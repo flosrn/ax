@@ -1,0 +1,77 @@
+{
+ "request": "req-parity",
+ "host": "MacBook-Pro-M1-Max-de-Florian-4.local",
+ "orca": "orca",
+ "createdAt": "2026-08-21T16:45:23.250308+00:00",
+ "attempts": [
+  {
+   "n": 1,
+   "settled": false,
+   "phases": [
+    {
+     "name": "task-create",
+     "identity": "id-tc-1",
+     "argv": [
+      "orca",
+      "orchestration",
+      "task-create",
+      "--run",
+      "run_9eabaf8e2826",
+      "--spec",
+      "[omp model=@smol] probe $(danger) \"quoted\"",
+      "--retry-request",
+      "id-tc-1",
+      "--json"
+     ],
+     "receiptPath": "/dev/null",
+     "receipt": {
+      "ok": true,
+      "result": {
+       "task": {
+        "id": "task_parity1"
+       },
+       "state": "created"
+      }
+     },
+     "exit": 0
+    },
+    {
+     "name": "worker-start",
+     "identity": "id-ws-1",
+     "argv": [
+      "orca",
+      "orchestration",
+      "worker-start",
+      "--task",
+      "task_parity1",
+      "--run",
+      "run_9eabaf8e2826",
+      "--retry-request",
+      "id-ws-1",
+      "--worktree",
+      "current",
+      "--agent",
+      "omp",
+      "--json"
+     ],
+     "receiptPath": "/dev/null",
+     "receipt": {
+      "ok": true,
+      "result": {
+       "taskId": "task_parity1",
+       "dispatchId": "ctx_parity1",
+       "stage": "input_accepted",
+       "state": "ready",
+       "mutation": {
+        "replayed": true
+       },
+       "effects": [],
+       "residualResources": []
+      }
+     },
+     "exit": 0
+    }
+   ]
+  }
+ ]
+}
