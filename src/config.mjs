@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { applyDefaults, validate } from './schema.mjs';
 
 export const CONFIG_FILE = 'ax.config.json';
-export const PACKAGE_NAME = 'makerkit-ax';
+export const PACKAGE_NAME = '@flosrn/ax';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 

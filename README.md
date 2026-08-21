@@ -5,7 +5,7 @@ Agent-experience tooling for MakerKit turbo projects: worktrees, `debug-as`, ven
 ## Use it in a project
 
 ```bash
-pnpm add -Dw github:flosrn/ax#v0.1.0
+pnpm add -Dw ^0.1.0
 pnpm ax init          # writes ax.config.json, bin/ax and the managed blocks
 pnpm ax doctor        # exit 0 when the checkout is coherent
 ```
@@ -22,7 +22,7 @@ documents each key; point your editor at it with `"$schema"`.
 
 ```json
 {
-  "$schema": "./node_modules/makerkit-ax/ax.schema.json",
+  "$schema": "./node_modules/@flosrn/ax/ax.schema.json",
   "project": { "name": "ofmchat", "display": "OFMChat" },
   "ports": { "dev": [3100, 3999], "proxy": 1355 },
   "apps": { "web": "apps/web", "e2e": "apps/e2e", "caches": ["apps/dev-tool"] },
@@ -53,7 +53,7 @@ node bin/ax.mjs doctor --help
 ```
 
 To try a change against a real project without publishing, point that project's pin at your
-checkout: `"makerkit-ax": "link:../../flosrn/ax"`.
+checkout: `"@flosrn/ax": "link:../../flosrn/ax"`.
 
 Adding a subcommand: one file under `src/`, one case in `bin/ax.mjs`, one test file. Report
 findings through `src/log.mjs` — every failing check names the command that repairs it, or it

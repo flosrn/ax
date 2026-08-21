@@ -1,10 +1,12 @@
 {
-  "name": "makerkit-ax",
+  "name": "@flosrn/ax",
   "version": "0.1.0",
   "description": "Agent-experience tooling for MakerKit turbo projects: worktrees, debug-as, vendor ownership.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
+  "repository": { "type": "git", "url": "git+https://github.com/flosrn/ax.git" },
+  "publishConfig": { "access": "public" },
   "bin": {
     "ax": "./bin/ax.mjs"
   },

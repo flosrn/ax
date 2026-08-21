@@ -6,7 +6,9 @@ import { agentLines } from './commands.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, vendorRemote, version } from './config.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 
-export const PIN = `github:flosrn/ax#v${version}`;
+// Caret, not an exact pin: patches of this tooling are the point of shipping it
+// as a package. The lockfile holds the version actually installed.
+export const PIN = `^${version}`;
 export const BLOCK_ID = 'ax';
 
 /** Lines ax owns in .gitignore: runtime state of the AX layer, nothing else. */

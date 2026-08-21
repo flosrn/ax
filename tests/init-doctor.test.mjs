@@ -64,7 +64,7 @@ test('init leaves the vendor-owned files intact around its block', () => {
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   assert.equal(manifest.scripts.dev, 'turbo dev');
   assert.equal(manifest.scripts.ax, './bin/ax');
-  assert.match(manifest.devDependencies['makerkit-ax'], /^github:flosrn\/ax#v/);
+  assert.match(manifest.devDependencies['@flosrn/ax'], /^\^\d+\./);
 
   assert.ok(statSync(join(dir, 'bin', 'ax')).mode & 0o111, 'bin/ax must be executable');
 });
