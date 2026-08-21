@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { COMMANDS, renderUsage } from '../src/commands.mjs';
+import { board } from '../src/board.mjs';
+import { orcaAvailable } from '../src/orca-bin.mjs';
 import { repoPaths, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
 import { init } from '../src/init.mjs';
@@ -22,6 +24,8 @@ const RUNNERS = {
   // Same reason, and stronger: every argument after `supabase` is the Supabase
   // CLI's own, so ax must not parse, reorder or consume a single one of them.
   supabase: () => supabase(args.slice(1)),
+  // Fail-open hook writer — its own module owns the always-zero exit contract.
+  board: () => board(args.slice(1)),
 };
 
 const args = process.argv.slice(2);
@@ -39,9 +43,11 @@ if (command === undefined || ['help', '--help', '-h'].includes(command)) {
   process.stdout.write(renderUsage(version));
 } else if (['--version', '-v'].includes(command)) {
   process.stdout.write(`${version}\n`);
-} else if (RUNNERS[command]) {
+} else if (RUNNERS[command] && !(COMMANDS.find(entry => entry.name === command)?.gated === 'orca' && !orcaAvailable())) {
   process.exitCode = RUNNERS[command](context);
 } else {
+  // A gated command on a machine without Orca is EXACTLY an unknown command:
+  // it does not exist here, and the help printed below does not list it.
   process.stderr.write(`ax: unknown command "${command}"\n\n${renderUsage(version)}`);
   process.exitCode = 2;
 }

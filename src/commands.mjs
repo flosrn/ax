@@ -12,6 +12,7 @@
 // to agents on the day it becomes runnable, not before.
 
 import { bold, dim } from './log.mjs';
+import { orcaAvailable } from './orca-bin.mjs';
 
 /**
  * `agentLine` is what the AGENTS.md block says about the command — set it only
@@ -60,6 +61,21 @@ export const COMMANDS = [
     ],
   },
   {
+    name: 'board',
+    summary: 'write this worktree’s sidebar checkpoint — comment and status, never backwards',
+    // Gated: this entry exists only where the machine resolves an Orca CLI. A
+    // client repo installing ax never sees it — not in the help, not at the
+    // dispatch, not in the generated AGENTS.md block (no agentLine).
+    gated: 'orca',
+    options: [
+      ['--worktree <selector>', 'target worktree (default: current, from cwd)'],
+      ['--comment <text>', 'sidebar comment — flattened to one line, capped at 160'],
+      ['--status <id>', 'todo|in-progress|in-review|completed — never backwards'],
+      ['--if-empty', 'write the comment only when none exists yet'],
+      ['--verbose', 'say what was written or skipped'],
+    ],
+  },
+  {
     name: 'init',
     summary: 'write ax.config.json, bin/ax and the managed blocks',
     options: [
@@ -71,6 +87,15 @@ export const COMMANDS = [
 ];
 
 export const commandNames = COMMANDS.map(command => command.name);
+
+/**
+ * The registry minus the entries this machine cannot answer. Gating is applied
+ * HERE, once, and traversed by the help and the dispatch alike — the full
+ * COMMANDS table stays intact so the SUBCOMMANDS-equality test keeps comparing
+ * complete tables instead of comparing the gate to itself. `orca` is injectable
+ * so both states are testable on any machine.
+ */
+export const visibleCommands = ({ orca = orcaAvailable() } = {}) => COMMANDS.filter(command => command.gated !== 'orca' || orca);
 
 /** The lines an agent sees in a project's AGENTS.md, in registry order. */
 export const agentLines = () => COMMANDS.filter(command => command.agentLine).map(command => command.agentLine);
@@ -91,8 +116,11 @@ export const subcommandNames = name =>
  * to the right and leaves the flags hanging in whitespace. Names are short and
  * stay short; flags belong indented under the command they modify.
  */
-export function renderUsage(version) {
-  const width = Math.max(...COMMANDS.map(command => command.name.length));
+export function renderUsage(version, availability = {}) {
+  // The help renders what THIS machine can answer — the gate is applied here
+  // and at the dispatch from the same predicate, injectable for tests.
+  const visible = visibleCommands(availability);
+  const width = Math.max(...visible.map(command => command.name.length));
 
   const lines = [
     `${bold('ax')} ${version} — agent-experience tooling for MakerKit turbo projects`,
@@ -103,7 +131,7 @@ export function renderUsage(version) {
     bold('Commands'),
   ];
 
-  for (const command of COMMANDS) {
+  for (const command of visible) {
     lines.push(`  ${command.name.padEnd(width)}  ${command.summary}`);
 
     // Each command's verbs and flags align among THEMSELVES, not against every

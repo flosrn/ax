@@ -56,8 +56,12 @@ test('every advertised command answers for real, verb included', () => {
 });
 
 test('the help text lists exactly the registry, and no line wraps a narrow terminal', () => {
-  const usage = renderUsage('0.0.0');
+  // Availability injected: this suite must answer the same on a machine with
+  // Orca and on one without, and both states are asserted — the gated entry
+  // exists with it, vanishes without it.
+  const usage = renderUsage('0.0.0', { orca: true });
   for (const command of COMMANDS) assert.match(usage, new RegExp(`^  ${command.name}\\b`, 'm'));
+  assert.doesNotMatch(renderUsage('0.0.0', { orca: false }), /^  board\b/m);
   // Flags hang under their own command, never in the left column.
   for (const [flag] of COMMANDS.flatMap(command => command.options ?? [])) {
     assert.match(usage, new RegExp(`^ {4,}${flag.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`, 'm'));
