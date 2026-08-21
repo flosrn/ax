@@ -20,8 +20,33 @@ import { proxyAvailable, proxyEnabled, proxyName, proxyServedUrl, tailnetName } 
 import { touchesDatabase } from './supabase.mjs';
 import { KEYS, RECORDED_KEYS, readRecorded } from './plan.mjs';
 
-/** The env files a worktree records itself in, in Next.js precedence order. */
-export const envFiles = config => [`${config.apps.web}/.env.local`, '.env.local'];
+/**
+ * The files a worktree's recorded state can live in, highest precedence first.
+ *
+ * This is Next's documented lookup order, not an approximation of it
+ * (`next/dist/docs/01-app/02-guides/environment-variables.md`): `process.env`,
+ * then `.env.$(NODE_ENV).local`, `.env.local`, `.env.$(NODE_ENV)`, `.env`.
+ * Reading a shorter chain is how a tool starts disagreeing with the framework
+ * it serves — a developer with a `.env.development.local` would have Next
+ * honour it while every verdict here quoted `.env.local`, which is the same
+ * two-derivations failure this module exists to prevent, one layer out.
+ *
+ * `.env.local` is skipped under `NODE_ENV=test`, because Next skips it: tests
+ * are meant to produce the same result for everyone.
+ *
+ * The app directory wins over the repository root. Next only loads the app's
+ * own files; the root ones are read by this tooling and by the task runner, so
+ * they belong at the bottom rather than nowhere.
+ */
+export const envFiles = (config, env = process.env) => {
+  const mode = env.NODE_ENV || 'development';
+  const chain = dir =>
+    [`.env.${mode}.local`, mode === 'test' ? undefined : '.env.local', `.env.${mode}`, '.env']
+      .filter(Boolean)
+      .map(file => (dir ? `${dir}/${file}` : file));
+
+  return [...chain(config.apps.web), ...chain('')];
+};
 
 /**
  * Read what this worktree already wrote about itself.
