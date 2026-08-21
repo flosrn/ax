@@ -1,0 +1,39 @@
+# Publish to npm without a token.
+#
+# The account runs 2FA in `auth-and-writes` mode, so a local `npm publish`
+# demands a one-time password every time, and the tokens that used to bypass
+# that are being restricted (npm says so during login:
+# https://gh.io/npm-gat-bypass2fa-deprecation). OIDC trusted publishing is the
+# path npm points at instead: GitHub signs a short-lived identity for this
+# workflow, npm verifies it, and no secret exists to leak or rotate.
+#
+# `id-token: write` is what mints that identity. Without it the publish falls
+# back to looking for a token and fails.
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # OIDC publishing needs npm 11.5+; setup-node still ships npm 10.
+      - run: npm install -g npm@latest
+
+      - run: node --test "tests/*.test.mjs"
+
+      - run: npm publish --provenance --access public
