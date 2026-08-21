@@ -5,7 +5,7 @@ Agent-experience tooling for MakerKit turbo projects: worktrees, `debug-as`, ven
 ## Use it in a project
 
 ```bash
-pnpm add -Dw github:flosrn/ax#v0.1.3
+pnpm add -Dw github:flosrn/ax#v0.3.0
 pnpm ax init          # writes ax.config.json, bin/ax and the managed blocks
 pnpm ax doctor        # exit 0 when the checkout is coherent
 ```
@@ -55,6 +55,5 @@ node bin/ax.mjs doctor --help
 To try a change against a real project without publishing, point that project's pin at your
 checkout: `"@flosrn/ax": "link:../../flosrn/ax"`.
 
-Adding a subcommand: one file under `src/`, one case in `bin/ax.mjs`, one test file. Report
-findings through `src/log.mjs` — every failing check names the command that repairs it, or it
-gets ignored.
+Adding a subcommand, the invariants a patch has to hold, and why `plan.mjs` is the axis:
+[`AGENTS.md`](./AGENTS.md).
