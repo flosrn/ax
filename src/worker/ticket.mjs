@@ -1,0 +1,251 @@
+// The ticket half of `ax worker launch`: everything that happens BEFORE anything
+// is created, because every failure here is one a child would have inherited.
+//
+// A brief whose ticket line is empty sends a child to improvise — the 2026-08-01
+// failure, where three worktrees ran without ever reading their brief. So the
+// ticket is read here, by name, and a read that does not answer stops the launch
+// instead of producing a session pointing at nothing.
+//
+// Nothing in this module writes, mutates or prints. It answers questions and
+// returns refusal TEXT; the verb decides what to do with it, and `src/log.mjs`
+// is the only thing that puts it on a stream.
+//
+// Every machine-facing call is injected: `run` is a `createRunner` product for
+// the Orca CLI, `exec(bin, args, cwd)` is `gh` and `git`. That is what lets the
+// suite decide these propositions with no tracker credential and no network.
+
+import { defaultExec } from './release.mjs';
+
+/**
+ * `GAP-353` is a Linear ref, `1234` a GitHub issue. Both are anchored: the ref
+ * has to BE one of the two grammars, never merely contain one. Anything else
+ * returns null so the caller refuses, because guessing a tracker from a
+ * free-form string is how a brief ends up pointing at nothing.
+ */
+const LINEAR = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const GITHUB = /^[0-9]+$/;
+
+export function ticketKind(ref) {
+  const text = String(ref ?? '');
+  if (LINEAR.test(text)) return 'linear';
+  if (GITHUB.test(text)) return 'github';
+  return null;
+}
+
+/**
+ * A slug that repeats the ticket ref, corrected rather than refused.
+ *
+ * The request id is built as `<ticket>-<slug>`, so the repetition doubles.
+ * Measured on the first real use, 2026-08-15: `--slug GAP-356-cache-components`
+ * produced the branch `feat/gap-356-gap-356-cache-components`. The intent is
+ * unambiguous, so this normalises — but it returns the correction in `note`,
+ * because a silent correction to a NAME is the other way to be wrong about it:
+ * the name is what the operator will later search for.
+ *
+ * Comparison is case-insensitive (`gap-356` is the same ref as `GAP-356`), and
+ * the slug is sliced by the ref's LENGTH, so the surviving text keeps the case
+ * the operator typed.
+ */
+export function normalizeSlug(ref, slug) {
+  const given = String(slug ?? '');
+  const refText = String(ref ?? '');
+  if (given === '' || refText === '') return { slug: given, note: '' };
+
+  const lower = given.toLowerCase();
+  const refLower = refText.toLowerCase();
+  const carries = `(the request id already carries ${refText})`;
+
+  if (lower === refLower) {
+    return { slug: '', note: `--slug was just the ticket ref; dropping it ${carries}` };
+  }
+  if (lower.startsWith(`${refLower}-`)) {
+    const kept = given.slice(refText.length + 1);
+    return { slug: kept, note: `--slug repeated the ticket ref; using '${kept}' ${carries}` };
+  }
+  return { slug: given, note: '' };
+}
+
+/** The tracker's own error, flattened to one bounded line — never dropped (F-004). */
+const detailOf = (...streams) =>
+  streams
+    .map(text => String(text ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 160);
+
+const unreadable = (ref, where, detail) => ({
+  ok: false,
+  reason:
+    `could not read ${ref} from ${where}${detail ? `: ${detail}` : ''}. ` +
+    `Read it by hand first — a launch whose ticket line is empty creates a child that improvises.`,
+});
+
+/**
+ * A ticket reduced to what a brief needs: identifier, title, url, state, and the
+ * SIZE of its body.
+ *
+ * Two trackers, one shape. Linear answers under `result.issue`, GitHub at the
+ * top level, and no caller should have to know which — a launcher that parses
+ * both inline grows a second parser the day a third tracker appears.
+ *
+ * The body TEXT never comes back. It is the child's to read, on its own host,
+ * with the command `readCommand` teaches; only its emptiness is decidable from
+ * here (see `emptyBodyRefusal`). Length, not judgement.
+ */
+export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExec } = {}) {
+  let ident;
+  let title;
+  let url;
+  let state = '';
+  let body = '';
+  let detail = '';
+
+  if (kind === 'linear') {
+    if (typeof run !== 'function') {
+      return {
+        ok: false,
+        reason: `no Orca runtime on this host, so ${ref} cannot be read from Linear. Run the launch from a host that has the Orca CLI.`,
+      };
+    }
+    const answer = run(['linear', 'issue', String(ref), '--json']);
+    const issue = answer?.receipt?.result?.issue ?? {};
+    ident = issue.identifier;
+    title = issue.title;
+    url = issue.url;
+    state = issue.state?.name ?? '';
+    body = issue.description ?? '';
+    detail = detailOf(answer?.stderr, answer?.receipt?.error, answer?.receipt?.unparseable);
+    if (!ident || !title || !url) return unreadable(ref, 'Linear', detail);
+  } else if (kind === 'github') {
+    const answer = exec('gh', ['issue', 'view', String(ref), '--json', 'title,url,state,body']);
+    // `gh` that cannot RUN is its own refusal: the credential, the network and a
+    // missing binary need three different repairs, and one message for all three
+    // sends the operator looking in the wrong place.
+    if (answer?.error) {
+      return {
+        ok: false,
+        reason: `gh cannot run here, so GitHub issue #${ref} cannot be read (${detailOf(answer.error)}). Install the GitHub CLI, or pass a Linear ref.`,
+      };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(answer?.stdout ?? '');
+    } catch {
+      parsed = {};
+    }
+    ident = `#${ref}`;
+    title = parsed.title;
+    url = parsed.url;
+    state = parsed.state ?? '';
+    body = parsed.body ?? '';
+    detail = detailOf(answer?.stderr);
+    if (!title || !url) return unreadable(`#${ref}`, 'GitHub', detail);
+  } else {
+    return {
+      ok: false,
+      reason: `--issue expects a Linear ref like GAP-353 or a GitHub issue number, got '${ref}'`,
+    };
+  }
+
+  return { ok: true, id: ident, title, url, state, bodyLength: String(body).trim().length };
+}
+
+/**
+ * How the child is told to read its own ticket.
+ *
+ * `orca linear issue <KEY> --full` was measured broken on this fleet
+ * (GAP-372/356/376): it prints a ~350-byte header and reports `Comments: 0` on
+ * issues that HAVE comments — so a child obeying it reads a truncated ticket,
+ * never sees the thread where half the decisions live, and its own command
+ * exits 0. Five dispatches carried that flag before anyone noticed. The MCP read
+ * comes first because the comments are part of the instruction rather than left
+ * to the child's judgement; the CLI `--json` form is the fallback for a host
+ * with no MCP, and it is the only Linear command line here a child can paste.
+ */
+export function readCommand({ kind = 'linear', ref } = {}) {
+  if (kind === 'github') return `\`gh issue view ${ref} --comments\``;
+  return (
+    `Linear MCP \`get_issue\` on ${ref}, then \`list_comments\` on the same issue — the thread ` +
+    `carries decisions the description does not. No MCP: ` +
+    `\`orca linear issue ${ref} --json | jq -r ".result.issue.description"\`. NEVER \`--full\`: ` +
+    `it truncates to a header and reports \`Comments: 0\` on issues that have comments.`
+  );
+}
+
+/**
+ * A ref the work is DEFINED by has to resolve on `origin`, proved before
+ * anything is created.
+ *
+ * Measured 2026-08-14: the nine Makerkit `v4-step/*` tags existed solely in one
+ * Mac's clone, pulled from a paid private third-party remote the other host has
+ * neither a remote nor a credential for. A child placed there was therefore
+ * defined by a merge it could not perform, and nothing noticed — disk,
+ * habitability, context file and marker all proved true while the one
+ * indispensable object was missing. `ls-remote` answers for every host at once,
+ * which is why this asks origin instead of ssh-ing into the target: a ref on
+ * origin is reachable by any clone of it, including hosts this launch has never
+ * seen.
+ */
+export function needsRef(ref, { exec = defaultExec, cwd = process.cwd() } = {}) {
+  const wanted = String(ref ?? '');
+  if (wanted === '') return { ok: true };
+
+  const answer = exec('git', ['ls-remote', '--exit-code', '--refs', 'origin', wanted], cwd);
+  if (!answer?.error && answer?.status === 0) return { ok: true };
+
+  return {
+    ok: false,
+    reason: `--needs-ref '${wanted}' does not resolve on origin, so no host that clones from origin can
+resolve it either. A ref that exists only in a local checkout cannot be merged by a child
+anywhere else, however capable that host is otherwise.
+
+  git ls-remote --refs origin            # what origin actually carries
+  git push origin 'refs/tags/<ns>/*:refs/tags/<ns>/*'
+                                         # if the ref is yours to publish and the objects
+                                         # already live in the history of that repo`,
+  };
+}
+
+/** `--task '<task>'   <why>`, from a string or a `{ task, why }` the caller declared. */
+function alternateLine(alternate) {
+  const { task, why } = typeof alternate === 'string' ? { task: alternate, why: '' } : (alternate ?? {});
+  if (!task) return '';
+  return `  --task '${task}'${why ? `   ${why}` : ''}`;
+}
+
+/**
+ * A ticket that READS is not a ticket that is EXECUTABLE — the refusal text, or
+ * '' when there is nothing to refuse.
+ *
+ * The default entry point's own gate needs a decision already made: a plan
+ * document it can open and the heading covering this slice, or acceptance
+ * criteria complete enough to pin tests. Measured 2026-08-14: GAP-355 was
+ * dispatched carrying a body of zero characters, so the plan it was defined by
+ * was named nowhere a child could reach, and the only correct thing left for
+ * that child was to escalate — after being created.
+ *
+ * Only EMPTINESS is decidable from here. A body that exists and says nothing is
+ * the child's gate to refuse, not this one's. And a caller who passed `--task`
+ * has named another entry point on purpose and is not held to this: refusing it
+ * would make the one correct route to an undecided ticket unreachable.
+ *
+ * The alternates come from the caller. No skill name is written here — `ax` runs
+ * in repos whose agents answer to verbs it has never heard of.
+ */
+export function emptyBodyRefusal({ bodyLength, task, id, alternates = [] } = {}) {
+  if (task) return '';
+  if (Number(bodyLength) > 0) return '';
+
+  const suggestions = alternates.map(alternateLine).filter(Boolean);
+  const escape = suggestions.length
+    ? suggestions.join('\n')
+    : `  --task '<entry point>'   an entry point that does not need a decision already written down`;
+
+  return `${id} reads, but its body is empty. The default entry point starts from a decision that
+already exists: a plan document and the heading that covers this slice, or acceptance criteria
+complete enough to pin tests. Neither is reachable from an empty ticket, and the child is told
+to treat the ticket as canonical — so it would escalate, correctly, after being created.
+
+Write them on the ticket, or name an entry point that does not need them:
+${escape}`;
+}

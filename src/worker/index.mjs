@@ -13,8 +13,9 @@ import { ls } from './ls.mjs';
 import { tail } from './tail.mjs';
 import { transcript } from './transcript.mjs';
 import { release } from './release.mjs';
+import { launch } from './launch.mjs';
 
-export const SUBCOMMANDS = { start, ls, tail, gate, transcript, release };
+export const SUBCOMMANDS = { start, launch, ls, tail, gate, transcript, release };
 
 /**
  * `ax worker <verb> [args]`.

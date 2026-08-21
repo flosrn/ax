@@ -122,6 +122,47 @@
           "description": "Env var that must be truthy for the handoff route to answer. Absent means 404."
         }
       }
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What `ax worker launch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
+      "properties": {
+        "entry": {
+          "type": "string",
+          "description": "The instruction a child is given when --task is not passed — the entry point that decides what it does with the ticket. Absent means every launch must pass --task: ax cannot invent the verb a project's agents answer to."
+        },
+        "contract": {
+          "type": "string",
+          "description": "Path to the pilot contract appended to every brief — repo-relative, or absolute for a contract shared by several repos. Declared and unreadable is a refusal: a brief pointing at nothing sends a child to improvise (2026-08-01, three worktrees that never read theirs). Absent means ax writes the mechanics-only contract it owns."
+        },
+        "worktreeTool": {
+          "type": "string",
+          "description": "The repo's own worktree creator, when it has one. It must BLOCK until the tree is usable and print the path on its last stdout line. Absent means Orca places the worktree and `ax worktree setup` provisions it."
+        },
+        "hosts": {
+          "type": "object",
+          "description": "Execution hosts this project may dispatch to, keyed by the Orca environment name passed to --on. A host absent from here cannot be dispatched to, and a ground it does not declare is not measured — the floors are what keep a newcomer from being OOM-killed for an incumbent's appetite, and they are per host and per project footprint.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ssh"],
+            "properties": {
+              "ssh": { "type": "string", "description": "ssh target that reaches this host, for the grounds Orca cannot answer." },
+              "diskPath": { "type": "string", "description": "Mount point the worktrees land on — a remote worktree installs its own dependencies. Measured only together with diskFloorGb." },
+              "diskFloorGb": { "type": "integer", "minimum": 0, "description": "Free gigabytes below which a launch onto this host is refused. Measured only together with diskPath." },
+              "cgroup": { "type": "string", "description": "cgroup directory of the unit every session on that host shares. Measured only together with memFreeFloorMb." },
+              "memFreeFloorMb": { "type": "integer", "minimum": 0, "description": "Unreclaimable headroom below which a launch is refused — never `memory.current`, which counts page cache the kernel drops under pressure. Measured only together with cgroup." },
+              "sweep": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "argv run on the host before memory is measured, to reclaim browsers an earlier stage left open. Refusing over dead renderers is a refusal about garbage."
+              },
+              "sessions": { "type": "string", "description": "Session transcript root on that host, so the marker check crosses the transport unchanged instead of degrading into a weaker one." }
+            }
+          }
+        }
+      }
     }
   }
 }

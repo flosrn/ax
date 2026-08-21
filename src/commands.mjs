@@ -67,6 +67,7 @@ export const COMMANDS = [
     gated: 'orca',
     subcommands: [
       ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
+      ['launch --issue <ref>', 'a ticket becomes a dispatched, verified session'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle>', 'alive-with-content / alive-and-silent / cannot-establish'],
       ['gate <task>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],

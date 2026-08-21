@@ -30,10 +30,15 @@ import { promote } from './supabase.mjs';
 /** Runtime paths that exist in every worktree and belong in none of its diffs. */
 const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
 
-export function setup(argv = []) {
+/**
+ * `cwd` is injected for one caller: `ax worker launch` places a worktree and
+ * then provisions it, and it may not chdir — a process that changed directory
+ * mid-launch would leave every later step resolving against the child's tree.
+ */
+export function setup(argv = [], { cwd } = {}) {
   const dryRun = argv.includes('--dry-run');
   const force = forcedDatabase(argv);
-  const { root, main } = repoPaths();
+  const { root, main } = repoPaths(cwd);
 
   if (!root) {
     bad('not inside a git repository');

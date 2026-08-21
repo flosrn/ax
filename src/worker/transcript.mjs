@@ -29,11 +29,11 @@
 //   2  usage error (no target, unknown flag)
 //   3  cannot establish: no orca, runtime silent, target unresolvable or
 //      ambiguous, source file unreadable
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
-import { bad as badLine, fix as fixLine, note as noteLine, section as sectionLine } from '../log.mjs';
+import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, section as sectionLine } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore } from './record.mjs';
 
@@ -46,6 +46,10 @@ const note = message => noteLine(redactSecrets(message));
 const bad = message => badLine(redactSecrets(message));
 const fix = command => fixLine(redactSecrets(command));
 const section = title => sectionLine(redactSecrets(title));
+// The marker mode's payload: one parseable line, redacted like everything else
+// this module prints — a needle is a worktree name, but the line crosses a
+// transport and every emission here goes through one boundary.
+const raw = text => rawLine(redactSecrets(text));
 
 /** `orca open` is the repair for every gate refusal of this verb. */
 const OPEN = 'orca open   # start the Orca runtime, then re-run';
@@ -228,6 +232,30 @@ export function renderEntry(entry) {
 
 export function transcript(argv = [], { resolve = resolveOrca, runner, env = process.env, sessionsRoot } = {}) {
   let target = '';
+  // `--marker <needle>` is the one mode that reads a transcript WITHOUT
+  // rendering it: `ax worker launch` asks which model a child ended up running
+  // and who moved it there, and it asks the same question on the machine the
+  // transcript lives on. So it crosses a transport (`ssh <host> ax worker
+  // transcript --marker …`) and answers in one parseable line instead of
+  // degrading into a weaker local proxy. It reads a file and asks the runtime
+  // nothing, which is why it answers before the gate below.
+  const markerAt = argv.indexOf('--marker');
+  if (markerAt !== -1) {
+    const needle = argv[markerAt + 1];
+    if (needle === undefined || needle.startsWith('-')) {
+      bad('ax worker transcript --marker expects the session needle (a worktree directory name)');
+      return 2;
+    }
+    const rootAt = argv.indexOf('--sessions');
+    const found = modelMarker({ needle, env, sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1] });
+    // Absence is "too early to tell", never "boot model": exit 1 says nothing
+    // was found, and a caller that read it as a verdict would report a marker
+    // failure on a child that was merely slow to start.
+    if (found === null) return 1;
+    raw(`${found.model}|${found.role}`);
+    return 0;
+  }
+
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') {
       section('ax worker transcript <handle|dispatch_id|path.jsonl>');
@@ -371,6 +399,66 @@ function resolveTarget(target, { env, sessionsRoot }) {
   // wrong answer is diagnosable without re-deriving the chain.
   return { path: candidates[0].path, via: `resolved from record ${name} → worktree ${worktrees[0]}` };
 }
+
+/**
+ * What model a dispatched child actually runs, and WHO put it there.
+ *
+ * The child's own word for it is stale the moment it switches, so the transcript
+ * is the evidence: in a `model_change` entry the `role` field names the mover —
+ * absent is the boot model, `default` is the spec's `[omp model=…]` marker
+ * applying, `fallback` is the quota chain moving the session on its own. That
+ * distinction was paid for: an early adapter was believed to work because a
+ * fallback happened to land on the intended model at the right moment.
+ *
+ * `null` means NO TRANSCRIPT YET — "too early to tell", never "boot model". A
+ * caller that conflated the two would report a marker failure on a child that
+ * was merely slow to start.
+ */
+export function modelMarker({ needle, env = process.env, sessionsRoot } = {}) {
+  const root = sessionsRootOf(env, sessionsRoot);
+  let dirs;
+  try {
+    dirs = readdirSync(root, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && entry.name.includes(needle))
+      .map(entry => join(root, entry.name));
+  } catch {
+    return null;
+  }
+  const newest = paths => paths.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);
+  const dir = newest(dirs);
+  if (dir === null) return null;
+
+  let files;
+  try {
+    files = readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => join(dir, name));
+  } catch {
+    return null;
+  }
+  const file = newest(files);
+  if (file === null) return null;
+
+  let last = null;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (line === '' || !line.includes('model_change')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    // The LAST one wins: a session that switched twice is running the newest.
+    if (entry?.type === 'model_change') last = { model: String(entry.model ?? ''), role: entry.role ?? '' };
+  }
+  return last;
+}
+
+const mtime = path => {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+};
 
 /** Exported for the doctor of a wrong answer: which files a target would consider. */
 export { findRecords, sessionCandidates, worktreesOf };

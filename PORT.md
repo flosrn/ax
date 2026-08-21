@@ -29,8 +29,9 @@ src/worker/release.mjs     ax worker release        (preuve d'atterrissage, jama
 src/worker/pane.mjs        LE lecteur de `terminal read` + `terminal list` (F-041/F-028)
 src/worker/transcript.mjs  ax worker transcript     (redacted par défaut, jamais de bypass capability)
 src/worker/stall.mjs       watcher détaché fail-open (fichier séparé du fail-closed — ADR 0025)
-src/worker/launch.mjs      ax worker launch --issue (gardes hôte → config par repo + probes injectées)
-src/board.mjs              ax board                 (écrivain UNIQUE du board, statut monotone)
+src/worker/launch.mjs      ax worker launch --issue (gardes hôte → contrat de config par repo +
+                           sondes injectées ; provisionnement délégué à ax worktree setup)
+src/worker/{ticket,hosts,brief,child}.mjs  ses quatre pièces séparables
 src/triage.mjs             ax triage                (cap par pane, F-030, sorties .scratch, le parent publie)
 src/pr-gate.mjs            ax pr gate               (pur gh/git — seul verbe non gaté sur orca)
 src/worktree/new.mjs       ax worktree new <nom> [--agent] [--prompt] [--brief] [--model] [--issue]
@@ -144,8 +145,35 @@ les tables complètes, gating appliqué après.
       `release-receipt`) avec leurs tests, prose `orca-orchestrator` basculée sur `ax worker
       release`. ⚠ `orca-triage.test.ts` a UN rouge préexistant (contrat de labels du template de
       triage), vérifié présent à HEAD avant cette étape : il appartient à l'étape 7.
-- [ ] **6. `worker launch`** — la restructuration : gardes gapicore/Portless/ofmchat → contrat de
-      config par repo + probes. Cas de `orca-launch.test.ts`. Meurt : `launch` du coordinator.
+- [x] **6. `worker launch`** — fait le 2026-08-22. `ax worker launch --issue <ref>` : ticket →
+      session dispatchée et vérifiée, en un geste. Ce que le port a surtout fait, c'est SUPPRIMER :
+      le bash portait son propre provisionneur (découverte du script de setup par glob, relance,
+      cross-check d'URL via une fonction shell dont la signature différait par repo — donc
+      exactement un repo était vérifié). Plus rien de tout ça : `ax worktree setup` provisionne et
+      écrit le fichier de contexte, `doctor` re-dérive et compare, l'URL servie vient de la sonde
+      proxy qui lit déjà la config du projet. L'habitabilité n'est plus une deuxième
+      implémentation qui peut contredire la première. 950 L de bash → 5 modules injectables :
+      `ticket.mjs` (grammaire des refs, adaptateurs Linear/GitHub, corps vide = rien créé sauf
+      `--task`, `--needs-ref` prouvé sur origin, la commande de lecture enseignée sans `--full`
+      qui tronque), `hosts.mjs` (les sols distants : disque, balayage AVANT mesure, jeu
+      irrécupérable du cgroup — jamais `memory.current`, qui compte le page cache —, sonde tracker
+      par hôte, repo-id par segment de chemin), `brief.mjs` (marker et instruction sur UNE ligne,
+      contrat mécanique que ax possède, addendum distant, brief opérateur verbatim), `child.mjs`
+      (mandat d'advisor scopé au worktree + git-exclude par `--path-format=absolute`, identité git
+      épinglée `--worktree` avec le tag `(babysit PR#N)` retiré), `launch.mjs` (le pipeline :
+      placement, sélecteur prouvé VISIBLE par Orca avant tout dispatch, lignage posé puis RELU,
+      STRANDED rejoué ici, vérification marker+curseur). Aucune constante projet dans `src/` : le
+      contrat `launch` d'`ax.schema.json` ne porte AUCUN défaut — un sol mesuré pour une flotte,
+      hérité par un repo qui ne l'a pas déclaré, c'est le même bug ailleurs ; ce qu'un projet ne
+      déclare pas n'est pas mesuré et le rapport le dit. 82 tests neufs (5 suites), suite ax
+      495/495, smoke live : ticket Linear réel lu, Run résolu depuis le registre de pairs, brief
+      composé, argv de dispatch prédite depuis le MÊME tableau que le run réel (le bash retapait
+      cette ligne à la main).
+      Côté `~/.omp` : `cmd_launch` (943 L) + `orca-launch.test.ts` (1 208 L) supprimés ; le
+      coordinator n'a plus que `checkpoint|triage|reap` ; `/launch` et `orca-sessions` appellent
+      `ax worker launch`. ⚠ `record.py` garde ses 28 verbes alors que 24 sont morts : il disparaît
+      ENTIER à l'étape 7, et le découper deux fois est du bruit. Le rouge unique de
+      `orca-triage.test.ts` est toujours celui d'avant l'étape 5.
 - [ ] **7. `ax triage`** — cas de `orca-triage.test.ts`. Meurt : le coordinator ENTIER.
 - [ ] **8. `ax worktree new` + `ax pr gate`** — parallélisables avec 6-7. Meurt : `merge-gate.sh`.
 - [ ] **9. Rôles** — `~/.omp/agent/agents/{coordinateur,orchestrateur}.md`, minces, appellent ax.
