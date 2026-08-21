@@ -65,8 +65,16 @@ les tables complètes, gating appliqué après.
       du spawn (résolution shared/ax.ts → /Users/flo/.local/bin/ax → board écrit et relu) ; la
       plomberie hook→writeCheckpoint est inchangée et épinglée par les 50 tests. Les sessions OMP
       déjà ouvertes gardent l'ancien chemin jusqu'à leur redémarrage.
-- [ ] **3. Lecteurs** — `worker tail`, `gate`, `ls`, `transcript`. Dispatchable en subagents sur le
-      gabarit de l'étape 2. Meurent : `tail`/`gate` du coordinator.
+- [x] **3. Lecteurs** — fait le 2026-08-21, par 4 subagents en parallèle sur le gabarit board +
+      câblage parent (nom `worker` gaté, dispatcher, égalité SUBCOMMANDS=registre). `tail` (F-041 :
+      jamais --lines ; queue rédigée), `gate` (4 verdicts ; F-001/F-003 ; « connue sans dispatch »
+      = 0), `ls` (F-048 : compté par pane vivant ; INCONNU quand hostScope omet des hôtes — jamais
+      MORT ; liste tronquée = 3), `transcript` (résolution chemin|dispatch|request → sessions ;
+      ambiguïté = refus listant les candidats ; rédaction au niveau des émetteurs, pas de bypass).
+      61 tests neufs, suite 291/291. Smoke live des 4 verbes contre l'Orca réel (95 records,
+      pane vivant, gate de la sonde, transcript de la sonde résolu par dispatch id).
+      ⚠ `tail`/`gate` du coordinator ne meurent PAS encore : `dispatch --replace` appelle `gate`
+      en interne (coordinator.sh:494) — ils tombent avec `dispatch` à l'étape 4.
 - [ ] **4. `worker start` + `stall`** — le cœur F-001. Cas de `orca-dispatch.test.ts` +
       `orca-stall-watch.test.ts`. Meurent : `dispatch` du coordinator, `orca-stall-watch.sh`,
       `record.py`.

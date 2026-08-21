@@ -1,0 +1,361 @@
+// `ax worker ls` — how many children are actually working, counted by LIVE PANE.
+//
+// F-048 (gapilabs/omp#23): the cap counter answered ZERO while children were
+// working. The mechanism: a `worker-start` left failed/retained and repaired
+// with `--inject` produces a Dispatch WITHOUT touching worker terminal
+// accounting — so `orca orchestration worker-list` invents free capacity and,
+// worse, hides those children at release time. Anything that counts workers
+// from that list inherits both bugs. The truth that no repair path can forge is
+// the PANE: a terminal handle the runtime still owns and has not orphaned.
+//
+// So this verb joins THREE sources and shows their disagreement rather than
+// picking a winner silently:
+//   1. the local dispatch store (src/worker/record.mjs) — which requests exist,
+//      and which agent terminal each one was recorded to have opened;
+//   2. `orca terminal list --json` — liveness per handle, `orphaned` = dead;
+//   3. `orca orchestration worker-list --json` — Orca's own accounting, printed
+//      FOR COMPARISON ONLY, never as the count.
+// A live pane whose worker-list entry is absent or `retained` is exactly the
+// F-048 shape, and it is reported as a failure with the release that repairs it.
+//
+// Reading discipline (F-028): a record with no usable receipt is rendered
+// UNKNOWN, never dropped — an absence of information is not an absence of a
+// child. Same for the two containers: a `terminal list` that answers without a
+// `terminals` array is a refusal, not an empty machine. And measured 2026-08-22
+// on this Mac, `terminal list` carries `hostScope.omittedHostIds`: when hosts
+// are omitted, a handle missing from the list is UNKNOWN, not dead.
+//
+// This verb is FAIL-CLOSED, unlike `ax board`: a count that cannot be
+// established must refuse, because the caller is about to decide whether it has
+// room for another child.
+//
+// Exit codes (ADR 0003 — per verb, never a shared alphabet):
+//   0  the list was rendered, including the honest "0 record"
+//   2  usage error
+//   3  cannot-establish: no Orca CLI, silent runtime, unreadable store,
+//      unreadable terminal list
+
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
+import { bad, fix, note, ok, section } from '../log.mjs';
+import { defaultStore } from './record.mjs';
+
+const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
+
+/** A receipt that came back at all: exit 0, `ok`, a result object. Believable, not authoritative. */
+const answered = ph =>
+  ph !== null &&
+  typeof ph === 'object' &&
+  ph.exit === 0 &&
+  ph.receipt !== null &&
+  typeof ph.receipt === 'object' &&
+  ph.receipt.ok === true &&
+  ph.receipt.result !== null &&
+  typeof ph.receipt.result === 'object';
+
+/**
+ * USABLE, the conjunction `report()` fixes in record.mjs: exit 0 AND
+ * `state === 'ready'`. Exit 0 alone is only a receipt; a receipt reporting a
+ * partial mutation is STRANDED however cleanly the process ended. This is the
+ * ONLY receipt allowed to name a pane and the dispatch this verb would tell an
+ * operator to release — a `task-create` answer (`{task, mutation}`, no state,
+ * measured 2026-08-22) is display metadata and never that authority.
+ */
+const usablePhase = ph => answered(ph) && ph.receipt.result.state === 'ready';
+
+/**
+ * The agent pane out of one receipt's effects. Measured shape, 2026-08-22:
+ * `{kind:'terminal', role:'agent', action:'created'|'reused_agent_terminal', id:'term_…'}`.
+ * The action is deliberately NOT filtered: a reused agent terminal is just as
+ * alive as a created one, and F-048's repaired dispatches reuse.
+ */
+function agentPane(effects) {
+  if (!Array.isArray(effects)) return null;
+  for (let i = effects.length - 1; i >= 0; i -= 1) {
+    const effect = effects[i];
+    if (effect !== null && typeof effect === 'object' && effect.kind === 'terminal' && effect.role === 'agent' && typeof effect.id === 'string') {
+      return effect.id;
+    }
+  }
+  return null;
+}
+
+/**
+ * One record, read into the three facts a line needs. Never throws: a record
+ * this verb cannot parse is a NAMED unknown on its own line — dropping it is
+ * how a working child disappears from a count.
+ */
+function describeRecord(dir, file) {
+  const stem = file.slice(0, -'.json'.length);
+  let rec;
+  try {
+    rec = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+  } catch (error) {
+    return { request: stem, taskId: null, dispatchId: null, handle: null, unsettled: null, why: `record unreadable: ${error.message}` };
+  }
+
+  const request = typeof rec.request === 'string' && rec.request !== '' ? rec.request : stem;
+  const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
+  const last = attempts[attempts.length - 1];
+  const phases = last !== undefined && last !== null && Array.isArray(last.phases) ? last.phases : [];
+
+  // ONE receipt answers for the pane: the LAST usable one. Carrying the handle
+  // forward from an older phase while taking the ids from a newer one would
+  // pair a pane with a dispatch that never owned it — and this verb's repair
+  // line is `worker-release --dispatch <id>`, so a mispaired id releases the
+  // wrong child.
+  //
+  // A pane recorded by a receipt that did NOT settle is therefore not promoted
+  // to an established pane: an effect on an incomplete `worker-start` is no
+  // proof that the dispatch/handle association took. It is not dropped either
+  // (F-028 — measured on ws-1874, 2026-08-22: a worker-start that timed out at
+  // agent_readiness had already recorded a reused agent terminal). It is
+  // carried as a SUSPICION: if that handle turns out to be alive, the line says
+  // so and points at `worker-show`, never at a release.
+  let latest = null;
+  let unsettled = null;
+  let labelTask = null;
+  for (const ph of phases) {
+    const result = ph !== null && typeof ph === 'object' && ph.receipt !== null && typeof ph.receipt === 'object' ? ph.receipt.result : undefined;
+    if (result === null || typeof result !== 'object') continue;
+    // Display metadata only: which task this request is about. It labels the
+    // line and decides nothing — the pane and the dispatch below come from the
+    // usable receipt alone.
+    if (answered(ph)) {
+      const seen = (result.task ?? {}).id ?? result.taskId;
+      if (typeof seen === 'string') labelTask = seen;
+    }
+    if (usablePhase(ph)) latest = result;
+    else {
+      const leaked = agentPane(result.effects);
+      if (leaked !== null) unsettled = { handle: leaked, dispatchId: typeof result.dispatchId === 'string' ? result.dispatchId : null };
+    }
+  }
+
+  if (latest === null) {
+    return { request, taskId: labelTask, dispatchId: null, handle: null, unsettled, why: 'no usable receipt yet' };
+  }
+
+  const tid = (latest.task ?? {}).id ?? latest.taskId;
+  const handle = agentPane(latest.effects);
+  return {
+    request,
+    taskId: typeof tid === 'string' ? tid : labelTask,
+    dispatchId: typeof latest.dispatchId === 'string' ? latest.dispatchId : null,
+    handle,
+    unsettled: handle === null ? unsettled : null,
+    why: handle === null ? 'no agent pane in the last usable receipt' : '',
+  };
+}
+
+/** Liveness per handle. Refuses rather than reporting an empty machine (F-028). */
+function terminalIndex(run) {
+  const out = run(['terminal', 'list', '--json']);
+  const receipt = out.receipt ?? {};
+  if (out.status !== 0 || receipt.ok !== true || !('result' in receipt)) {
+    const detail = receipt.unparseable ?? out.stderr ?? '';
+    return { ok: false, reason: `orca terminal list did not answer (exit ${out.status})${detail ? `: ${String(detail).slice(0, 200)}` : ''}` };
+  }
+  const result = receipt.result;
+  if (!Array.isArray(result.terminals)) {
+    return { ok: false, reason: 'orca terminal list answered without a "terminals" list — an absent container is not an empty one (F-028)' };
+  }
+  // A truncated list cannot prove a handle's absence, and absence is exactly
+  // what MORT is read from. `terminal list` carries `truncated` (measured
+  // 2026-08-22); when it is set, the only honest answer is a refusal.
+  if (result.truncated === true) {
+    return { ok: false, reason: 'orca terminal list is TRUNCATED — a partial list cannot prove a pane is dead' };
+  }
+  const byHandle = new Map();
+  for (const terminal of result.terminals) {
+    if (terminal !== null && typeof terminal === 'object' && typeof terminal.handle === 'string') byHandle.set(terminal.handle, terminal);
+  }
+  const scope = result.hostScope ?? {};
+  const omitted = Array.isArray(scope.omittedHostIds) ? scope.omittedHostIds.length > 0 : false;
+  return { ok: true, byHandle, omitted };
+}
+
+/**
+ * Orca's accounting, indexed by both keys it exposes. Unreadable is NOT fatal:
+ * this list is the suspect, not the witness — but its unreadability is named on
+ * every line rather than shown as an absence of workers.
+ */
+function workerIndex(run) {
+  const out = run(['orchestration', 'worker-list', '--json']);
+  const receipt = out.receipt ?? {};
+  if (out.status !== 0 || receipt.ok !== true || !('result' in receipt) || !Array.isArray(receipt.result.workers)) {
+    const detail = receipt.unparseable ?? out.stderr ?? '';
+    return { ok: false, reason: `orca orchestration worker-list unreadable (exit ${out.status})${detail ? `: ${String(detail).slice(0, 200)}` : ''}` };
+  }
+  const byDispatch = new Map();
+  const byHandle = new Map();
+  for (const worker of receipt.result.workers) {
+    if (worker === null || typeof worker !== 'object') continue;
+    if (typeof worker.dispatchId === 'string') byDispatch.set(worker.dispatchId, worker);
+    if (typeof worker.agentTerminalHandle === 'string') byHandle.set(worker.agentTerminalHandle, worker);
+  }
+  return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length };
+}
+
+/** VIVANT / MORT / INCONNU for one recorded handle. */
+function paneVerdict(handle, why, terminals) {
+  if (handle === null) return { pane: 'INCONNU', detail: why };
+  const terminal = terminals.byHandle.get(handle);
+  if (terminal === undefined) {
+    return terminals.omitted
+      ? { pane: 'INCONNU', detail: `${handle} is not in this host's terminal list, and hosts are omitted from its scope` }
+      : { pane: 'MORT', detail: `${handle} is unknown to the runtime` };
+  }
+  if (terminal.orphaned === true) return { pane: 'MORT', detail: `${handle} orphaned` };
+  return { pane: 'VIVANT', detail: handle };
+}
+
+export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
+  let storeArg = '';
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--store') {
+      i += 1;
+      if (argv[i] === undefined) {
+        process.stderr.write('ax worker ls: --store needs a value\n');
+        return 2;
+      }
+      storeArg = argv[i];
+    } else {
+      process.stderr.write(`ax worker ls: unknown argument "${arg}" (only --store <dir>)\n`);
+      return 2;
+    }
+  }
+
+  const bin = runner ? 'injected' : resolve();
+  if (!bin) {
+    bad('no Orca CLI on this machine — pane liveness cannot be established');
+    fix(OPEN);
+    return 3;
+  }
+  const run = runner ?? createRunner({ bin });
+
+  // The execution gate of the socle, before ANY read: a silent runtime cannot
+  // be distinguished from a machine with no children, and this verb exists
+  // precisely because that confusion costs duplicated agents.
+  const ready = runtimeReady(run);
+  if (!ready.ready) {
+    bad(ready.reason);
+    fix(OPEN);
+    return 3;
+  }
+
+  const dir = storeArg || defaultStore(env);
+  let files;
+  try {
+    files = readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => entry.name)
+      .sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      section('0 record');
+      note(`no dispatch store at ${dir} — nothing was ever claimed on this host`);
+      return 0;
+    }
+    bad(`dispatch store unreadable at ${dir}: ${error.message}`);
+    fix(`ls -ld ${dir}   # the store must be readable before any worker can be counted`);
+    return 3;
+  }
+
+  if (files.length === 0) {
+    section('0 record');
+    note(`the dispatch store ${dir} is empty — no request was ever claimed on this host`);
+    return 0;
+  }
+
+  const terminals = terminalIndex(run);
+  if (!terminals.ok) {
+    bad(terminals.reason);
+    fix('orca terminal list --json   # panes are the only trustworthy count (F-048); without them nothing is established');
+    return 3;
+  }
+  const workers = workerIndex(run);
+
+  const rows = files.map(file => describeRecord(dir, file));
+  const width = key => rows.reduce((max, row) => Math.max(max, String(row[key] ?? '').length), 0);
+  const requestWidth = width('request');
+  const taskWidth = Math.max(width('taskId'), 'no task id'.length);
+  const pad = (text, size) => (text.length >= size ? text : text + ' '.repeat(size - text.length));
+
+  section(`${rows.length} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
+
+  let alive = 0;
+  let suspects = 0;
+  const drift = [];
+  const matched = new Set();
+
+  for (const row of rows) {
+    const { pane, detail } = paneVerdict(row.handle, row.why, terminals);
+    if (pane === 'VIVANT') alive += 1;
+
+    let state;
+    let entry;
+    if (!workers.ok) {
+      state = 'ILLISIBLE';
+    } else {
+      entry = (row.dispatchId !== null ? workers.byDispatch.get(row.dispatchId) : undefined) ?? (row.handle !== null ? workers.byHandle.get(row.handle) : undefined);
+      if (entry === undefined) state = 'ABSENT';
+      else {
+        if (typeof entry.dispatchId === 'string') matched.add(entry.dispatchId);
+        state = `${entry.workerState ?? '?'}/${entry.terminalState ?? '?'}`;
+      }
+    }
+
+    // A pane recorded by a receipt that never settled, which the runtime is
+    // nonetheless still holding. It is NOT counted — nothing proves that
+    // terminal belongs to this dispatch — and it is NOT released, because a
+    // release on an unproven association is a mutation on a guess. It is shown,
+    // because a live terminal nobody accounts for is the F-048 lie in embryo.
+    const leaked = row.unsettled;
+    const leakedLive = leaked !== null && leaked !== undefined && terminals.byHandle.get(leaked.handle) !== undefined && terminals.byHandle.get(leaked.handle).orphaned !== true;
+    if (leakedLive) suspects += 1;
+
+    const suffix = leakedLive ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now` : '';
+    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${suffix}`;
+
+    // THE F-048 line: a pane the runtime still owns, while Orca's accounting
+    // either does not know it (a `--inject` repair) or calls its terminal
+    // `retained`. Both mean the same thing — that child is invisible to the cap
+    // and to the release sweep, and only a release BY DISPATCH clears it.
+    const disagrees = workers.ok && pane === 'VIVANT' && (entry === undefined || entry.terminalState === 'retained');
+    if (disagrees) {
+      drift.push(row);
+      bad(line);
+      fix(
+        row.dispatchId !== null
+          ? `orca orchestration worker-release --dispatch ${row.dispatchId} --json   # after landing proof; worker-list will never sweep this pane for you`
+          : `orca orchestration worker-list --json   # ${row.handle} is alive with no recorded dispatchId — find its Dispatch before releasing it`,
+      );
+    } else if (leakedLive) {
+      bad(line);
+      fix(
+        leaked.dispatchId !== null
+          ? `orca orchestration worker-show --dispatch ${leaked.dispatchId} --json   # establish who owns ${leaked.handle} before assuming free capacity`
+          : `orca terminal list --json   # establish who owns ${leaked.handle} before assuming free capacity`,
+      );
+    } else if (pane === 'VIVANT') ok(line);
+    else note(line);
+  }
+
+  note(`${alive} live pane(s) — this is the cap count`);
+  if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
+  if (terminals.omitted) note('hosts were omitted from the terminal-list scope: a pane absent from it is INCONNU here, never MORT');
+  if (!workers.ok) {
+    bad(workers.reason);
+    fix('orca orchestration worker-list --json   # the comparison column is missing; the pane count above still stands');
+  } else {
+    const unmatched = workers.total - matched.size;
+    note(`worker-list reports ${workers.total} entry(ies), ${unmatched} of them with no local record`);
+    if (drift.length > 0) note(`${drift.length} live pane(s) absent or retained in worker-list — that is F-048, and the count above is the one to trust`);
+  }
+
+  return 0;
+}

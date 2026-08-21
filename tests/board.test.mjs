@@ -170,12 +170,12 @@ test('visibleCommands applies the gate after the full table — both states, inj
   const withOrca = visibleCommands({ orca: true }).map(command => command.name);
   const without = visibleCommands({ orca: false }).map(command => command.name);
   assert.ok(withOrca.includes('board'));
+  assert.ok(withOrca.includes('worker'));
   assert.ok(!without.includes('board'));
-  assert.deepEqual(
-    withOrca.filter(name => name !== 'board'),
-    without,
-    'the gate removes gated entries and nothing else',
-  );
+  assert.ok(!without.includes('worker'));
+  // The gate removes gated entries and nothing else — whatever they are named.
+  const gated = visibleCommands({ orca: true }).filter(command => command.gated === 'orca').map(command => command.name);
+  assert.deepEqual(withOrca.filter(name => !gated.includes(name)), without);
 });
 
 /** A stateful stub orca: `show` answers after a delay, `set` persists the status. */

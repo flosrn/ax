@@ -2,6 +2,7 @@
 import { COMMANDS, renderUsage } from '../src/commands.mjs';
 import { board } from '../src/board.mjs';
 import { orcaAvailable } from '../src/orca-bin.mjs';
+import { worker } from '../src/worker/index.mjs';
 import { repoPaths, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
 import { init } from '../src/init.mjs';
@@ -26,6 +27,8 @@ const RUNNERS = {
   supabase: () => supabase(args.slice(1)),
   // Fail-open hook writer — its own module owns the always-zero exit contract.
   board: () => board(args.slice(1)),
+  // Verbs of one noun get the remaining argv, unparsed — same as worktree.
+  worker: () => worker(args.slice(1)),
 };
 
 const args = process.argv.slice(2);
