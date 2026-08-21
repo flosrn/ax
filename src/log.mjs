@@ -10,6 +10,7 @@ const useColor = process.stdout.isTTY && process.env.NO_COLOR === undefined;
 
 const paint = (code, text) => (useColor ? `\u001B[${code}m${text}\u001B[0m` : text);
 
+export const bold = text => paint('1', text);
 export const green = text => paint('32', text);
 export const red = text => paint('31', text);
 export const yellow = text => paint('33', text);

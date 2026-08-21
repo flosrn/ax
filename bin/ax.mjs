@@ -38,8 +38,9 @@ if (command === undefined || ['help', '--help', '-h'].includes(command)) {
   process.exitCode = 2;
 }
 
-// A registry entry with no runner would print in the help and fail on use —
-// the exact drift this registry exists to prevent, so it fails at startup.
+// A registry entry with no runner would print in the help and fail on use — the
+// exact drift this registry exists to prevent, so it fails at startup. `help`
+// is answered by the dispatcher itself and says so with `runnerless`.
 for (const entry of COMMANDS) {
-  if (!RUNNERS[entry.name]) throw new Error(`command "${entry.name}" is declared but has no runner`);
+  if (!entry.runnerless && !RUNNERS[entry.name]) throw new Error(`command "${entry.name}" is declared but has no runner`);
 }

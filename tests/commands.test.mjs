@@ -37,10 +37,15 @@ test('every advertised command answers for real', () => {
   }
 });
 
-test('the help text lists exactly the registry', () => {
+test('the help text lists exactly the registry, and no line wraps a narrow terminal', () => {
   const usage = renderUsage('0.0.0');
-  for (const command of COMMANDS) assert.match(usage, new RegExp(`\\b${command.name}\\b`));
-  assert.match(usage, /\bhelp\b/);
+  for (const command of COMMANDS) assert.match(usage, new RegExp(`^  ${command.name}\\b`, 'm'));
+  // Flags hang under their own command, never in the left column.
+  for (const [flag] of COMMANDS.flatMap(command => command.options ?? [])) {
+    assert.match(usage, new RegExp(`^ {4,}${flag.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`, 'm'));
+  }
+  const widest = Math.max(...usage.split('\n').map(line => line.length));
+  assert.ok(widest <= 96, `help wraps at 96 columns: longest line is ${widest}`);
 });
 
 test('only commands meant for agents reach the AGENTS block', () => {
@@ -54,10 +59,10 @@ test('an unknown command exits 2 and prints the help', () => {
   const result = run(['worktree']);
   assert.equal(result.status, 2);
   assert.match(result.out, /unknown command "worktree"/);
-  assert.match(result.out, /Usage: ax <command>/);
+  assert.match(result.out, /^Usage$/m);
 });
 
 test('help and version answer without a repository', () => {
   assert.match(run(['--version']).out.trim(), /^\d+\.\d+\.\d+$/);
-  assert.match(run([]).out, /Usage: ax <command>/);
+  assert.match(run([]).out, /^Usage$/m);
 });
