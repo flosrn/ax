@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { dirname, join } from 'node:path';
 
 import { applyBlock, setJsonPath, styleFor } from './blocks.mjs';
+import { agentLines } from './commands.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, vendorRemote, version } from './config.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 
@@ -12,22 +13,20 @@ export const BLOCK_ID = 'ax';
 export const GITIGNORE_BODY = ['.worktrees/', '.agent/', '.scratch/', '.orca-worktree.json'].join('\n');
 
 /**
- * What an agent opening this repo needs in order to act, in the fewest lines
- * that still work. Anything longer belongs in the docs this points at, not in
- * every session's context.
+ * What an agent opening this repo needs in order to act — built from the
+ * command registry, so it can never advertise a command the CLI does not run.
  */
-export const AGENTS_BODY = [
-  '## Worktrees and debug tooling',
-  '',
-  'This repo drives worktrees, local dev addressing and debug sessions through the `ax` CLI.',
-  '',
-  '- `pnpm ax doctor` — is this checkout coherent? Run it first when something local misbehaves.',
-  '- `pnpm ax worktree setup` — make a fresh worktree runnable (own port, own Supabase stack).',
-  '- `pnpm ax debug-as --as <role>` — open the app already signed in as that role.',
-  '',
-  `Ports, app paths and guarded vendor trees come from \`${CONFIG_FILE}\`. Read them from there —`,
-  'a port or hostname written into a script is wrong in every other worktree.',
-].join('\n');
+export const agentsBody = () =>
+  [
+    '## Local tooling',
+    '',
+    "This repo's local checkout tooling runs through the `ax` CLI.",
+    '',
+    ...agentLines().map(line => `- ${line}`),
+    '',
+    `Ports, app paths and guarded vendor trees come from \`${CONFIG_FILE}\`. Read them from there —`,
+    'a port or hostname written into a script is wrong in every other worktree.',
+  ].join('\n');
 
 /** Infer what can be inferred; refuse to guess what must be decided. */
 function inferConfig(root, explicitVendor) {
@@ -105,7 +104,7 @@ export function init(root, { dryRun = false, vendor } = {}) {
 
   for (const [file, body] of [
     ['.gitignore', GITIGNORE_BODY],
-    ['AGENTS.md', AGENTS_BODY],
+    ['AGENTS.md', agentsBody()],
   ]) {
     const path = join(root, file);
     const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
