@@ -146,7 +146,7 @@ export function planWorktree({ identity, worktreePath, config, recorded = {}, pr
     port,
     urls,
     supabase,
-    env: envWrites({ config, port, urls, supabase }),
+    env: envWrites({ config, port, urls, supabase, proxy }),
     log,
   };
 }
@@ -229,7 +229,7 @@ function planSupabase({ identity, config, recorded, isBound, database, log }) {
  * ::1 first, the container listens on IPv4 only and every request fails with
  * ECONNREFUSED.
  */
-function envWrites({ config, port, urls, supabase }) {
+function envWrites({ config, port, urls, supabase, proxy = {} }) {
   const runtime = {
     PORT: String(port.port),
     BASE_URL: urls.publishedUrl,
@@ -241,6 +241,14 @@ function envWrites({ config, port, urls, supabase }) {
     // only when there is one, so a machine with a sleeping daemon does not
     // publish a hostname nothing resolves.
     ...(urls.tailnetUrl ? { [KEYS.tailnetUrl]: urls.tailnetUrl } : {}),
+    // The proxy's OWN keys, under its own names, recorded because the process
+    // that starts the dev server has to reach the same route this plan chose.
+    // Left unrecorded, that process falls back to its own defaults — which
+    // agree here by luck and stop agreeing the moment a project moves its
+    // proxy off the default port. The values come from the probe that asked the
+    // proxy, never from a second composition.
+    ...(urls.mode === 'proxy' && proxy.name ? { PORTLESS_NAME: proxy.name } : {}),
+    ...(urls.mode === 'proxy' && proxy.port ? { PORTLESS_PORT: String(proxy.port) } : {}),
   };
 
   const writes = [{ file: `${config.apps.web}/.env.local`, label: RUNTIME_LABEL, keys: runtime }];

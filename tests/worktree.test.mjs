@@ -87,6 +87,33 @@ test('a shared plan ERASES the isolated endpoints instead of leaving them behind
   assert.equal(block.keys, undefined);
 });
 
+test('a proxied worktree records the route the launcher has to reuse', () => {
+  // The process that starts the dev server reads these; unrecorded, it falls
+  // back to its own defaults, which agree by luck until a project moves its
+  // proxy off the default port.
+  const result = plan({
+    probes: {
+      database: { touches: false },
+      proxy: { enabled: true, available: true, name: 'demo', servedUrl: 'http://x.demo.localhost:1355', port: 1355 },
+    },
+  });
+
+  const runtime = result.env.find(write => write.label === 'Worktree runtime').keys;
+  assert.equal(result.urls.mode, 'proxy');
+  assert.equal(runtime.PORTLESS_NAME, 'demo');
+  assert.equal(runtime.PORTLESS_PORT, '1355');
+  assert.equal(runtime[KEYS.useProxy], '1');
+});
+
+test('a direct worktree records no proxy route at all', () => {
+  const result = plan({ probes: { database: { touches: false }, proxy: { enabled: false } } });
+  const runtime = result.env.find(write => write.label === 'Worktree runtime').keys;
+
+  assert.equal(runtime[KEYS.useProxy], '0');
+  assert.equal(runtime.PORTLESS_NAME, undefined);
+  assert.equal(runtime.PORTLESS_PORT, undefined);
+});
+
 test('a worktree provisioned by the old tooling keeps its stack instead of orphaning it', () => {
   // Two regressions in one case, both of which orphan seven containers.
   //
