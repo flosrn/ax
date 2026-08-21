@@ -9,11 +9,16 @@
 #
 # `id-token: write` is what mints that identity. Without it the publish falls
 # back to looking for a token and fails.
+# Dispatch-only on purpose. npm cannot accept an OIDC publish until a trusted
+# publisher is declared for the package, and a package must already EXIST to
+# have that setting — so the first publish needs one credential, once, by hand.
+# Firing on every `v*` tag before then would just paint the tag history red.
+# Measured 2026-08-21 (run 32455245327): the identity is minted, the provenance
+# is signed and logged to Sigstore, and the PUT returns 404 "or you do not have
+# permission" — the signature works, the authorisation is missing.
 name: Publish
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
