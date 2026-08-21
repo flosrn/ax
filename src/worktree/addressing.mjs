@@ -261,6 +261,14 @@ export function planUrls({ worktreePath, branch, port, proxy = {}, tailnet = {} 
 
   if (proxy.enabled === false) {
     log.push(`proxy disabled for this worktree — addressing it by port (${directUrl})`);
+  } else if (!branch) {
+    // A detached HEAD has no branch, and the proxy builds a worktree's hostname
+    // from one: asked without it, it answers with the PROJECT route — the very
+    // address the primary checkout serves. Publishing that here would put two
+    // checkouts on one origin and therefore one cookie jar, which is the exact
+    // confusion this whole layer exists to prevent. Measured on a detached tree:
+    // `portless get <project>` returned the primary's URL verbatim.
+    log.push(`detached HEAD — no branch to build a proxy hostname from, so addressing this worktree by port (${directUrl})`);
   } else {
     name = proxy.name;
     if (proxy.servedUrl) {

@@ -161,6 +161,7 @@ test('a proxy route makes the proxy host the base URL, and the direct URL surviv
 
 test('a proxy with no route for the name falls back to direct mode and says so', () => {
   const plan = planUrls({
+    branch: 'feat/x',
     port: 3412,
     proxy: { available: true, name: 'demo', servedUrl: undefined },
     tailnet: { enabled: false },
@@ -177,6 +178,7 @@ test('a proxy with no route for the name falls back to direct mode and says so',
 
 test('an absent proxy is direct mode with the install hint the caller supplied', () => {
   const plan = planUrls({
+    branch: 'feat/x',
     port: 3412,
     proxy: { available: false, name: 'demo', installHint: 'Install it: npm i -g the-proxy' },
     tailnet: { enabled: false },
@@ -194,6 +196,7 @@ test('an absent proxy is direct mode with the install hint the caller supplied',
 test('an explicitly disabled proxy is never reported as broken', () => {
   // How the primary checkout, which owns the project's plain port, opts out.
   const plan = planUrls({
+    branch: 'feat/x',
     port: 3000,
     proxy: { enabled: false, available: true, name: 'demo' },
     tailnet: { enabled: false },
@@ -205,6 +208,7 @@ test('an explicitly disabled proxy is never reported as broken', () => {
 
 test('the tailnet URL is an ADDITIONAL address, never the published origin', () => {
   const plan = planUrls({
+    branch: 'feat/x',
     port: 3412,
     proxy: { available: true, name: 'demo', servedUrl: 'http://feat-x.demo.localhost:1355' },
     tailnet: { name: 'box.tail1234.ts.net.' },
@@ -222,6 +226,22 @@ test('the tailnet URL is an ADDITIONAL address, never the published origin', () 
   assert.equal(plan.tailnetUrl, 'https://box.tail1234.ts.net:3412');
   assert.equal(plan.mode, 'proxy');
   assert.ok(plan.log.some(line => line.includes('https://box.tail1234.ts.net:3412')));
+});
+
+test('a detached checkout is addressed by port, never by the shared project route', () => {
+  // The proxy builds a worktree's hostname from its branch. Asked without one it
+  // answers with the PROJECT route, which the primary checkout serves — measured
+  // on a real detached tree, where `portless get <project>` returned the
+  // primary's URL verbatim. Publishing it here puts two checkouts on one origin.
+  const plan = planUrls({
+    port: 3279,
+    proxy: { available: true, name: 'demo', servedUrl: 'http://demo.localhost:1355' },
+    tailnet: { enabled: false },
+  });
+
+  assert.equal(plan.mode, 'direct');
+  assert.equal(plan.publishedUrl, 'http://localhost:3279');
+  assert.ok(plan.log.some(line => line.includes('detached HEAD')));
 });
 
 test('an enabled tailnet with no name warns instead of quietly going local-only', () => {
