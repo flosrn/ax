@@ -110,14 +110,102 @@ export function findOffset({ identity, base, step, maxSlot, isBound = isPortBoun
 }
 
 /**
+ * The claim a worktree's own `config.toml` records: which block it took, and
+ * under which project id its containers are running.
+ *
+ * This exists because the offset used to live in ONE place only — an untracked
+ * `AX_SUPABASE_OFFSET` in `.env.local` — while the containers themselves are
+ * named after the `project_id` in `config.toml` and bound to the ports that
+ * same file assigns. Wipe the env file (`git clean -xdf` does it) and the
+ * "recorded wins before any scan" protection evaporated: the next setup read
+ * this worktree's OWN running stack as a collision, moved to another block and
+ * started a second one, leaving seven containers nothing could address.
+ *
+ * The config is the durable artefact, so read the claim back out of it:
+ *   - the offset is any service port minus that service's baseline
+ *     (`base` + its index in SERVICES), and every port present must AGREE on
+ *     it — a file whose ports disagree is hand-mangled, and guessing which
+ *     half is right is how you stop the wrong stack;
+ *   - the id is its `project_id`.
+ *
+ * A zero offset is not a claim: that is the committed baseline, i.e. the SHARED
+ * stack, whose id belongs to the primary checkout and must never be adopted or
+ * torn down by a worktree.
+ *
+ * The id here is EVIDENCE, never authority: `ownsStack` compares it against the
+ * id this worktree is expected to run, and nothing derives an expectation from
+ * it. A config copied out of a sibling worktree carries that sibling's id, and
+ * no property of the file tells that copy apart from a legitimate rewrite.
+ *
+ * @returns {{ offset: number, projectId: string } | undefined}
+ */
+export function recordedClaim({ cwd, relativePath, base }) {
+  const configToml = join(cwd, relativePath);
+  if (!existsSync(configToml) || !Number.isInteger(base)) return undefined;
+
+  const id = configProjectId(configToml);
+  if (!id) return undefined;
+
+  let offset;
+  for (const [service, port] of Object.entries(configPorts(readFileSync(configToml, 'utf8')))) {
+    const candidate = port - (base + SERVICES.indexOf(service));
+    if (offset === undefined) offset = candidate;
+    else if (candidate !== offset) return undefined; // ports disagree: no claim.
+  }
+
+  return offset > 0 ? { offset, projectId: id } : undefined;
+}
+
+/** Every service port a `config.toml` actually assigns, by service name. */
+function configPorts(text) {
+  const ports = {};
+  let section = '';
+  for (const line of text.split('\n')) {
+    // Exact section names, not prefixes — `[db.migrations]` is a sibling of
+    // `[db]`, and a prefix match would hunt for ports in it.
+    const header = line.match(/^[ \t]*\[([^\]]+)\][ \t]*$/);
+    if (header) {
+      section = header[1];
+      continue;
+    }
+    const assignment = line.match(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(\d+)/);
+    if (!assignment) continue;
+    const service = keyOwner(section, assignment[1]);
+    if (service) ports[service] = Number(assignment[2]);
+  }
+  return ports;
+}
+
+/** Which service owns `key` inside `[section]`, if any. */
+function keyOwner(section, key) {
+  for (const [service, where] of Object.entries(SERVICE_LOCATIONS)) {
+    if (where.key === key && where.sections.includes(section)) return service;
+  }
+  return undefined;
+}
+
+/**
  * The offset this worktree owns.
  *
  * A recorded positive offset wins BEFORE any scan. Without that precedence,
  * re-running setup reads this worktree's OWN running stack as a collision and
  * moves it to another block — orphaning seven containers that nothing then
  * knows how to stop.
+ *
+ * The `config.toml` claim outranks the env record, and is consulted whenever the
+ * caller supplies `cwd`/`relativePath`: the config is what `supabase start`
+ * read, so its ports are the ones the running containers actually hold, and it
+ * survives the wipe of an untracked env file that used to lose the block
+ * entirely. The two only disagree after a hand edit or a half-written promotion
+ * (`applyConfig` runs before the env write), and in both cases the config is the
+ * one naming ports something is really bound to.
  */
-export function resolveOffset({ identity, recorded, base, step, maxSlot, isBound = isPortBound }) {
+export function resolveOffset({ identity, recorded, base, step, maxSlot, isBound = isPortBound, cwd, relativePath }) {
+  if (cwd && relativePath) {
+    const claim = recordedClaim({ cwd, relativePath, base });
+    if (claim) return { offset: claim.offset, source: 'config' };
+  }
+
   const kept = Number.parseInt(String(recorded ?? ''), 10);
   if (/^\d+$/.test(String(recorded ?? '').trim()) && kept > 0) {
     return { offset: kept, source: 'recorded' };
@@ -165,18 +253,23 @@ export function configProjectId(configTomlPath) {
 }
 
 /**
- * Is this checkout's `config.toml` an ISOLATED one?
+ * Is the rewrite still in place — does the working-tree `project_id` differ
+ * from the COMMITTED one?
  *
- * Answered by comparing the working-tree `project_id` against the COMMITTED
- * one, which is the only rule that holds without a naming convention: the
- * committed id is whatever the vendor kit shipped (in one real repository it is
- * `next-supabase-saas-kit-turbo`, nothing like the project's own name), and the
- * isolated id is written by `applyConfig`. Different means promoted.
+ * A SECONDARY signal only, and nothing destructive may depend on it alone. It
+ * answers "this file was rewritten locally", which is neither necessary nor
+ * sufficient for "this worktree owns the stack that id names", and it lies in
+ * both directions:
+ *   - a `config.toml` carrying ANOTHER checkout's id (copied between worktrees,
+ *     or hand-edited) differs from HEAD, so this reads as isolated and a
+ *     teardown driven by it stops someone else's — or the shared — stack;
+ *   - a branch that legitimately COMMITS its own project id does NOT differ
+ *     from HEAD, so this reads as shared and teardown leaves seven containers
+ *     running when the worktree is deleted.
  *
- * The alternative — trusting a recorded offset — is what makes a stale env key
- * dangerous: `supabase stop` against a shared project id takes the database out
- * from under every other session on the machine. A caller must have THIS answer
- * before it stops anything.
+ * `ownsStack` is the authority in front of anything that stops containers. Use
+ * this one only to report whether the local rewrite survived, e.g. next to a
+ * recorded offset in the doctor.
  */
 export function isIsolatedConfig({ cwd, relativePath, run = defaultRun }) {
   const working = configProjectId(join(cwd, relativePath));
@@ -187,6 +280,57 @@ export function isIsolatedConfig({ cwd, relativePath, run = defaultRun }) {
 
   const match = String(committed.stdout ?? '').match(/^[ \t]*project_id[ \t]*=[ \t]*"([^"]+)"/m);
   return match ? working !== match[1] : false;
+}
+
+/**
+ * Does THIS worktree own the stack its `config.toml` names?
+ *
+ * The one question a caller must answer before `supabase stop --project-id`,
+ * and it is answered by IDENTITY, not by difference: the id in the file must be
+ * exactly the id this tooling would run for this worktree (`expectedProjectId`,
+ * i.e. `projectId(identity, prefix)` as the plan mints it, or the id this
+ * worktree recorded when it took the block). Anything else — a foreign id, the
+ * committed vendor baseline, the machine's shared id, a hand edit — is someone
+ * else's stack, and stopping it takes the database out from under every other
+ * session on the machine.
+ *
+ * `owned: false` is never an error state on its own: `reason` says which id was
+ * found and which was expected, so the caller can report a stack it must NOT
+ * stop rather than silently stopping the wrong one, or silently nothing.
+ *
+ * Never throws — an unreadable config or a missing git is a `reason`, because a
+ * crash here aborts a teardown half-way through.
+ *
+ * @returns {{ owned: boolean, projectId?: string, expected?: string, rewritten?: boolean, reason?: string }}
+ */
+export function ownsStack({ cwd, relativePath, expectedProjectId, run = defaultRun }) {
+  try {
+    if (!cwd || !relativePath) return { owned: false, reason: 'no config.toml path to check ownership against' };
+
+    const found = configProjectId(join(cwd, relativePath));
+    if (!found) return { owned: false, reason: `${relativePath} records no project_id, so no stack is addressable from it` };
+
+    const expected = expectedProjectId ? String(expectedProjectId) : '';
+    if (!expected) {
+      return { owned: false, projectId: found, reason: `no project id was derived for this worktree, so "${found}" cannot be shown to belong to it` };
+    }
+
+    if (found !== expected) {
+      return {
+        owned: false,
+        projectId: found,
+        expected,
+        reason: `${relativePath} carries project id "${found}", but this worktree's stack is "${expected}" — "${found}" belongs to another checkout or to the shared stack`,
+      };
+    }
+
+    // Secondary, informational: whether the local rewrite is still in place. A
+    // branch may legitimately commit its isolated id, so `false` here does NOT
+    // withdraw ownership — it only tells the caller how the id got there.
+    return { owned: true, projectId: found, expected, rewritten: isIsolatedConfig({ cwd, relativePath, run }) };
+  } catch (error) {
+    return { owned: false, reason: `could not establish stack ownership: ${error.message}` };
+  }
 }
 
 /** Local origins the auth allow-list may still be pointing at the shared checkout with. */
@@ -210,12 +354,8 @@ export function applyConfig({ configToml, projectId: id, offset, base, apiUrl })
   const target = blockPorts(base, offset);
   const previous = { projectId: undefined, ports: {} };
 
-  const keyOwner = (section, key) => {
-    for (const [service, where] of Object.entries(SERVICE_LOCATIONS)) {
-      if (where.key === key && where.sections.includes(section)) return service;
-    }
-    return undefined;
-  };
+  // `keyOwner` is the module's, shared with `configPorts`: the read-back of a
+  // claim and the rewrite that wrote it must agree on where a port lives.
 
   let section = '';
   let dbHeaderLine = -1;
@@ -283,16 +423,41 @@ export function restoreConfig({ cwd, relativePath, run = defaultRun }) {
  * own the first time one of these commands runs. PURE policy, no I/O — the
  * wrapper that consults it is an exec shim with nowhere to hang a test.
  *
- * Deliberately NOT triggering: start / stop / status, because promotion itself
- * runs `supabase start` through the same wrapper and would recurse; and
- * anything explicitly aimed at a remote database.
+ * The command NAMES here are the real CLI's, read from `supabase --help` and
+ * not from the shape of the wrapper. That distinction was a live hole: `test`
+ * and `seed` were listed as `db` subcommands, which the CLI does not have, so
+ * `supabase test db` (pgTAP) and `supabase seed buckets` fell through to "no
+ * isolation needed" and ran fixtures and seeds against the SHARED database from
+ * an unpromoted worktree. Verbatim from `supabase --help` (CLI 2.109.1):
+ *
+ *     seed                Seed a Supabase project
+ *     test                Run tests on local Supabase containers
+ *
+ * and the complete `supabase db --help` list, in which no `test` and no `seed`
+ * appear:
+ *
+ *     diff | dump | push | pull | reset | lint | start | query | advisors | schema
+ *
+ * Deliberately NOT triggering: start / stop / status (and `db start`), because
+ * promotion itself runs `supabase start` through the same wrapper and would
+ * recurse; and anything explicitly aimed at a remote database.
  */
 export function commandNeedsIsolation(argv = []) {
   const args = argv.map(String);
+
+  // `db pull` is decided BEFORE the remote-target flags, because for this one
+  // command those flags name the SOURCE of the pull and not where the work
+  // happens: the migration is computed by diffing through the LOCAL shadow
+  // database (`supabase db pull --help` offers `--diff-engine migra|pg-delta`
+  // for exactly that), and that shadow is a container in this project's own
+  // port block. `db pull --linked` from an unpromoted worktree therefore still
+  // reaches the shared stack.
+  if (args[0] === 'db' && args[1] === 'pull') return true;
+
   if (args.includes('--linked') || args.includes('--db-url')) return false;
 
-  // Subcommands that act on the local stack with no flag at all.
-  const alwaysLocal = new Set(['reset', 'diff', 'test', 'lint', 'seed']);
+  // `db` subcommands that reach the local stack with no flag at all.
+  const alwaysLocal = new Set(['reset', 'diff', 'lint']);
   // Subcommands whose DEFAULT target is remote, and which only reach the local
   // stack with an explicit --local. Omitting push/query here would let a
   // shared-stack worktree mutate the shared database without promotion, which
@@ -301,6 +466,13 @@ export function commandNeedsIsolation(argv = []) {
   const explicitLocal = args.includes('--local');
 
   switch (args[0]) {
+    // Top-level, and local by definition: `test` runs "on local Supabase
+    // containers", `seed` seeds the project the local `config.toml` describes.
+    // Their subcommands (`test db`, `test new`, `seed buckets`) do not change
+    // the target, so the first word is the whole decision.
+    case 'test':
+    case 'seed':
+      return true;
     case 'db':
       if (!args[1]) return false;
       if (alwaysLocal.has(args[1])) return true;
@@ -364,12 +536,15 @@ export function touchesDatabase({ cwd, supabaseDir, force, baseRefs = ['origin/m
  * ::1 first, the Supabase container only listens on IPv4 and every request
  * fails with ECONNREFUSED.
  *
- * The offset key is the durable record of which block this worktree owns — read
- * back by `resolveOffset`, by teardown to decide whether there is a stack to
- * stop, and by the doctor. It is the ONLY record; a second marker file would
- * just be a third source of truth to disagree with the other two.
+ * Two keys are the durable RECORD of what this worktree claimed, and both are
+ * needed. The offset says which block it took; the project id says what Docker
+ * named the containers, which is the only handle anything has on them. Before
+ * the id was recorded it was re-derived from the CURRENT branch on every run, so
+ * a `git branch -m` minted a second name for a stack that was already running —
+ * the config was rewritten, `supabase start` collided with its own ports, and
+ * every later teardown addressed an id Docker had never used.
  */
-export function envKeys({ ports, offset, envPrefix = '' }) {
+export function envKeys({ ports, offset, projectId: id, envPrefix = '' }) {
   const keys = {
     NEXT_PUBLIC_SUPABASE_URL: `http://127.0.0.1:${ports.api}`,
     SUPABASE_URL: `http://127.0.0.1:${ports.api}`,
@@ -378,8 +553,63 @@ export function envKeys({ ports, offset, envPrefix = '' }) {
     EMAIL_PORT: String(ports.smtp),
     [`${envPrefix}SUPABASE_INBUCKET_PORT`]: String(ports.inbucket),
   };
+  // Offset 0 is the shared baseline; recording it would claim isolation, and an
+  // id without a block is the same false claim.
   if (offset) keys[`${envPrefix}SUPABASE_OFFSET`] = String(offset);
+  if (offset && id) keys[`${envPrefix}SUPABASE_PROJECT`] = String(id);
   return keys;
+}
+
+/** A project id this tooling could have written: Docker-name-safe and not truncated. */
+const PLAUSIBLE_PROJECT_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * The project id this worktree's stack runs under.
+ *
+ * Never a bare derivation from the current branch, which is what made a
+ * `git branch -m` mint a second name for a stack that was already running. The
+ * order, and the reason for each step:
+ *
+ *  1. the id in `config.toml`, but ONLY when it equals the id this worktree
+ *     would mint. That is agreement with our own derivation, not adoption of
+ *     whatever the file says, and it is the half-written-promotion case:
+ *     `promote` writes the config BEFORE the env block, so a run that died in
+ *     between leaves a config newer than the record, naming containers that are
+ *     up. Preferring the stale record there would strand them.
+ *  2. the id this worktree RECORDED when it took the block. The containers are
+ *     named after it, so a rename must not rename them.
+ *  3. a fresh mint from the branch — the only option for a worktree that has
+ *     never claimed anything.
+ *
+ * What is deliberately NOT here is authority for an unrecognised `project_id`,
+ * however isolated the file looks. A config copied out of a sibling worktree
+ * carries that sibling's id, and no property of the file tells that copy apart
+ * from a rename whose record was wiped. One of the two has to lose, and it is
+ * the rename: adopting a foreign id puts two worktrees on ONE database with no
+ * error at all, while declining it leaves containers running under a name this
+ * checkout does not use. So the id is compared, never adopted, and the leak is
+ * REPORTED — `conflict` names the stack nothing here addresses, for the caller
+ * to print. Silence is the only outcome that is never acceptable.
+ *
+ * @returns {{ projectId: string, source: 'config'|'recorded'|'branch', conflict?: string }}
+ */
+export function resolveProjectId({ identity, prefix = '', recorded, cwd, relativePath, base }) {
+  const minted = projectId(identity, prefix);
+  const claim = cwd && relativePath ? recordedClaim({ cwd, relativePath, base }) : undefined;
+
+  const kept = String(recorded ?? '').trim();
+  const usable = kept.length > 0 && kept.length <= PROJECT_ID_MAX_LENGTH && PLAUSIBLE_PROJECT_ID.test(kept);
+
+  let resolved;
+  if (claim?.projectId === minted) resolved = { projectId: minted, source: 'config' };
+  else if (usable) resolved = { projectId: kept, source: 'recorded' };
+  else resolved = { projectId: minted, source: 'branch' };
+
+  if (claim && claim.projectId !== resolved.projectId) {
+    resolved.conflict = `${relativePath} names stack "${claim.projectId}" on block +${claim.offset}, but this worktree resolves to "${resolved.projectId}" — nothing here addresses the containers of "${claim.projectId}"`;
+  }
+
+  return resolved;
 }
 
 /**
@@ -392,6 +622,12 @@ export function envKeys({ ports, offset, envPrefix = '' }) {
  * half-way still leaves the app and the config naming the same project. The
  * reverse order produces an isolated stack the app cannot see.
  *
+ * Both halves of the claim are RESOLVED rather than derived: `recorded` is the
+ * block this worktree already took and `recordedProjectId` the id its
+ * containers already run under, and a re-run after a branch rename keeps both.
+ * Deriving the id from the current branch on every run is what used to start a
+ * second stack on the first stack's ports and leave the first unaddressable.
+ *
  * `run` and `write` are injected so that order is testable without Docker.
  */
 export function promote({
@@ -401,6 +637,7 @@ export function promote({
   step,
   maxSlot,
   recorded,
+  recordedProjectId,
   relativePath,
   envFiles = [],
   envLabel,
@@ -416,8 +653,10 @@ export function promote({
   if (!write) throw new Error('promote needs an injected `writeBlock`');
 
   const steps = [];
-  const id = projectId(identity, prefix);
-  const { offset, source } = resolveOffset({ identity, recorded, base, step, maxSlot, isBound });
+  const { projectId: id, source: idSource, conflict } = resolveProjectId({
+    identity, prefix, recorded: recordedProjectId, cwd, relativePath, base,
+  });
+  const { offset, source } = resolveOffset({ identity, recorded, base, step, maxSlot, isBound, cwd, relativePath });
   const ports = blockPorts(base, offset);
 
   const config = applyConfig({ configToml: join(cwd, relativePath), projectId: id, offset, base, apiUrl });
@@ -428,7 +667,7 @@ export function promote({
   run('git', ['-C', cwd, 'update-index', '--skip-worktree', relativePath]);
   steps.push('skip-worktree');
 
-  const keys = envKeys({ ports, offset, envPrefix });
+  const keys = envKeys({ ports, offset, projectId: id, envPrefix });
   for (const file of envFiles) {
     write(isAbsolute(file) ? file : join(cwd, file), { label: envLabel, keys });
     steps.push(`env:${file}`);
@@ -437,7 +676,10 @@ export function promote({
   const started = run(start.command, start.args ?? [], { cwd: start.cwd ?? cwd });
   steps.push('start');
 
-  return { projectId: id, offset, offsetSource: source, ports, config, steps, started: started.status === 0 };
+  // `conflict` is a stack this run just stopped addressing. The caller has to
+  // surface it: it is the only notice anyone gets that containers were left
+  // behind under another name.
+  return { projectId: id, projectIdSource: idSource, conflict, offset, offsetSource: source, ports, config, steps, started: started.status === 0 };
 }
 
 /**
@@ -446,10 +688,19 @@ export function promote({
  * By id and not by working directory: the id is what Docker named the
  * containers after, so it still reaches them after the config.toml that
  * produced it has been restored — which is the order teardown has to run in.
+ *
+ * The caller MUST have established ownership of that id first (`ownsStack`).
+ * An absent id is refused here rather than passed on, because
+ * `supabase stop --project-id ""` is not a no-op: with no id to match, the CLI
+ * falls back to the project the working directory describes, which for an
+ * unpromoted worktree is the SHARED stack every other session is reading.
  */
 export function teardown({ cwd, projectId: id, cli = 'supabase', run = defaultRun }) {
-  const result = run(cli, ['stop', '--project-id', id], { cwd });
-  return { stopped: result.status === 0, projectId: id };
+  const target = String(id ?? '').trim();
+  if (!target) return { stopped: false, projectId: undefined, refused: 'no project id to stop — refusing to let the CLI pick one' };
+
+  const result = run(cli, ['stop', '--project-id', target], { cwd });
+  return { stopped: result.status === 0, projectId: target };
 }
 
 /** Default command runner. Never throws: a missing binary is a status, not a crash. */

@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { readConfigured } from '../dotenv.mjs';
 import { isMainCheckout } from '../git.mjs';
 import { isPortBound } from './ports.mjs';
-import { proxyAvailable, proxyEnabled, proxyName, proxyServedUrl, tailnetName } from './addressing.mjs';
+import { proxyAvailable, proxyEnabled, proxyName, proxyPort, proxyServedUrl, tailnetName } from './addressing.mjs';
 import { touchesDatabase } from './supabase.mjs';
 import { KEYS, RECORDED_KEYS, readRecorded } from './plan.mjs';
 
@@ -88,7 +88,18 @@ export function probeProxy({ worktreePath, config, recorded }) {
   if (!available) return { enabled: true, available: false, installHint: 'no local proxy on PATH' };
 
   const name = proxyName({ recorded: recorded.PORTLESS_NAME, fallback: config.project.name });
-  return { enabled: true, available: true, name, servedUrl: proxyServedUrl({ name }), port: config.ports.proxy };
+  const servedUrl = proxyServedUrl({ name });
+
+  // The port comes from the URL the proxy just reported, then from a value this
+  // worktree already recorded, and only then from the config default. Taking
+  // the default first is agreement by luck: it holds until a project moves its
+  // proxy, at which point setup records a port the launcher dials and the
+  // doctor compares against the same wrong number — so both agree and nothing
+  // answers there.
+  const served = servedUrl ? Number(new URL(servedUrl).port) : undefined;
+  const port = served || proxyPort({ recorded: recorded.PORTLESS_PORT, fallback: config.ports.proxy });
+
+  return { enabled: true, available: true, name, servedUrl, port };
 }
 
 /** This node's tailnet name, so a phone can reach the worktree at all. */
@@ -138,10 +149,36 @@ export function probeDocker(env = process.env) {
   return { usable: true };
 }
 
+/**
+ * A port probe that answers each port ONCE per run.
+ *
+ * The allocation scan asks about up to nine hundred dev ports and forty-five
+ * database blocks, so collecting every answer up front is out of the question —
+ * but asking the same port twice and getting two answers is worse than either.
+ * Without this, one `planWorktree` call could report a port free while
+ * allocating it and bound while logging it, and two calls in one process could
+ * disagree outright.
+ *
+ * It does NOT make the plan a pure function of its arguments: a scan is a
+ * question about the machine, and setup and doctor running minutes apart may
+ * legitimately get different answers. What it guarantees is that ONE plan is
+ * internally consistent, which is what a comparison between two of them needs.
+ * A port a checkout has already recorded never reaches this probe at all — that
+ * is the branch `resolvePort` takes first, and the reason a published URL does
+ * not move.
+ */
+export function portProbe(probe = isPortBound) {
+  const seen = new Map();
+  return port => {
+    if (!seen.has(port)) seen.set(port, probe(port));
+    return seen.get(port);
+  };
+}
+
 /** Every probe a full plan needs, in one call. */
 export function probeAll({ worktreePath, config, recorded, force }) {
   return {
-    isBound: isPortBound,
+    isBound: portProbe(),
     proxy: probeProxy({ worktreePath, config, recorded }),
     tailnet: probeTailnet(),
     database: probeDatabase({ worktreePath, config, force }),

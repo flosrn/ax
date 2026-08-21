@@ -14,13 +14,14 @@
 // diffed or re-derived without provisioning a thing.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { removeBlock, writeBlock } from '../dotenv.mjs';
 import { excludePaths, installHooks, isMainCheckout } from '../git.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
+import { CONTEXT_PATH, renderContext } from './context.mjs';
 import { identify } from './identity.mjs';
 import { PREFIX, planWorktree } from './plan.mjs';
 import { probeAll, readWorktreeRecord } from './probes.mjs';
@@ -127,6 +128,17 @@ function apply({ plan, config, root, main }) {
       start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'], cwd: root },
       write: writeBlock,
     });
+    // `promote` reports whether the stack actually came up, and announcing
+    // success without reading that is how a worktree ends up with endpoints
+    // recorded for ports nothing answers on — while the doctor confirms the
+    // block, because it does not ask either. The database guard already refuses
+    // on this; the two callers of one function have to agree.
+    if (started.started === false) {
+      bad(`the database stack for ${started.projectId} did not start — its endpoints are recorded but nothing is listening there`);
+      fix('start the container runtime, then re-run ax worktree setup');
+      return 1;
+    }
+
     ok(`isolated stack ${started.projectId} on block +${started.offset}`);
 
     // A promotion moves the database endpoint, and a dev server already running
@@ -138,6 +150,13 @@ function apply({ plan, config, root, main }) {
   } else {
     note('sharing the primary checkout’s database — promoted automatically the first time a command would write');
   }
+
+  // The prose an agent reads before it touches anything here. Written last, so
+  // it describes the state that actually landed rather than the state that was
+  // planned.
+  mkdirSync(join(root, dirname(CONTEXT_PATH)), { recursive: true });
+  writeFileSync(join(root, CONTEXT_PATH), renderContext({ plan, config, main }));
+  ok(`${CONTEXT_PATH} written — the file an agent reads first`);
 
   section('this worktree');
   ok(`serves ${plan.urls.publishedUrl}`);

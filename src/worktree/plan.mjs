@@ -13,16 +13,30 @@
 // derivation left, and the sole remaining question is whether the files match
 // it.
 //
-// Purity is what buys that. Everything that has to look at the machine — bound
-// ports, a proxy's routing table, the tailnet, Docker, git — is probed by the
-// caller and arrives as data. Callable with plain objects, this function is
-// testable without a single container.
+// Purity is what buys that, with one honest limit. Everything that has to look
+// at the machine — a proxy's routing table, the tailnet, Docker, git — is probed
+// by the caller and arrives as data, so this function is callable with plain
+// objects and testable without a container. The exception is the port scan: an
+// allocation asks about up to nine hundred dev ports and forty-five database
+// blocks, and collecting all of that up front would cost more than it buys, so
+// `isBound` arrives as an injected probe and is called from in here.
+//
+// That makes the plan a function of its arguments AND of the machine at one
+// moment. Two guarantees follow, and they are the ones the comparison needs:
+// the probe answers each port once per run (`probes.portProbe`), so a single
+// plan is internally consistent; and a value a checkout has already RECORDED is
+// never re-decided, so setup and doctor minutes apart still agree about every
+// provisioned worktree. An unprovisioned one is the only case where two runs can
+// legitimately differ, and the doctor reports it as unrecorded rather than as a
+// mismatch.
 
-import { resolveOffset, projectId as supabaseProjectId, blockPorts, envKeys } from './supabase.mjs';
+import { blockPorts, envKeys, recordedClaim, resolveOffset, resolveProjectId } from './supabase.mjs';
 import { planUrls } from './addressing.mjs';
 import { resolvePort } from './ports.mjs';
 
 /** The one prefix tooling-private keys carry, in every project. */
+import { join } from 'node:path';
+
 export const PREFIX = 'AX_';
 
 /**
@@ -47,6 +61,7 @@ export const KEYS = {
   useProxy: `${PREFIX}USE_PROXY`,
   supabaseOffset: `${PREFIX}SUPABASE_OFFSET`,
   supabaseMode: `${PREFIX}SUPABASE_MODE`,
+  supabaseProject: `${PREFIX}SUPABASE_PROJECT`,
 };
 
 /**
@@ -67,7 +82,7 @@ export const LEGACY_KEYS = {
 };
 
 /** The env keys a plan needs to read before it can be computed. */
-export const RECORDED_KEYS = ['PORT', KEYS.supabaseOffset, KEYS.useProxy, 'PORTLESS_NAME', 'PORTLESS_PORT'];
+export const RECORDED_KEYS = ['PORT', KEYS.supabaseOffset, KEYS.supabaseProject, KEYS.useProxy, 'PORTLESS_NAME', 'PORTLESS_PORT'];
 
 /**
  * Read every recorded key, preferring the current name and falling back to the
@@ -138,7 +153,7 @@ export function planWorktree({ identity, worktreePath, config, recorded = {}, pr
   });
   log.push(...urls.log);
 
-  const supabase = planSupabase({ identity, config, recorded, isBound, database, log });
+  const supabase = planSupabase({ identity, worktreePath, config, recorded, isBound, database, log });
 
   return {
     identity,
@@ -160,7 +175,7 @@ export function planWorktree({ identity, worktreePath, config, recorded = {}, pr
  * guard in front of the Supabase CLI promotes a shared worktree the first time
  * it runs a command that would actually write.
  */
-function planSupabase({ identity, config, recorded, isBound, database, log }) {
+function planSupabase({ identity, worktreePath, config, recorded, isBound, database, log }) {
   const shared = { mode: 'shared', offset: 0, projectId: undefined, ports: undefined };
 
   // The primary checkout OWNS the shared stack: its committed config.toml is
@@ -177,7 +192,12 @@ function planSupabase({ identity, config, recorded, isBound, database, log }) {
   // the endpoints of a live stack and leave it running under a project id
   // nothing references. Sharing is only the default for a checkout that never
   // claimed a block.
-  const claimed = /^[1-9][0-9]*$/.test(String(recorded[KEYS.supabaseOffset] ?? ''));
+  // The claim is durable in TWO places, and the env file is the fragile one: a
+  // `git clean -xdf` takes it while the containers keep running. So an isolated
+  // `config.toml` — tracked, and rewritten in place — counts as a claim too.
+  const relativePath = join(config.apps.web, 'supabase', 'config.toml');
+  const onDisk = recordedClaim({ cwd: worktreePath, relativePath, base: config.ports.supabaseBase });
+  const claimed = /^[1-9][0-9]*$/.test(String(recorded[KEYS.supabaseOffset] ?? '')) || onDisk !== undefined;
 
   if (database.touches === false && !claimed) {
     log.push('supabase shared — this worktree does not touch the database');
@@ -192,16 +212,33 @@ function planSupabase({ identity, config, recorded, isBound, database, log }) {
   const offset = resolveOffset({
     identity,
     recorded: recorded[KEYS.supabaseOffset],
+    cwd: worktreePath,
+    relativePath,
     base: config.ports.supabaseBase,
     step: config.ports.step,
     maxSlot: config.ports.maxSlot,
     isBound,
   });
 
-  const id = supabaseProjectId(identity, `${config.project.name}-`);
+  // The project id is the ONLY handle the container runtime gives on this
+  // stack, and deriving it from the current branch means a `git branch -m`
+  // mints a second one while the first is still running — seven containers
+  // nothing can then address. So the id recorded for this worktree, or the one
+  // its own config.toml carries, wins over a fresh derivation.
+  const project = resolveProjectId({
+    identity,
+    prefix: `${config.project.name}-`,
+    recorded: recorded[KEYS.supabaseProject],
+    cwd: worktreePath,
+    relativePath,
+    base: config.ports.supabaseBase,
+  });
+  const id = project.projectId;
+
+  if (project.conflict) log.push(`WARN:${project.conflict}`);
   log.push(
-    offset.source === 'recorded'
-      ? `supabase isolated — keeping block +${offset.offset} (${id})`
+    offset.source === 'recorded' || offset.source === 'config'
+      ? `supabase isolated — keeping block +${offset.offset} (${id}, from ${offset.source})`
       : `supabase isolated — block +${offset.offset} (${id})`,
   );
 
@@ -236,7 +273,17 @@ function envWrites({ config, port, urls, supabase, proxy = {} }) {
     PLAYWRIGHT_BASE_URL: urls.publishedUrl,
     NEXT_PUBLIC_SITE_URL: urls.publishedUrl,
     [KEYS.directUrl]: urls.directUrl,
-    [KEYS.useProxy]: urls.mode === 'proxy' ? '1' : '0',
+    // `'1'` when the proxy IS the route, and the key is left alone otherwise —
+    // never written as `'0'` because the layer happened to be unreachable.
+    //
+    // `'0'` means "this worktree opted out", and the reader treats it as
+    // permanent. Writing it for a transient probe failure (binary not yet on
+    // PATH, proxy mid-reinstall, route table momentarily empty) latches that
+    // one moment forever: the published URL drops to a localhost port, the
+    // worktree rejoins the primary's cookie jar, and every later run agrees
+    // because the flag now says it was deliberate. Only an explicit opt-out
+    // writes that value.
+    ...(urls.mode === 'proxy' ? { [KEYS.useProxy]: '1' } : proxy.enabled === false ? { [KEYS.useProxy]: '0' } : {}),
     // A second address for the same app, for a phone on the tailnet. Recorded
     // only when there is one, so a machine with a sleeping daemon does not
     // publish a hostname nothing resolves.
@@ -265,7 +312,7 @@ function envWrites({ config, port, urls, supabase, proxy = {} }) {
   writes.push({
     file: `${config.apps.web}/.env.local`,
     label: SUPABASE_LABEL,
-    keys: { [KEYS.supabaseMode]: 'isolated', ...envKeys({ ports: supabase.ports, offset: supabase.offset, envPrefix: PREFIX }) },
+    keys: { [KEYS.supabaseMode]: 'isolated', ...envKeys({ ports: supabase.ports, offset: supabase.offset, projectId: supabase.projectId, envPrefix: PREFIX }) },
   });
 
   return writes;

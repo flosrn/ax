@@ -17,6 +17,7 @@ import test from 'node:test';
 
 import { subcommandNames } from '../src/commands.mjs';
 import { SUBCOMMANDS } from '../src/worktree/index.mjs';
+import { portProbe } from '../src/worktree/probes.mjs';
 import { KEYS, LEGACY_KEYS, SUPABASE_LABEL, planWorktree, readRecorded } from '../src/worktree/plan.mjs';
 
 const config = {
@@ -112,6 +113,39 @@ test('a direct worktree records no proxy route at all', () => {
   assert.equal(runtime[KEYS.useProxy], '0');
   assert.equal(runtime.PORTLESS_NAME, undefined);
   assert.equal(runtime.PORTLESS_PORT, undefined);
+});
+
+test('an unreachable proxy never records an opt-out', () => {
+  // The reviewer's finding, and the worst regression of the set: written as
+  // '0', the flag is read back as a deliberate opt-out FOREVER. One setup while
+  // the proxy binary was not yet on PATH would drop the published URL to a
+  // localhost port permanently, putting the worktree back in the primary's
+  // cookie jar — the failure the whole addressing layer exists to prevent.
+  const unreachable = plan({ probes: { database: { touches: false }, proxy: { enabled: true, available: false } } });
+  const runtime = unreachable.env.find(write => write.label === 'Worktree runtime').keys;
+
+  assert.equal(unreachable.urls.mode, 'direct');
+  assert.equal(runtime[KEYS.useProxy], undefined, 'a transient failure must leave the flag untouched');
+
+  // An explicit opt-out is the only thing that records one.
+  const optedOut = plan({ probes: { database: { touches: false }, proxy: { enabled: false } } });
+  assert.equal(optedOut.env.find(write => write.label === 'Worktree runtime').keys[KEYS.useProxy], '0');
+});
+
+test('one plan asks about a port once', () => {
+  // A scan that answered twice could report a port free while allocating it and
+  // bound while logging it. Recorded values never reach the probe at all.
+  const asked = [];
+  const probe = portProbe(port => {
+    asked.push(port);
+    return port < 3500;
+  });
+
+  const result = plan({ probes: { isBound: probe, database: { touches: false } } });
+
+  assert.equal(new Set(asked).size, asked.length, `asked twice: ${asked.join(', ')}`);
+  assert.equal(result.port.source, 'scanned');
+  assert.ok(result.port.port >= 3500);
 });
 
 test('a worktree provisioned by the old tooling keeps its stack instead of orphaning it', () => {

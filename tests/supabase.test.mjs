@@ -206,8 +206,25 @@ test('configProjectId reports absence rather than guessing', () => {
 test('only commands that would write to the shared database trigger promotion', () => {
   assert.equal(commandNeedsIsolation(['db', 'reset']), true);
   assert.equal(commandNeedsIsolation(['db', 'diff']), true);
-  assert.equal(commandNeedsIsolation(['db', 'test']), true);
+  assert.equal(commandNeedsIsolation(['db', 'lint']), true);
   assert.equal(commandNeedsIsolation(['migration', 'new', 'x']), true);
+
+  // `test` and `seed` are TOP-LEVEL commands, and this is the whole of finding
+  // 5: they were listed as `db` subcommands, which the CLI has never had, so
+  // pgTAP fixtures and storage seeds ran against the SHARED database from an
+  // unpromoted worktree. Verbatim from `supabase --help` (CLI 2.109.1):
+  //   seed                Seed a Supabase project
+  //   test                Run tests on local Supabase containers
+  assert.equal(commandNeedsIsolation(['test', 'db']), true);
+  assert.equal(commandNeedsIsolation(['test', 'new', 'orders']), true);
+  assert.equal(commandNeedsIsolation(['seed', 'buckets']), true);
+
+  // And the dead entries are gone. `supabase db --help` lists exactly:
+  //   diff | dump | push | pull | reset | lint | start | query | advisors | schema
+  // so `db test` and `db seed` are not commands at all; answering `true` for
+  // them only hid the two real ones above.
+  assert.equal(commandNeedsIsolation(['db', 'test']), false);
+  assert.equal(commandNeedsIsolation(['db', 'seed']), false);
 
   // `db push` defaults to the REMOTE project, so it only counts as a local
   // write with an explicit --local — but it must count then, or a shared-stack
@@ -216,15 +233,25 @@ test('only commands that would write to the shared database trigger promotion', 
   assert.equal(commandNeedsIsolation(['db', 'push']), false);
   assert.equal(commandNeedsIsolation(['db', 'query', '--local', 'select 1']), true);
 
+  // `db pull` reads the schema from a REMOTE database but computes the
+  // migration through the LOCAL shadow database, which lives in this project's
+  // own port block — so it needs isolation whatever names the source, including
+  // the flags that exempt every other subcommand.
+  assert.equal(commandNeedsIsolation(['db', 'pull']), true);
+  assert.equal(commandNeedsIsolation(['db', 'pull', '--linked']), true);
+  assert.equal(commandNeedsIsolation(['db', 'pull', '--db-url', 'postgres://x']), true);
+
   // `gen types` alone reads the remote schema; only `--local` touches the stack.
   assert.equal(commandNeedsIsolation(['gen', 'types']), false);
   assert.equal(commandNeedsIsolation(['gen', 'types', '--local']), true);
 
   // start/stop/status are excluded on purpose: promotion itself runs
-  // `supabase start` through the same guard and would recurse forever.
+  // `supabase start` through the same guard and would recurse forever. `db
+  // start` ("Starts local Postgres database") is the same case.
   assert.equal(commandNeedsIsolation(['start']), false);
   assert.equal(commandNeedsIsolation(['stop']), false);
   assert.equal(commandNeedsIsolation(['status']), false);
+  assert.equal(commandNeedsIsolation(['db', 'start']), false);
 
   // An explicitly remote target is never local, whatever the subcommand.
   assert.equal(commandNeedsIsolation(['db', 'reset', '--linked']), false);
