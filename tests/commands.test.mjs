@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
-import { COMMANDS, agentLines, commandNames, renderUsage } from '../src/commands.mjs';
+import { COMMANDS, commandNames, renderUsage, subcommandNames } from '../src/commands.mjs';
 import { agentsBody } from '../src/init.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
@@ -21,19 +21,37 @@ const run = args => {
   }
 };
 
+/**
+ * The commands the AGENTS.md block tells an agent to type, verb and all.
+ *
+ * One extraction, used by every assertion below, because the block is the
+ * contract: what it names must exist, must run, and must be a command we chose
+ * to expose.
+ */
+const advertisedCommands = () => [...agentsBody().matchAll(/pnpm (?:-w )?ax ([a-z-]+(?: [a-z-]+)?)/g)].map(match => match[1]);
+
 test('every command the AGENTS block advertises is a real command', () => {
-  const advertised = [...agentsBody().matchAll(/pnpm (?:-w )?ax ([a-z-]+)/g)].map(match => match[1]);
+  const advertised = advertisedCommands();
   assert.ok(advertised.length > 0, 'the block must advertise at least one command');
-  for (const name of advertised) {
+
+  for (const entry of advertised) {
+    const [name, verb] = entry.split(' ');
     assert.ok(commandNames.includes(name), `AGENTS block names "ax ${name}", which the CLI does not implement`);
+    if (verb) {
+      assert.ok(subcommandNames(name).includes(verb), `AGENTS block names "ax ${name} ${verb}", which is not a declared verb`);
+    }
   }
 });
 
-test('every advertised command answers for real', () => {
-  for (const name of [...agentsBody().matchAll(/pnpm (?:-w )?ax ([a-z-]+)/g)].map(match => match[1])) {
-    const result = run([name, '--dry-run']);
-    assert.notEqual(result.status, 2, `ax ${name} is advertised but reports an unknown command`);
-    assert.doesNotMatch(result.out, /unknown command/);
+test('every advertised command answers for real, verb included', () => {
+  // The whole command as written in the block, not just its first word: a
+  // registry entry can be a noun (`worktree`) whose verbs are what the block
+  // actually tells an agent to type. Checking the first word only would have
+  // passed while `ax worktree setup` did not exist.
+  for (const advertised of advertisedCommands()) {
+    const result = run([...advertised.split(' '), '--dry-run']);
+    assert.notEqual(result.status, 2, `${advertised} is advertised but reports an unknown command or verb`);
+    assert.doesNotMatch(result.out, /unknown (command|verb)/);
   }
 });
 
@@ -49,16 +67,17 @@ test('the help text lists exactly the registry, and no line wraps a narrow termi
 });
 
 test('only commands meant for agents reach the AGENTS block', () => {
-  // `init` is a human's setup step; advertising it invites an agent to rewrite
-  // the project's managed files mid-task.
-  assert.equal(agentLines().length, 1);
-  assert.doesNotMatch(agentsBody(), /pnpm ax init/);
+  // An explicit allow-list, not a count: `init` is a human's setup step, and
+  // advertising it invites an agent to rewrite the project's managed files
+  // mid-task. Adding a command here is a decision, so it belongs in a diff.
+  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'worktree setup']);
+  assert.doesNotMatch(agentsBody(), /pnpm (?:-w )?ax init/);
 });
 
 test('an unknown command exits 2 and prints the help', () => {
-  const result = run(['worktree']);
+  const result = run(['deploy']);
   assert.equal(result.status, 2);
-  assert.match(result.out, /unknown command "worktree"/);
+  assert.match(result.out, /unknown command "deploy"/);
   assert.match(result.out, /^Usage$/m);
 });
 

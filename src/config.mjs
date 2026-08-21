@@ -68,6 +68,27 @@ export function loadConfig(repoRoot) {
 }
 
 /**
+ * The config governing THIS checkout, preferring its own copy.
+ *
+ * `ax.config.json` is tracked, so every worktree carries the version its branch
+ * checked out — and a branch whose whole purpose is to change a port band or add
+ * an app must be read from its own file, not from whatever the primary checkout
+ * happens to have. The primary is only a fallback, for the case that reads
+ * wrong otherwise: a worktree branched from before the config existed.
+ */
+export function loadCheckoutConfig({ root, main }) {
+  const own = loadConfig(root);
+  if (own.exists) return { ...own, from: root };
+
+  if (main && main !== root) {
+    const fallback = loadConfig(main);
+    if (fallback.exists) return { ...fallback, from: main };
+  }
+
+  return { ...own, from: root };
+}
+
+/**
  * The remote that points at the vendor kit, found by URL.
  *
  * Never by name: ofmchat calls it `makerkit` (naming it `upstream` breaks Orca's

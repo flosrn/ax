@@ -46,6 +46,12 @@
           "default": 100,
           "description": "Port offset between two isolated Supabase stacks."
         },
+        "maxSlot": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 45,
+          "description": "How many isolated Supabase blocks exist. Slot n uses supabaseBase + n*step, so the last block must still fit under the top of the reserved Supabase range."
+        },
         "reserved": {
           "type": "array",
           "items": { "type": "string" },

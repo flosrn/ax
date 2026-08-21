@@ -4,6 +4,7 @@ import { repoPaths, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
 import { init } from '../src/init.mjs';
 import { fatal } from '../src/log.mjs';
+import { worktree } from '../src/worktree/index.mjs';
 
 const RUNNERS = {
   doctor: () => (doctor() === 0 ? 0 : 1),
@@ -14,6 +15,9 @@ const RUNNERS = {
     }
     return init(root, { dryRun: flag('dry-run'), vendor: value('vendor') });
   },
+  // Verbs of one noun get the remaining argv, unparsed: `rm <name> --force`
+  // needs its own positional, and the flag helpers above are whole-command.
+  worktree: () => worktree(args.slice(1)),
 };
 
 const args = process.argv.slice(2);

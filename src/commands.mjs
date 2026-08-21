@@ -20,6 +20,12 @@ import { bold, dim } from './log.mjs';
  *
  * `runnerless` marks a command the dispatcher answers itself (help), so the
  * startup check does not demand a runner for it.
+ *
+ * `subcommands` are verbs of one noun, and they exist for the same reason the
+ * registry does: `worktree` alone does nothing, so every verb it accepts has to
+ * be declared where the help and the AGENTS.md block are built from. A test
+ * asserts this list equals the runner's own dispatch table, which is what stops
+ * the help from advertising a verb that answers "unknown".
  */
 
 export const COMMANDS = [
@@ -28,6 +34,18 @@ export const COMMANDS = [
     summary: 'is this checkout coherent? exit 0 when it is',
     agentLine:
       "`pnpm -w ax doctor` — check this checkout's ax config and wiring (`-w`: a workspace package has no `ax` script of its own).",
+  },
+  {
+    name: 'worktree',
+    summary: 'provision, inspect and reclaim isolated checkouts',
+    subcommands: [
+      ['setup', 'make this checkout runnable — own port, own env, own database'],
+      ['ls', 'every worktree, with the port and stack each one holds'],
+      ['clean [path]', 'reclaim processes, containers and caches; keep the tree'],
+      ['rm <name> [--force]', 'reclaim, then remove the tree'],
+    ],
+    agentLine:
+      '`pnpm -w ax worktree setup` — make a fresh worktree runnable, and `ax worktree ls` to see the port and database each one holds.',
   },
   {
     name: 'init',
@@ -46,6 +64,14 @@ export const commandNames = COMMANDS.map(command => command.name);
 export const agentLines = () => COMMANDS.filter(command => command.agentLine).map(command => command.agentLine);
 
 /**
+ * The verbs declared for one command, as bare names (`rm <name> [--force]` is
+ * `rm`). The runner's dispatch table is asserted equal to this, so the help can
+ * never advertise a verb that answers "unknown".
+ */
+export const subcommandNames = name =>
+  (COMMANDS.find(command => command.name === name)?.subcommands ?? []).map(([verb]) => verb.split(' ')[0]);
+
+/**
  * Help composed on the command NAME, never on a usage string.
  *
  * `init [--vendor <owner>/<repo>] [--dry-run]` as a left column is 42
@@ -55,7 +81,6 @@ export const agentLines = () => COMMANDS.filter(command => command.agentLine).ma
  */
 export function renderUsage(version) {
   const width = Math.max(...COMMANDS.map(command => command.name.length));
-  const flagWidth = Math.max(...COMMANDS.flatMap(command => (command.options ?? []).map(([flag]) => flag.length)), 0);
 
   const lines = [
     `${bold('ax')} ${version} — agent-experience tooling for MakerKit turbo projects`,
@@ -68,8 +93,17 @@ export function renderUsage(version) {
 
   for (const command of COMMANDS) {
     lines.push(`  ${command.name.padEnd(width)}  ${command.summary}`);
-    for (const [flag, description] of command.options ?? []) {
-      lines.push(`  ${' '.repeat(width)}  ${dim(`${flag.padEnd(flagWidth)}  ${description}`)}`);
+
+    // Each command's verbs and flags align among THEMSELVES, not against every
+    // other command's. One global column let the widest flag in the registry
+    // (`--vendor <owner>/<repo>`) push unrelated descriptions past 96 columns,
+    // where they wrap in a split pane — the exact laddering this help was
+    // rewritten to avoid.
+    const inner = [...(command.subcommands ?? []), ...(command.options ?? [])];
+    const innerWidth = Math.max(...inner.map(([name]) => name.length), 0);
+
+    for (const [name, description] of inner) {
+      lines.push(`  ${' '.repeat(width)}  ${dim(`${name.padEnd(innerWidth)}  ${description}`)}`);
     }
   }
 
