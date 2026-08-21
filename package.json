@@ -1,6 +1,6 @@
 {
   "name": "@flosrn/ax",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Agent-experience tooling for MakerKit turbo projects: worktrees, debug-as, vendor ownership.",
   "type": "module",
   "license": "UNLICENSED",
@@ -11,6 +11,13 @@
   },
   "bin": {
     "ax": "./bin/ax.mjs"
+  },
+  "//exports": "The public surface, deliberately small. `./dotenv` is here because a project's own scripts must read env files the way this package does: the launcher in one repo kept a second copy of that grammar, and the two disagreed twice. A shared reader is the only way that stops recurring. Everything else stays internal.",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./dotenv": "./src/dotenv.mjs",
+    "./ax.schema.json": "./ax.schema.json",
+    "./package.json": "./package.json"
   },
   "files": [
     "bin",
