@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { redactSecrets } from '../redact.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { bad, fix, note } from '../log.mjs';
-import { defaultStore, dispatchFields, requestIdOk, terminalCursor } from './record.mjs';
+import { defaultStore, dispatchFields, requestIdOk } from './record.mjs';
+import { paneReadable, readPane, terminalInventory } from './pane.mjs';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -86,23 +87,19 @@ function workerProbe(run, dispatchId) {
 }
 
 function cursorProbe(run, handle, executionEnv) {
-  const args = ['terminal', 'read', '--terminal', handle];
-  if (executionEnv) args.push('--environment', executionEnv);
-  args.push('--limit', '1', '--json');
-  const out = run(args);
-  if (out.status !== 0 || out.receipt?.ok !== true) return { readable: false, cursor: null };
-  const terminal = out.receipt?.result?.terminal;
-  if (terminal === null || typeof terminal !== 'object') return { readable: false, cursor: null };
-  return { readable: true, cursor: terminalCursor(out.receipt) };
+  const pane = readPane(run, handle, { environment: executionEnv, limit: 1 });
+  return paneReadable(pane) ? { readable: true, cursor: pane.cursor } : { readable: false, cursor: null };
 }
 
+/**
+ * The worktree the watched pane sits in, for the card alert. Fail-open like the
+ * rest of this file: an inventory that cannot be read is no worktree, never an
+ * exception and never a guessed path.
+ */
 function worktreeFor(run, handle, executionEnv) {
-  const args = ['terminal', 'list'];
-  if (executionEnv) args.push('--environment', executionEnv);
-  args.push('--json');
-  const out = run(args);
-  if (out.status !== 0 || !Array.isArray(out.receipt?.result?.terminals)) return '';
-  return out.receipt.result.terminals.find(row => row.handle === handle)?.worktreePath ?? '';
+  const inventory = terminalInventory(run, { environment: executionEnv });
+  if (!inventory.ok) return '';
+  return inventory.byHandle.get(handle)?.worktreePath ?? '';
 }
 
 function cardProbe(run, worktreePath, executionEnv) {

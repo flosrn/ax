@@ -36,6 +36,7 @@
 
 import { resolveOrca, createRunner, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
+import { terminalInventory } from './pane.mjs';
 
 /**
  * A named list out of a receipt — the F-028 read. An absent `workers` container
@@ -55,9 +56,6 @@ function namedList(out, key, command) {
   if (!Array.isArray(rows)) return { ok: false, reason: `'${command}' answered "${key}" as ${typeof rows}, not a list` };
   return { ok: true, rows };
 }
-
-/** A terminal that is present and not orphaned. An orphaned pane is a dead one. */
-const liveHandles = terminals => new Set(terminals.filter(t => !t.orphaned).map(t => t.handle));
 
 export function gate(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
   let task = '';
@@ -116,15 +114,18 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   }
 
   // Read 2: which panes still exist. This is what makes a Dispatch row a live
-  // agent or a corpse, and nothing else does.
-  const terminals = namedList(run(['terminal', 'list', '--json']), 'terminals', 'orca terminal list');
+  // agent or a corpse, and nothing else does — so it goes through the shared
+  // inventory (src/worker/pane.mjs), which refuses a TRUNCATED list and reports
+  // whether every host was asked. Reading `terminals` by hand here missed both,
+  // and "absent from the list" is precisely what "no live agent" is read from.
+  const terminals = terminalInventory(run);
   if (!terminals.ok) {
     bad(`CANNOT ESTABLISH — ${terminals.reason}`);
     note('Without the terminal list, a dead dispatch and a working agent are the same row.');
     fix('orca open   # bring up the Orca runtime, then re-run this gate');
     return 3;
   }
-  const alive = liveHandles(terminals.rows);
+  const alive = new Set([...terminals.byHandle].filter(([, terminal]) => terminal.orphaned !== true).map(([handle]) => handle));
 
   // Read 3: does the task exist at all? A failure here is NOT an answer — it is
   // an ignorance, and it is reported as one.
@@ -165,6 +166,19 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   }
 
   if (live.length === 0) {
+    // An absent handle is a corpse only when every host was asked, and
+    // `terminal list` omits hosts on this very Mac (measured 2026-08-22: one
+    // stale runtime, and 155 of 218 dispatch panes absent because of it). So the
+    // absence is DISCLOSED rather than either hidden or turned into a refusal:
+    // refusing here answered 3 for every ordinary relaunch on this machine, and
+    // "answered 3 for a day" is the bug this verb was written to stop repeating.
+    // The gate's scope is this host, as its header says, and a pane on another
+    // one is `--on <host>`'s business, not a duplicate this host can create.
+    const unproven = rows.filter(w => typeof w.agentTerminalHandle === 'string' && !terminals.byHandle.has(w.agentTerminalHandle));
+    if (terminals.omitted && unproven.length > 0) {
+      note(`${unproven.length} of these panes are absent from a terminal list that omits ${terminals.omittedHosts.join(', ')}.`);
+      note('On this host they are down. If this task was dispatched with `--on <host>`, establish them there before relaunching.');
+    }
     ok('no live agent. Safe to relaunch (return the task to `ready` first).');
     return 0;
   }

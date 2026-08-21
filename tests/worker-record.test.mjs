@@ -15,7 +15,6 @@ import {
   dispatchFields,
   initRecord,
   newIdentity,
-  terminalCursor,
   phaseArgv,
   phaseBegin,
   phaseCount,
@@ -436,13 +435,6 @@ test('the replace lock is exclusive and every pre-existing lock fails closed', (
   const unreadable = acquireLock(torn);
   assert.equal(unreadable.held, false);
   assert.match(unreadable.reason, /unreadable/);
-});
-
-test('terminal cursor is lenient but never turns absence into zero', () => {
-  assert.equal(terminalCursor({ ok: true, result: { terminal: { latestCursor: 0 } } }), 0);
-  assert.equal(terminalCursor(JSON.stringify({ ok: true, result: { terminal: { latestCursor: 42 } } })), 42);
-  assert.equal(terminalCursor({ ok: true, result: { terminal: {} } }), null);
-  assert.equal(terminalCursor('not json'), null);
 });
 
 test('task-update is accepted only when Orca confirms ready (F-003)', () => {

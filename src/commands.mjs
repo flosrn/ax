@@ -71,6 +71,7 @@ export const COMMANDS = [
       ['tail <handle>', 'alive-with-content / alive-and-silent / cannot-establish'],
       ['gate <task>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
       ['transcript <cible>', 'a child’s full session, structured and redacted'],
+      ['release', 'close a landed pane — proven by artifact, never by a word'],
     ],
   },
   {

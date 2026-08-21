@@ -18,7 +18,7 @@
 // `||` fallback on a container. An `or` on a container is how an empty worker
 // list was once read as a count of 2.
 
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -249,10 +249,16 @@ export function initRecord(path, { request, orca, host = hostname(), now = () =>
  * Write-ahead: the argv and the identity land on disk BEFORE the mutation is
  * issued. That ordering is the whole recovery property — a mutation that never
  * returns is still replayable byte for byte.
+ *
+ * `beganAt` is when THIS mutation was issued, and it is additive on purpose: the
+ * record's `createdAt` is when the request was claimed, which a `--resume` or a
+ * `--replace` leaves hours behind the dispatch it produced. `release` dates a
+ * comment against the dispatch, so it needs the phase's own time; a record
+ * written before this field existed falls back to `createdAt`.
  */
-export function phaseBegin(path, { name, identity, argv, receiptPath = null }) {
+export function phaseBegin(path, { name, identity, argv, receiptPath = null, now = () => new Date().toISOString() }) {
   const rec = load(path);
-  must(lastAttempt(rec), 'phases', 'last attempt').push({ name, identity, argv, receiptPath, receipt: null, exit: null });
+  must(lastAttempt(rec), 'phases', 'last attempt').push({ name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() });
   save(rec, path);
 }
 
@@ -287,6 +293,16 @@ export function phaseEnd(path, index, { exit, receiptText, stderr = '', error = 
 export const phaseArgv = (path, index) => [...must(phaseAt(load(path), index), 'argv', 'phase')];
 
 export const phaseCount = path => must(lastAttempt(load(path)), 'phases', 'last attempt').length;
+
+/**
+ * The recorded exit status of one phase, or null when the call never reported
+ * one. It is a SEPARATE question from `phaseVerdict`: a receipt can read `ok`
+ * while the exit carries the outcome, and `worker-release` is exactly that shape
+ * — retained, release_pending and already_released all exit 0, and only
+ * `release_unknown` exits 1 (Orca 1.4.185). A verb whose domain puts a verdict
+ * in the exit code must be able to read it back off the record.
+ */
+export const phaseExit = (path, index) => phaseAt(load(path), index).exit ?? null;
 
 /**
  * The verdict on one phase. Four outcomes, and the two that must never be
@@ -449,13 +465,97 @@ export function dispatchFields(path) {
 }
 
 /**
- * Cursor probes are deliberately lenient: a failed read is absence, never a
- * fabricated zero that could be mistaken for a held or frozen pane.
+ * The whole store, indexed by the dispatch id each record produced.
+ *
+ * The store is the ONE place that knows what a dispatch was FOR: Orca's own
+ * inventory carries ids, states and handles, and no notion of the request that
+ * asked for them. `release` needs that provenance twice over — to decide which
+ * proof applies to a pane (a triage owes a comment, an implementation owes a
+ * merged PR), and to date that proof against the moment the dispatch was issued.
+ *
+ * Because that provenance decides whether a pane may be CLOSED, it is read
+ * strictly (F-028) and never inferred:
+ *   - the record must NAME its request, and the name must agree with the file it
+ *     lives in. A stem substituted for an absent `request` would let any
+ *     filename decide which proof rule applies to a live pane.
+ *   - only a `worker-start` phase may name a dispatch. Every other phase that
+ *     happens to carry a `dispatchId` is display metadata.
+ *   - one dispatch produced by two DIFFERENT requests is ambiguous, and
+ *     ambiguity is cannot-establish, never last-file-wins (F-001).
+ *
+ * `issuedAt` is when the mutation was ISSUED — the newest `worker-start` phase's
+ * own `beganAt`, falling back to the record's `createdAt` for records written
+ * before that field existed. Never the file's mtime: a `--resume` rewrites the
+ * file, which would push its mtime past the artifact the dispatch produced and
+ * turn a proven session into a permanent KEEP. And never `createdAt` alone when
+ * a phase timestamp exists: a record claimed at 10:00 whose worker-start ran at
+ * 11:00 would accept a 10:30 comment as "after the dispatch".
+ *
+ * Reading is lenient PER FILE and never silent: one unreadable record is named
+ * in `unreadable` and the scan continues, because a store this verb cannot fully
+ * parse still knows about the other dispatches — but a caller that concludes "no
+ * provenance" must be able to say whether it looked.
  */
-export function terminalCursor(receipt) {
-  const parsed = typeof receipt === 'string' ? parseReceipt(receipt) : receipt;
-  const terminal = parsed?.result?.terminal;
-  return terminal && Object.hasOwn(terminal, 'latestCursor') ? terminal.latestCursor : null;
+export function dispatchIndex(store) {
+  const byDispatch = new Map();
+  const unreadable = [];
+  const ambiguous = new Set();
+  let files;
+  try {
+    files = readdirSync(store, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => entry.name)
+      .sort();
+  } catch (error) {
+    return { byDispatch, unreadable, ambiguous, missing: error.code === 'ENOENT', reason: String(error) };
+  }
+
+  for (const file of files) {
+    let rec;
+    try {
+      rec = load(join(store, file));
+    } catch (error) {
+      unreadable.push({ file, error: String(error) });
+      continue;
+    }
+    const stem = file.slice(0, -'.json'.length);
+    if (rec.request !== stem) {
+      unreadable.push({ file, error: `record names request ${JSON.stringify(rec.request)}, which is not ${stem}` });
+      continue;
+    }
+    const created = Date.parse(rec.createdAt ?? '');
+    const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
+
+    for (const attempt of attempts) {
+      for (const ph of Array.isArray(attempt.phases) ? attempt.phases : []) {
+        if (ph?.name !== 'worker-start') continue;
+        const result = ph.receipt?.result;
+        if (result === null || typeof result !== 'object') continue;
+        if (typeof result.dispatchId !== 'string' || result.dispatchId === '') continue;
+
+        const known = byDispatch.get(result.dispatchId);
+        if (known !== undefined && known.request !== stem) {
+          ambiguous.add(result.dispatchId);
+          byDispatch.delete(result.dispatchId);
+          continue;
+        }
+        if (ambiguous.has(result.dispatchId)) continue;
+
+        const began = Date.parse(ph.beganAt ?? '');
+        // Newest phase wins: a `--replace` records a second worker-start for the
+        // same request, and the pane that matters is the one it opened.
+        byDispatch.set(result.dispatchId, {
+          request: stem,
+          issuedAt: Number.isFinite(began) ? began : Number.isFinite(created) ? created : null,
+          file,
+          handle: agentTerminal(result),
+          ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',
+        });
+      }
+    }
+  }
+
+  return { byDispatch, unreadable, ambiguous, missing: false, reason: '' };
 }
 
 /** F-003: a clean exit is not enough; Orca must read back the ready state. */

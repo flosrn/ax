@@ -24,7 +24,9 @@ src/worker/start.mjs       ax worker start (--resume/--replace/--show), arme le 
 src/worker/gate.mjs        ax worker gate           (0 sûr / 1 vivant / 2 duplicate / 3 cannot)
 src/worker/tail.mjs        ax worker tail           (vivant-contenu / vivant-silencieux / cannot)
 src/worker/ls.mjs          ax worker ls             (panes vivants, jamais worker-list — F-048)
-src/worker/release.mjs     ax worker release        (preuve d'atterrissage, jamais le mot de l'enfant)
+src/worker/release.mjs     ax worker release        (preuve d'atterrissage, jamais le mot de
+                           l'enfant ; close write-ahead sous <store>/release/)
+src/worker/pane.mjs        LE lecteur de `terminal read` + `terminal list` (F-041/F-028)
 src/worker/transcript.mjs  ax worker transcript     (redacted par défaut, jamais de bypass capability)
 src/worker/stall.mjs       watcher détaché fail-open (fichier séparé du fail-closed — ADR 0025)
 src/worker/launch.mjs      ax worker launch --issue (gardes hôte → config par repo + probes injectées)
@@ -95,7 +97,53 @@ les tables complètes, gating appliqué après.
       ses verbes non-dispatch (`ticket`, `classify`, `active-count`, etc.). Le supprimer ici,
       comme l'esquisse le prévoyait, cassait ces trois surfaces vivantes ; il meurt avec leur
       dernier port, pas avant.
-- [ ] **5. `worker release`** — cas de `orca-close-sessions.test.ts` + classification par preuve.
+- [x] **5. `worker release`** — fait le 2026-08-22. Rapport par défaut, `--close` seul mute.
+      Preuve d'atterrissage par artefact : PR MERGÉE (implémentation) ou commentaire postérieur
+      au dispatch (triage/brief) ; PR ouverte, commits sans PR, diff vide, silence et la parole
+      de l'enfant ne sont jamais des preuves. Liveness = deux échantillons de curseur (un seul
+      sleep pour tout le lot) ; un pane qui bouge est BUSY même sous `--no-proof`. Chaque cause
+      non offerte porte son nom et sa réparation — le fourre-tout « 80 with no pane to close »
+      n'existe plus. Trois causes mesurées que bash lisait faux (Orca 1.4.185, 218 workers,
+      5 panes vivants) : le handle est sur `agentTerminalHandle` (217/218) et non seulement dans
+      `resource.terminalHandle` (132/218) — d'où les 86 « no terminal recorded » ; `terminalState`
+      a six valeurs (`release_pending` et `release_unknown` sont deux rangées à poursuivre, pas
+      « déjà relâché ») ; un pane distant refuse `worker-release` (`federation_unsupported`,
+      2026-08-14) et se ferme par `terminal close --environment`. Le close est write-ahead comme
+      un dispatch (F-001) : argv + identité `--retry-request` sur disque AVANT l'appel, sous
+      `<store>/release/` pour que `ax worker ls` n'y voie pas un dispatch mort-né ; claim perdu =
+      on rejoue le record de l'autre, jamais une seconde identité ; un `release_unknown`
+      enregistré est rejoué (le verdict seul dirait « déjà relâché » — il faut son exit).
+      Panes F-048 (vivants ici, absents de `worker-list`) réintégrés au balayage. Extraction
+      payée par cette étape : `src/worker/pane.mjs`, LE lecteur de `terminal read` + de
+      `terminal list` (tail, start, stall en avaient trois copies, release aurait été la
+      quatrième ; `gate` et `stall` y sont passés aussi, `terminalInventory` sorti de `ls.mjs`).
+      Revue 6 lentilles (correctness, adversarial, reliability, testing, security, reuse) :
+      7 routes de close injustifié fermées, chacune avec son test qui échoue sans le correctif.
+      La preuve est liée au dépôt qui possède le pane (un même slug fusionné dans un AUTRE repo
+      fermait une session vivante sous `--all`/`--dispatch`) ; chemins canonisés
+      (`/scope/../ailleurs` passait le préfixe) ; PR liée à SON head ref (la première ligne
+      était crue) ; un `gh` en échec est une ignorance, jamais « pas de PR » ; `gh repo view`
+      muet et store illisible = exit 3, plus un rapport propre ; provenance stricte (requête
+      nommée == nom de fichier, phase `worker-start` seule, deux records pour un dispatch =
+      ambigu) ; commentaire daté sur le `beganAt` de la phase, plus sur le `createdAt` du claim ;
+      un record de release rejoué doit d'abord PROUVER qu'il décrit cette release (sinon son
+      argv choisissait le programme ET le dispatch) ; le receipt doit nommer ce dispatch.
+      Deux formes corrigées par le smoke live, pas par la revue : `latestCursor` est une CHAÎNE
+      décimale (1.4.185) — la règle « entier » rendait tous les panes illisibles — et le refus
+      du gate sur hôtes omis répondait 3 pour tout relaunch ordinaire ici (155 panes sur 218
+      absents à cause d'un runtime périmé), donc il annonce au lieu de bloquer.
+      54 tests neufs, suite ax 413/413, smoke réel : rapport scopé et machine-wide contre
+      l'Orca vivant (218 workers → 1 `release_unknown` nommé avec sa réparation), forme de
+      receipt mesurée sur une répétition idempotente (`already_released · none ·
+      archive=captured`, exit 0), et les 4 verbes recâblés revérifiés vivants.
+      ⚠ Pas de `--close` prouvé LIVE : aucune ligne fermable n'existait sur cette machine et en
+      fabriquer une coûtait un vrai agent. Le chemin de mutation est tenu par le receipt mesuré
+      + les tests (record sur disque AU MOMENT de l'appel, rejeu argv byte-for-byte).
+      Côté `~/.omp` : `cmd_release` (296 L) + `orca-close-sessions.test.ts` supprimés, 5 verbes
+      de `record.py` devenus orphelins retirés (`classify`, `request-of`, `epoch`, `merged-pr`,
+      `release-receipt`) avec leurs tests, prose `orca-orchestrator` basculée sur `ax worker
+      release`. ⚠ `orca-triage.test.ts` a UN rouge préexistant (contrat de labels du template de
+      triage), vérifié présent à HEAD avant cette étape : il appartient à l'étape 7.
 - [ ] **6. `worker launch`** — la restructuration : gardes gapicore/Portless/ofmchat → contrat de
       config par repo + probes. Cas de `orca-launch.test.ts`. Meurt : `launch` du coordinator.
 - [ ] **7. `ax triage`** — cas de `orca-triage.test.ts`. Meurt : le coordinator ENTIER.

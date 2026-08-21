@@ -34,6 +34,7 @@
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
+import { readPane } from './pane.mjs';
 
 /**
  * The terminal-handle grammar, closed. It lands on argv, and the bash era's
@@ -71,49 +72,42 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   const ready = runtimeReady(run);
   if (!ready.ready) return refuse(ready.reason, 'orca open   # start the runtime, then re-run this tail');
 
-  // No `--lines`, ever (F-041). And the receipt is read as data: the runner
-  // carries stderr and the raw text back, so no diagnostic is lost (F-004).
-  const out = run(['terminal', 'read', '--terminal', handle, '--json']);
-  const receipt = out.receipt;
+  // The shape of the read, the flags it may carry and the key names all live in
+  // ./pane.mjs — one reader for the four verbs that need this receipt. This one
+  // maps every named inability to its own repair, because "I could not look"
+  // must never resemble "nothing is there".
+  const pane = readPane(run, handle);
+  const refusal = pane.refusal;
 
-  if (receipt.unparseable !== undefined) {
-    const code = refuse(`the receipt for ${handle} is not JSON: ${receipt.error}`, 'orca open   # then re-run; if this persists the CLI answered something else entirely');
-    note(redactSecrets(String(receipt.unparseable).slice(0, 400)));
-    return code;
-  }
-
-  if (receipt.ok === false) {
-    const error = receipt.error ?? {};
-    return refuse(`${handle}: ${error.code ?? 'unknown'} ${error.message ?? ''}`.trim(), 'ax worker ls   # the handle may have moved or the pane may be gone');
-  }
-
-  // Named-key read, F-028: an absent container is a NAMED inability, never a
-  // silent zero. This is the exact key that got read as `result.output` and
-  // cost a live pane.
-  const terminal = (receipt.result ?? {}).terminal;
-  if (terminal === null || typeof terminal !== 'object') {
-    return refuse(
-      `no result.terminal in the receipt for ${handle}. The key moved, or this is not a terminal receipt. Do NOT read this as an empty terminal.`,
-      'ax worker ls   # re-establish the handle from a receipt whose shape is known',
-    );
-  }
-
-  const status = terminal.status ?? null;
-  if (status === null) {
-    return refuse(
-      `${handle} returned no status. That is the shape \`--lines\` produces, and it is not an empty terminal.`,
-      'orca terminal read --terminal ' + handle + ' --json   # never with --lines',
-    );
-  }
-
-  const lines = terminal.tail;
-  if (!Array.isArray(lines)) {
-    return refuse(`${handle}: result.terminal.tail is ${lines === null ? 'null' : typeof lines}, not a list.`, 'ax worker ls   # the receipt shape changed; re-establish before acting on it');
+  if (refusal !== null) {
+    if (refusal.kind === 'unparseable') {
+      const code = refuse(`the receipt for ${handle} is not JSON: ${refusal.error}`, 'orca open   # then re-run; if this persists the CLI answered something else entirely');
+      note(redactSecrets(String(refusal.raw).slice(0, 400)));
+      return code;
+    }
+    if (refusal.kind === 'error') {
+      return refuse(`${handle}: ${refusal.code} ${refusal.message}`.trim(), 'ax worker ls   # the handle may have moved or the pane may be gone');
+    }
+    // F-028: an absent container is a NAMED inability, never a silent zero.
+    // This is the exact key that got read as `result.output` and cost a live pane.
+    if (refusal.kind === 'no-terminal') {
+      return refuse(
+        `no result.terminal in the receipt for ${handle}. The key moved, or this is not a terminal receipt. Do NOT read this as an empty terminal.`,
+        'ax worker ls   # re-establish the handle from a receipt whose shape is known',
+      );
+    }
+    if (refusal.kind === 'null-status') {
+      return refuse(
+        `${handle} returned no status. That is the shape \`--lines\` produces, and it is not an empty terminal.`,
+        'orca terminal read --terminal ' + handle + ' --json   # never with --lines',
+      );
+    }
+    return refuse(`${handle}: result.terminal.tail is ${refusal.got}, not a list.`, 'ax worker ls   # the receipt shape changed; re-establish before acting on it');
   }
 
   // Both remaining answers are ESTABLISHED facts about a living pane — the ✓ is
   // about having established it, and the exit code carries which one it is.
-  const cursor = terminal.latestCursor ?? null;
+  const { lines, cursor, paneStatus: status } = pane;
   if (lines.length > 0) {
     ok(`ALIVE — ${handle}  status=${status}  cursor=${cursor}  ${lines.length} line(s)`);
     for (const line of lines) note(redactSecrets(line));

@@ -40,6 +40,7 @@ import { join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
+import { terminalInventory } from './pane.mjs';
 import { defaultStore } from './record.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
@@ -150,33 +151,6 @@ function describeRecord(dir, file) {
   };
 }
 
-/** Liveness per handle. Refuses rather than reporting an empty machine (F-028). */
-function terminalIndex(run) {
-  const out = run(['terminal', 'list', '--json']);
-  const receipt = out.receipt ?? {};
-  if (out.status !== 0 || receipt.ok !== true || !('result' in receipt)) {
-    const detail = receipt.unparseable ?? out.stderr ?? '';
-    return { ok: false, reason: `orca terminal list did not answer (exit ${out.status})${detail ? `: ${String(detail).slice(0, 200)}` : ''}` };
-  }
-  const result = receipt.result;
-  if (!Array.isArray(result.terminals)) {
-    return { ok: false, reason: 'orca terminal list answered without a "terminals" list — an absent container is not an empty one (F-028)' };
-  }
-  // A truncated list cannot prove a handle's absence, and absence is exactly
-  // what MORT is read from. `terminal list` carries `truncated` (measured
-  // 2026-08-22); when it is set, the only honest answer is a refusal.
-  if (result.truncated === true) {
-    return { ok: false, reason: 'orca terminal list is TRUNCATED — a partial list cannot prove a pane is dead' };
-  }
-  const byHandle = new Map();
-  for (const terminal of result.terminals) {
-    if (terminal !== null && typeof terminal === 'object' && typeof terminal.handle === 'string') byHandle.set(terminal.handle, terminal);
-  }
-  const scope = result.hostScope ?? {};
-  const omitted = Array.isArray(scope.omittedHostIds) ? scope.omittedHostIds.length > 0 : false;
-  return { ok: true, byHandle, omitted };
-}
-
 /**
  * Orca's accounting, indexed by both keys it exposes. Unreadable is NOT fatal:
  * this list is the suspect, not the witness — but its unreadability is named on
@@ -271,7 +245,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     return 0;
   }
 
-  const terminals = terminalIndex(run);
+  const terminals = terminalInventory(run);
   if (!terminals.ok) {
     bad(terminals.reason);
     fix('orca terminal list --json   # panes are the only trustworthy count (F-048); without them nothing is established');

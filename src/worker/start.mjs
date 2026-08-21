@@ -42,9 +42,9 @@ import {
   taskId,
   taskIdScan,
   taskUpdateOk,
-  terminalCursor,
   workerPane,
 } from './record.mjs';
+import { readPane } from './pane.mjs';
 
 const STALL_MODULE = fileURLToPath(new URL('./stall.mjs', import.meta.url));
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -201,12 +201,8 @@ function summarize(path) {
 }
 
 function cursorRead(run, handle, executionEnv) {
-  const args = ['terminal', 'read', '--terminal', handle];
-  if (executionEnv) args.push('--environment', executionEnv);
-  args.push('--limit', '1', '--json');
-  const out = run(args);
-  if (out.status !== 0) return null;
-  return terminalCursor(out.receipt);
+  const pane = readPane(run, handle, { environment: executionEnv, limit: 1 });
+  return pane.exit === 0 ? pane.cursor : null;
 }
 
 /** A held initial composer is an upstream race; one guarded Enter repairs it. */

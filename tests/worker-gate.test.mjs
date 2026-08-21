@@ -35,6 +35,8 @@ function fakeRunner({
   workerListFails = false,
   workerListShape = false,
   terminalListFails = false,
+  terminalListTruncated = false,
+  omittedHostIds = [],
   ready = true,
 } = {}) {
   const calls = [];
@@ -54,7 +56,11 @@ function fakeRunner({
     }
     if (line.includes('terminal list')) {
       if (terminalListFails) return broken('boom');
-      return receipt({ terminals: terminals.map(t => (typeof t === 'string' ? { handle: t } : t)) });
+      return receipt({
+        terminals: terminals.map(t => (typeof t === 'string' ? { handle: t } : t)),
+        hostScope: { hostIds: ['local'], omittedHostIds },
+        truncated: terminalListTruncated,
+      });
     }
     if (line.includes('task-list')) {
       if (tasks === null) return { status: 0, stdout: 'not json at all', stderr: '', receipt: { unparseable: 'not json at all', error: 'x' } };
@@ -123,6 +129,32 @@ test('F-003: an orphaned pane is a dead one, not an agent at work', () => {
   });
   assert.equal(r.code, 0);
   assert.match(r.out, /no live agent/);
+});
+
+test('a pane on a host this list never asked about is disclosed, not silently a corpse', () => {
+  // `terminal list` carries `hostScope.omittedHostIds`, non-empty on this Mac
+  // (measured 2026-08-22: one stale runtime, 155 of 218 dispatch panes absent
+  // because of it). Refusing on that made every ordinary relaunch answer 3 —
+  // the same "answered 3 for a day" bug this suite exists for — so the gate
+  // still answers for THIS host and says what it could not see.
+  const r = verdict({
+    workers: [dispatch('ctx_remote', 'term_elsewhere')],
+    terminals: [],
+    omittedHostIds: ['runtime:7930a317'],
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /absent from a terminal list that omits runtime:7930a317/);
+  assert.match(r.out, /--on <host>/);
+});
+
+test('a truncated terminal list cannot answer the gate at all', () => {
+  const r = verdict({
+    workers: [dispatch('ctx_any', 'term_any')],
+    terminals: [],
+    terminalListTruncated: true,
+  });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /TRUNCATED/);
 });
 
 test('F-001: a failed dispatch whose terminal is still live is a working agent, not a corpse', () => {

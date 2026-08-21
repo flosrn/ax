@@ -12,8 +12,9 @@ import { gate } from './gate.mjs';
 import { ls } from './ls.mjs';
 import { tail } from './tail.mjs';
 import { transcript } from './transcript.mjs';
+import { release } from './release.mjs';
 
-export const SUBCOMMANDS = { start, ls, tail, gate, transcript };
+export const SUBCOMMANDS = { start, ls, tail, gate, transcript, release };
 
 /**
  * `ax worker <verb> [args]`.
