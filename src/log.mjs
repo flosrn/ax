@@ -21,6 +21,25 @@ export function section(title) {
   process.stdout.write(`${title}\n`);
 }
 
+/**
+ * A payload, not a message: the record a caller reads or pipes. No glyph, no
+ * indent, nothing prepended — a verb that prints JSON must print JSON, and it
+ * must print it through this file like every other emission, so redaction and
+ * the stream choice stay decided in one place.
+ */
+export function raw(text) {
+  process.stdout.write(`${text}\n`);
+}
+
+/**
+ * One line about ax's own machinery — armed, not armed — on stderr, so stdout
+ * stays the payload above. Unlike `warn` it carries no tag: these lines are
+ * read by an operator watching a dispatch scroll past, not triaged later.
+ */
+export function status(message) {
+  process.stderr.write(`${message}\n`);
+}
+
 export function ok(message) {
   process.stdout.write(`  ${green('✓')} ${message}\n`);
 }

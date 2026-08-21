@@ -73,11 +73,28 @@ les tables complètes, gating appliqué après.
       ambiguïté = refus listant les candidats ; rédaction au niveau des émetteurs, pas de bypass).
       61 tests neufs, suite 291/291. Smoke live des 4 verbes contre l'Orca réel (95 records,
       pane vivant, gate de la sonde, transcript de la sonde résolu par dispatch id).
-      ⚠ `tail`/`gate` du coordinator ne meurent PAS encore : `dispatch --replace` appelle `gate`
-      en interne (coordinator.sh:494) — ils tombent avec `dispatch` à l'étape 4.
-- [ ] **4. `worker start` + `stall`** — le cœur F-001. Cas de `orca-dispatch.test.ts` +
-      `orca-stall-watch.test.ts`. Meurent : `dispatch` du coordinator, `orca-stall-watch.sh`,
-      `record.py`.
+      `tail`/`gate` du coordinator supprimés avec `dispatch` à l'étape 4.
+- [x] **4. `worker start` + `stall`** — fait le 2026-08-22. `start` porte les quatre modes
+      (frais/`--resume`/`--replace`/`--show`) : claim O_EXCL, argv + identité écrits avant
+      `task-create`/`worker-start`, replay byte-for-byte par le binaire ENREGISTRÉ, sortie 4
+      STRANDED sur mutation inconnue, run enregistré passé au gate, verrou exclusif sur replace,
+      takeover étranger seulement si TOUTES les phases prouvent un refus fermé sans ressource,
+      options d'identité refusées dans le passthrough, task-update confirmé `ready` (F-003).
+      `stall` est un processus détaché fail-open séparé (ADR 0025) : pid claim, seuil 45 min,
+      émission du curseur (jamais `--lines`), receipt `failed` ≠ processus mort si le pane répond,
+      card distante avec baseline + grammaire checkpoint exacte + découverte tardive, retry borné,
+      durée de vie et nombres env finis, log best-effort. Records/diagnostics bruts restent sur
+      disque ; toute émission rédige `dcap_…`. 71 tests nets, suite ax 362/362 ; smoke réel en
+      sous-processus (callers de Runs différents et reclaimers d'un refus étranger → une seule
+      paire d'identités ; watcher détaché armé → settle → pid nettoyé). Revue 8 lenses +
+      adversarial Codex indépendant, puis 2 relectures finales : stale takeover, races replace/
+      pidfile, record rewrite atomique et receipts malformés corrigés.
+      Côté `~/.omp` : blocs `dispatch`/`gate`/`tail` + 5 fichiers legacy supprimés ; `launch` et
+      `triage` appellent `ax worker start --orca <résolu>` (148 tests ciblés verts).
+      ⚠ `record.py` reste jusqu'à l'étape 7 : `launch`, `release` et `triage` consomment encore
+      ses verbes non-dispatch (`ticket`, `classify`, `active-count`, etc.). Le supprimer ici,
+      comme l'esquisse le prévoyait, cassait ces trois surfaces vivantes ; il meurt avec leur
+      dernier port, pas avant.
 - [ ] **5. `worker release`** — cas de `orca-close-sessions.test.ts` + classification par preuve.
 - [ ] **6. `worker launch`** — la restructuration : gardes gapicore/Portless/ofmchat → contrat de
       config par repo + probes. Cas de `orca-launch.test.ts`. Meurt : `launch` du coordinator.

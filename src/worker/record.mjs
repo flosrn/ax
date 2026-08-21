@@ -18,10 +18,11 @@
 // `||` fallback on a container. An `or` on a container is how an empty worker
 // list was once read as a count of 2.
 
-import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { parseReceipt } from '../orca-bin.mjs';
 
 /**
  * The request-id grammar, closed: it names a file in the store, so a leading
@@ -35,7 +36,33 @@ export const requestIdOk = request => typeof request === 'string' && REQUEST_ID.
 export const defaultStore = (env = process.env) => env.ORCA_DISPATCH_STORE || join(env.HOME ?? '', '.omp', 'run', 'dispatch');
 
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
-const save = (rec, path) => writeFileSync(path, JSON.stringify(rec, null, 1));
+function save(rec, path) {
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  let fd;
+  try {
+    fd = openSync(temporary, 'wx', 0o600);
+    writeFileSync(fd, JSON.stringify(rec, null, 1));
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, path);
+
+    // Persist the rename itself where the platform permits directory fsync.
+    const dir = openSync(dirname(path), 'r');
+    try {
+      fsyncSync(dir);
+    } finally {
+      closeSync(dir);
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Renamed successfully, or never created.
+    }
+  }
+}
 
 /** Named-key read: absence is a protocol violation, named — never a default. */
 function must(container, key, where) {
@@ -61,6 +88,59 @@ function phaseAt(rec, index) {
 
 /** A task id under either of the two shapes Orca has returned it in. */
 const taskIdOf = result => (result.task ?? {}).id ?? result.taskId;
+
+/** One argv option under either split (`--on value`) or joined (`--on=value`) form. */
+export function argvValue(argv, name) {
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === name && i + 1 < argv.length) return argv[i + 1];
+    if (argv[i].startsWith(`${name}=`)) return argv[i].slice(name.length + 1);
+  }
+  return null;
+}
+
+/** Every phase in chronological order, with named-key strictness at each level. */
+function allPhases(rec) {
+  return must(rec, 'attempts', 'record root').flatMap(attempt => must(attempt, 'phases', 'attempt'));
+}
+
+function lastWorkerStart(rec) {
+  const phase = allPhases(rec).findLast(candidate => candidate.name === 'worker-start');
+  if (!phase) throw new Error('record has no worker-start phase');
+  return phase;
+}
+
+function workerStartResult(phase) {
+  return must(must(phase, 'receipt', 'worker-start phase'), 'result', 'worker-start receipt');
+}
+
+/**
+ * The pane the AGENT sits in, or null.
+ *
+ * Orca marks that effect `role: "agent"` since it started returning more than
+ * one terminal per dispatch (a setup pane and the agent's own). Bash-era
+ * receipts carry no role at all and name exactly one `term_` effect, so that
+ * one IS the agent pane — but the fallback is allowed ONLY when no pane
+ * declares a role. A receipt that labels its panes and labels none `agent` has
+ * told us the agent pane is absent, and calling its setup pane the agent's is
+ * how a half-made dispatch gets reported as a working worker.
+ */
+function agentTerminal(result) {
+  const effects = Array.isArray(result?.effects) ? result.effects : [];
+  const panes = effects.filter(
+    candidate => candidate?.kind === 'terminal' && typeof candidate.id === 'string' && candidate.id.startsWith('term_'),
+  );
+  const agent = panes.find(candidate => candidate.role === 'agent');
+  if (agent) return agent.id;
+  if (panes.length > 0 && panes.every(candidate => candidate.role === undefined)) return panes[0].id;
+  return null;
+}
+
+function terminalEffect(result, message) {
+  must(result, 'effects', 'worker-start result');
+  const id = agentTerminal(result);
+  if (id === null) throw new Error(message);
+  return id;
+}
 
 /**
  * The atomic claim. `wx` is O_CREAT|O_EXCL: it fails when the path exists at
@@ -88,6 +168,78 @@ export function claimRecord(store, request) {
   }
 }
 
+/**
+ * Is that pid running? Signal 0 tests existence without delivering anything,
+ * and EPERM is the one failure that means YES: a live process this user does
+ * not own. Reading it as dead is how a lock gets stolen from a working sibling.
+ */
+const pidAlive = pid => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+};
+
+/**
+ * The exclusive right to REPLACE this record, host-local, held for the whole
+ * gesture.
+ *
+ * `claimRecord` guards the birth of a record; nothing guarded its replacement.
+ * Two concurrent `--replace` runs each pass the live-agent gate (neither has
+ * started anything yet), each return the task to `ready`, and each start a
+ * worker — the F-001 duplicate rebuilt out of two legitimate recoveries. So the
+ * lock is taken BEFORE the gate and released only after `worker-start` has been
+ * recorded: the gate's answer is worthless the instant a sibling can act on it.
+ *
+ * `wx` again, with an ownership token. Every pre-existing lock fails closed,
+ * even when its pid looks dead: read-then-unlink has an ABA race where two
+ * reapers can each delete the other's new lock. Normal release removes only
+ * the token it created; a crashed holder needs explicit repair after the
+ * operator proves no replacement survives.
+ */
+export function acquireLock(path, { pid = process.pid, host = hostname(), suffix = '.lock' } = {}) {
+  const lock = `${path}${suffix}`;
+  const token = randomUUID();
+  try {
+    const fd = openSync(lock, 'wx', 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify({ pid, host, token, at: new Date().toISOString() }));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    try {
+      const holder = JSON.parse(readFileSync(lock, 'utf8'));
+      const stale = holder.host === host && !pidAlive(Number(holder.pid));
+      return {
+        held: false,
+        reason: stale
+          ? `pre-existing stale lock at ${lock} from dead pid ${holder.pid}; automatic takeover is refused`
+          : `pre-existing lock at ${lock} belongs to ${holder.host} pid ${holder.pid}`,
+      };
+    } catch (readError) {
+      return { held: false, reason: `the replace lock at ${lock} is unreadable: ${String(readError.message ?? readError)}` };
+    }
+  }
+
+  return {
+    held: true,
+    release: () => {
+      try {
+        const holder = JSON.parse(readFileSync(lock, 'utf8'));
+        if (holder.token === token) unlinkSync(lock);
+      } catch {
+        // Already gone or no longer ours: never delete an unknown successor.
+      }
+    },
+  };
+}
+
 /** The first write of a claimed record: who asked, on what host, through which binary. */
 export function initRecord(path, { request, orca, host = hostname(), now = () => new Date().toISOString() }) {
   save({ request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] }, path);
@@ -108,16 +260,22 @@ export function phaseBegin(path, { name, identity, argv, receiptPath = null }) {
  * Close a phase with its exit code and its receipt text. An unparseable receipt
  * is STORED as `{ unparseable, error }`, never dropped: F-004 is the one time a
  * formatter ate the only diagnostic that mattered.
+ *
+ * `error` is the TRANSPORT failure — a spawn that never ran, a call killed on
+ * timeout. It is recorded separately from the receipt because it answers a
+ * different question: not "what did Orca refuse?" but "did Orca ever hear the
+ * mutation?". A timeout on `worker-start` may well have committed it, so this
+ * detail is what keeps the outcome named `unknown` instead of `failed`.
  */
-export function phaseEnd(path, index, { exit, receiptText }) {
+export function phaseEnd(path, index, { exit, receiptText, stderr = '', error = null }) {
   const rec = load(path);
   const ph = phaseAt(rec, index);
   ph.exit = exit;
-  try {
-    ph.receipt = JSON.parse(receiptText);
-  } catch (error) {
-    ph.receipt = { unparseable: String(receiptText).slice(0, 4000), error: String(error) };
+  ph.receipt = parseReceipt(receiptText);
+  if (stderr && ph.receipt !== null && typeof ph.receipt === 'object') {
+    ph.receipt.stderr = String(stderr).slice(0, 4000);
   }
+  if (error) ph.transport = String(error.message ?? error).slice(0, 1000);
   save(rec, path);
 }
 
@@ -131,18 +289,35 @@ export const phaseArgv = (path, index) => [...must(phaseAt(load(path), index), '
 export const phaseCount = path => must(lastAttempt(load(path)), 'phases', 'last attempt').length;
 
 /**
- * The verdict on one phase. `mismatch` is Orca refusing a divergent reissue —
- * a refusal, never a reason to mint a new identity: minting one is how the
- * duplicate is born. It is therefore distinguished from `failed` by name.
+ * The verdict on one phase. Four outcomes, and the two that must never be
+ * confused with each other are named apart:
+ *   - `mismatch` — Orca refusing a divergent reissue. A refusal, never a reason
+ *     to mint a new identity: minting one is how the duplicate is born.
+ *   - `unknown` — nobody knows. A transport that never concluded, an illegible
+ *     receipt or a missing exit status leaves the mutation possibly COMMITTED,
+ *     so it is not a rejection and must never be reported as one.
  */
 export function phaseVerdict(path, index) {
-  const receipt = phaseAt(load(path), index).receipt ?? {};
+  const ph = phaseAt(load(path), index);
+  const receipt = ph.receipt ?? {};
+  if (ph.transport) return { verdict: 'unknown', evidence: `the Orca call never concluded: ${ph.transport}` };
+  if (ph.receipt === null || ph.receipt === undefined) return { verdict: 'unknown', evidence: 'this phase recorded no receipt at all' };
+  if (receipt.unparseable !== undefined) {
+    return { verdict: 'unknown', evidence: `Orca answered no legible receipt: ${String(receipt.unparseable).slice(0, 300)}` };
+  }
+  if (ph.exit === null || ph.exit === undefined) return { verdict: 'unknown', evidence: 'this phase recorded no exit status' };
+  if (receipt.ok !== true && receipt.ok !== false) {
+    return { verdict: 'unknown', evidence: `Orca answered a receipt with malformed "ok": ${JSON.stringify(receipt.ok)}` };
+  }
   const error = receipt.error ?? {};
   if (error.code === 'request_mismatch') return { verdict: 'mismatch', evidence: error.message ?? '' };
-  if (!receipt.ok) {
+  if (receipt.ok === false) {
     return { verdict: 'failed', evidence: Object.keys(error).length > 0 ? error : JSON.stringify(receipt).slice(0, 400) };
   }
-  const result = must(receipt, 'result', 'phase receipt');
+  const result = receipt.result;
+  if (result === null || typeof result !== 'object') {
+    return { verdict: 'unknown', evidence: 'Orca answered ok:true without an object result' };
+  }
   return {
     verdict: (result.mutation ?? {}).replayed ? 'replayed' : 'ran',
     evidence: {
@@ -159,22 +334,33 @@ export function phaseVerdict(path, index) {
 /**
  * RAN/REPLAYED, usable or stranded, then the resources.
  *
- * `usable` is a conjunction ON PURPOSE: exit 0 alone is a receipt, and a
- * receipt that reports a partial mutation is STRANDED however cleanly the
- * process ended. Reads here are lenient — a stranded receipt has no `result`
- * to demand.
+ * `usable` is a conjunction ON PURPOSE, and every term is one way a dispatch
+ * has actually come back half-made: exit 0 alone is only a receipt; `ready`
+ * without a `dispatchId` names nothing the caller can address later; and a
+ * dispatch with no agent pane is a worker no operator and no tail can read.
+ * Reads here are lenient — a stranded receipt has no `result` to demand.
  */
 export function report(path) {
   const ph = phaseAt(load(path), 'last');
   const receipt = ph.receipt ?? {};
-  const result = receipt.result ?? {};
+  const result = receipt.result !== null && typeof receipt.result === 'object' ? receipt.result : {};
+  const terminal = agentTerminal(result);
+  // Bash-era `record.py` called exit-0 + ready USABLE before Orca returned
+  // terminal roles/effects. Its non-null receiptPath is the persisted version
+  // marker; new in-memory phases use null and must name the agent pane.
+  const legacyUsable = typeof ph.receiptPath === 'string' && ph.receiptPath !== '';
   return {
     mode: (result.mutation ?? {}).replayed ? 'REPLAYED' : 'RAN',
-    usable: ph.exit === 0 && result.state === 'ready',
+    usable: receipt.ok === true
+      && ph.exit === 0
+      && result.state === 'ready'
+      && Boolean(result.dispatchId)
+      && (terminal !== null || legacyUsable),
     summary: {
       dispatchId: result.dispatchId,
       stage: result.stage,
       state: result.state,
+      terminal,
       effects: result.effects ?? [],
       residualResources: result.residualResources ?? [],
     },
@@ -194,6 +380,87 @@ export function taskId(path) {
   return tid;
 }
 
+/**
+ * The pane created by the newest worker-start phase. Autosubmit must address
+ * that exact pane, including its execution environment when the child is remote.
+ */
+export function workerPane(path) {
+  const phase = lastWorkerStart(load(path));
+  return {
+    handle: terminalEffect(workerStartResult(phase), 'worker-start receipt names no terminal'),
+    env: argvValue(must(phase, 'argv', 'worker-start phase'), '--on') ?? '',
+  };
+}
+
+/**
+ * The Run this record belongs to, recovered NEWEST-PHASE-FIRST across the
+ * complete record.
+ *
+ * A replacement `worker-start` deliberately carries no `--run` (the task
+ * already binds it), so the only place the Run survives is an older phase's
+ * argv. Strict on purpose: every reader of this — the watcher, and the live
+ * gate, whose `task-list` read is Run-scoped — answers "cannot establish" when
+ * the Run is unknown, and must never quietly ask an unscoped question instead.
+ */
+export function recordedRun(path) {
+  for (const candidate of allPhases(load(path)).reverse()) {
+    const run = argvValue(must(candidate, 'argv', 'phase'), '--run');
+    if (run) return run;
+  }
+  throw new Error('no phase argv carries --run');
+}
+
+/**
+ * The binary this record was written through — argv[0] of the newest phase,
+ * else the `orca` field written at init.
+ *
+ * A recovery must re-probe and re-watch through the SAME runtime it mutated:
+ * on a host with both `orca` and `orca-ide` (see orca-bin.mjs) a freshly
+ * resolved binary can be a different runtime, and the pane recorded here does
+ * not exist in it.
+ */
+export function recordedBin(path) {
+  const rec = load(path);
+  for (const candidate of allPhases(rec).reverse()) {
+    const argv = must(candidate, 'argv', 'phase');
+    if (argv.length > 0) return argv[0];
+  }
+  return must(rec, 'orca', 'record root');
+}
+
+/**
+ * Everything the detached watcher needs, extracted once from the write-ahead
+ * record.
+ */
+export function dispatchFields(path) {
+  const rec = load(path);
+  const phase = lastWorkerStart(rec);
+  const result = workerStartResult(phase);
+  const dispatchId = result.dispatchId;
+  if (!dispatchId) throw new Error('worker-start receipt has no dispatchId');
+  const handle = terminalEffect(result, 'worker-start receipt has no terminal effect');
+
+  return {
+    dispatchId,
+    handle,
+    run: recordedRun(path),
+    env: argvValue(must(phase, 'argv', 'worker-start phase'), '--on') ?? '',
+  };
+}
+
+/**
+ * Cursor probes are deliberately lenient: a failed read is absence, never a
+ * fabricated zero that could be mistaken for a held or frozen pane.
+ */
+export function terminalCursor(receipt) {
+  const parsed = typeof receipt === 'string' ? parseReceipt(receipt) : receipt;
+  const terminal = parsed?.result?.terminal;
+  return terminal && Object.hasOwn(terminal, 'latestCursor') ? terminal.latestCursor : null;
+}
+
+/** F-003: a clean exit is not enough; Orca must read back the ready state. */
+export const taskUpdateOk = receipt => receipt?.ok === true && receipt?.result?.task?.status === 'ready';
+
 /** The newest task id anywhere in the record, both receipt shapes — for --replace. */
 export function taskIdScan(path) {
   const attempts = must(load(path), 'attempts', 'record root');
@@ -210,32 +477,55 @@ export function taskIdScan(path) {
  * Is a lost claim provably USELESS rather than merely suspicious?
  *
  * Measured 2026-08-14: a record written under ANOTHER session's Run fenced the
- * operator's own legitimate relaunch permanently. Two conditions, BOTH required:
- * no attempt anywhere recorded a task id (nothing exists server-side to
- * protect), and the Run it names is not the caller's (no terminal here can
- * replay it). A record that fails either test is precious: the reason says why,
- * and the caller replays it instead.
+ * operator's own legitimate relaunch permanently. So a foreign record CAN be
+ * set aside — but only when it is proved to hold nothing, and the proof is
+ * deliberately harsh, because the cost of being wrong is F-001 itself: a
+ * second identity minted over a mutation that is still in flight.
+ *
+ * Reclaimable requires ALL of:
+ *   - at least one phase, and every phase CLOSED (an exit and a receipt);
+ *   - every phase a conclusive `ok: false` refusal — an illegible receipt or a
+ *     transport that never concluded is an UNKNOWN outcome, not a refusal, and
+ *     a success (with or without a task id) may name a live agent;
+ *   - no refused phase reporting effects or residual resources — a refusal that
+ *     still created something is a mutation, whatever it calls itself;
+ *   - a recorded Run, and one that is not the caller's (a caller's own Run is
+ *     replayable from here, which is always better than a takeover).
+ *
+ * Anything else is precious: the reason says why, and the caller replays it.
  */
 export function staleClaim(path, callerRun) {
   const rec = load(path);
   const attempts = must(rec, 'attempts', 'record root');
-  for (const attempt of attempts) {
-    for (const ph of must(attempt, 'phases', 'attempt')) {
-      if (taskIdOf((ph.receipt ?? {}).result ?? {})) {
-        return { stale: false, reason: 'record carries a task id — it may name a real mutation' };
-      }
+  const phases = attempts.flatMap(attempt => must(attempt, 'phases', 'attempt'));
+  if (phases.length === 0) return { stale: false, reason: 'record has no phase yet — its first mutation may be in flight' };
+
+  for (const ph of phases) {
+    const receipt = ph.receipt;
+    if (ph.exit === null || ph.exit === undefined || receipt === null || receipt === undefined) {
+      return { stale: false, reason: `phase "${ph.name}" is still open — its mutation may be in flight` };
+    }
+    if (typeof receipt !== 'object' || receipt.unparseable !== undefined || ph.transport) {
+      return { stale: false, reason: `phase "${ph.name}" ended with an unknown outcome — it may have committed` };
+    }
+    if (receipt.ok !== false) {
+      const tid = taskIdOf(receipt.result ?? {});
+      return {
+        stale: false,
+        reason: tid
+          ? `record carries a task id (${tid}) — it may name a real mutation`
+          : `phase "${ph.name}" succeeded — it may name a real mutation`,
+      };
+    }
+    const result = receipt.result ?? {};
+    if ((result.effects ?? []).length > 0 || (result.residualResources ?? []).length > 0) {
+      return { stale: false, reason: `refused phase "${ph.name}" still reports resources — they may exist` };
     }
   }
+
   let recorded = '';
-  for (const attempt of attempts) {
-    for (const ph of must(attempt, 'phases', 'attempt')) {
-      const argv = ph.argv ?? [];
-      const i = argv.indexOf('--run');
-      if (i !== -1 && i + 1 < argv.length) {
-        recorded = argv[i + 1];
-        break;
-      }
-    }
+  for (const ph of phases) {
+    recorded = argvValue(ph.argv ?? [], '--run') ?? '';
     if (recorded) break;
   }
   if (!recorded) return { stale: false, reason: 'record names no Run — being foreign cannot be proven' };

@@ -1,0 +1,431 @@
+// Detached stall watcher — every proposition is ported from
+// orca-stall-watch.test.ts. The loop uses a fake clock and injected Orca; real
+// files still prove the record and pidfile lifecycle.
+import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+
+import { progressOnly, stall } from '../src/worker/stall.mjs';
+
+const scratch = () => mkdtempSync(join(tmpdir(), 'ax-worker-stall-'));
+const receipt = result => {
+  const body = { ok: true, result };
+  return { status: 0, stdout: JSON.stringify(body), stderr: '', receipt: body };
+};
+
+function writeRecord(store, request, { on = 'envx', terminal = true } = {}) {
+  mkdirSync(store, { recursive: true });
+  const path = join(store, `${request}.json`);
+  writeFileSync(path, JSON.stringify({
+    request,
+    attempts: [{ n: 1, settled: false, phases: [
+      {
+        name: 'task-create',
+        argv: ['orca', 'orchestration', 'task-create', '--run', 'run_test123', '--json'],
+        receipt: { ok: true, result: { task: { id: 'task_1' } } },
+      },
+      {
+        name: 'worker-start',
+        argv: ['orca', 'orchestration', 'worker-start', ...(on ? ['--on', on] : []), '--json'],
+        receipt: {
+          ok: true,
+          result: {
+            dispatchId: 'ctx_t1',
+            effects: terminal ? [{ kind: 'terminal', id: 'term_t1' }] : [{ kind: 'worktree', id: 'wt_1' }],
+          },
+        },
+      },
+    ] }],
+  }));
+  return path;
+}
+
+function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 6], readFails = 0, cards = ['in-progress\t1/4 · Work · task'], worktree = '/tmp/work', worktrees = null, sendFails = false } = {}) {
+  const calls = [];
+  let cursorIndex = 0;
+  let cardIndex = 0;
+  let listIndex = 0;
+  let sendCount = 0;
+  let readCount = 0;
+  // `worktrees` is the per-`terminal list` series, for transient discovery.
+  const listSeries = worktrees ?? [worktree];
+  const cardPath = [...listSeries].reverse().find(Boolean) ?? '';
+  const run = args => {
+    calls.push([...args]);
+    // Match on argv, never on the joined line: an alert body quotes the repair
+    // commands ('orca terminal read', 'orca worktree ps') and a substring match
+    // would answer a send with a probe receipt.
+    const command = `${args[0]} ${args[1]}`;
+    if (command === 'orchestration send') {
+      sendCount += 1;
+      const fails = typeof sendFails === 'number' ? sendCount <= sendFails : sendFails;
+      if (fails) return { status: 1, stdout: '', stderr: 'send failed', receipt: { ok: false, error: { message: 'send failed' } } };
+      return receipt({ message: { id: `msg_${calls.length}` } });
+    }
+    if (command === 'orchestration worker-show') {
+      if (status) return receipt({ dispatch: { status: status.dispatch }, worker: { state: status.worker } });
+      return receipt({ dispatch: { status: settled ? 'completed' : 'running' }, worker: { state: settled ? 'succeeded' : 'working' } });
+    }
+    if (command === 'terminal read') {
+      readCount += 1;
+      if (readCount <= readFails) {
+        return { status: 1, stdout: '', stderr: 'transient read failure', receipt: { ok: false, error: { message: 'read failed' } } };
+      }
+      const value = cursors[Math.min(cursorIndex, Math.max(0, cursors.length - 1))];
+      cursorIndex += 1;
+      return receipt({ terminal: value === null || value === undefined ? {} : { latestCursor: value } });
+    }
+    if (command === 'terminal list') {
+      const value = listSeries[Math.min(listIndex, Math.max(0, listSeries.length - 1))] ?? '';
+      listIndex += 1;
+      return receipt({ terminals: value ? [{ handle: 'term_t1', worktreePath: value }] : [] });
+    }
+    if (command === 'worktree ps') {
+      const value = cards[Math.min(cardIndex, Math.max(0, cards.length - 1))] ?? '';
+      cardIndex += 1;
+      const [workspaceStatus = '', ...comment] = value.split('\t');
+      return receipt({ worktrees: value ? [{ path: cardPath, workspaceStatus, comment: comment.join('\t') }] : [] });
+    }
+    return receipt({});
+  };
+  run.calls = calls;
+  return run;
+}
+
+function invoke({ request = 'req-watch', record = true, recordOptions, runner = fakeRunner(), env = {}, before, processAlive, pid = 4242, append, maxTicks = 5000 } = {}) {
+  const home = env.HOME ?? scratch();
+  const store = env.ORCA_DISPATCH_STORE ?? join(home, 'dispatch');
+  const watchDir = env.ORCA_STALL_DIR ?? join(home, 'watch');
+  const fullEnv = {
+    HOME: home,
+    ORCA_DISPATCH_STORE: store,
+    ORCA_STALL_DIR: watchDir,
+    ORCA_STALL_TICK: '1',
+    ORCA_STALL_AFTER: '3',
+    ORCA_STALL_LIFETIME: '6',
+    ORCA_CARD_WATCH: '1',
+    ORCA_CARD_MAX: '20',
+    ...env,
+  };
+  const path = record ? writeRecord(store, request, recordOptions) : join(store, `${request}.json`);
+  before?.({ path, watchDir, store });
+  let seconds = 0;
+  let ticks = 0;
+  const now = () => seconds;
+  const sleep = ms => {
+    ticks += 1;
+    if (ticks > maxTicks) throw new Error(`the watcher did not terminate within ${maxTicks} ticks`);
+    seconds += ms / 1000;
+  };
+  const chunks = [];
+  const outWrite = process.stdout.write.bind(process.stdout);
+  const errWrite = process.stderr.write.bind(process.stderr);
+  process.stdout.write = chunk => (chunks.push(String(chunk)), true);
+  process.stderr.write = chunk => (chunks.push(String(chunk)), true);
+  let code;
+  try {
+    code = stall(['--request', request, '--orca', 'orca'], { runner, env: fullEnv, now, sleep, pid, processAlive, append });
+  } finally {
+    process.stdout.write = outWrite;
+    process.stderr.write = errWrite;
+  }
+  const logPath = join(watchDir, `${request}.log`);
+  return { code, out: chunks.join('').replace(/\u001B\[\d+m/g, ''), calls: runner.calls, path, watchDir, log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : '' };
+}
+
+const sends = calls => calls.filter(args => args[0] === 'orchestration' && args[1] === 'send');
+
+test('a settled local dispatch ends on the first probe and sends nothing', () => {
+  const runner = fakeRunner({ settled: true });
+  const r = invoke({ runner, recordOptions: { on: '' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0);
+  assert.match(r.log, /settled/);
+  assert.equal(existsSync(join(r.watchDir, 'req-watch.pid')), false);
+});
+
+test('an emitting pane never alarms; lifetime ends the watch', () => {
+  const r = invoke({ runner: fakeRunner({ cursors: [1, 2, 3, 4, 5, 6, 7] }), env: { ORCA_STALL_LIFETIME: '4' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0);
+  assert.match(r.log, /lifetime/);
+});
+
+test('a vanished record ends the running watcher without an alert', () => {
+  const runner = fakeRunner({ cursors: [1, 2, 3] });
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const watchDir = join(home, 'watch');
+  const path = writeRecord(store, 'req-gone');
+  let seconds = 0;
+  const code = stall(['--request', 'req-gone', '--orca', 'orca'], {
+    runner,
+    env: { HOME: home, ORCA_DISPATCH_STORE: store, ORCA_STALL_DIR: watchDir, ORCA_STALL_TICK: '1', ORCA_STALL_AFTER: '9' },
+    now: () => seconds,
+    sleep: ms => { seconds += ms / 1000; if (existsSync(path)) rmSync(path); },
+    pid: 4243,
+  });
+  assert.equal(code, 0);
+  assert.equal(sends(runner.calls).length, 0);
+  assert.match(readFileSync(join(watchDir, 'req-gone.log'), 'utf8'), /record gone/);
+});
+
+test('a frozen remote pane emits exactly one local-run alert, then exits', () => {
+  const runner = fakeRunner({ cursors: [7, 7, 7, 7] });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  const alert = sends(r.calls);
+  assert.equal(alert.length, 1);
+  assert.equal(alert[0][alert[0].indexOf('--to') + 1], 'run:run_test123');
+  assert.equal(alert[0].includes('--environment'), false, 'the mother is local');
+  assert.match(alert[0][alert[0].indexOf('--subject') + 1], /req-watch/);
+  assert.match(alert[0][alert[0].indexOf('--body') + 1], /ctx_t1/);
+  for (const read of r.calls.filter(args => args[0] === 'terminal' && args[1] === 'read')) {
+    assert.equal(read[read.indexOf('--environment') + 1], 'envx');
+    assert.equal(read[read.indexOf('--terminal') + 1], 'term_t1');
+  }
+});
+
+test('a second watcher with a live holder exits without touching its pidfile', () => {
+  let pidPath;
+  const r = invoke({
+    before: ({ watchDir }) => {
+      mkdirSync(watchDir, { recursive: true });
+      pidPath = join(watchDir, 'req-watch.pid');
+      writeFileSync(pidPath, '999');
+    },
+    processAlive: () => true,
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /already armed/);
+  assert.equal(readFileSync(pidPath, 'utf8'), '999');
+  assert.equal(r.calls.length, 0);
+});
+
+test('missing record cannot establish a watch', () => {
+  const r = invoke({ record: false });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /CANNOT ESTABLISH/);
+});
+
+test('a record with no terminal effect names that missing field', () => {
+  const r = invoke({ recordOptions: { terminal: false } });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /terminal effect/);
+});
+
+test('a path-shaped request id is refused before filesystem access', () => {
+  const r = invoke({ request: 'a/../../etc/passwd', record: false });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /invalid --request/);
+  assert.equal(r.calls.length, 0);
+});
+
+test('the default silence floor is 45 minutes', () => {
+  const r = invoke({ runner: fakeRunner({ cursors: [1] }), env: { ORCA_STALL_AFTER: undefined, ORCA_STALL_LIFETIME: '0' } });
+  assert.equal(r.code, 0);
+  assert.match(r.log, /after=2700s/);
+});
+
+test('a deliberate card change wakes in the child words, redacted, without ending early', () => {
+  const token = 'dcap_cardSecret_123456';
+  const runner = fakeRunner({
+    cursors: [1, 2, 3, 4, 5],
+    cards: ['in-progress\t1/4 · Work · task', `in-review\t1/4 · DECISION: portails ${token}`, `in-review\t1/4 · DECISION: portails ${token}`],
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_LIFETIME: '3' } });
+  const alert = sends(r.calls);
+  assert.equal(alert.length, 1);
+  const body = alert[0][alert[0].indexOf('--body') + 1];
+  assert.match(body, /DECISION: portails/);
+  assert.doesNotMatch(body, new RegExp(token));
+  assert.match(body, /dcap_<redacted>/);
+  assert.doesNotMatch(body, /gone silent/);
+  assert.match(r.log, /card change #1/);
+  assert.match(r.log, /lifetime/);
+});
+
+test('the card present at arming is baseline, never replayed as a change', () => {
+  const runner = fakeRunner({ cursors: [1, 2, 3, 4], cards: ['in-progress\tDECISION: old news'] });
+  const r = invoke({ runner, env: { ORCA_STALL_LIFETIME: '2' } });
+  assert.equal(sends(r.calls).length, 0);
+});
+
+test('ORCA_CARD_WATCH=0 never reads the board', () => {
+  const runner = fakeRunner({ cursors: [1, 2, 3] });
+  const r = invoke({ runner, env: { ORCA_CARD_WATCH: '0', ORCA_STALL_LIFETIME: '2' } });
+  assert.equal(r.calls.some(args => args[0] === 'worktree' && args[1] === 'ps'), false);
+  assert.match(r.log, /disabled by ORCA_CARD_WATCH=0/);
+});
+
+test('a settled remote dispatch keeps card watch alive while the pane emits', () => {
+  const runner = fakeRunner({ settled: true, cursors: [1, 2, 3, 4], cards: ['in-progress\t1/2 · Work · task', 'in-review\tDECISION: remote done'] });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '1', ORCA_STALL_LIFETIME: '2' } });
+  assert.equal(sends(r.calls).length, 1);
+  assert.match(r.log, /stall watch off, card watch continues/);
+  assert.doesNotMatch(sends(r.calls)[0][sends(r.calls)[0].indexOf('--body') + 1], /gone silent/);
+});
+
+test('a settled remote dispatch whose pane is gone exits', () => {
+  const runner = fakeRunner({ settled: true, cursors: [null], worktree: '' });
+  const r = invoke({ runner });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0);
+  assert.match(r.log, /settled/);
+});
+
+test('checkpoint progress is suppressed and logged', () => {
+  assert.equal(progressOnly('2/11 · Prerender · Fix showcase-context.tsx:43 class A read'), true);
+});
+
+test('a deliberate long card with the same counter still wakes', () => {
+  assert.equal(progressOnly('14/22 · Prerender · build rouge · PR non ouverte · SHA 901a9c066. Learning fige.'), false);
+});
+
+test('DECISION always wakes, including a three-segment card', () => {
+  assert.equal(progressOnly('3/11 · DECISION: la frontiere de tenancy a bouge'), false);
+});
+
+test('the terminal N/N card wakes even though it matches extension grammar', () => {
+  assert.equal(progressOnly('12/12 · done'), false);
+  assert.equal(progressOnly('12/12'), false);
+});
+
+test('equal counts alone do not wake when the card is not terminal', () => {
+  assert.equal(progressOnly('12/12 · Review · Three review axes: Standards, Spec, Correctness'), true);
+});
+
+test('checkpoint-shaped changes are skipped but deliberate and terminal changes send', () => {
+  const cases = [
+    ['2/11 · Prerender · Fix showcase-context.tsx:43 class A read', 0],
+    ['14/22 · Prerender · build rouge · PR non ouverte · SHA 901a9c066. Learning fige.', 1],
+    ['12/12 · done', 1],
+    ['12/12 · Review · Three review axes: Standards, Spec, Correctness', 0],
+  ];
+  for (const [comment, expected] of cases) {
+    const runner = fakeRunner({ cursors: [1, 2, 3, 4], cards: ['in-progress\t1/4 · Work · task', `in-review\t${comment}`, `in-review\t${comment}`] });
+    const r = invoke({ request: `req-${Math.random().toString(16).slice(2)}`, runner, env: { ORCA_STALL_LIFETIME: '2' } });
+    assert.equal(sends(r.calls).length, expected, comment);
+    if (expected === 0) assert.match(r.log, /checkpoint extension's own shape/);
+  }
+});
+
+test('a failed card send keeps the baseline so the unchanged card wakes next tick', () => {
+  const deliberate = 'in-review\tDECISION: portails';
+  const runner = fakeRunner({
+    cursors: [1, 2, 3, 4, 5, 6],
+    cards: ['in-progress\t1/4 · Work · task', deliberate, deliberate, deliberate],
+    sendFails: 1,
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '4' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 2, 'the failed send is retried once the card is still unchanged');
+  assert.match(r.log, /card alert failed; keeping the previous baseline/);
+  assert.match(r.log, /card change #1/);
+  assert.doesNotMatch(r.log, /card change #2/);
+});
+
+test('a worktree that resolves late still arms card watch and takes a baseline', () => {
+  const runner = fakeRunner({
+    cursors: [1, 2, 3, 4, 5],
+    worktrees: ['', '/tmp/work'],
+    cards: ['in-progress\t1/4 · Work · task', 'in-review\tDECISION: late board'],
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '3' } });
+  assert.equal(r.code, 0);
+  assert.match(r.log, /retrying discovery each tick/);
+  assert.match(r.log, /worktree resolved late at \/tmp\/work/);
+  assert.equal(sends(r.calls).length, 1);
+  assert.match(sends(r.calls)[0][sends(r.calls)[0].indexOf('--body') + 1], /DECISION: late board/);
+});
+
+test('an unwritable log never stops the watch after the claim', () => {
+  const runner = fakeRunner({ cursors: [7, 7, 7, 7] });
+  const r = invoke({
+    runner,
+    append: () => { throw new Error('no space left on device'); },
+    env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' },
+  });
+  assert.equal(r.code, 0);
+  assert.equal(r.log, '', 'the injected append wrote nothing');
+  assert.equal(sends(r.calls).length, 1, 'the alert still went out');
+});
+
+test('malformed tick, floor, lifetime and card ceiling fall back to the documented defaults', () => {
+  const runner = fakeRunner({ cursors: [7, 7, 7] });
+  const r = invoke({
+    runner,
+    env: {
+      ORCA_STALL_TICK: 'abc',
+      ORCA_STALL_AFTER: 'Infinity',
+      ORCA_STALL_LIFETIME: 'oops',
+      ORCA_CARD_MAX: 'NaN',
+    },
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.log, /tick=60s after=2700s lifetime=43200s/);
+  assert.match(r.log, /ALERT sent/);
+});
+
+test('a failed receipt with a readable pane is not settled; a frozen pane still alerts', () => {
+  const runner = fakeRunner({ status: { dispatch: 'failed', worker: 'failed' }, cursors: [7, 7, 7, 7] });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  assert.match(r.log, /failed receipt \(dispatch=failed worker=failed\) but the pane still reads/);
+  assert.doesNotMatch(r.log, /settled: dispatch=failed/);
+  assert.equal(sends(r.calls).length, 1);
+  const alert = sends(r.calls)[0];
+  assert.match(alert[alert.indexOf('--subject') + 1], /gone silent/);
+  assert.match(alert[alert.indexOf('--body') + 1], /dispatch=failed worker=failed/);
+});
+
+test('a failed receipt whose pane cannot be read is terminal', () => {
+  const runner = fakeRunner({ status: { dispatch: 'failed', worker: 'failed' }, cursors: [null] });
+  const r = invoke({ runner, env: { ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0);
+  assert.match(r.log, /settled: dispatch=failed worker=failed; exiting/);
+});
+
+test('a stale watcher pidfile fails closed instead of racing an automatic takeover', () => {
+  let pidPath;
+  const r = invoke({
+    runner: fakeRunner({ cursors: [1, 2, 3] }),
+    before: ({ watchDir }) => {
+      mkdirSync(watchDir, { recursive: true });
+      pidPath = join(watchDir, 'req-watch.pid');
+      writeFileSync(pidPath, '999');
+    },
+    processAlive: () => false,
+    env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '2' },
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /dead pid 999/);
+  assert.match(r.out, /automatic takeover is refused/);
+  assert.equal(r.calls.length, 0, 'no second watcher probes or alerts');
+  assert.equal(readFileSync(pidPath, 'utf8'), '999', 'the existing ownership evidence is untouched');
+});
+
+test('a transient terminal-read failure never proves a failed worker dead', () => {
+  const runner = fakeRunner({
+    status: { dispatch: 'failed', worker: 'failed' },
+    readFails: 1,
+    cursors: [7, 7, 7, 7],
+  });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.log, /settled: dispatch=failed worker=failed; exiting/);
+  assert.match(r.log, /failed receipt .* pane still reads/);
+  assert.equal(sends(r.calls).length, 1, 'supervision survived the transient probe failure and later alerted');
+});
+
+test('a failed silence alert is retried on the next tick, then ends the watch', () => {
+  const runner = fakeRunner({ cursors: [7, 7, 7, 7, 7], sendFails: 1 });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 2);
+  assert.match(r.log, /stall alert failed; will retry next tick/);
+  assert.match(r.log, /ALERT sent to run:run_test123; exiting/);
+});

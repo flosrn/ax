@@ -62,10 +62,11 @@ export const COMMANDS = [
   },
   {
     name: 'worker',
-    summary: 'inspect dispatched agents — liveness, gates and transcripts',
+    summary: 'start dispatched agents and inspect them — liveness, gates and transcripts',
     // Gated like board: exists only where the machine resolves an Orca CLI.
     gated: 'orca',
     subcommands: [
+      ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle>', 'alive-with-content / alive-and-silent / cannot-establish'],
       ['gate <task>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],

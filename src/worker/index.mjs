@@ -7,12 +7,13 @@
 // sees `worker` at all), so the verbs themselves assume a machine that HAS an
 // Orca CLI and fail closed on a runtime that does not answer.
 
+import { start } from './start.mjs';
 import { gate } from './gate.mjs';
 import { ls } from './ls.mjs';
 import { tail } from './tail.mjs';
 import { transcript } from './transcript.mjs';
 
-export const SUBCOMMANDS = { ls, tail, gate, transcript };
+export const SUBCOMMANDS = { start, ls, tail, gate, transcript };
 
 /**
  * `ax worker <verb> [args]`.
