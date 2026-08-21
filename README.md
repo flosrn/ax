@@ -5,7 +5,7 @@ Agent-experience tooling for MakerKit turbo projects: worktrees, `debug-as`, ven
 ## Use it in a project
 
 ```bash
-pnpm add -Dw github:flosrn/ax#v0.1.1
+pnpm add -Dw github:flosrn/ax#v0.1.2
 pnpm ax init          # writes ax.config.json, bin/ax and the managed blocks
 pnpm ax doctor        # exit 0 when the checkout is coherent
 ```

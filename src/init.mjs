@@ -13,8 +13,15 @@ import { bad, fix, note, ok, section } from './log.mjs';
 export const PIN = `github:flosrn/ax#v${version}`;
 export const BLOCK_ID = 'ax';
 
-/** Lines ax owns in .gitignore: runtime state of the AX layer, nothing else. */
-export const GITIGNORE_BODY = ['.worktrees/', '.agent/', '.scratch/', '.orca-worktree.json'].join('\n');
+/**
+ * Lines ax owns in .gitignore: runtime state of the AX layer, nothing else.
+ *
+ * `.orca-worktree.json` is deliberately absent while the Orca adapter still
+ * lives in the project — ofmchat already ignores it, with a comment saying
+ * which script writes it. Claiming it here too would print the same path twice
+ * in a file a human reads. It joins this list when `ax orca` does.
+ */
+export const GITIGNORE_BODY = ['.worktrees/', '.agent/', '.scratch/'].join('\n');
 
 /**
  * What an agent opening this repo needs in order to act — built from the
