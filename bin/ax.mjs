@@ -4,6 +4,7 @@ import { repoPaths, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
 import { init } from '../src/init.mjs';
 import { fatal } from '../src/log.mjs';
+import { supabase } from '../src/supabase-guard.mjs';
 import { worktree } from '../src/worktree/index.mjs';
 
 const RUNNERS = {
@@ -18,6 +19,9 @@ const RUNNERS = {
   // Verbs of one noun get the remaining argv, unparsed: `rm <name> --force`
   // needs its own positional, and the flag helpers above are whole-command.
   worktree: () => worktree(args.slice(1)),
+  // Same reason, and stronger: every argument after `supabase` is the Supabase
+  // CLI's own, so ax must not parse, reorder or consume a single one of them.
+  supabase: () => supabase(args.slice(1)),
 };
 
 const args = process.argv.slice(2);

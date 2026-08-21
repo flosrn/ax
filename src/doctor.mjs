@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote } from './config.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
+import { worktreeFindings } from './worktree/doctor.mjs';
 
 /**
  * Answer one question — "is this checkout coherent?" — and answer it with an
@@ -103,6 +104,21 @@ export function doctor(cwd = process.cwd()) {
     if (key === 'caches') continue;
     if (!existsSync(join(root, relative))) fail(`apps.${key} points at ${relative}, which does not exist`, `fix apps.${key} in ${CONFIG_FILE}`);
     else ok(`apps.${key}: ${relative}`);
+  }
+
+  // 6. The worktree half: the plan `ax worktree setup` writes, compared against
+  //    what this checkout actually recorded. Here rather than behind a second
+  //    command because it answers the same question this one already asks, and a
+  //    coherence check nobody runs is not a check.
+  section('worktree');
+  for (const finding of worktreeFindings({ root, main, config })) {
+    if (finding.level === 'bad') fail(finding.message, finding.fix);
+    else if (finding.level === 'note') {
+      note(finding.message);
+      if (finding.fix) fix(finding.fix);
+    } else {
+      ok(finding.message);
+    }
   }
 
   if (failures === 0) ok('checkout is coherent');

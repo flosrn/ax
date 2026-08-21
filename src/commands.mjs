@@ -48,6 +48,18 @@ export const COMMANDS = [
       '`pnpm -w ax worktree setup` — make a fresh worktree runnable, and `ax worktree ls` to see the port and database each one holds.',
   },
   {
+    name: 'supabase',
+    summary: 'run the Supabase CLI against THIS checkout’s database',
+    // Environment, not flags: every argument after the command name belongs to
+    // the Supabase CLI, so `ax` claims none of them. They are listed here all
+    // the same, because an escape hatch nobody can find is an escape hatch
+    // nobody uses — they delete the guard instead.
+    options: [
+      ['AX_SUPABASE_CLI=<path>', 'the CLI to run when the workspace and PATH have none'],
+      ['AX_SUPABASE_GUARD=0', 'skip the guard and run against the shared database'],
+    ],
+  },
+  {
     name: 'init',
     summary: 'write ax.config.json, bin/ax and the managed blocks',
     options: [

@@ -43,6 +43,7 @@ export const SUPABASE_LABEL = 'Supabase endpoints';
  */
 export const KEYS = {
   directUrl: `${PREFIX}DIRECT_URL`,
+  tailnetUrl: `${PREFIX}TAILNET_URL`,
   useProxy: `${PREFIX}USE_PROXY`,
   supabaseOffset: `${PREFIX}SUPABASE_OFFSET`,
   supabaseMode: `${PREFIX}SUPABASE_MODE`,
@@ -72,8 +73,15 @@ export const RECORDED_KEYS = ['PORT', KEYS.supabaseOffset, KEYS.useProxy, 'PORTL
  * Read every recorded key, preferring the current name and falling back to the
  * legacy one. Returns `{ values, legacy }` so a caller can report which keys
  * are still on their old name instead of silently depending on them.
+ *
+ * `readLegacy` defaults to `read` but exists to be narrower: the legacy names
+ * are worth honouring when a WORKTREE recorded them, and pure noise when they
+ * merely happen to be exported in the ambient shell. Reading them from the
+ * files only means running `ax` in an unrelated repository, from a terminal
+ * that once sourced the old tooling, does not report a migration that is not
+ * happening.
  */
-export function readRecorded(keys, read) {
+export function readRecorded(keys, read, readLegacy = read) {
   const values = {};
   const legacy = [];
 
@@ -87,7 +95,7 @@ export function readRecorded(keys, read) {
     const older = LEGACY_KEYS[key];
     if (!older) continue;
 
-    const value = read(older);
+    const value = readLegacy(older);
     if (value !== undefined && value !== '') {
       values[key] = value;
       legacy.push({ key, from: older });
@@ -229,6 +237,10 @@ function envWrites({ config, port, urls, supabase }) {
     NEXT_PUBLIC_SITE_URL: urls.publishedUrl,
     [KEYS.directUrl]: urls.directUrl,
     [KEYS.useProxy]: urls.mode === 'proxy' ? '1' : '0',
+    // A second address for the same app, for a phone on the tailnet. Recorded
+    // only when there is one, so a machine with a sleeping daemon does not
+    // publish a hostname nothing resolves.
+    ...(urls.tailnetUrl ? { [KEYS.tailnetUrl]: urls.tailnetUrl } : {}),
   };
 
   const writes = [{ file: `${config.apps.web}/.env.local`, label: RUNTIME_LABEL, keys: runtime }];

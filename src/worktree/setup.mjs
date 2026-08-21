@@ -46,6 +46,20 @@ export function setup(argv = []) {
     return 1;
   }
 
+  // The primary checkout is not a worktree, and provisioning it would be
+  // actively harmful: it serves the port its TRACKED env pins, which is what
+  // every bookmark, OAuth callback and teammate's clone already points at.
+  // Writing a dev-band port and a proxy hostname into its `.env.local` would
+  // move the one address nobody expects to move. Hooks are the exception —
+  // they are per-checkout state that belongs everywhere.
+  if (isMainCheckout(root)) {
+    section('primary checkout');
+    if (installHooks(root, '.githooks')) ok('hooks point at the tracked .githooks');
+    note('nothing to provision here — this checkout owns its port and the shared database');
+    fix('ax worktree ls   # the checkouts that DO get their own port and stack');
+    return 0;
+  }
+
   const identity = identify({ worktreePath: root, branch: currentBranch(root), marker: join(root, '.orca-worktree.json') });
   const { values: recorded, legacy } = readWorktreeRecord(root, config);
   const plan = planWorktree({

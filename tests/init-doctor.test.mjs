@@ -23,6 +23,10 @@ before(() => {
   mkdirSync(join(dir, 'apps', 'e2e'), { recursive: true });
   mkdirSync(join(dir, 'docs', 'adr'), { recursive: true });
   mkdirSync(join(dir, 'docs', 'billing'), { recursive: true });
+  // An installed checkout, because `doctor` now grades the worktree too and a
+  // fixture with no node_modules is legitimately broken: nothing in it could
+  // run. Without this the fixture measures that, not what these tests assert.
+  mkdirSync(join(dir, 'node_modules'), { recursive: true });
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'client-saas', scripts: { dev: 'turbo dev' } }, null, 2));
   writeFileSync(join(dir, '.gitignore'), 'node_modules/\n');
   writeFileSync(join(dir, 'AGENTS.md'), '# AGENTS.md\n\nMonorepo notes.\n');

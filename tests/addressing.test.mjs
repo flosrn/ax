@@ -133,11 +133,11 @@ test('the tailnet name comes from a recorded override, DNSName, or the composed 
   assert.equal(tailnetName({ run: status({}) }), undefined);
 });
 
-test('planUrls returns exactly the five contracted keys', () => {
+test('planUrls returns exactly the six contracted keys', () => {
   const plan = planUrls({ port: 3412, proxy: { enabled: false }, tailnet: { enabled: false } });
   // Whole plan objects get compared — setup's against the doctor's — so the key
   // set is part of the contract, not an implementation detail.
-  assert.deepEqual(Object.keys(plan).sort(), ['baseUrl', 'directUrl', 'log', 'mode', 'publishedUrl']);
+  assert.deepEqual(Object.keys(plan).sort(), ['baseUrl', 'directUrl', 'log', 'mode', 'publishedUrl', 'tailnetUrl']);
 });
 
 test('a proxy route makes the proxy host the base URL, and the direct URL survives alongside it', () => {
@@ -203,18 +203,23 @@ test('an explicitly disabled proxy is never reported as broken', () => {
   assert.ok(plan.log.every(line => !line.startsWith('WARN:')));
 });
 
-test('the tailnet URL is the published address when there is one', () => {
+test('the tailnet URL is an ADDITIONAL address, never the published origin', () => {
   const plan = planUrls({
     port: 3412,
     proxy: { available: true, name: 'demo', servedUrl: 'http://feat-x.demo.localhost:1355' },
     tailnet: { name: 'box.tail1234.ts.net.' },
   });
 
-  // The only address that holds from this machine, another machine and a phone.
-  assert.equal(plan.publishedUrl, 'https://box.tail1234.ts.net:3412');
-  // It replaces neither of the local addresses.
+  // The published URL is an auth ORIGIN: cookies, OAuth redirect URIs and the
+  // database's allow-list are keyed on it. Promoting a tailnet hostname there
+  // invalidates the session the developer already has, and only on the machines
+  // where the daemon happens to be up.
+  assert.equal(plan.publishedUrl, 'http://feat-x.demo.localhost:1355');
   assert.equal(plan.baseUrl, 'http://feat-x.demo.localhost:1355');
   assert.equal(plan.directUrl, 'http://localhost:3412');
+
+  // Recorded alongside, for the phone. Trailing dot stripped.
+  assert.equal(plan.tailnetUrl, 'https://box.tail1234.ts.net:3412');
   assert.equal(plan.mode, 'proxy');
   assert.ok(plan.log.some(line => line.includes('https://box.tail1234.ts.net:3412')));
 });

@@ -298,16 +298,22 @@ export function planUrls({ worktreePath, branch, port, proxy = {}, tailnet = {} 
   }
 
   // The ONE address handed to agents, Playwright and the app's own site config.
-  // The tailnet URL wins when there is one because it is the only address that
-  // holds from everywhere — this machine, another machine, and the phone — and,
-  // like the proxy host, it is a distinct origin rather than one more localhost
-  // port sharing the cookie jar. `baseUrl` and `directUrl` travel alongside it
-  // for the consumers that must stay on this machine.
-  const publishedUrl = tailnetUrl ?? baseUrl;
+  //
+  // The PROXY host wins when there is one, and the tailnet URL never does. That
+  // ordering is not aesthetic: the site URL is an auth ORIGIN. Cookies, OAuth
+  // redirect URIs and Supabase's allow-list are all keyed on it, so promoting a
+  // tailnet hostname to that role silently invalidates the session the developer
+  // already has and sends redirects somewhere the allow-list does not name — and
+  // it does so only on the machines where the daemon happens to be up, which is
+  // the worst possible way to learn it.
+  //
+  // The tailnet URL is a SECOND address for the same app, recorded beside this
+  // one for the phone. Additional, never primary.
+  const publishedUrl = baseUrl;
 
-  // Exactly five keys, and no `tailnetUrl` or resolved proxy name among them.
-  // Consumers compare whole plan objects — setup's against the doctor's — so an
-  // extra field is not free information, it is a second thing that has to agree.
-  // Both are recoverable from the inputs, and both are already in `log`.
-  return { directUrl, baseUrl, publishedUrl, mode, log };
+  // `tailnetUrl` is the sixth key rather than something a consumer re-composes
+  // from `tailnet.name` and the port: the doctor compares whole plan objects,
+  // and a value recorded in an env file has to be comparable against the plan
+  // that produced it.
+  return { directUrl, baseUrl, publishedUrl, tailnetUrl, mode, log };
 }

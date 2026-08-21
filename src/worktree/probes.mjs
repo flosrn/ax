@@ -29,10 +29,18 @@ export const envFiles = config => [`${config.apps.web}/.env.local`, '.env.local'
  * Precedence is Next.js's, not ours: an exported variable beats `.env.local`
  * beats the root file. That matters because a caller overriding a knob for one
  * run expects the override to be what the tooling sees too.
+ *
+ * The legacy names are read from the FILES only. A shell that once sourced the
+ * old tooling still exports them, and honouring that would report a migration
+ * in repositories that have nothing to migrate.
  */
 export function readWorktreeRecord(worktreePath, config, env = process.env) {
   const files = envFiles(config);
-  return readRecorded(RECORDED_KEYS, key => readConfigured(key, { cwd: worktreePath, files, env }));
+  return readRecorded(
+    RECORDED_KEYS,
+    key => readConfigured(key, { cwd: worktreePath, files, env }),
+    key => readConfigured(key, { cwd: worktreePath, files, env: {} }),
+  );
 }
 
 /**
