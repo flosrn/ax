@@ -52,9 +52,14 @@ les tables complètes, gating appliqué après.
       de l'ère bash se rejouent). 26 tests portés de `coordinator/record.test.ts` : claim atomique +
       symlink refusé, write-ahead, mismatch ≠ failed, replay ≠ run frais, USABLE = conjonction,
       stale-claim à double preuve, lectures par clé nommée (F-028), F-004 adapté.
-- [ ] **2. `ax board`** — port de `checkpoint` (monotonie, aplatissement 160, exit toujours 0),
-      puis bascule des écrivains (`orca-checkpoint.ts`, `registry.ts:report()`) une fois ax
-      résoluble sur LES DEUX hôtes. Meurt : `checkpoint` du coordinator.
+- [ ] **2. `ax board`** — VERBE FAIT le 2026-08-21 (`5bc87a2`) : fail-open, sonde runtimeReady,
+      verrou par worktree (deux écrivains même-hôte ne régressent jamais le board ; verrou non
+      acquis = skip annoncé), monotonie ici seulement, --if-empty fail-closed, cap 160. Première
+      entrée gatée du registre (visibleCommands, prédicat injectable, aide + dispatch). Vérifié
+      LIVE sur les deux hôtes (Mac : comment écrit et relu ; VPS : refus propre hors worktree,
+      EXIT=0). RESTE : basculer les écrivains `orca-checkpoint.ts` et
+      `orca-peer/registry.ts:report()` sur `ax board` (édits dans ~/.omp + leurs tests bun),
+      puis supprimer `checkpoint` du coordinator.
 - [ ] **3. Lecteurs** — `worker tail`, `gate`, `ls`, `transcript`. Dispatchable en subagents sur le
       gabarit de l'étape 2. Meurent : `tail`/`gate` du coordinator.
 - [ ] **4. `worker start` + `stall`** — le cœur F-001. Cas de `orca-dispatch.test.ts` +
