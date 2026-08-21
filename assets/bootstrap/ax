@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+# Run the ax CLI from wherever it is actually installed.
+#
+# A worktree created seconds ago has no node_modules — and installing them is
+# one of the things ax is asked to do. So this file, committed to the project,
+# looks in this checkout and then in the primary checkout, which always carries
+# an install. Nothing here reaches the network: worktree setup must behave the
+# same offline, and a silent `dlx` would also run a version the lockfile never
+# pinned. Neither candidate present is a local, deterministic failure with the
+# one command that fixes it.
+set -eu
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+common=$(git rev-parse --git-common-dir 2>/dev/null || echo '')
+case "$common" in
+  '') main=$root ;;
+  /*) main=$(dirname "$common") ;;
+  *) main=$(cd "$root/$(dirname "$common")" 2>/dev/null && pwd || echo "$root") ;;
+esac
+
+for candidate in "$root/node_modules/.bin/ax" "$main/node_modules/.bin/ax"; do
+  if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+done
+
+echo "ax: not installed in $root nor in $main" >&2
+echo "    run: pnpm install --dir $main" >&2
+exit 127

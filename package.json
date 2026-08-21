@@ -1,0 +1,23 @@
+{
+  "name": "makerkit-ax",
+  "version": "0.1.0",
+  "description": "Agent-experience tooling for MakerKit turbo projects: worktrees, debug-as, vendor ownership.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "bin": {
+    "ax": "./bin/ax.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "assets",
+    "ax.schema.json"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

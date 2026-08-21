@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "ax.config.json",
+  "description": "Per-project configuration for the ax CLI. Every value that used to be hardcoded in a project's worktree scripts lives here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "apps", "vendor"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Slug used for Docker project ids, Portless hostnames and log tags."
+        },
+        "display": { "type": "string", "description": "Human-facing name. Defaults to name." }
+      }
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dev": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+          "minItems": 2,
+          "maxItems": 2,
+          "default": [3100, 3999],
+          "description": "Inclusive band a worktree's dev port is allocated from."
+        },
+        "proxy": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 1355,
+          "description": "Portless proxy port."
+        },
+        "supabaseBase": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 54320 },
+        "step": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "Port offset between two isolated Supabase stacks."
+        },
+        "reserved": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["0-1023", "2375-2376", "3000", "5000", "5432", "6379", "7000", "54320-59999"],
+          "description": "Ports and ranges never allocated, e.g. \"3000\" or \"54320-59999\"."
+        }
+      }
+    },
+    "apps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["web"],
+      "properties": {
+        "web": { "type": "string", "description": "Path to the Next.js app." },
+        "e2e": { "type": "string", "description": "Path to the Playwright workspace." },
+        "caches": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra workspace roots whose .next/.turbo/test output a worktree cleanup reclaims."
+        }
+      }
+    },
+    "vendor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo"],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$",
+          "description": "owner/name of the upstream kit. Matched against remote URLs, never against a remote name."
+        },
+        "guarded": {
+          "type": "object",
+          "description": "Trees shared with the vendor. Value is \"vendor\" (all theirs) or two explicit lists.",
+          "additionalProperties": {
+            "oneOf": [
+              { "const": "vendor" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["ours", "vendor"],
+                "description": "Both lists are explicit so a path added later belongs to neither and gets flagged.",
+                "properties": {
+                  "ours": { "type": "array", "items": { "type": "string" } },
+                  "vendor": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "debugAs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "route": {
+          "type": "string",
+          "pattern": "^/",
+          "default": "/debug-as",
+          "description": "Mount path of the handoff route."
+        },
+        "optInEnv": {
+          "type": "string",
+          "default": "AX_DEBUG_AS_PHONE",
+          "description": "Env var that must be truthy for the handoff route to answer. Absent means 404."
+        }
+      }
+    }
+  }
+}
