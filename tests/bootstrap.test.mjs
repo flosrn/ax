@@ -28,9 +28,10 @@ function installFakeAx(root, label) {
   return path;
 }
 
-const runBootstrap = cwd => {
+/** `cwd` is where the caller stands; `scriptRoot` is the checkout carrying bin/ax. */
+const runBootstrap = (cwd, scriptRoot = cwd) => {
   try {
-    return { status: 0, out: execFileSync('sh', [join(cwd, 'bin', 'ax'), 'doctor'], { cwd, encoding: 'utf8' }) };
+    return { status: 0, out: execFileSync('sh', [join(scriptRoot, 'bin', 'ax'), 'doctor'], { cwd, encoding: 'utf8' }) };
   } catch (error) {
     return { status: error.status, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
   }
@@ -61,7 +62,7 @@ test('with no install anywhere, it fails locally and names the repair', () => {
   assert.match(result.out, /ax: not installed in/);
   // realpath, because macOS serves /var as a symlink to /private/var and the
   // shell resolves it — the point is that it names the PRIMARY checkout.
-  assert.match(result.out, new RegExp(`pnpm install --dir ${realpathSync(main)}$`, 'm'));
+  assert.match(result.out, new RegExp(`pnpm install --dir '${realpathSync(main)}'$`, 'm'));
 });
 
 test('from a linked worktree it reaches the primary checkout install', () => {
@@ -82,4 +83,33 @@ test('in the primary checkout it uses its own install', () => {
   const result = runBootstrap(main);
   assert.equal(result.status, 0);
   assert.match(result.out, /resolved:main args:doctor/);
+});
+
+test('run from a package subdirectory, it still resolves the right checkout', () => {
+  // The regression this test exists for: `git rev-parse --git-common-dir`
+  // answers relative to the CALLER, so asking from apps/web returned `../../.git`
+  // and re-anchoring that under the root pointed two levels above the repo —
+  // a directory with no install, named in the repair command.
+  mkdirSync(join(main, 'apps', 'web'), { recursive: true });
+  const fromMain = runBootstrap(join(main, 'apps', 'web'), main);
+  assert.equal(fromMain.status, 0);
+  assert.match(fromMain.out, /resolved:main args:doctor/);
+
+  mkdirSync(join(linked, 'apps', 'web'), { recursive: true });
+  const fromWorktree = runBootstrap(join(linked, 'apps', 'web'), linked);
+  assert.equal(fromWorktree.status, 0);
+  assert.match(fromWorktree.out, /resolved:worktree args:doctor/);
+});
+
+test('a path with a space is emitted as a command that survives being pasted', () => {
+  const spaced = join(mkdtempSync(join(tmpdir(), 'ax-space-')), 'my repo');
+  mkdirSync(join(spaced, 'bin'), { recursive: true });
+  writeFileSync(join(spaced, 'bin', 'ax'), readFileSync(BOOTSTRAP, 'utf8'));
+  chmodSync(join(spaced, 'bin', 'ax'), 0o755);
+  git(spaced, 'init', '-q');
+
+  const result = runBootstrap(spaced);
+  assert.equal(result.status, 127);
+  assert.match(result.out, new RegExp(`--dir '${realpathSync(spaced)}'`));
+  rmSync(dirname(spaced), { recursive: true, force: true });
 });

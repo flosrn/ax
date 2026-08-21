@@ -59,7 +59,7 @@ test('init leaves the vendor-owned files intact around its block', () => {
 
   const agents = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
   assert.match(agents, /Monorepo notes\./);
-  assert.match(readBlock(agents, { id: 'ax', style: 'markdown' }), /pnpm ax doctor/);
+  assert.match(readBlock(agents, { id: 'ax', style: 'markdown' }), /pnpm -w ax doctor/);
 
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   assert.equal(manifest.scripts.dev, 'turbo dev');

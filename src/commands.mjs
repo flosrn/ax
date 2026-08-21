@@ -26,7 +26,8 @@ export const COMMANDS = [
   {
     name: 'doctor',
     summary: 'is this checkout coherent? exit 0 when it is',
-    agentLine: '`pnpm ax doctor` — is this checkout coherent? Run it first when something local misbehaves.',
+    agentLine:
+      "`pnpm -w ax doctor` — check this checkout's ax config and wiring (`-w`: a workspace package has no `ax` script of its own).",
   },
   {
     name: 'init',

@@ -11,9 +11,19 @@
 set -eu
 
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-common=$(git rev-parse --git-common-dir 2>/dev/null || echo '')
+
+# `--git-common-dir` answers relative to the CALLER's directory, not to the
+# repository root — so it is asked from the root. Without that, `pnpm ax` run
+# from apps/web resolved an unrelated ancestor and advised installing there.
+# `--path-format=absolute` needs Git 2.31; the fallback re-anchors the relative
+# answer at the root, where it is correct. A submodule answers
+# `.git/modules/<name>`, which names no working tree at all: do not invent one.
+common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null ||
+  git -C "$root" rev-parse --git-common-dir 2>/dev/null ||
+  echo '')
 case "$common" in
   '') main=$root ;;
+  */.git/modules/*) main=$root ;;
   /*) main=$(dirname "$common") ;;
   *) main=$(cd "$root/$(dirname "$common")" 2>/dev/null && pwd || echo "$root") ;;
 esac
@@ -23,5 +33,11 @@ for candidate in "$root/node_modules/.bin/ax" "$main/node_modules/.bin/ax"; do
 done
 
 echo "ax: not installed in $root nor in $main" >&2
-echo "    run: pnpm install --dir $main" >&2
+case "$main" in
+  # A copied command has to survive a space in the path. Single quotes cover
+  # every character except their own, so a path carrying one is printed raw and
+  # says so rather than handing over a command that would split.
+  *"'"*) echo "    run: pnpm install --dir $main   # quote this path yourself" >&2 ;;
+  *) echo "    run: pnpm install --dir '$main'" >&2 ;;
+esac
 exit 127

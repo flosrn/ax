@@ -22,7 +22,7 @@ const run = args => {
 };
 
 test('every command the AGENTS block advertises is a real command', () => {
-  const advertised = [...agentsBody().matchAll(/pnpm ax ([a-z-]+)/g)].map(match => match[1]);
+  const advertised = [...agentsBody().matchAll(/pnpm (?:-w )?ax ([a-z-]+)/g)].map(match => match[1]);
   assert.ok(advertised.length > 0, 'the block must advertise at least one command');
   for (const name of advertised) {
     assert.ok(commandNames.includes(name), `AGENTS block names "ax ${name}", which the CLI does not implement`);
@@ -30,7 +30,7 @@ test('every command the AGENTS block advertises is a real command', () => {
 });
 
 test('every advertised command answers for real', () => {
-  for (const name of [...agentsBody().matchAll(/pnpm ax ([a-z-]+)/g)].map(match => match[1])) {
+  for (const name of [...agentsBody().matchAll(/pnpm (?:-w )?ax ([a-z-]+)/g)].map(match => match[1])) {
     const result = run([name, '--dry-run']);
     assert.notEqual(result.status, 2, `ax ${name} is advertised but reports an unknown command`);
     assert.doesNotMatch(result.out, /unknown command/);

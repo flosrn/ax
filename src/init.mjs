@@ -29,14 +29,14 @@ export const GITIGNORE_BODY = ['.worktrees/', '.agent/', '.scratch/'].join('\n')
  */
 export const agentsBody = () =>
   [
-    '## Local tooling',
+    '## ax tooling',
     '',
-    "This repo's local checkout tooling runs through the `ax` CLI.",
+    'The `ax` CLI carries this checkout\'s reusable tooling.',
     '',
     ...agentLines().map(line => `- ${line}`),
     '',
-    `Ports, app paths and guarded vendor trees come from \`${CONFIG_FILE}\`. Read them from there —`,
-    'a port or hostname written into a script is wrong in every other worktree.',
+    `\`${CONFIG_FILE}\` is where ax reads its ports, app paths and guarded vendor trees. A command`,
+    'that needs one of those values reads it from there rather than restating it.',
   ].join('\n');
 
 /** Infer what can be inferred; refuse to guess what must be decided. */
