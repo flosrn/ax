@@ -6,9 +6,11 @@ import { agentLines } from './commands.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, vendorRemote, version } from './config.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 
-// Caret, not an exact pin: patches of this tooling are the point of shipping it
-// as a package. The lockfile holds the version actually installed.
-export const PIN = `^${version}`;
+// A git tag, not an npm range: this package is not on the registry, and the tag
+// is a decision a rollback can point back at. pnpm resolves it over the git
+// credentials the machine already has, private repo included. Publishing later
+// changes this one line.
+export const PIN = `github:flosrn/ax#v${version}`;
 export const BLOCK_ID = 'ax';
 
 /** Lines ax owns in .gitignore: runtime state of the AX layer, nothing else. */

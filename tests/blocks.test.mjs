@@ -57,7 +57,7 @@ test('json edits are structural and idempotent', () => {
   assert.equal(manifest.scripts.dev, 'next dev');
   assert.equal(getJsonPath(manifest, 'scripts.ax'), './bin/ax');
 
-  assert.equal(setJsonPath(manifest, 'devDependencies.@flosrn/ax', '^0.1.0'), true);
-  assert.equal(getJsonPath(manifest, 'devDependencies.@flosrn/ax'), '^0.1.0');
+  assert.equal(setJsonPath(manifest, 'devDependencies.@flosrn/ax', 'github:flosrn/ax#v0.1.1'), true);
+  assert.equal(getJsonPath(manifest, 'devDependencies.@flosrn/ax'), 'github:flosrn/ax#v0.1.1');
   assert.equal(getJsonPath(manifest, 'devDependencies.missing'), undefined);
 });
