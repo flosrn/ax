@@ -46,9 +46,12 @@ les tables complètes, gating appliqué après.
       VPS clone `/home/orca/Code/flosrn/ax` + lien `/home/orca/.local/bin/ax` (node v22.22.1).
       Vérifié depuis `/tmp` sur les deux hôtes. Le pin `versions.yml` + convergence (git pull VPS)
       arrivent au plus tard à l'étape 2 (prérequis de la bascule des extensions).
-- [ ] **1. Socle** — `orca-bin` + runner + `record` + `redact` + prédicat de gate. Cas portés de
-      `coordinator/record.test.ts` (cœur : claim atomique + symlink refusé, write-ahead,
-      mismatch ≠ failed, replay ≠ run frais, USABLE/STRANDED, lectures par clé nommée).
+- [x] **1. Socle** — fait le 2026-08-21 : `src/orca-bin.mjs` (résolution + gate 2 niveaux
+      `orcaAvailable`/`runtimeReady` + runner injectable, exit codes = données, stderr jamais perdu),
+      `src/redact.mjs`, `src/worker/record.mjs` (vocabulaire JSON compatible record.py — les records
+      de l'ère bash se rejouent). 26 tests portés de `coordinator/record.test.ts` : claim atomique +
+      symlink refusé, write-ahead, mismatch ≠ failed, replay ≠ run frais, USABLE = conjonction,
+      stale-claim à double preuve, lectures par clé nommée (F-028), F-004 adapté.
 - [ ] **2. `ax board`** — port de `checkpoint` (monotonie, aplatissement 160, exit toujours 0),
       puis bascule des écrivains (`orca-checkpoint.ts`, `registry.ts:report()`) une fois ax
       résoluble sur LES DEUX hôtes. Meurt : `checkpoint` du coordinator.
