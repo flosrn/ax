@@ -372,6 +372,29 @@ test('an unknown argument is refused', () => {
   assert.match(r.out, /unknown argument "--close"/);
 });
 
+// ── publish: an open question is a verdict not yet rendered ──────────────────
+
+test('a draft with open Q lines refuses — the child is still asking, nothing may land', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nQ1: bug or enhancement?\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /1 open question\(s\) — an open question is a verdict not yet rendered/);
+  assert.match(r.out, /ax triage status --issue 7/);
+  assert.deepEqual(mutations(r.calls), [], 'nothing landed mid-escalation');
+});
+
+test('one still-asking issue refuses the whole batch — the finished sibling does not land either', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nFinal verdict.\n');
+  draft(root, 'triage-acme-widgets-8', 'Labels: category/bug\n\nQ1: still waiting on this.\n\nParked.\n');
+  const r = run(['--issue', '7', '--issue', '8'], { root });
+
+  assert.equal(r.code, 1);
+  assert.deepEqual(mutations(r.calls), [], 'the batch is one gesture: all or nothing');
+});
+
 // ── status: read-only, and never a second dispatch ───────────────────────────
 
 const runStatus = (argv, options = {}) => {

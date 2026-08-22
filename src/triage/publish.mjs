@@ -165,6 +165,27 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       blocked = true;
       continue;
     }
+    // An OPEN question is a verdict not yet rendered: the child that wrote this
+    // draft is parked on it, or died waiting on it — either way its loop is not
+    // finished, and a comment landing mid-escalation is the adjustment problem
+    // this whole noun exists to prevent. The spec already tells every child
+    // "Report when the draft is FINAL — which means it carries no open
+    // question"; this is that same contract, held at the boundary where it can
+    // be enforced. No override: a question FOR THE REPORTER belongs in the
+    // comment body as prose — the `Q<n>:` marker is, by grammar, the channel to
+    // the parent and nothing else.
+    //
+    // What this gate is NOT: a wave guarantee. It makes any batch containing a
+    // still-asking issue refuse entirely (the all-or-nothing above), but it
+    // does not know what a "wave" is — publishing one finished issue alone
+    // while its siblings still work is legal here, and whether ax should own
+    // wave membership is an open arbitration.
+    if (draft.questions.length > 0) {
+      bad(`#${issue} still carries ${draft.questions.length} open question(s) — an open question is a verdict not yet rendered`);
+      fix(`ax triage status --issue ${issue} --job ${job}   # who is waiting; answer it, let the child fold and drop its Q lines, then publish`);
+      blocked = true;
+      continue;
+    }
     const unknown = [...draft.labels, ...draft.remove].filter(label => !known.names.has(label));
     if (unknown.length > 0) {
       bad(`#${issue} names ${unknown.length} label(s) this repository does not have: ${unknown.join(' | ')}`);
