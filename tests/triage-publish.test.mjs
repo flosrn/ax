@@ -208,13 +208,16 @@ const runStatus = (argv, options = {}) => {
   return { ...result, root, calls: gh.calls };
 };
 
-function record(store, request, { usable = true } = {}) {
+function record(store, request, { usable = true, repaired = false } = {}) {
   mkdirSync(store, { recursive: true });
   writeFileSync(
     join(store, `${request}.json`),
     JSON.stringify({
       request,
       createdAt: '2026-08-20T10:00:00.000Z',
+      // The fact `start.mjs` persists after a CONFIRMED submission, and the only
+      // thing that tells a reader a child is alive behind a `failed` Dispatch.
+      ...(repaired ? { heldRepairAt: '2026-08-20T10:00:26.000Z' } : {}),
       attempts: [
         {
           n: 1,
@@ -252,6 +255,26 @@ test('status names an unsettled mutation and routes recovery to --resume, never 
   assert.match(r.out, /UNSETTLED/);
   assert.match(r.out, /--resume --request triage-acme-widgets-7/);
   assert.match(r.out, /F-001/);
+});
+
+test('a repaired held composer is never offered a --resume, because its child is running', () => {
+  // Measured 2026-08-22 on the first real coordinator campaign: #50 and #51 both
+  // read `RAN · failed · <handle> — UNSETTLED` and both were offered a resume,
+  // while `orca terminal read` answered `status: running` on their panes and the
+  // children were mid-analysis. Following that line puts a SECOND agent in a
+  // working session — printed as the repair, which is the worst place for it.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7', { usable: false, repaired: true });
+  const r = runStatus(['--issue', '7'], { root, store });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /UNSETTLED/, 'the record is still unsettled, and still says so');
+  assert.match(r.out, /its child IS running/);
+  assert.match(r.out, /ax worker transcript triage-acme-widgets-7/);
+  // The COMMAND must be gone, not the word: the surviving prose names `--resume`
+  // on purpose, to say which line not to type.
+  assert.doesNotMatch(r.out, /ax worker start --resume/, 'the one line that would double the agent');
 });
 
 test('a settled record is reported without the recovery instruction', () => {

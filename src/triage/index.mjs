@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { defaultExec } from '../worker/release.mjs';
-import { defaultStore, report } from '../worker/record.mjs';
+import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
 import { dispatch } from './dispatch.mjs';
 import { draftPath, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
@@ -28,6 +28,22 @@ const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|cu
  * mutation may still be running, and no snapshot can see one in flight (F-001).
  * The draft is reported beside it, because "the session settled" and "the
  * session produced something" are two different questions.
+ *
+ * EXCEPT over a repaired held composer, and that exception is the whole reason
+ * this comment is longer than the loop. Measured 2026-08-22 on the first real
+ * coordinator campaign: #50 and #51 both read `RAN · failed · <handle> —
+ * UNSETTLED` and both were offered a `--resume`, while their panes answered
+ * `status: running` and their children were mid-analysis. An operator who
+ * followed that line would have put a SECOND agent into a session that was
+ * working — the one outcome this whole subsystem exists to prevent, printed as
+ * the repair.
+ *
+ * The record already knows. `heldRepairAt` is written only after a confirmed
+ * submission, so it says a child is running behind a Dispatch that settled
+ * `failed` and will never settle again. Read that instead of probing: a probe
+ * would add an Orca round-trip to a read-only verb, and `paneReadable` is true
+ * for a pane whose status is `exited` — measured the same day — so the naive
+ * probe answers "alive" over a corpse.
  */
 export function status(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   const issues = [];
@@ -85,7 +101,13 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         note(`${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
         // Never a fresh dispatch: the recorded mutation may still be running,
         // and no snapshot can see one in flight.
-        if (!state.usable) fix(`ax worker start --resume --request ${request}   # replays the recorded call (F-001)`);
+        if (!state.usable) {
+          if (heldRepaired(path)) {
+            note('a repaired held composer — this Dispatch settled `failed` and never will again, but its child IS running');
+            note('its report arrives by peer, and its work lands in the draft below — never `--resume`, which would be a second agent in one session');
+            note(dim(`ax worker transcript ${request}   # what it is doing`));
+          } else fix(`ax worker start --resume --request ${request}   # replays the recorded call (F-001)`);
+        }
       } catch (error) {
         bad(`record unreadable: ${String(error.message ?? error)}`);
       }
