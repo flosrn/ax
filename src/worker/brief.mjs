@@ -52,22 +52,54 @@ const OPERATOR_HEADING = 'OPERATOR BRIEF';
  *    heartbeat noise. It is a net, not a leash.
  *  - verification: what was exercised, not a project-wide sweep run for show.
  */
-export const MECHANICS = [
+const BULLETS = [
   '- The worktree you were started in is yours and is already bootstrapped. Do not create another.',
-  '- **You own the shipping tail; the coordinator owns only the merge.** Commit, push and open the',
-  '  pull request yourself, then take CI to a DECISION before you report. Measured 2026-08-14: a',
-  '  child reported while its end-to-end run was still queued, and the coordinator spent the wait',
-  '  instead. That wait is yours.',
+  [
+    '- **You own the shipping tail; the coordinator owns only the merge.** Commit, push and open the',
+    '  pull request yourself, then take CI to a DECISION before you report. Measured 2026-08-14: a',
+    '  child reported while its end-to-end run was still queued, and the coordinator spent the wait',
+    '  instead. That wait is yours.',
+  ].join('\n'),
   '- You do not merge, ever, even when everything is green. That decision is the coordinator\u2019s.',
-  '- Keep the ticket current yourself: in progress when you start, final state and pull request link',
-  '  when you finish. The coordinator reads the ticket, and a ticket still showing its opening state',
-  '  is a queue lie — a view that treats unfinished work as its input re-dispatches finished work.',
-  '- Any decision that blocks you goes to the coordinator; your report wakes them. Deciding it alone',
-  '  is taking their job without telling them.',
-  '- A stall watcher is armed on your dispatch: prolonged silence on your pane raises ONE alert on',
-  '  the coordinator\u2019s Run. It is a net, not a leash — spend no turns on heartbeats.',
+  [
+    '- Keep the ticket current yourself: in progress when you start, final state and pull request link',
+    '  when you finish. The coordinator reads the ticket, and a ticket still showing its opening state',
+    '  is a queue lie — a view that treats unfinished work as its input re-dispatches finished work.',
+  ].join('\n'),
+  [
+    '- Any decision that blocks you goes to the coordinator; your report wakes them. Deciding it alone',
+    '  is taking their job without telling them.',
+  ].join('\n'),
+  [
+    '- A stall watcher is armed on your dispatch: prolonged silence on your pane raises ONE alert on',
+    '  the coordinator\u2019s Run. It is a net, not a leash — spend no turns on heartbeats.',
+  ].join('\n'),
   '- Verify what you changed and say what you exercised. No project-wide sweep for show.',
-].join('\n');
+];
+
+/** The bullet that only makes sense when a tracker owns the work. */
+const TICKET_BULLET = 3;
+
+export const MECHANICS = BULLETS.join('\n');
+
+/**
+ * The mechanics for a launch with NO ticket (`--name`, no tracker ref).
+ *
+ * The ticket bullet is not merely irrelevant there — it is an instruction the
+ * child cannot carry out, and the cost is exact: it tells the child the
+ * coordinator READS the ticket, so a child with none either invents one or
+ * concludes its report is being read somewhere it is not. What replaces it says
+ * where the work is defined and where its record goes.
+ */
+export const MECHANICS_UNTRACKED = BULLETS.map((bullet, index) =>
+  index === TICKET_BULLET
+    ? [
+        '- There is NO ticket for this work: this brief is its whole definition, and your board card',
+        '  plus your pull request are its only record. Do not go looking for a ticket, and do not open',
+        '  one — the coordinator dispatched this by name, and that name is what they will look for.',
+      ].join('\n')
+    : bullet,
+).join('\n');
 
 /**
  * True of every cross-host child, always — so it is generated here rather than
@@ -134,18 +166,28 @@ function markerLine(marker, instruction) {
  * checked before anything is put through it. Nothing is appended to them either:
  * the document is terminated with a newline only when its last block does not
  * already end in one, so a caller's bytes survive in both directions.
+ *
+ * `ticket: null` says the launch HAS no ticket, which renders differently from a
+ * ticket that could not be read.
  */
-export function renderBrief({ marker, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null } = {}) {
+export function renderBrief({ marker, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '' } = {}) {
+  // `ticket: null` is not "a ticket I could not read" — it is a launch that has
+  // none (`--name`). The two must not render the same: the tracked shape says
+  // "read the ticket, it is canonical", and pointing that at nothing is how a
+  // child is sent to improvise (2026-08-01, three worktrees that never read
+  // theirs). So the couplet is replaced rather than emitted empty, and the
+  // heading falls back to the name the coordinator dispatched.
+  const tracked = ticket !== null;
+  const head = tracked
+    ? [`# ${ticket.title ?? ''}`, `${ticket.url ?? ''}`, '', `Read the ticket before you plan: ${readCommand ?? ''}`, 'It is canonical; this file carries only the pilot contract.']
+    : [`# ${name}`, '', 'This launch carries NO ticket: what follows is the whole definition of the work.'];
+
   const lines = [
     markerLine(marker, instruction),
-    `# ${ticket.title ?? ''}`,
-    `${ticket.url ?? ''}`,
-    '',
-    `Read the ticket before you plan: ${readCommand ?? ''}`,
-    'It is canonical; this file carries only the pilot contract.',
+    ...head,
     '',
     `PILOT CONTRACT — coordinator Run ${run ?? ''}, execution host ${host || 'here'}`,
-    contract === '' || contract === undefined || contract === null ? MECHANICS : String(contract),
+    contract === '' || contract === undefined || contract === null ? (tracked ? MECHANICS : MECHANICS_UNTRACKED) : String(contract),
   ];
 
   if (host) lines.push(REMOTE);

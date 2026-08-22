@@ -336,6 +336,11 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
         );
       }
     }
+  } else if (kind === null) {
+    // A `--name` launch owns no ticket, so there is no tracker ground to prove.
+    // Said rather than skipped: every other absence in this file is announced,
+    // and a silent one reads as "the tracker was checked".
+    notes.push(`no ticket for this launch, so no tracker ground applies on '${at}' — the brief is the whole definition of the work`);
   }
 
   // `unproven` is what keeps an absence from reading like a pass: the caller

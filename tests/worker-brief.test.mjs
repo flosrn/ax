@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MECHANICS, renderBrief } from '../src/worker/brief.mjs';
+import { MECHANICS, MECHANICS_UNTRACKED, renderBrief } from '../src/worker/brief.mjs';
 import { progressOnly } from '../src/worker/stall.mjs';
 
 const TICKET = { id: 'T-353', title: 'Loading states are missing on the dashboard', url: 'https://tracker.test/issue/T-353' };
@@ -27,6 +27,49 @@ test('the marker and the instruction are on ONE line, and it is the first', () =
   // is untested, so it is never assumed.
   const first = brief().split('\n')[0];
   assert.equal(first, '[omp model=@task] /entry T-353');
+});
+
+test('a launch with NO ticket never tells the child to read one', () => {
+  // `--name` dispatches work no tracker owns. The tracked shape says "read the
+  // ticket, it is canonical" — rendered against nothing, that is the 2026-08-01
+  // failure written into the brief itself: a child sent to improvise by a
+  // pointer to nowhere. An empty `# ` heading and an empty read command are the
+  // same defect, quieter.
+  const text = brief({ ticket: null, name: 'loading-states', instruction: 'fix the skeletons', readCommand: '' });
+  assert.doesNotMatch(text, /Read the ticket/);
+  assert.doesNotMatch(text, /It is canonical/);
+  assert.doesNotMatch(text, /^# $/m);
+  // The name the coordinator dispatched is the heading, because it is the only
+  // handle they will later search for.
+  assert.match(text, /^# loading-states$/m);
+  assert.match(text, /carries NO ticket/);
+});
+
+test('a ticketless brief drops the keep-the-ticket-current bullet, and only that one', () => {
+  // The bullet is not merely irrelevant: it states the coordinator READS the
+  // ticket, so a child with none either invents one or concludes its report
+  // lands somewhere it does not. Every other mechanic still applies.
+  assert.match(MECHANICS, /Keep the ticket current yourself/);
+  assert.doesNotMatch(MECHANICS_UNTRACKED, /Keep the ticket current/);
+  assert.match(MECHANICS_UNTRACKED, /There is NO ticket for this work/);
+  // And it says what to do INSTEAD, which is the half a bare deletion loses: the
+  // child must not open a ticket to fill the gap either.
+  assert.match(MECHANICS_UNTRACKED, /do not open\s+one/);
+  assert.match(MECHANICS_UNTRACKED, /dispatched this by name/);
+
+  const bullets = text => text.split('\n').filter(line => line.startsWith('- ')).length;
+  assert.equal(bullets(MECHANICS_UNTRACKED), bullets(MECHANICS));
+  for (const kept of ['already bootstrapped', 'You do not merge, ever', 'A stall watcher is armed', 'No project-wide sweep']) {
+    assert.match(MECHANICS_UNTRACKED, new RegExp(kept));
+  }
+});
+
+test('a ticketless launch still gets the mechanics, and a project contract still replaces them', () => {
+  const text = brief({ ticket: null, name: 'loading-states' });
+  assert.match(text, /There is NO ticket for this work/);
+  const owned = brief({ ticket: null, name: 'loading-states', contract: 'OUR RULES' });
+  assert.match(owned, /OUR RULES/);
+  assert.doesNotMatch(owned, /There is NO ticket for this work/);
 });
 
 test('a caller holding the composed marker gets the same single line', () => {

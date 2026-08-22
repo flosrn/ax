@@ -165,7 +165,7 @@ const run = (argv, options = {}) => {
       })(),
       startFn: (args, context) => {
         started.push(args.join(' '));
-        record(store, REQUEST);
+        record(store, options.request ?? REQUEST);
         return options.startCodes ? options.startCodes.shift() : 0;
       },
       setupFn: options.setupFn ?? (() => 0),
@@ -564,4 +564,118 @@ test('the request id is the key every later gesture uses', () => {
   assert.equal(requestIdFor('GAP-353', 'loading-states'), REQUEST);
   assert.equal(requestIdFor('1234', ''), '1234-work');
   assert.equal(requestIdFor('GAP-353', 'Feature/Two Words'), 'gap-353-feature-two-words');
+});
+
+// ── --name: a worktree with no ticket ────────────────────────────────────────
+
+test('the request id is NOT injective, which is why a name is refused rather than normalised', () => {
+  // The reason the canonical rule exists, stated as the measurement it comes
+  // from: three different names, one request id. Keyed on that, the second
+  // launch would find the first one's tree and dispatch a child into it.
+  const collide = ['My Feature', 'my/feature', 'my@@feature'].map(name => requestIdFor(name, 'x'));
+  assert.deepEqual(collide, ['my-feature-x', 'my-feature-x', 'my-feature-x']);
+});
+
+test('exactly one identity: both --issue and --name is refused, and so is neither', () => {
+  const both = run(['--issue', ISSUE, '--slug', SLUG, '--name', 'loading-states']);
+  assert.equal(both.code, 2);
+  assert.match(both.out, /two identities for one worktree/);
+  assert.deepEqual(both.started, []);
+
+  const neither = run(['--task', 'do the thing']);
+  assert.equal(neither.code, 2);
+  assert.match(neither.out, /no --issue and no --name/);
+});
+
+test('a name that is not already the request id is refused, and the refusal shows the one it means', () => {
+  for (const [given, suggestion] of [
+    ['My Feature', 'my-feature'],
+    ['my/feature', 'my-feature'],
+    ['UPPER', 'upper'],
+    ['-lead', 'lead'],
+    ['trail-', 'trail'],
+    ['a b', 'a-b'],
+  ]) {
+    const r = run(['--name', given, '--task', 'do the thing']);
+    assert.equal(r.code, 2, `${given} must be refused`);
+    assert.match(r.out, /must be lowercase alphanumerics/);
+    assert.match(r.out, new RegExp(`ax worker launch --name ${suggestion}$`, 'm'), `${given} should suggest ${suggestion}`);
+    assert.deepEqual(r.started, []);
+  }
+});
+
+test('a name that is a path segment is refused before anything is placed', () => {
+  // `.` and `..` survive a round-trip through `requestIdFor` unchanged, so a rule
+  // written as "normalise and compare" accepts them — and `.worktrees/<request>`
+  // then resolves to the worktree base or the repository above it.
+  for (const given of ['.', '..', './x', '../x']) {
+    const r = run(['--name', given, '--task', 'do the thing']);
+    assert.equal(r.code, 2, `${given} must be refused`);
+    assert.deepEqual(r.started, []);
+  }
+});
+
+test('--slug is refused with --name: the name is the whole identity', () => {
+  const r = run(['--name', 'loading-states', '--slug', 'again', '--task', 'do the thing']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--slug belongs to a ticket ref/);
+});
+
+test('a name with no instruction is refused: there is no ticket to read one from', () => {
+  // With a ticket, `launch.entry` composes `<entry> GAP-353` and the body carries
+  // the rest. A name has neither, so a launch that let this through would dispatch
+  // a child holding `/entry loading-states` and nothing else — the 2026-08-01
+  // failure with better spelling.
+  const r = run(['--name', 'loading-states']);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /nothing here knows what "loading-states" means/);
+  assert.match(r.out, /--task "<instruction>"/);
+  assert.deepEqual(r.started, []);
+});
+
+test('a named launch reads no ticket, and its brief never points at one', () => {
+  const root = repo();
+  const r = run(['--name', 'loading-states', '--task', 'fix the skeletons', '--dry-run'], { root });
+
+  assert.equal(r.code, 0);
+  assert.ok(
+    r.calls.every(argv => !argv.includes('linear issue') && !argv.includes('issue view')),
+    `a tracker was read for a launch that has no ticket: ${r.calls.join(' | ')}`,
+  );
+  assert.doesNotMatch(r.out, /Read the ticket/);
+  assert.match(r.out, /^# loading-states$/m);
+  // The identity is the name, verbatim — not `loading-states-work`.
+  assert.match(r.out, /--request loading-states /);
+  assert.match(r.out, new RegExp(`predicted at ${join(root, '.worktrees', 'loading-states')}`));
+});
+
+test('reuse is EXACT for a name: `auth` never takes the tree of `auth-refactor`', () => {
+  // The prefix rule exists for tickets, where `gap-353-old-slug` is the same
+  // ticket's earlier tree. A name has no slug hanging off it, so the same rule
+  // would hand `--name auth` a different piece of work, already provisioned and
+  // already someone's.
+  const root = repo();
+  provisioned(root, 'auth-refactor');
+  const r = run(['--name', 'auth', '--task', 'add the guard', '--dry-run'], { root });
+
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /auth-refactor/);
+
+  // Its own tree, on the other hand, IS reused rather than placed a second time.
+  provisioned(root, 'auth');
+  const again = run(['--name', 'auth', '--task', 'add the guard', '--wait', '0'], { root, request: 'auth' });
+  assert.equal(again.code, 0);
+  assert.match(again.out, /reusing the worktree that already exists for auth/);
+});
+
+test('a named launch reports no ticket instead of empty tracker fields', () => {
+  const root = repo();
+  provisioned(root, 'loading-states');
+  const r = run(['--name', 'loading-states', '--task', 'fix the skeletons', '--wait', '0'], { root, request: 'loading-states' });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /LAUNCHED loading-states — fix the skeletons/);
+  assert.match(r.out, /ticket {4}none — dispatched by name/);
+  assert.doesNotMatch(r.out, /ticket {4}undefined/);
+  assert.match(r.out, /request {3}loading-states/);
 });
