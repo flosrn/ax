@@ -198,7 +198,7 @@ les tables complètes, gating appliqué après.
       pattern refusé (`ls-remote` matche des motifs et répondrait 0 pour n'importe quel ref) ;
       balayage distant muet en dry-run ; sol dont le transport a échoué compté NON PROUVÉ.
       Suite ax 503/503.
-- [ ] **7. `ax triage`** — cas de `orca-triage.test.ts`. **Côté ax : fait le 2026-08-22** (`110a662`).
+- [x] **7. `ax triage` + `ax worker sweep`** — fait le 2026-08-22 (`110a662`, `dcf84fb`, `41dee7c`).
       `ax triage dispatch|status|publish`. Décision prise avant d'écrire : l'enfant ne mute plus
       rien — il écrit UN brouillon dans `.scratch/triage/<request>.md`, le parent relit, corrige,
       et publie à la fin d'une chaîne de PRD. Ce qui rend `publish` la seule surface qui touche le
@@ -231,25 +231,29 @@ les tables complètes, gating appliqué après.
       `ps` du harness sur le PATH. Colonne portable : `etime`, parseur exporté et testé.
       **Prose basculée** : `orca-orchestrator` (cap + mode triage) et `orca-sessions` (inventaire)
       nomment `ax triage`/`ax board`, plus le bash.
-      **BLOQUÉ sur une PR gapila, et l'ordre n'est pas négociable.** `gapilabs/gapila` appelle
-      `orca-coordinator.sh checkpoint` en vrai (`scripts/orca/worktree-setup.sh`) et son
-      `install-agent-tools.sh` liste `scripts/orca-coordinator.sh` dans `EXPECTED`. Le commentaire
-      de cette liste énonce la règle, payée le 2026-08-11 : « le retrait d'une entrée part AVANT
-      que le fichier disparaisse en amont ». Migration écrite et commitée en local sur gapila
-      (`b3f75d860` : `ax board`, mêmes 5 flags, résolution par chemin avec repli
-      `~/.local/bin/ax`, 3/3 de son test de gardes, smoke avec l'argv exact du hook) — mais leur
-      convention est la PR, donc elle doit ATTERRIR sur leur main d'abord. Sans ça, toute branche
-      gapila non rebasée perd son seed de sidebar derrière `|| warn` (dégradé, pas fatal : les deux
-      appels sont gardés). Une fois la PR passée, dans cet ordre :
-      supprimer `orca-coordinator.sh` (709 L) + `orca-triage.test.ts` (710) + `orca-reap.test.ts`
-      (134) + `orca-checkpoint.test.ts` + `orca-test-harness.ts` (plus aucun consommateur), puis
-      `record.py` (788) + `record.test.ts` (588) — ses 4 derniers verbes ont chacun leur
-      destination : `peer-run` → `peerRun`, `record-status` → `report()`, `active-count`/
-      `active-list` supprimés avec le comptage par `worker-list` — puis la paire
-      `record.py` ↔ `record.test.ts` de `check-test-proof.ts` (sinon le gate casse, pas le code),
-      l'entrée `orca-coordinator.sh` de `check-orchestration-surface.sh:34` et sa fixture
-      (`.test.ts:97`). `ORCA_BROWSER_REAP_AGE_MIN` meurt avec le script (remplacé par
-      `AX_SWEEP_MAX_AGE_MIN`) ; rien ne le pose dans un profil, vérifié.
+      **Le coordinator est mort le 2026-08-22** (`41dee7c`), −3 339 lignes :
+      `orca-coordinator.sh` (709), `record.py` (788) + `record.test.ts` (588) dont le seul
+      appelant était ce script, `orca-triage.test.ts` (710), `orca-checkpoint.test.ts` (360),
+      `orca-reap.test.ts` (134) et `orca-test-harness.ts` (50), qui ne portait que ces trois-là.
+      La classe `scripts/coordinator/*.py` quitte `check-test-proof` (un motif pour un répertoire
+      disparu est une affirmation fausse) et `orca-coordinator.sh` quitte la liste sanctionnée —
+      1 exécutable restant, `merge-gate.sh`, jusqu'à l'étape 8.
+      **L'ordre a été tenu, et il ne l'avait pas été le 2026-08-11.** `gapilabs/gapila` appelait
+      `checkpoint` en production depuis son hook de création de worktree, et son
+      `install-agent-tools.sh` nommait le script dans `EXPECTED` — dont le commentaire énonce la
+      règle : « le retrait d'une entrée part AVANT que le fichier disparaisse en amont ».
+      PR gapila #1999 (`eaad7f548`) atterrie d'abord : `ax board`, mêmes 5 flags, même contrat
+      fail-open. La résolution y est **chemin épinglé d'abord, PATH en repli** — l'inverse de
+      l'ordre évident, parce que `@flosrn/ax` est aussi une devDependency des projets d'ici, donc
+      un hook qui hérite d'un environnement pnpm peut porter un `node_modules/.bin/ax` plus ancien.
+      C'est aussi ce que `extensions/shared/ax.ts` fait déjà. Le test l'assure comme un ORDRE, pas
+      comme deux `match` indépendants.
+      **Un rouge trouvé en passant, antérieur** : le garde « jamais le nom nu » de
+      `orca-model.test.ts` ne connaissait pas `axBin()`, ajouté à `registry.ts` à l'étape 2 le
+      2026-08-21 — il échouait depuis, personne n'ayant lancé ce fichier dans cette portée.
+      Accepté parce qu'il résout comme le coordinator le faisait, pas parce qu'il gênait.
+      `ORCA_BROWSER_REAP_AGE_MIN` est mort avec le script (remplacé par `AX_SWEEP_MAX_AGE_MIN`) ;
+      rien ne le posait dans un profil, vérifié. 434 tests OMP verts, 605 côté ax.
 - [ ] **8. `ax worker launch --name` + `ax pr gate`** — décidé le 2026-08-22 : pas de
       `worktree new`, c'est `launch` sans ticket (voir la surface cible). Meurt : `merge-gate.sh`.
 - [ ] **9. Deux rôles** — décidé le 2026-08-22 : ils se séparent par le GENRE de travail, pas par
