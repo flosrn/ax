@@ -287,16 +287,34 @@ les tables complètes, gating appliqué après.
       projet dans un outil). Codes : 0 passe, 1 refus, 2 usage, 3 impossible d'établir — le « 2
       réservé » du bash était mort. 683 tests (66 neufs), 6 mutations falsifiées, plus le garde du
       SHA 40-hex qui ne tuait aucun test : couvert maintenant sur la longueur, la casse et le trim.
-      **Le smoke live a refusé la PR gapila #1999 que je venais de merger**, sur un fil de revue
-      non résolu — un P2 correct de `chatgpt-codex-connector` : le repli `command -v ax` retombait
-      sur `node_modules/.bin/ax`, la copie épinglée que le commentaire au-dessus dit d'éviter.
-      Correctif prêt sur `fix/orca-ax-fallback-rejects-repo-pinned` (`18b225714`), non poussé.
-      **RESTE, et c'est la même règle qu'à l'étape 7** : `merge-gate.sh` (624 L) +
-      `merge-gate.test.ts` (749) + `merge-gate.json` ne meurent qu'APRÈS que gapila et ofmchat
-      déclarent leur `prGate` dans leur propre `ax.config.json` — aucun des deux n'en a un
-      aujourd'hui, et supprimer avant laisserait les deux repos sans gate du tout. Puis retirer
-      `merge-gate.sh` de `check-orchestration-surface.sh` (dernier exécutable sanctionné) et
-      basculer la prose qui le nomme.
+      **Le smoke live a refusé la PR gapila #1999 une heure après son merge**, sur un fil de revue
+      non résolu : un P2 correct, où le repli `command -v ax` retombait sur `node_modules/.bin/ax`,
+      la copie épinglée que le commentaire au-dessus dit d'éviter. Le correctif a été refusé une
+      seconde fois, aussi à raison — inspecter la réponse de `command -v` ne peut pas marcher, une
+      entrée relative échappe au glob absolu et une entrée à slash final au `grep` ancré. Donc PATH
+      est parcouru, chaque composant normalisé, le découpage est un builtin (une boucle qui a besoin
+      d'un binaire *venant de PATH* pour lire PATH ne peut pas signaler que PATH est le problème —
+      mesuré : la version à `tr` ne lisait rien sous un PATH minimal), et un composant vide est
+      SAUTÉ au lieu d'être lu comme le cwd, qui pendant ce hook est l'arbre en cours de
+      provisionnement.
+      **RESTE, et c'est la même règle qu'à l'étape 7.** Une déclaration doit atterrir dans chaque
+      repo AVANT que le bash meure, sinon ce repo se retrouve sans gate du tout.
+      `gapilabs/gapila` : **atterrie le 2026-08-22** (#2001, `de54c8956`) — et mergée par le gate
+      lui-même, `--merge` sur le SHA qu'il venait de valider. Au passage il a refusé deux fois à
+      raison : un fil de revue non résolu sur #1999 (mergée une heure plus tôt sans être lue, un P2
+      correct → #2000, `0f182fbaf`), puis sa propre branche en retard sur une base qui avait
+      avancé, pendant que `mergeStateStatus` disait `UNKNOWN` — F-033.2 en direct.
+      `goodluckagency/ofmchat` : la déclaration est repliée dans **#31**, la PR d'adoption d'ax qui
+      crée déjà `ax.config.json` (deux PR pour un fichier était la dérive exacte que ça évite ;
+      #48 fermée comme superseded). #31 est une adoption de 18 fichiers, donc son merge n'est pas
+      un geste de ce port. Elle mesure aussi une correction : le fichier machine-wide disait
+      `Instant Navigation` inconditionnel — faux, il est gaté sur
+      `vars.DISABLE_INSTANT_NAVIGATION_TESTS` et n'a PAS tourné sur #47. Donc un seul job est
+      attendu, et l'angle mort est écrit : un vert là prouve les types et le lint, jamais
+      l'isolation base, et pas la navigation tant que la variable est levée.
+      Quand #31 atterrit : supprimer `merge-gate.sh` (624 L) + `merge-gate.test.ts` (749) +
+      `merge-gate.json`, retirer `merge-gate.sh` de `check-orchestration-surface.sh` (il devient le
+      dernier exécutable sanctionné, donc la liste tombe à zéro) et basculer la prose qui le nomme.
 - [ ] **9. Deux rôles** — décidé le 2026-08-22 : ils se séparent par le GENRE de travail, pas par
       le nombre d'enfants. Un rôle mène les sessions de triage (l'enfant écrit un brouillon, le
       parent publie), l'autre les sessions d'implémentation (l'enfant ouvre une PR, le parent
