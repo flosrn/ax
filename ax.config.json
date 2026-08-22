@@ -1,0 +1,21 @@
+{
+  "$schema": "./ax.schema.json",
+  "project": {
+    "name": "ax",
+    "display": "ax"
+  },
+  "apps": {
+    "web": "."
+  },
+  "vendor": {
+    "repo": "flosrn/ax"
+  },
+  "launch": {
+    "hosts": {
+      "gapicore": {
+        "ssh": "orca@vps",
+        "sessions": "/home/orca/.omp/agent/sessions"
+      }
+    }
+  }
+}

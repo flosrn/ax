@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { applyDefaults, validate } from '../src/schema.mjs';
 import { schema } from '../src/config.mjs';
+import { applyDefaults, validate } from '../src/schema.mjs';
+
 
 const minimal = () => ({
   project: { name: 'ofmchat' },
@@ -61,4 +65,10 @@ test('a guarded tree needs both ownership lists, so a new path can be flagged', 
 test('a port outside the addressable range is rejected', () => {
   const errors = validate({ ...minimal(), ports: { dev: [80, 3999] } }, schema);
   assert.match(errors.join(), /ports\.dev\[0\]: 80 is below the minimum 1024/);
+});
+
+test('this checkout’s ax.config.json validates, so ax worker launch can run here', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const raw = JSON.parse(readFileSync(join(root, 'ax.config.json'), 'utf8'));
+  assert.deepEqual(validate(raw, schema), []);
 });
