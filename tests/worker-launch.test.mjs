@@ -67,7 +67,7 @@ function provisioned(root, name) {
  * dispatch will use; `cursors` is the liveness series; every argv is recorded so
  * "nothing was dispatched" is asserted rather than assumed.
  */
-function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'wt-parent', terminals, created } = {}) {
+function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false } = {}) {
   const calls = [];
   let reads = 0;
   const runner = createRunner({
@@ -78,7 +78,7 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'wt-parent', ter
       const receipt = result => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' });
       if (args[0] === 'status') return receipt({ runtime: { reachable: true } });
       if (line.startsWith('linear issue')) {
-        return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state: { name: 'In Progress' }, description: 'a decision, written down' } });
+        return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state: { name: 'In Progress' }, description: emptyBody ? '   ' : 'a decision, written down' } });
       }
       if (line.startsWith('worktree create')) return created ?? receipt({ worktree: { path: '/nonexistent' } });
       if (line.startsWith('worktree show')) {
@@ -154,7 +154,7 @@ const run = (argv, options = {}) => {
   const started = [];
   const result = capture(() =>
     launch([...argv], {
-      runner,
+      runner: options.runnerOverride ?? runner,
       exec: options.exec ?? (() => ({ status: 0, stdout: '', stderr: '' })),
       env: { HOME: home, ORCA_TERMINAL_HANDLE: 'term_me', ORCA_DISPATCH_STORE: store, AX_LAUNCH_SPEC_DIR: join(home, 'specs'), AX_LAUNCH_TICK: '1', AX_LAUNCH_SEE_WAIT: '0', ...options.env },
       cwd: root,
@@ -227,11 +227,49 @@ test('no Run to own the Task is a named inability, never a guess', () => {
   assert.deepEqual(r.started, []);
 });
 
+test('an unreadable ticket creates nothing, and cannot be established', () => {
+  const { runner, calls } = fakeOrca({});
+  const dead = args => (args[0] === 'linear' ? { status: 1, stdout: '', stderr: 'linear_not_connected', receipt: { ok: false, error: { code: 'linear_not_connected' } } } : runner(args));
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { orca: {}, runnerOverride: dead });
+
+  assert.equal(r.code, 3);
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'nothing is placed for a ticket nobody could read');
+  assert.deepEqual(r.started, []);
+});
+
+test('an empty ticket body creates nothing on the default entry point', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { orca: { emptyBody: true } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /body is empty|names none/i);
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'an empty ticket places nothing');
+  assert.deepEqual(r.started, []);
+});
+
+test('a --needs-ref origin does not carry creates nothing, and a pattern is refused as one', () => {
+  const missing = run(['--issue', ISSUE, '--slug', SLUG, '--needs-ref', 'refs/tags/v4/x'], {
+    exec: (bin, args) => (bin === 'git' && args[0] === 'ls-remote' ? { status: 2, stdout: '', stderr: '' } : { status: 0, stdout: '', stderr: '' }),
+  });
+  assert.equal(missing.code, 1);
+  assert.match(missing.out, /does not resolve on origin/);
+  assert.ok(missing.calls.every(argv => !argv.startsWith('worktree create')));
+
+  // `ls-remote` matches PATTERNS: `*` exits 0 and would prove any ref at all.
+  const glob = run(['--issue', ISSUE, '--slug', SLUG, '--needs-ref', 'refs/tags/*'], {
+    exec: (bin, args) => (bin === 'git' && args[0] === 'ls-remote' ? { status: 0, stdout: 'sha\trefs/tags/a\nsha\trefs/tags/b\n', stderr: '' } : { status: 0, stdout: '', stderr: '' }),
+  });
+  assert.equal(glob.code, 1);
+  assert.match(glob.out, /is a pattern, not a ref/);
+});
+
 // ── placement ────────────────────────────────────────────────────────────────
 
-test('a worktree that already exists for the ticket is reused, with no second bootstrap', () => {
+test('a worktree that already exists for the ticket is reused, and still proven habitable', () => {
   // `worktree create` carries no --retry-request, so a create that strands
-  // cannot be replayed: finding the first tree IS the countermeasure.
+  // cannot be replayed: finding the first tree IS the countermeasure. But the
+  // launch that made it may be exactly the one that died before provisioning it,
+  // so a reused tree is provisioned again — `ax worktree setup` is idempotent by
+  // contract, and re-running it on a live worktree is its normal case.
   const root = repo();
   const existing = provisioned(root, `${ISSUE}-${SLUG}`);
   const setups = [];
@@ -240,8 +278,22 @@ test('a worktree that already exists for the ticket is reused, with no second bo
   assert.equal(r.code, 0);
   assert.match(r.out, /reusing the worktree that already exists/);
   assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'no second placement');
-  assert.deepEqual(setups, [], 'a reused worktree is not re-provisioned');
+  assert.deepEqual(setups, [existing], 'the reused tree is proven habitable, not assumed');
   assert.match(r.started[0], new RegExp(`--worktree path:${existing}`));
+});
+
+test('a tree for another ticket is never reused for this one', () => {
+  // A substring match read `GAP-35` as this ticket's tree inside `gap-357-…`,
+  // which dispatches a child into a branch that is not its own.
+  const root = repo();
+  provisioned(root, 'GAP-3530-other-work');
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    root,
+    orca: { created: { status: 0, stdout: JSON.stringify({ ok: true, result: {} }), stderr: '' } },
+  });
+
+  assert.doesNotMatch(r.out, /reusing the worktree/);
+  assert.equal(r.code, 3, 'it places a new one instead, and this fixture makes that placement fail');
 });
 
 test('the declared worktree tool places it, and its last stdout line is the path', () => {
@@ -282,21 +334,25 @@ test('a create receipt that names no path cannot be dispatched into', () => {
   assert.deepEqual(r.started, []);
 });
 
-test('provisioning is ax worktree setup, and a tree it did not finish is refused', () => {
+test('a tree that exists but is not provisioned cannot be established, and names itself', () => {
+  // Once a worktree EXISTS, exit 1 would be a lie: it promises nothing was
+  // created. So the failure is cannot-establish, and it names the tree — which
+  // is also the tree a second launch will reuse rather than duplicate.
   const root = repo();
   const tree = join(root, '.worktrees', 'made');
   mkdirSync(tree, { recursive: true });
   const orca = { created: { status: 0, stdout: JSON.stringify({ ok: true, result: { worktree: { path: tree } } }), stderr: '' } };
 
   const failed = run(['--issue', ISSUE, '--slug', SLUG], { root, orca, setupFn: () => 1 });
-  assert.equal(failed.code, 1);
+  assert.equal(failed.code, 3);
   assert.match(failed.out, /ax worktree setup did not finish/);
+  assert.match(failed.out, new RegExp(tree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the operator is told which tree exists now');
   assert.deepEqual(failed.started, []);
 
   // Setup ends 0 but writes nothing: the child would have no URL to test
   // against, which is what `--setup skip` produced on 2026-08-13.
   const empty = run(['--issue', ISSUE, '--slug', SLUG], { root, orca, setupFn: () => 0 });
-  assert.equal(empty.code, 1);
+  assert.equal(empty.code, 3);
   assert.match(empty.out, new RegExp(`has no ${CONTEXT_PATH.replace('.', '\\.')}`));
 });
 
@@ -333,13 +389,14 @@ test('a placement Orca cannot SEE stops the launch before any dispatch', () => {
 
 // ── lineage ──────────────────────────────────────────────────────────────────
 
-test('lineage is set and READ BACK, never trusted', () => {
+test('lineage is set and READ BACK, and the read-back must be the parent it set', () => {
   const root = repo();
   provisioned(root, `${ISSUE}-${SLUG}`);
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root });
 
   assert.equal(r.code, 0);
-  assert.match(r.out, /lineage\s+wt-parent/);
+  assert.ok(r.calls.some(argv => argv.includes('worktree set') && argv.includes('--parent-worktree')));
+  assert.match(r.out, /lineage\s+repo-id::\/parent\/wt/);
 });
 
 test('a set that lands while the field still reads empty is announced, not claimed (F-002)', () => {
@@ -349,6 +406,18 @@ test('a set that lands while the field still reads empty is announced, not claim
 
   assert.equal(r.code, 0, 'a degraded report channel never costs the slice');
   assert.match(r.out, /parentWorktreeId still reads empty \(F-002\)/);
+});
+
+test('a parent that reads back as someone else is NOT SET, however non-empty it is', () => {
+  // A tree reused from an earlier launch already carries a parent. Reading "some
+  // parent" back would report success over a `set` Orca discarded — which is
+  // exactly the shape F-002 is about.
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root, orca: { parent: 'repo-id::/somebody/else' } });
+
+  assert.equal(r.code, 0, 'a degraded report channel never costs the slice');
+  assert.match(r.out, /not the \/parent\/wt this launch set/);
 });
 
 test('a session Orca witnesses nowhere gets no guessed parent', () => {
@@ -400,41 +469,27 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
 });
 
-test('a declared contract that cannot be read is refused, never silently replaced', () => {
-  const root = repo();
-  provisioned(root, `${ISSUE}-${SLUG}`);
-  writeFileSync(
-    join(root, 'ax.config.json'),
-    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry', contract: 'docs/pilot.md' } }),
-  );
-  const r = run(['--issue', ISSUE, '--slug', SLUG], { root });
-
-  assert.equal(r.code, 1);
-  assert.match(r.out, /which cannot be read/);
-  assert.deepEqual(r.started, []);
-});
-
 // ── dispatch and verification ────────────────────────────────────────────────
 
 test('a STRANDED dispatch is replayed here, and the child is still verified', () => {
-  // Both remote launches on record hit it, which makes the recovery the
-  // ordinary path rather than an anomaly. Typing it by hand is what used to
-  // drop the verification: the launch exited and the operator resumed from a
-  // fresh shell.
+  // Both remote launches on record hit it, which makes the recovery the ordinary
+  // path rather than an anomaly. Typing it by hand is what used to drop the
+  // verification: the launch exited and the operator resumed from a fresh shell,
+  // so the child was never proven.
   const root = repo();
   provisioned(root, `${ISSUE}-${SLUG}`);
-  const r = run(['--issue', ISSUE, '--slug', SLUG], {
-    root,
-    startCodes: [4, 0],
-    env: { AX_LAUNCH_SESSIONS: 'x' },
-    setupFn: () => 0,
-  });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, 'default');
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, home, startCodes: [4, 0] });
 
   assert.match(r.out, /STRANDED/);
   assert.match(r.out, /replaying the recorded call/);
   assert.equal(r.started.length, 2);
   assert.match(r.started[1], /--resume --request gap-353-loading-states/);
   assert.ok(!r.started[1].includes('--spec-file'), 'the replay is the recorded call, not a second composed one');
+  // The proposition is that the replay reaches a full green verdict in ONE run.
+  assert.equal(r.code, 0);
+  assert.match(r.out, /role=default/);
 });
 
 test('the marker applied WITH a role and a moving pane is a green verdict', () => {

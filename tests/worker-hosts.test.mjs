@@ -59,17 +59,24 @@ const fullHost = (extra = {}) => ({
 /**
  * An ssh that answers per ground and records the order it was asked, which is
  * how the sweep-before-measure rule is asserted rather than assumed.
+ *
+ * The argv is the hardened one: `-o BatchMode=yes -- <target> <command>`. The
+ * command is the LAST element, and the assertions below read the whole argv, so
+ * a value that stopped being quoted would show up here rather than on a host.
  */
 function fakeSsh({ df = ok('42G\n'), sweep = ok('reap 3\n'), mem = HEALTHY, tracker = ok('') } = {}) {
   const asked = [];
-  const ssh = ([, command]) => {
+  const calls = [];
+  const ssh = args => {
+    calls.push(args);
+    const command = args[args.length - 1];
     if (command.startsWith('df')) return (asked.push('df'), df);
     if (command.includes('memory.current'))
       return (asked.push('mem'), mem.unreadable ? dead : ok(`${mem.current}\n${mem.max}\n${mem.stat}\n`));
     if (command.includes('linear issue')) return (asked.push('tracker'), tracker);
     return (asked.push('sweep'), sweep);
   };
-  return { ssh, asked };
+  return { ssh, asked, calls };
 }
 
 // ── the arithmetic ───────────────────────────────────────────────────────────
@@ -197,7 +204,7 @@ test('half a declared pair is not a floor', () => {
 // The credential is per host: measured, `linear_not_connected` came back from
 // the remote host while the local CLI answered the ticket in full.
 test('the tracker probe passes when the ref echoes back, and names which path it proved', () => {
-  const { ssh } = fakeSsh({ tracker: ok('{"identifier": "ABC-12", "title": "x"}') });
+  const { ssh } = fakeSsh({ tracker: ok('{"ok":true,"result":{"issue":{"identifier":"ABC-12","title":"x"}}}') });
   const proof = proveHost(fullHost(), { ssh, kind: 'linear', ref: 'ABC-12' });
   assert.equal(proof.ok, true);
   assert.match(proof.notes.join('\n'), /reads ABC-12 over the orca CLI/);
@@ -216,19 +223,20 @@ test('a tracker that answers nothing is unproven, never a wall', () => {
 });
 
 test('a tracker that answers something else refuses, echoing what came back', () => {
-  const { ssh } = fakeSsh({ tracker: ok('{"ok": false, "error": "linear_not_connected"}') });
+  const { ssh } = fakeSsh({ tracker: ok('{"ok":false,"error":{"code":"linear_not_connected"}}') });
   const proof = proveHost(fullHost(), { ssh, kind: 'linear', ref: 'ABC-12' });
   assert.equal(proof.ok, false);
   assert.match(proof.reason, /linear_not_connected/);
   assert.match(proof.reason, /plan from the brief alone/);
 });
 
-// A ref is data, not a pattern. `SAFE_REF` admits `.`, so an unescaped match
-// turned it into a wildcard: probing `ABC.1` accepted an answer identifying
-// `ABCX1` as the ticket echoing back — a different ticket read as proof that the
-// child can open its own, which is the one outcome that must refuse.
-test('a ref containing a dot is matched literally, so a near-miss identifier still refuses', () => {
-  const { ssh } = fakeSsh({ tracker: ok('{"identifier": "ABCX1", "title": "someone else"}') });
+// The identifier is read out of the RECEIPT, never matched anywhere in the reply:
+// an error object quoting the ticket id is not the ticket answering, and a ref
+// carrying a `.` used to make the match a wildcard — probing `ABC.1` accepted an
+// answer identifying `ABCX1` as the ticket echoing back. A different ticket read
+// as proof that the child can open its own is the one outcome that must refuse.
+test('the identifier is read from the receipt, so a near-miss ticket still refuses', () => {
+  const { ssh } = fakeSsh({ tracker: ok('{"ok":true,"result":{"issue":{"identifier":"ABCX1"}}}') });
   const proof = proveHost(fullHost(), { ssh, kind: 'linear', ref: 'ABC.1' });
   assert.equal(proof.ok, false);
   assert.match(proof.reason, /ABCX1/);
@@ -303,4 +311,64 @@ test('an unlistable environment refuses with the command that lists it', () => {
   const refusal = repoIdFor('acme', { run, env: 'built' });
   assert.equal(refusal.ok, false);
   assert.match(refusal.reason, /orca repo list --environment built --json/);
+});
+
+// ── the ssh boundary ─────────────────────────────────────────────────────────
+
+// An argv array stops NEITHER injection that lives here, and both are reachable
+// from `ax.config.json` — which in a client repository is a file a pull request
+// can change. That is the threat: not a hostile operator, a hostile diff.
+test('a target that would be read as a local ssh option is refused, not passed', () => {
+  // `ssh -oProxyCommand=… host` executes that command on THIS machine, before
+  // any connection exists. So the target grammar is closed.
+  const calls = [];
+  const ssh = args => (calls.push(args), ok(''));
+  const proof = proveHost({ ssh: '-oProxyCommand=touch /tmp/pwned', diskPath: '/data', diskFloorGb: 10 }, { ssh });
+
+  assert.deepEqual(calls, [], 'nothing is handed to ssh at all');
+  assert.match(proof.notes.join('\n'), /could not be read over ssh/);
+  assert.match(proof.notes.join('\n'), /LOCAL ssh option/);
+});
+
+test('every value that crosses into the remote shell is quoted', () => {
+  // ssh REJOINS its arguments into one string and hands it to a remote shell, so
+  // a path interpolated into that command is program text, not data.
+  const { ssh, calls } = fakeSsh();
+  proveHost(
+    fullHost({
+      diskPath: '/data; touch /tmp/pwned',
+      cgroup: '/sys/fs/cgroup/x; touch /tmp/pwned',
+      sweep: ['reap', ';', 'touch', '/tmp/pwned'],
+    }),
+    { ssh, kind: 'linear', ref: 'ABC-12' },
+  );
+
+  const sent = calls.map(argv => argv.join(' ')).join('\n');
+  assert.ok(sent.includes("'/data; touch /tmp/pwned'"), 'the mount is one quoted word');
+  assert.ok(sent.includes("'/sys/fs/cgroup/x; touch /tmp/pwned/memory.current'"), 'each cgroup file is one quoted word');
+  assert.ok(sent.includes("';'"), 'a sweep argument that looks like a separator is quoted as data');
+  for (const argv of calls) {
+    assert.equal(argv[0], '-o');
+    assert.equal(argv[2], '--', 'option parsing is ended before the target');
+    assert.equal(argv[3], 'ground');
+  }
+});
+
+test('a ground whose transport failed is unproven, however plausible its output looks', () => {
+  // A non-zero ssh with numeric text on stdout is not a measurement: reading it
+  // as one lets a broken transport manufacture headroom.
+  const { ssh } = fakeSsh({ df: { status: 255, stdout: '999G\n', stderr: 'connection closed' } });
+  const proof = proveHost(fullHost(), { ssh });
+
+  assert.equal(proof.ok, true, 'a transport change never blocks remote work');
+  assert.match(proof.notes.join('\n'), /could not be read over ssh/);
+  assert.ok(proof.unproven >= 1, 'and it is counted as unproven rather than passed');
+});
+
+test('the dry-run mode says it would sweep, and sweeps nothing', () => {
+  const { ssh, asked } = fakeSsh();
+  const proof = proveHost(fullHost(), { ssh, sweep: false });
+
+  assert.ok(!asked.includes('sweep'), 'a preview that reclaims processes on another machine is not a preview');
+  assert.match(proof.notes.join('\n'), /would sweep stale browsers/);
 });

@@ -68,9 +68,13 @@ import { readPane } from './pane.mjs';
 import { modelMarker } from './transcript.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, ticketKind } from './ticket.mjs';
-import { hostFor, proveHost, repoIdFor } from './hosts.mjs';
+import { hostFor, proveHost, quote, remote, repoIdFor } from './hosts.mjs';
 import { MECHANICS, renderBrief } from './brief.mjs';
 import { pinIdentity, writeMandate } from './child.mjs';
+// `gh` and `git`, run for real. Imported rather than re-declared: this exact
+// default was dropped in a refactor once and no test noticed, because every test
+// injects `exec` — so there is ONE of them, and it has its own test.
+import { defaultExec } from './release.mjs';
 
 const USAGE =
   'ax worker launch --issue <ref> [--slug <s>] [--task <text>] [--brief <file>] [--model <alias>] ' +
@@ -80,12 +84,8 @@ const USAGE =
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
-const defaultExec = (bin, args, at) => {
-  const out = spawnSync(bin, args, { cwd: at, encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'] });
-  return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
-};
-
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
+/** A declared placement tool prints its path LAST; everything else it says is progress. */
 const lastLine = text =>
   String(text ?? '')
     .split('\n')
@@ -242,13 +242,41 @@ export function launch(
   const emptyBody = emptyBodyRefusal({ bodyLength: ticket.bodyLength, task: flags.task, id: ticket.id });
   if (emptyBody) return refuse(emptyBody, `ax worker launch --issue ${flags.issue} --task "<instruction> ${ticket.id}"`);
 
-  // ── 3. the ref the work is DEFINED by ──────────────────────────────────────
+  // ── 3. everything else knowable BEFORE anything is created ─────────────────
+  // A launch that can never dispatch must not leave a worktree, a mandate, a
+  // pinned identity or a lineage behind: exit 1 says nothing was created, and it
+  // has to be true. So the ref, the contract, the Run and the operator's brief —
+  // all four knowable now — are settled before placement.
   if (flags.needsRef !== '') {
     const proven = needsRef(flags.needsRef, { exec, cwd });
-    if (!proven.ok) return refuse(proven.reason, `git ls-remote --refs origin   # what origin actually carries`);
+    if (!proven.ok) return refuse(proven.reason, 'git ls-remote --refs origin   # what origin actually carries');
     note(`${flags.needsRef} resolves on origin, so a child on any clone of it is defined by something it can reach`);
   }
 
+  const contract = readContract(launchConfig, paths.root);
+  if (contract.missing) {
+    return refuse(
+      `launch.contract names ${contract.path}, which cannot be read — a brief pointing at nothing sends a child to improvise (2026-08-01)`,
+      `ls ${contract.path}   # or drop launch.contract to use the mechanics-only contract`,
+    );
+  }
+
+  const runId = flags.run || recordedRun(env);
+  if (runId === '') {
+    return cannot(
+      'no Run to own the Task: this session is in no peer registry and --run was not given',
+      'ax worker launch --issue … --run <run_id>',
+    );
+  }
+
+  let operator = null;
+  if (flags.brief !== '') {
+    try {
+      operator = { name: basename(flags.brief), text: readFileSync(flags.brief, 'utf8') };
+    } catch (error) {
+      return refuse(`--brief ${flags.brief} could not be read: ${String(error.message ?? error)}`);
+    }
+  }
   // ── 4. placement ───────────────────────────────────────────────────────────
   const place = [];
   let worktree = '';
@@ -268,9 +296,14 @@ export function launch(
       repoId = resolved.id;
     } else if (!repoId.startsWith('id:')) repoId = `id:${repoId}`;
 
-    const grounds = proveHost(declared.host, { ssh: args => exec('ssh', args, cwd), kind, ref: flags.issue });
+    // `sweep: !dry` — the browser sweep is the one MUTATION among the grounds,
+    // and a preview that reclaims processes on another machine is not a preview.
+    const grounds = proveHost(declared.host, { ssh: args => exec('ssh', args, cwd), kind, ref: flags.issue, sweep: !dry });
     for (const line of grounds.notes ?? []) note(line);
     if (!grounds.ok) return refuse(grounds.reason);
+    if ((grounds.unproven ?? 0) > 0) {
+      note(`${grounds.unproven} ground(s) on '${on}' are UNPROVEN rather than passed — a transport that cannot answer never blocks remote work, but it never proves it either`);
+    }
 
     place.push('--on', on, '--worktree', 'new-top-level', '--repo', repoId, '--name', request, '--agent', flags.agent);
     // `--setup skip` is exactly what left a child with no URLs, so it is only
@@ -330,21 +363,6 @@ export function launch(
   }
 
   // ── 6. the brief, as a FILE ────────────────────────────────────────────────
-  const contract = readContract(launchConfig, paths.root);
-  if (contract.missing) {
-    return refuse(
-      `launch.contract names ${contract.path}, which cannot be read — a brief pointing at nothing sends a child to improvise (2026-08-01)`,
-      `ls ${contract.path}   # or drop launch.contract to use the mechanics-only contract`,
-    );
-  }
-  const runId = flags.run || recordedRun(env);
-  if (runId === '') {
-    return cannot(
-      'no Run to own the Task: this session is in no peer registry and --run was not given',
-      'ax worker launch --issue … --run <run_id>',
-    );
-  }
-
   const brief = renderBrief({
     marker: flags.model,
     instruction,
@@ -353,7 +371,7 @@ export function launch(
     run: runId,
     host: on,
     contract: contract.text,
-    operator: flags.brief === '' ? null : { name: basename(flags.brief), text: readFileSync(flags.brief, 'utf8') },
+    operator,
   });
 
   if (dry) {
@@ -417,13 +435,13 @@ function placeLocal({ request, issue, slug, paths, launchConfig, exec, run, cwd,
   const base = join(paths.root, '.worktrees');
 
   // Idempotence first, and it is the only countermeasure available: `worktree
-  // create` carries no `--retry-request`, so a create that strands cannot be
-  // replayed. A second launch for the same ticket finds the first tree.
+  // create` carries no `--retry-request` (PORT invariant 2), so a create that
+  // strands cannot be replayed and the claim is bounded to THIS host. A second
+  // launch for the same ticket finds the first tree — and still proves it
+  // habitable below, because the launch that made it may be exactly the one that
+  // died before provisioning it.
   const existing = existingFor(base, issue);
-  if (existing !== '') {
-    notes.push(`reusing the worktree that already exists for ${issue}, and running no second bootstrap: ${existing}`);
-    return { worktree: existing, notes };
-  }
+  let created = false;
 
   const tool = launchConfig.worktreeTool ?? '';
   if (dry) {
@@ -439,8 +457,10 @@ function placeLocal({ request, issue, slug, paths, launchConfig, exec, run, cwd,
     return { worktree: '', predicted, notes };
   }
 
-  let worktree = '';
-  if (tool !== '') {
+  let worktree = existing;
+  if (existing !== '') {
+    notes.push(`reusing the worktree that already exists for ${issue}, and placing no second one: ${existing}`);
+  } else if (tool !== '') {
     // The declared tool BLOCKS until the tree is usable and prints the path on
     // its last stdout line; everything else it says is progress on stderr.
     const out = exec(tool, [issue, ...(slug === '' ? [] : [slug])], cwd);
@@ -452,15 +472,17 @@ function placeLocal({ request, issue, slug, paths, launchConfig, exec, run, cwd,
     if (worktree === '' || !existsSync(worktree)) {
       return { notes, cannot: `${tool} printed ${JSON.stringify(worktree)}, which is not a directory` };
     }
+    created = true;
   } else {
-    const created = run(['worktree', 'create', '--name', request, '--no-parent', '--setup', 'run', '--json']);
-    if (created.status !== 0 || created.receipt?.ok !== true) {
-      const detail = created.receipt?.unparseable ?? firstLine(created.stderr) ?? '';
+    const receipt = run(['worktree', 'create', '--name', request, '--no-parent', '--setup', 'run', '--json']);
+    if (receipt.status !== 0 || receipt.receipt?.ok !== true) {
+      const detail = receipt.receipt?.unparseable ?? firstLine(receipt.stderr) ?? '';
       return { notes, refused: `orca worktree create failed for ${request}; nothing was dispatched`, repair: String(detail).slice(0, 200) };
     }
-    worktree = String(created.receipt.result?.worktree?.path ?? '');
+    worktree = String(receipt.receipt.result?.worktree?.path ?? '');
     if (worktree === '') return { notes, cannot: 'the worktree receipt names no path, so there is nowhere to dispatch into' };
     if (!existsSync(worktree)) return { notes, cannot: `the receipt names ${JSON.stringify(worktree)}, which is not a directory on this host` };
+    created = true;
     notes.push(`orca placed the worktree and its setup hook is running: ${worktree}`);
   }
 
@@ -473,22 +495,38 @@ function placeLocal({ request, issue, slug, paths, launchConfig, exec, run, cwd,
     return { worktree, notes };
   }
 
+  // Once a tree EXISTS, a provisioning failure is no longer "nothing was
+  // created": exit 1 promises that, so these answer cannot-establish and name
+  // the tree, which is also what a second launch will reuse.
   const setupCode = setupFn([], { cwd: worktree, env: { ...env, PWD: worktree } });
   if (setupCode !== 0) {
-    return { notes, refused: `ax worktree setup did not finish in ${worktree}, so the child would start in a tree nobody prepared`, repair: `cd ${worktree} && ax worktree setup` };
+    return {
+      notes,
+      cannot: `ax worktree setup did not finish in ${worktree}${created ? ' (which this launch just created)' : ''}, so the child would start in a tree nobody prepared`,
+      repair: `cd ${worktree} && ax worktree setup   # then re-run this launch; it reuses that tree`,
+    };
   }
   if (!existsSync(join(worktree, CONTEXT_PATH))) {
     return {
       notes,
-      refused: `${worktree} has no ${CONTEXT_PATH}, so the child would have no URL to test against`,
-      repair: `cd ${worktree} && ax worktree setup`,
+      cannot: `${worktree} has no ${CONTEXT_PATH}, so the child would have no URL to test against`,
+      repair: `cd ${worktree} && ax worktree setup   # then re-run this launch; it reuses that tree`,
     };
   }
   notes.push(`provisioned: ${join(worktree, CONTEXT_PATH)} describes this worktree's own port and database`);
   return { worktree, notes };
 }
 
-/** The first worktree whose name carries this ticket, or ''. */
+/**
+ * The worktree this ticket already has, or ''.
+ *
+ * The match is the request's OWN name, never a substring of the ticket: `GAP-35`
+ * inside `gap-357-…` is a different ticket, and reusing another ticket's tree
+ * dispatches a child into a branch that is not its own. A tree is this ticket's
+ * when its name IS the request, or when it starts with the request's ticket
+ * segment followed by a separator — which is what a differently-slugged earlier
+ * launch of the same ticket produced.
+ */
 function existingFor(base, issue) {
   let entries;
   try {
@@ -496,7 +534,11 @@ function existingFor(base, issue) {
   } catch {
     return '';
   }
-  const hit = entries.filter(name => name.toLowerCase().includes(String(issue).toLowerCase())).sort();
+  const ticket = String(issue).toLowerCase();
+  const hit = entries.filter(name => {
+    const lower = name.toLowerCase();
+    return lower === ticket || lower.startsWith(`${ticket}-`) || lower.startsWith(`${ticket}_`);
+  }).sort();
   return hit.length === 0 ? '' : join(base, hit[0]);
 }
 
@@ -551,6 +593,13 @@ function setLineage({ run, worktree, on, dry, env }) {
   const recorded = String(readBack.receipt?.result?.worktree?.parentWorktreeId ?? readBack.receipt?.result?.parentWorktreeId ?? '');
   if (recorded === '') {
     return 'NOT SET — the set call returned but parentWorktreeId still reads empty (F-002); this child cannot report home, and its Run is the only channel left';
+  }
+  // A non-empty field is not the field this call asked for. A tree reused from an
+  // earlier launch already carries a parent, so reading "some parent" back would
+  // report success over a `set` Orca discarded — which is exactly the shape
+  // F-002 is about. The recorded id ends with the path it was set to.
+  if (!recorded.endsWith(parent)) {
+    return `NOT SET — parentWorktreeId reads ${recorded}, not the ${parent} this launch set (F-002: the set was discarded and answered ok); this child reports to whoever that is, not to this session`;
   }
   return recorded;
 }
@@ -669,9 +718,13 @@ function readMarker({ needle, env, sessionsRoot, host, exec, cwd }) {
   if (host === null) return modelMarker({ needle, env, sessionsRoot });
   const root = host.sessions ?? '';
   if (root === '') return null;
-  // The identical question, asked on the other machine: `ax` is there too, so
-  // the read is the same verb rather than a weaker proxy for it.
-  const out = exec('ssh', [host.ssh, 'ax', 'worker', 'transcript', '--marker', needle, '--sessions', root], cwd);
+  // The identical question, asked on the machine the transcript lives on: `ax`
+  // is there too, so this is the same verb rather than a weaker proxy for it.
+  //
+  // Through the ssh boundary, because ssh rejoins its arguments into ONE remote
+  // shell command: the needle and the declared sessions root are quoted there,
+  // and a target that would be read as a local option is refused.
+  const out = remote(args => exec('ssh', args, cwd), host.ssh, `ax worker transcript --marker ${quote(needle)} --sessions ${quote(root)}`);
   if (out.error || out.status !== 0) return null;
   const answer = firstLine(out.stdout);
   if (answer === '') return null;

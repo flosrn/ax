@@ -413,20 +413,30 @@ function resolveTarget(target, { env, sessionsRoot }) {
  * `null` means NO TRANSCRIPT YET — "too early to tell", never "boot model". A
  * caller that conflated the two would report a marker failure on a child that
  * was merely slow to start.
+ *
+ * The needle is a worktree directory NAME, and a session directory is the cwd
+ * slug it ran in — so the match is anchored at the END of that slug, never
+ * anywhere inside it. Unanchored, `GAP-35` would read the transcript of
+ * `GAP-357`, and a sibling session that happens to carry `role: default` would
+ * green this child's model proof. Two slugs ending in the same worktree name is
+ * a real ambiguity (the same branch checked out under two repositories), and it
+ * answers null rather than picking the newest.
  */
 export function modelMarker({ needle, env = process.env, sessionsRoot } = {}) {
   const root = sessionsRootOf(env, sessionsRoot);
+  const tail = String(needle ?? '');
+  if (tail === '') return null;
   let dirs;
   try {
     dirs = readdirSync(root, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && entry.name.includes(needle))
+      .filter(entry => entry.isDirectory() && (entry.name === tail || entry.name.endsWith(`-${tail}`)))
       .map(entry => join(root, entry.name));
   } catch {
     return null;
   }
+  if (dirs.length !== 1) return null;
+  const dir = dirs[0];
   const newest = paths => paths.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);
-  const dir = newest(dirs);
-  if (dir === null) return null;
 
   let files;
   try {

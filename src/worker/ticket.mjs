@@ -190,8 +190,24 @@ export function needsRef(ref, { exec = defaultExec, cwd = process.cwd() } = {}) 
   const wanted = String(ref ?? '');
   if (wanted === '') return { ok: true };
 
+  // `ls-remote` takes PATTERNS: `*` matches every ref, exits 0, and would prove
+  // that a ref nobody named exists. A ref the work is DEFINED by is one object,
+  // so a pattern is refused rather than resolved.
+  if (/[*?[\]]/.test(wanted)) {
+    return {
+      ok: false,
+      reason: `--needs-ref '${wanted}' is a pattern, not a ref. \`git ls-remote\` matches patterns and would answer 0 for any ref at all, which proves nothing about the one this work is defined by. Name the ref itself.`,
+    };
+  }
+
   const answer = exec('git', ['ls-remote', '--exit-code', '--refs', 'origin', wanted], cwd);
-  if (!answer?.error && answer?.status === 0) return { ok: true };
+  // Exactly one ref came back, because `--exit-code` alone only proves the
+  // pattern matched SOMETHING.
+  const named = String(answer?.stdout ?? '')
+    .split('\n')
+    .map(line => line.trim().split(/\s+/)[1] ?? '')
+    .filter(Boolean);
+  if (!answer?.error && answer?.status === 0 && named.length === 1) return { ok: true };
 
   return {
     ok: false,

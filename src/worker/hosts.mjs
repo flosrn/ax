@@ -34,6 +34,45 @@ const defaultSsh = args => {
 /** A ref is about to be pasted into a remote shell. Anything else is refused a probe. */
 const SAFE_REF = /^[A-Za-z0-9._#/-]+$/;
 
+/**
+ * THE ssh BOUNDARY. Two different injections live here, and an argv array stops
+ * neither of them on its own:
+ *
+ *   1. `ssh` reads a leading `-…` as a LOCAL option, so a target of
+ *      `-oProxyCommand=…` executes a command on THIS machine before any
+ *      connection is made. The target grammar below is therefore closed, and
+ *      `--` ends option parsing as well.
+ *   2. everything after the target is REJOINED by ssh into one string and handed
+ *      to a remote shell. So a path or an argv element interpolated into that
+ *      command is remote program text, not data — which is why every value that
+ *      crosses this boundary is quoted, without exception.
+ *
+ * These values arrive from `ax.config.json`, which in a client repository is a
+ * file a pull request can change. That is the threat model: not a hostile
+ * operator, a hostile diff.
+ */
+const SSH_TARGET = /^[A-Za-z0-9._][A-Za-z0-9._@%-]*(:[0-9]+)?$/;
+
+/** POSIX single-quoting: the only form a remote shell reads as one literal word. */
+export const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`;
+
+/**
+ * One remote command, or a refusal naming the target it would not pass to ssh.
+ * `command` is already-quoted program text; nothing here interpolates a caller's
+ * value into it afterwards.
+ */
+export function remote(ssh, at, command) {
+  if (!SSH_TARGET.test(String(at ?? ''))) {
+    return {
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: new Error(`ssh target ${JSON.stringify(at)} is not a host name — a leading dash is read as a LOCAL ssh option, so it is refused rather than passed`),
+    };
+  }
+  return ssh(['-o', 'BatchMode=yes', '--', at, command]);
+}
+
 /** A ref is data, never a pattern: it is compared literally wherever it is matched. */
 const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -140,23 +179,33 @@ export function unreclaimableMb(statText, { current, max } = {}) {
  * A refusal carries the notes taken before it: the grounds already proven are
  * what tells the operator whether the shortage is the whole story.
  */
-export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
+export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = {}) {
   const notes = [];
   const at = host.ssh;
   const refuse = reason => ({ ok: false, reason, notes });
+  // Every ground that could not be MEASURED is counted, so a caller can say
+  // "dispatching with N grounds unproven" instead of letting an absence read
+  // like a pass. It is still not a wall: a transport change must not stop
+  // remote work, which is the measured decision this ports.
+  let unproven = 0;
 
   // A worktree on that host installs its own dependencies — pnpm's store is
   // shared, the tree is not. Measured 2026-08-14: 42G of 301G free is why this
   // floor exists at all. An unreadable `df` is a NOTE, deliberately.
   if (host.diskPath && Number.isInteger(host.diskFloorGb)) {
-    const read = ssh([at, `df -BG --output=avail ${host.diskPath} 2> /dev/null | tail -1`]);
+    const read = remote(ssh, at, `df -BG --output=avail ${quote(host.diskPath)} 2> /dev/null | tail -1`);
     // Digits of the LAST non-empty line, so a header or a warning above it
-    // cannot be concatenated into a number that reads like free space.
-    const digits = String(read.stdout ?? '')
-      .split('\n')
-      .map(line => line.replace(/\D/g, ''))
-      .filter(Boolean)
-      .pop();
+    // cannot be concatenated into a number that reads like free space. And the
+    // transport's own verdict comes first: text arriving with a failed ssh is
+    // not a measurement, however numeric it looks.
+    const digits =
+      read.error === undefined && read.status === 0
+        ? String(read.stdout ?? '')
+            .split('\n')
+            .map(line => line.replace(/\D/g, ''))
+            .filter(Boolean)
+            .pop()
+        : undefined;
     const availGb = Number(digits);
     if (digits !== undefined) {
       if (availGb < host.diskFloorGb)
@@ -165,25 +214,32 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
         );
       notes.push(`free disk on '${at}': ${availGb}G on ${host.diskPath}, over the ${host.diskFloorGb}G floor`);
     } else {
+      unproven += 1;
       notes.push(
-        `free disk on '${at}' could not be read over ssh — that ground is unproven, not passed. Check launch.hosts.*.diskPath exists there, or run df yourself before dispatching.`,
+        `free disk on '${at}' could not be read over ssh — that ground is unproven, not passed${read.error ? ` (${String(read.error.message ?? read.error)})` : ''}. Check launch.hosts.*.diskPath exists there, or run df yourself before dispatching.`,
       );
     }
   } else {
+    unproven += 1;
     notes.push(
       `free disk on '${at}' was NOT MEASURED: it needs both diskPath and diskFloorGb under launch.hosts in ax.config.json. Declare the pair to have it measured.`,
     );
   }
 
   // Failure is silent about WHY on purpose, and announced as not-swept: a sweep
-  // that cannot run must never be why a dispatch stops.
+  // that cannot run must never be why a dispatch stops. `sweep: false` is a dry
+  // run: the sweep is the one MUTATION in this file, so a preview says it would
+  // run rather than running it.
   if (Array.isArray(host.sweep) && host.sweep.length > 0) {
-    const swept = ssh([at, host.sweep.join(' ')]);
-    if (swept.status === 0) notes.push(`swept stale browsers on '${at}' before measuring memory`);
-    else
-      notes.push(
-        `the browser sweep on '${at}' did not run, so memory is measured with whatever an earlier stage left open — this never blocks a dispatch. Run launch.hosts.*.sweep there by hand if the memory ground below refuses.`,
-      );
+    if (!sweep) notes.push(`dry-run: would sweep stale browsers on '${at}' before measuring memory, and is not doing it`);
+    else {
+      const swept = remote(ssh, at, host.sweep.map(quote).join(' '));
+      if (swept.status === 0) notes.push(`swept stale browsers on '${at}' before measuring memory`);
+      else
+        notes.push(
+          `the browser sweep on '${at}' did not run, so memory is measured with whatever an earlier stage left open — this never blocks a dispatch. Run launch.hosts.*.sweep there by hand if the memory ground below refuses.`,
+        );
+    }
   } else {
     notes.push(
       `no browser sweep declared for '${at}', so memory is measured with whatever is still running. Declare launch.hosts.*.sweep to reclaim dead renderers before the measurement.`,
@@ -195,10 +251,11 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
   // stays here, rather than in a remote shell whose quoting is a second thing to
   // get right. Unreadable is a NOTE, matching the disk ground above.
   if (host.cgroup && Number.isInteger(host.memFreeFloorMb)) {
-    const read = ssh([at, `cat ${host.cgroup}/memory.current ${host.cgroup}/memory.max ${host.cgroup}/memory.stat 2> /dev/null`]);
-    const lines = String(read.stdout ?? '').split('\n');
+    const read = remote(ssh, at, `cat ${quote(`${host.cgroup}/memory.current`)} ${quote(`${host.cgroup}/memory.max`)} ${quote(`${host.cgroup}/memory.stat`)} 2> /dev/null`);
+    const lines = read.error === undefined && read.status === 0 ? String(read.stdout ?? '').split('\n') : [];
     const verdict = unreclaimableMb(lines.slice(2).join('\n'), { current: lines[0], max: lines[1] });
     if (verdict === null) {
+      unproven += 1;
       notes.push(
         `cgroup memory on '${at}' could not be read as a measurement — that ground is unproven, not passed (an uncapped memory.max reads this way too, and an uncapped cgroup has no ceiling to be near). Check launch.hosts.*.cgroup still names the unit every session there shares.`,
       );
@@ -214,6 +271,7 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
       );
     }
   } else {
+    unproven += 1;
     notes.push(
       `cgroup memory on '${at}' was NOT MEASURED: it needs both cgroup and memFreeFloorMb under launch.hosts in ax.config.json. Declare the pair to have it measured.`,
     );
@@ -231,15 +289,26 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
   // child will do.
   if (kind === 'linear' && ref) {
     if (!SAFE_REF.test(ref)) {
+      unproven += 1;
       notes.push(`the tracker on '${at}' was not probed: '${ref}' carries characters this refuses to paste into a remote shell. Read it there by hand before dispatching.`);
     } else {
-      const probe = ssh([at, `bash -lc 'command -v orca-ide > /dev/null 2>&1 && O=orca-ide || O=orca; "$O" linear issue ${ref} --json'`]);
+      // `bash -lc` receives ONE argument, and that argument is built here rather
+      // than interpolated: the ref is a quoted literal word inside it, so a ref
+      // that reached this line carrying shell text is data.
+      const probe = remote(ssh, at, `bash -lc ${quote(`command -v orca-ide > /dev/null 2>&1 && O=orca-ide || O=orca; "$O" linear issue ${quote(ref)} --json`)}`);
       const answer = String(probe.stdout ?? '');
-      // The ref is matched LITERALLY. `SAFE_REF` admits `.`, `#` and `/`, and an
-      // unescaped `.` in a pattern is a wildcard: probing `ABC.1` would take an
-      // answer identifying `ABCX1` as the ticket echoing back, which is the one
-      // outcome that has to refuse.
-      if (new RegExp(`"identifier"\\s*:\\s*"${escapeRegExp(ref)}"`).test(answer)) {
+      // The identifier is read out of the RECEIPT, not matched anywhere in the
+      // text: an error object that happens to quote the ticket id is not the
+      // ticket answering, and a regex over the whole reply cannot tell those
+      // apart. A reply that does not parse is an unproven ground, below.
+      let identified = null;
+      try {
+        const parsed = JSON.parse(answer);
+        if (parsed?.ok !== false) identified = String(parsed?.result?.issue?.identifier ?? '');
+      } catch {
+        identified = null;
+      }
+      if (identified === ref) {
         // Name WHICH path was proven, because there are two and they
         // authenticate separately. This proves the `orca linear` CLI, the one
         // the brief tells the child to use, backed by a Personal API key in that
@@ -257,6 +326,7 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
         // tracker that answered nothing are one output here, and only the last
         // is a wall — so this is unproven, never a refusal. Empty is an absence
         // of information, not an absence of problem.
+        unproven += 1;
         notes.push(
           `the tracker on '${at}' answered nothing — that ground is unproven, not passed. Run \`orca linear issue ${ref} --json\` there yourself if the child later plans without its acceptance criteria.`,
         );
@@ -268,7 +338,12 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref } = {}) {
     }
   }
 
-  return { ok: true, notes };
+  // `unproven` is what keeps an absence from reading like a pass: the caller
+  // announces the count, so "nothing measured" and "everything measured and
+  // fine" are never the same line. It is deliberately NOT a refusal — the
+  // measured decision this ports is that a transport change must not stop
+  // remote work.
+  return { ok: true, notes, unproven };
 }
 
 /**
