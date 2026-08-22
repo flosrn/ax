@@ -254,9 +254,8 @@ les tables complètes, gating appliqué après.
       Accepté parce qu'il résout comme le coordinator le faisait, pas parce qu'il gênait.
       `ORCA_BROWSER_REAP_AGE_MIN` est mort avec le script (remplacé par `AX_SWEEP_MAX_AGE_MIN`) ;
       rien ne le posait dans un profil, vérifié. 434 tests OMP verts, 605 côté ax.
-- [ ] **8. `ax worker launch --name` + `ax pr gate`** — **les deux verbes faits le 2026-08-22**
-      (`7052902`, `a04fa7d`) ; la case reste ouverte parce que `merge-gate.sh` vit encore, et une
-      étape n'est cochée ici que quand son legacy est supprimé.
+- [x] **8. `ax worker launch --name` + `ax pr gate`** — fait le 2026-08-22
+      (`7052902`, `a04fa7d`, `35ac0e9` ; côté OMP `0b223ab`).
       Pas de `worktree new` : créer un worktree sans ticket est le MÊME verbe sans ticket, donc la
       chaîne claim → create → ax setup → agent EN DERNIER n'existe qu'une fois, et l'anti-doublon
       avec elle. Exactement une identité : `--issue` ou `--name`, jamais les deux.
@@ -297,24 +296,28 @@ les tables complètes, gating appliqué après.
       mesuré : la version à `tr` ne lisait rien sous un PATH minimal), et un composant vide est
       SAUTÉ au lieu d'être lu comme le cwd, qui pendant ce hook est l'arbre en cours de
       provisionnement.
-      **RESTE, et c'est la même règle qu'à l'étape 7.** Une déclaration doit atterrir dans chaque
-      repo AVANT que le bash meure, sinon ce repo se retrouve sans gate du tout.
-      `gapilabs/gapila` : **atterrie le 2026-08-22** (#2001, `de54c8956`) — et mergée par le gate
-      lui-même, `--merge` sur le SHA qu'il venait de valider. Au passage il a refusé deux fois à
-      raison : un fil de revue non résolu sur #1999 (mergée une heure plus tôt sans être lue, un P2
-      correct → #2000, `0f182fbaf`), puis sa propre branche en retard sur une base qui avait
-      avancé, pendant que `mergeStateStatus` disait `UNKNOWN` — F-033.2 en direct.
-      `goodluckagency/ofmchat` : la déclaration est repliée dans **#31**, la PR d'adoption d'ax qui
-      crée déjà `ax.config.json` (deux PR pour un fichier était la dérive exacte que ça évite ;
-      #48 fermée comme superseded). #31 est une adoption de 18 fichiers, donc son merge n'est pas
-      un geste de ce port. Elle mesure aussi une correction : le fichier machine-wide disait
-      `Instant Navigation` inconditionnel — faux, il est gaté sur
-      `vars.DISABLE_INSTANT_NAVIGATION_TESTS` et n'a PAS tourné sur #47. Donc un seul job est
-      attendu, et l'angle mort est écrit : un vert là prouve les types et le lint, jamais
-      l'isolation base, et pas la navigation tant que la variable est levée.
-      Quand #31 atterrit : supprimer `merge-gate.sh` (624 L) + `merge-gate.test.ts` (749) +
-      `merge-gate.json`, retirer `merge-gate.sh` de `check-orchestration-surface.sh` (il devient le
-      dernier exécutable sanctionné, donc la liste tombe à zéro) et basculer la prose qui le nomme.
+      **La règle de séquencement a été tenue une troisième fois.** Une déclaration doit atterrir
+      dans chaque repo AVANT que le bash meure, sinon ce repo se retrouve sans gate du tout.
+      `gapilabs/gapila` #2001 (`de54c8956`) et `goodluckagency/ofmchat` #31 (`da4a9d563`) ont
+      atterri, **tous deux mergés par le gate lui-même** — `--merge` sur le SHA qu'il venait de
+      valider, avec `--match-head-commit`. Puis `merge-gate.sh` (624) + `merge-gate.test.ts` (749)
+      + `merge-gate.json` (9) ont été supprimés (`0b223ab`), et `SANCTIONED_EXECUTABLES` est
+      **vide** — l'état fini d'ADR 0003, pas un manque : une liste vide refuse toujours tout
+      nouveau `orca-*`/`merge-gate*` dans `agent/scripts`, donc la surface ne repousse pas par
+      accident.
+      Le gate a refusé quatre fois sur le chemin, chaque fois à raison : un fil de revue non résolu
+      sur #1999 (mergée une heure plus tôt sans être lue — un P2 correct, qui a demandé DEUX
+      correctifs : inspecter la réponse de `command -v` ne peut pas marcher) ; sa propre branche en
+      retard pendant que `mergeStateStatus` disait `UNKNOWN` ; et #31, une adoption de 120 fichiers,
+      en retard pendant que `mergeStateStatus` disait **CLEAN** — F-033.2 deux fois, sur les deux
+      valeurs que ce champ prend. Sur une PR d'upgrade la différence n'est pas académique : un
+      squash depuis une base périmée rejoue tous les conflits d'un vieux merge-base au prochain kit.
+      Une correction mesurée au passage : `merge-gate.json` portait une entrée ofmchat non commitée
+      qui disait `Instant Navigation` inconditionnel. Faux — gaté sur
+      `vars.DISABLE_INSTANT_NAVIGATION_TESTS`, absent de #47 et de la tête de #31. Donc un seul job
+      est attendu là-bas, et l'angle mort est écrit dans la config plutôt que caché dans un vert :
+      un pass prouve les types et le lint, jamais l'isolation base, et pas la navigation tant que
+      la variable est levée.
 - [ ] **9. Deux rôles** — décidé le 2026-08-22 : ils se séparent par le GENRE de travail, pas par
       le nombre d'enfants. Un rôle mène les sessions de triage (l'enfant écrit un brouillon, le
       parent publie), l'autre les sessions d'implémentation (l'enfant ouvre une PR, le parent
