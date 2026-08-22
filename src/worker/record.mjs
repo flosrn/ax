@@ -594,6 +594,30 @@ export function dispatchIndex(store) {
   return { byDispatch, unreadable, ambiguous, missing: false, reason: '' };
 }
 
+/**
+ * Every pane handle recorded against each request, from a `dispatchIndex`.
+ *
+ * A request can hold more than one: a `--replace` records a second worker-start,
+ * and both panes are worth probing before anything concludes the request is
+ * finished. Two callers need this — `dispatch --fresh` before it opens a rival
+ * pass, and `publish --pass` before it lands a verdict under a newer one — and a
+ * second copy of the traversal is how the two would come to disagree.
+ *
+ * An EMPTY set is not proof of no pane. Rows here exist only where a parseable
+ * `worker-start` receipt named a dispatch id, so a stranded record maps nothing
+ * at all. Callers must route that absence through `paneVerdict`'s third value
+ * rather than reading it as a death (F-028).
+ */
+export function handlesByRequest(index) {
+  const byRequest = new Map();
+  for (const row of index.byDispatch.values()) {
+    if (row.handle === null) continue;
+    if (!byRequest.has(row.request)) byRequest.set(row.request, new Set());
+    byRequest.get(row.request).add(row.handle);
+  }
+  return byRequest;
+}
+
 /** F-003: a clean exit is not enough; Orca must read back the ready state. */
 export const taskUpdateOk = receipt => receipt?.ok === true && receipt?.result?.task?.status === 'ready';
 

@@ -21,7 +21,7 @@
 // would be a project constant in `src/`, which is the one thing this package
 // cannot carry.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { gitBlobSha } from '../hash.mjs';
@@ -35,11 +35,89 @@ export const DRAFT_DIR = join('.scratch', 'triage');
  * The job is part of it: a `brief` run on an issue already dispatched as
  * `triage` must create its own request rather than replay the triage record and
  * re-send the triage instruction.
+ *
+ * PASSES ARE APPEND-ONLY, AND PASS 1 IS UNSUFFIXED
+ *
+ * A second pass on one issue is a real need — the coordinator's understanding
+ * moved, a sibling ticket moved, or the first pass was wrong — and on
+ * 2026-08-22 it had no verb at all: the operator went around `dispatch`
+ * entirely, hand-editing the child's draft with string replacements.
+ *
+ * Nothing is ever renamed to make room for a new pass. A rename invalidates
+ * every live reference to the old path — a status copied into notes, a brief
+ * already sent, a concurrent read inside the rename window — which is the same
+ * stale-anchor failure that cost draft #54. Immutable paths are the cure, and
+ * the same one the draft fingerprint applies.
+ *
+ * Pass 1 carries no suffix so that every record and draft written before passes
+ * existed keeps working, unmoved. `-p1` is therefore never a legal name: one
+ * pass, one path.
  */
-export const requestFor = ({ job, repo, issue }) => `${job}-${String(repo).replace(/\//g, '-')}-${issue}`;
+export const requestFor = ({ job, repo, issue, pass = 1 }) =>
+  `${job}-${String(repo).replace(/\//g, '-')}-${issue}${pass > 1 ? `-p${pass}` : ''}`;
 
 /** The one path three parties derive independently. */
 export const draftPath = (root, identity) => join(root, DRAFT_DIR, `${requestFor(identity)}.md`);
+
+/**
+ * Which passes of one issue already exist in a directory, oldest first.
+ *
+ * One definition for two questions, because the naming rule is one rule: the
+ * store answers "which passes were dispatched" (`.json`) and the draft dir
+ * answers "which passes were written" (`.md`). A caller that scanned with its
+ * own regex would be a second naming rule, which is what `draftPath`'s comment
+ * already forbids.
+ *
+ * An unreadable directory answers `[]` rather than throwing: a machine that has
+ * never dispatched has no passes, and that is the ordinary first run. Callers
+ * that must not treat absence as emptiness check the directory themselves —
+ * `dispatch` already refuses on an unreadable store for exactly that reason.
+ */
+export function passesIn(dir, identity, extension) {
+  const base = requestFor({ ...identity, pass: 1 });
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  const found = [];
+  for (const name of names) {
+    if (!name.endsWith(extension)) continue;
+    const stem = name.slice(0, -extension.length);
+    if (stem === base) {
+      found.push(1);
+      continue;
+    }
+    if (!stem.startsWith(`${base}-p`)) continue;
+    const digits = stem.slice(base.length + 2);
+    // `-p1` is not pass 1 under another name, it is a name no writer here
+    // produces — so it is ignored rather than silently folded into pass 1.
+    if (!/^[1-9][0-9]*$/.test(digits)) continue;
+    const pass = Number(digits);
+    if (pass > 1) found.push(pass);
+  }
+  return found.sort((a, b) => a - b);
+}
+
+/**
+ * Every pass of one issue that exists at all: dispatched, written, or both.
+ *
+ * The union is the load-bearing part, and it was got wrong three times in one
+ * sitting before being named here. A pass just dispatched has a RECORD and a
+ * live pane but no `.md` yet; a pass written by hand can be the reverse. Any
+ * reader that consults one side alone concludes an older pass is the newest —
+ * and then publishes it, distils it, or reports it, under a child that is at
+ * that moment writing its replacement.
+ *
+ * So: three callers, one universe. `publish` decides what lands, `status`
+ * decides what to show, and the `brief` precheck decides what to distil.
+ */
+export function passesOf(storeDir, draftDir, identity) {
+  const both = new Set([...passesIn(storeDir, identity, '.json'), ...passesIn(draftDir, identity, '.md')]);
+  return [...both].sort((a, b) => a - b);
+}
 
 /**
  * Read the labels and the comment out of a draft, or say why it cannot be

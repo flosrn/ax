@@ -28,15 +28,16 @@ import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../worker/release.mjs';
-import { defaultStore, dispatchIndex } from '../worker/record.mjs';
+import { defaultStore, dispatchIndex, handlesByRequest, heldRepaired, report } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
+import { paneVerdict } from '../worker/ls.mjs';
 import { start as startVerb } from '../worker/start.mjs';
 import { launchProof } from '../worker/transcript.mjs';
-import { draftPath, readDraft, requestFor } from './draft.mjs';
+import { DRAFT_DIR, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
 
 const USAGE =
-  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
+  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
@@ -163,6 +164,8 @@ export function dispatch(
   let model = '@default';
   let force = false;
   let dry = false;
+  let freshPass = false;
+  let because = '';
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -174,6 +177,8 @@ export function dispatch(
     else if (arg === '--model') model = value();
     else if (arg === '--force') force = true;
     else if (arg === '--dry-run') dry = true;
+    else if (arg === '--fresh') freshPass = true;
+    else if (arg === '--because') because = value();
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else return usageError(`unknown argument "${arg}"`);
   }
@@ -186,6 +191,16 @@ export function dispatch(
   if (!['triage', 'brief', 'custom'].includes(job)) return usageError(`--job expects triage|brief|custom, got "${job}"`);
   if (job === 'custom' && instruction === '') return usageError('--job custom needs --instruction <file> holding the one-line task');
   if (job === 'custom' && !existsSync(instruction)) return refuse(`--instruction file unreadable: ${instruction}`);
+  // A fresh pass with no stated reason is a child redoing the work the last one
+  // already did. The text is not paperwork: it becomes the "what changed" line
+  // in the new child's own brief, which is the only thing telling it which parts
+  // of the previous pass still stand.
+  if (freshPass && because.trim() === '') {
+    return usageError('--fresh needs --because <text> — the reason is what the new child is told changed since the last pass');
+  }
+  // Refused rather than ignored: the caller wrote down why they were redoing the
+  // work, and silence would carry none of it.
+  if (!freshPass && because !== '') return usageError('--because only means something with --fresh');
 
   // ── 2. the machine, before the tracker ────────────────────────────────────
   const bin = runner ? null : resolve({ env });
@@ -258,7 +273,89 @@ export function dispatch(
   const live = alive.size;
   if (inventory.omitted) note('hosts are omitted from this terminal list: a child on one of them is UNKNOWN here, not counted');
 
-  const fresh = issues.filter(issue => !existsSync(join(store, `${requestFor({ job, repo: slug, issue })}.json`)));
+  // ── 4b. which PASS each issue is about to run ─────────────────────────────
+  // A plain dispatch targets the CURRENT pass — the newest one on disk — so it
+  // replays what is there (F-001) exactly as it did before passes existed. Only
+  // `--fresh` moves the number, and only behind two gates.
+  const handlesOf = handlesByRequest(index);
+
+  const plan = [];
+  for (const issue of issues) {
+    const base = { job, repo: slug, issue };
+    const existing = passesIn(store, base, '.json');
+    const latest = existing.length === 0 ? 0 : existing[existing.length - 1];
+
+    if (!freshPass) {
+      plan.push({ issue, pass: Math.max(latest, 1), previous: null });
+      continue;
+    }
+    if (latest === 0) {
+      return refuse(
+        `#${issue} has no recorded pass, so there is nothing to redo`,
+        `ax triage dispatch --issue ${issue} --job ${job}   # a first pass is an ordinary dispatch`,
+      );
+    }
+
+    // GATE 1 — F-001, and `--fresh` must never be the way around it. An
+    // unsettled record may still be mutating: `worker-start` has answered
+    // `runtime_unavailable` twice while its mutation ran on, which is how two
+    // agents landed in one worktree. A second pass on top of that is the same
+    // duplicate under a new name. Note this cannot be decided from the handle
+    // index: it only holds rows built from a parseable `worker-start` receipt,
+    // so a stranded record maps NO handle at all — the very case where a child
+    // is most likely to exist unseen.
+    const previousRequest = requestFor({ ...base, pass: latest });
+    let previousState;
+    try {
+      previousState = report(join(store, `${previousRequest}.json`));
+    } catch (error) {
+      return cannot(`pass ${latest} of #${issue} has an unreadable record: ${String(error.message ?? error)}`, `cat ${join(store, `${previousRequest}.json`)}`);
+    }
+    if (!previousState.usable) {
+      return refuse(
+        `pass ${latest} of #${issue} never settled, so it may still be mutating — a fresh pass here is a second agent under a new number`,
+        heldRepaired(join(store, `${previousRequest}.json`))
+          ? `ax worker transcript ${previousRequest}   # its child IS running and reports by peer; never --resume, never --fresh`
+          : `ax worker start --resume --request ${previousRequest}   # settle it first (F-001), then redo it`,
+      );
+    }
+
+    // GATE 2 — the pane, on the shared three-valued definition rather than the
+    // cap's. The cap deliberately leaves an omitted host UNCOUNTED, which is
+    // right for "have I room for one more" and wrong here: this call is about to
+    // create a RIVAL child, so an absence that proves nothing must stop it.
+    const handles = [...(handlesOf.get(previousRequest) ?? [])];
+    // Zero handles is not zero panes, and this is REACHABLE — not a theoretical
+    // guard. `report()` treats a Bash-era record as usable on
+    // `terminal !== null || legacyUsable`, where `legacyUsable` is just a
+    // non-empty `receiptPath` (record.mjs:367). So a settled legacy record can
+    // name no agent pane at all, clear gate 1, and map no handle here — which is
+    // "nothing on this machine can tell", exactly what `paneVerdict`'s null case
+    // answers. Probing through it routes the gap to the shared third value
+    // instead of falling through to "go ahead".
+    const probed = handles.length === 0 ? [null] : handles;
+    const why = `pass ${latest} has no pane recorded against it, so nothing on this machine can say whether its child is gone`;
+    const verdicts = probed.map(handle => paneVerdict(handle, why, inventory));
+    const living = probed.find((_, at) => verdicts[at].pane === 'VIVANT');
+    if (living !== undefined) {
+      return refuse(
+        `pass ${latest} of #${issue} still holds a live pane (${living}) — two children on one issue is the duplicate this whole subsystem exists to prevent`,
+        `ax worker release --close --dispatch <id>   # or let it finish; then redo it`,
+      );
+    }
+    const unknown = verdicts.find(verdict => verdict.pane === 'INCONNU');
+    if (unknown !== undefined) {
+      return cannot(
+        `pass ${latest} of #${issue} cannot be proven finished: ${unknown.detail} — an absence from a partial terminal list is not a death (F-028)`,
+        `ax worker ls   # read the pane's real state, close it if it is there, then redo`,
+      );
+    }
+
+    const previous = readDraft(paths.root, { ...base, pass: latest });
+    plan.push({ issue, pass: latest + 1, previous: { pass: latest, path: previous.path, sha: previous.sha } });
+  }
+
+  const newSessions = plan.filter(entry => !existsSync(join(store, `${requestFor({ job, repo: slug, issue: entry.issue, pass: entry.pass })}.json`)));
   const cap = capOf(env);
   if (!cap.ok) {
     return refuse(
@@ -266,9 +363,9 @@ export function dispatch(
       'unset ORCA_TRIAGE_SESSION_CAP # the default is 3, and 0 means "no new session here"',
     );
   }
-  if (live + fresh.length > cap.cap) {
+  if (live + newSessions.length > cap.cap) {
     return refuse(
-      `cap: ${live} live child pane(s) + ${fresh.length} new > ${cap.cap}`,
+      `cap: ${live} live child pane(s) + ${newSessions.length} new > ${cap.cap}`,
       'let a session finish, dispatch fewer issues, or raise ORCA_TRIAGE_SESSION_CAP',
     );
   }
@@ -303,7 +400,19 @@ export function dispatch(
       // A pass exists if it was published as a comment OR still sits in its
       // draft: publication happens at the end of a chain, so refusing on the
       // comment count alone would refuse the ordinary sequence.
-      const draft = readDraft(paths.root, { job: 'triage', repo: slug, issue });
+      // The NEWEST triage pass, from the records-and-drafts union. Reading `.md`
+      // alone would distil pass 1 while pass 2's child is still writing — a brief
+      // built on a verdict its own author is in the middle of replacing.
+      const triageBase = { job: 'triage', repo: slug, issue };
+      const triagePasses = passesOf(store, join(paths.root, DRAFT_DIR), triageBase);
+      const from = triagePasses.length === 0 ? 1 : triagePasses[triagePasses.length - 1];
+      const draft = readDraft(paths.root, { ...triageBase, pass: from });
+      if (triagePasses.length > 0 && !existsSync(draft.path)) {
+        bad(`^ triage pass ${from} is dispatched but has written no draft yet — there is nothing to distil, and falling back to an older pass would brief a verdict being replaced`);
+        fix(`ax triage status --issue ${issue} --job triage   # wait for pass ${from} to write, then run the brief`);
+        blocked = true;
+        continue;
+      }
       if (meta.comments === 0 && !draft.ok && !existsSync(draft.path)) {
         bad('^ no comment and no triage draft — there is no pass to distil into a brief');
         fix(`ax triage dispatch --issue ${issue} # run the triage pass first`);
@@ -331,10 +440,14 @@ export function dispatch(
 
   // ── 7. one session per issue ──────────────────────────────────────────────
   const results = [];
-  for (const issue of issues) {
-    const request = requestFor({ job, repo: slug, issue });
-    const draft = draftPath(paths.root, { job, repo: slug, issue });
-    section(`issue #${issue} → session '${request}'`);
+  for (const { issue, pass, previous } of plan) {
+    const identity = { job, repo: slug, issue, pass };
+    const request = requestFor(identity);
+    const draft = draftPath(paths.root, identity);
+    // The pass is printed even when there is only one of it. A number that
+    // appears only once it matters is a number nobody learns to read, and the
+    // silence on which version was in play is what cost draft #54.
+    section(`issue #${issue} → session '${request}' (pass ${pass})`);
 
     const spec = renderSpec({
       job,
@@ -344,6 +457,9 @@ export function dispatch(
       labels: labels.path,
       triaged: (state.get(issue)?.comments ?? 0) > 0,
       instruction: job === 'custom' ? readFileSync(instruction, 'utf8') : '',
+      pass,
+      previous,
+      because,
     });
     note(`spec: ${spec}`);
 
@@ -460,7 +576,7 @@ function readLabels(declared, root) {
  * close, never the bare size labels — is the publisher's contract now, and
  * belongs to `ax triage publish`. What the child owes is one file.
  */
-function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) {
+function renderSpec({ job, model, issue, draft, labels, triaged, instruction, pass = 1, previous = null, because = '' }) {
   const marker = `[omp role=triage-worker model=${model}]`;
   const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted.`;
 
@@ -472,9 +588,22 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) 
   // pairs a ruling to, so the shape is declared here instead of left to taste.
   const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own. Those lines stay in the body — the human reads them on the issue — and they are what a fold pairs answers to, so a question that needs three paragraphs to state is more than one decision: split it.`;
 
+  // What a SECOND pass is told, and it is told before anything else it reads.
+  // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.
+  //
+  // The previous draft is named by path AND by fingerprint. The path lets the
+  // child read what its predecessor concluded instead of re-deriving it; the
+  // `git hash-object` value is what lets a human afterwards prove which version
+  // it actually read, which is the same question #54 could not answer. Both are
+  // immutable: no pass is ever renamed to make room for the next one.
+  const redo = previous === null
+    ? ''
+    : `This is PASS ${pass} on this issue. Pass ${previous.pass} already ran and its verdict is at ${previous.path} (git hash-object ${previous.sha || 'unwritten'}) — read it first. You are not starting over and you are not reviewing it: keep everything it established that the following still supports, and change only what follows from it. WHAT CHANGED SINCE: ${because.replace(/\s+/g, ' ').trim()}`;
+
   if (job === 'triage') {
     return [
       marker,
+      redo,
       `Read skill://triage AND ${labels}, which overrides the skill wherever the two diverge.`,
       `Then triage issue #${issue} (issue://${issue}).`,
       `Write your verdict to ${draft}. It opens with directive lines, then the comment body a human will read on the issue months from now, with your justification at one line per group.`,
@@ -483,12 +612,13 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) 
       nothing,
       asking,
       'Report when the draft is written.',
-    ].join(' ');
+    ].filter(Boolean).join(' ');
   }
 
   if (job === 'brief') {
     return [
       marker,
+      redo,
       `Read skill://triage and its reference file AGENT-BRIEF.md, and ${labels}.`,
       `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass: do not redo it, do not re-measure what is established, and do not render a competing verdict.`,
       `Write the Agent Brief that follows from that pass to ${draft}, absorbing everything its "what is missing" section asks for, with a \`Labels:\` line for any label the pass left unapplied and a \`Remove labels:\` line for any state label your transition supersedes — label names only, no group prefix and no parenthetical, each checked against this repository's label list before it is applied.`,
@@ -496,7 +626,7 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) 
       asking,
       nothing,
       'Report when the draft is written.',
-    ].join(' ');
+    ].filter(Boolean).join(' ');
   }
 
   // The caller's own one-line task, prefixed by the issue's triage state. That

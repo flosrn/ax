@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { draftPath, parseDraft, readDraft, requestFor } from '../src/triage/draft.mjs';
+import { draftPath, parseDraft, passesIn, readDraft, requestFor } from '../src/triage/draft.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-draft-'));
 
@@ -34,6 +34,45 @@ test('the draft path is the request, under the repo’s own .scratch', () => {
   // `.scratch/` is gitignored, so a draft never reaches a diff — and never a
   // client repo's history. It is work in progress, not a deliverable file.
   assert.equal(draftPath('/w', { job: 'triage', repo: 'acme/widgets', issue: '7' }), '/w/.scratch/triage/triage-acme-widgets-7.md');
+});
+
+test('pass 1 is unsuffixed, so every record written before passes existed still resolves', () => {
+  // The suffix is append-only: nothing is renamed to make room for pass 2, which
+  // is what keeps a status already copied into notes, or a brief already sent,
+  // pointing at the file it named.
+  assert.equal(requestFor({ job: 'triage', repo: 'acme/widgets', issue: '7' }), 'triage-acme-widgets-7');
+  assert.equal(requestFor({ job: 'triage', repo: 'acme/widgets', issue: '7', pass: 1 }), 'triage-acme-widgets-7');
+  assert.equal(requestFor({ job: 'triage', repo: 'acme/widgets', issue: '7', pass: 2 }), 'triage-acme-widgets-7-p2');
+});
+
+test('the passes present in a directory are found, oldest first, whatever order the disk lists them', () => {
+  const dir = scratch();
+  for (const name of ['triage-acme-widgets-7-p3.json', 'triage-acme-widgets-7.json', 'triage-acme-widgets-7-p2.json']) {
+    writeFileSync(join(dir, name), '{}');
+  }
+  assert.deepEqual(passesIn(dir, { job: 'triage', repo: 'acme/widgets', issue: '7' }, '.json'), [1, 2, 3]);
+});
+
+test('a neighbouring issue, job or extension is not a pass of this one', () => {
+  // `…-7` is a prefix of `…-70`, and that near-miss would report a pass that
+  // belongs to another ticket — then refuse a fresh dispatch on a collision that
+  // does not exist.
+  const dir = scratch();
+  for (const name of ['triage-acme-widgets-70.json', 'brief-acme-widgets-7.json', 'triage-acme-widgets-7.md', 'triage-acme-widgets-7-p2.json']) {
+    writeFileSync(join(dir, name), '{}');
+  }
+  assert.deepEqual(passesIn(dir, { job: 'triage', repo: 'acme/widgets', issue: '7' }, '.json'), [2]);
+});
+
+test('a directory that cannot be read has no passes, because a first run has none', () => {
+  assert.deepEqual(passesIn(join(scratch(), 'never'), { job: 'triage', repo: 'acme/widgets', issue: '7' }, '.json'), []);
+});
+
+test('`-p1` is ignored rather than folded into pass 1, because one pass has one path', () => {
+  const dir = scratch();
+  writeFileSync(join(dir, 'triage-acme-widgets-7-p1.json'), '{}');
+  writeFileSync(join(dir, 'triage-acme-widgets-7-px.json'), '{}');
+  assert.deepEqual(passesIn(dir, { job: 'triage', repo: 'acme/widgets', issue: '7' }, '.json'), []);
 });
 
 // ── what a draft has to say to be publishable ────────────────────────────────

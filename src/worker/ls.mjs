@@ -173,8 +173,16 @@ function workerIndex(run) {
   return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length };
 }
 
-/** VIVANT / MORT / INCONNU for one recorded handle. */
-function paneVerdict(handle, why, terminals) {
+/**
+ * VIVANT / MORT / INCONNU for one recorded handle.
+ *
+ * Exported because `ax triage dispatch --fresh` has to answer the same question
+ * before it opens a competing pass, and a second definition of "is that pane
+ * dead" is how one of the two ends up wrong. The third value is the whole point:
+ * a handle missing from a terminal list that omits hosts is UNKNOWN, never dead
+ * (F-028), and a caller about to create a rival child must not round that down.
+ */
+export function paneVerdict(handle, why, terminals) {
   if (handle === null) return { pane: 'INCONNU', detail: why };
   const terminal = terminals.byHandle.get(handle);
   if (terminal === undefined) {

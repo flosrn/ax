@@ -674,3 +674,169 @@ test('the summary refuses to let a report stand for a landing', () => {
   assert.match(r.out, /nothing lands until you publish it/);
   assert.match(r.out, /do not poll/);
 });
+
+// ── a second pass on one issue ───────────────────────────────────────────────
+//
+// Measured 2026-08-22: the coordinator never ran a second pass, because there
+// was no verb for one. It hand-edited the child's draft with string replacements
+// and published that. Every refusal below is a way that shortcut could have gone
+// wrong once it became a real verb.
+
+/** A record that never settled: worker-start answered, its mutation may run on. */
+function stranded(store, request) {
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, `${request}.json`),
+    JSON.stringify({
+      request,
+      createdAt: '2026-08-20T10:00:00.000Z',
+      attempts: [
+        {
+          n: 1,
+          phases: [{ name: 'worker-start', beganAt: '2026-08-20T10:00:00.000Z', exit: 1, receipt: { ok: false, error: { code: 'runtime_unavailable' } } }],
+        },
+      ],
+    }),
+  );
+}
+
+/** A draft on disk for one pass, so `passesIn` can see it. */
+function draftAt(root, request, text = 'Labels: category/bug\n\nIt reproduces.\n') {
+  mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
+  writeFileSync(join(root, '.scratch', 'triage', `${request}.md`), text);
+  return join(root, '.scratch', 'triage', `${request}.md`);
+}
+
+test('--fresh without --because is refused, because an unexplained redo is a child repeating itself', () => {
+  const r = run(['--issue', '7', '--fresh']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--fresh needs --because/);
+  assert.deepEqual(r.started, [], 'nothing was dispatched');
+});
+
+test('--because without --fresh is refused rather than dropped, because the caller wrote it down', () => {
+  const r = run(['--issue', '7', '--because', 'the sibling moved']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--because only means something with --fresh/);
+});
+
+test('--fresh on an issue with no recorded pass says a first pass is an ordinary dispatch', () => {
+  const r = run(['--issue', '7', '--fresh', '--because', 'nothing to redo']);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /no recorded pass/);
+  assert.match(r.out, /ax triage dispatch --issue 7/);
+  assert.deepEqual(r.started, []);
+});
+
+test('--fresh is refused while the previous pass still holds a live pane', () => {
+  // The duplicate this whole subsystem exists to prevent, under a new number.
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  record(store, 'triage-acme-widgets-7', { handle: 'term_child' });
+  const r = run(['--issue', '7', '--fresh', '--because', 'the ruling changed'], { root, home, store, orca: { panes: ['term_me', 'term_child'] } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /still holds a live pane \(term_child\)/);
+  assert.deepEqual(r.started, []);
+});
+
+test('--fresh cannot establish anything when the previous pane is absent from a partial list', () => {
+  // F-028: an absence from an inventory that omits hosts is not a death, and this
+  // call is about to create a rival child on the strength of it.
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  record(store, 'triage-acme-widgets-7', { handle: 'term_child' });
+  const r = run(['--issue', '7', '--fresh', '--because', 'the ruling changed'], {
+    root,
+    home,
+    store,
+    orca: { panes: ['term_me'], omitted: ['host_b'] },
+  });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /cannot be proven finished/);
+  assert.deepEqual(r.started, []);
+});
+
+test('--fresh cannot establish anything when a settled legacy pass recorded no pane', () => {
+  // REACHABLE, not theoretical: `report()` calls a Bash-era record usable on
+  // `terminal !== null || legacyUsable`, and `legacyUsable` is just a non-empty
+  // `receiptPath` (record.mjs:367). Such a record clears gate 1 as settled and
+  // maps no handle at all — so nothing on this machine can say whether its child
+  // is gone, and creating a rival pass on that silence is the F-028 mistake.
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, 'triage-acme-widgets-7.json'),
+    JSON.stringify({
+      request: 'triage-acme-widgets-7',
+      createdAt: '2026-08-20T10:00:00.000Z',
+      attempts: [
+        {
+          n: 1,
+          phases: [
+            {
+              name: 'worker-start',
+              beganAt: '2026-08-20T10:00:00.000Z',
+              exit: 0,
+              receiptPath: '/legacy/receipts/worker-start.json',
+              receipt: { ok: true, result: { dispatchId: 'd-1', state: 'ready', effects: [] } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  const r = run(['--issue', '7', '--fresh', '--because', 'the ruling changed'], { root, home, store, orca: { panes: ['term_me'] } });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /no pane recorded against it/);
+  assert.deepEqual(r.started, []);
+});
+
+test('--fresh never overrides F-001: an unsettled pass routes to --resume, not to a new number', () => {
+  // `worker-start` has answered `runtime_unavailable` twice while its mutation
+  // ran on. A second pass on top of that is the same duplicate, renamed.
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  stranded(store, 'triage-acme-widgets-7');
+  const r = run(['--issue', '7', '--fresh', '--because', 'the ruling changed'], { root, home, store, orca: { panes: ['term_me'] } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /never settled/);
+  assert.match(r.out, /--resume --request triage-acme-widgets-7/);
+  assert.deepEqual(r.started, []);
+});
+
+test('a fresh pass runs as p2, and its child is told the path, the fingerprint and the reason', () => {
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  record(store, 'triage-acme-widgets-7', { handle: 'term_gone' });
+  const path = draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one said this.\n');
+  const sha = execFileSync('git', ['hash-object', path], { encoding: 'utf8' }).trim();
+
+  const r = run(['--issue', '7', '--fresh', '--because', 'issue #8 changed the cost model'], { root, home, store, orca: { panes: ['term_me'] } });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /pass 2/);
+  assert.match(r.out, /PASS 2 on this issue/);
+  assert.match(r.out, new RegExp(`Pass 1 already ran and its verdict is at ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(r.out, new RegExp(`git hash-object ${sha}`));
+  assert.match(r.out, /WHAT CHANGED SINCE: issue #8 changed the cost model/);
+  assert.equal(r.started.length, 1);
+  assert.match(r.started[0], /triage-acme-widgets-7-p2/);
+});
+
+test('a plain dispatch on an issue that has two passes replays the NEWEST, never pass 1', () => {
+  // Otherwise the ordinary command reruns a verdict its own author replaced.
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  record(store, 'triage-acme-widgets-7', { handle: 'term_one', dispatchId: 'd-1' });
+  record(store, 'triage-acme-widgets-7-p2', { handle: 'term_two', dispatchId: 'd-2' });
+  const r = run(['--issue', '7'], { root, home, store, orca: { panes: ['term_me'] } });
+  assert.equal(r.code, 0);
+  assert.equal(r.started.length, 1);
+  assert.match(r.started[0], /--resume --request triage-acme-widgets-7-p2/);
+});

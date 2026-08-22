@@ -16,7 +16,7 @@ import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
 import { dispatch } from './dispatch.mjs';
-import { readDraft, requestFor } from './draft.mjs';
+import { DRAFT_DIR, passesIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
 
 const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|custom] [--repo <owner/repo>]';
@@ -88,43 +88,55 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
 
   const store = defaultStore(env);
   for (const issue of issues) {
-    const identity = { job, repo: slug, issue };
-    const request = requestFor(identity);
-    section(`issue #${issue} — request ${request}`);
+    const base = { job, repo: slug, issue };
+    // Every pass, oldest first, records UNION drafts. A pass just dispatched has
+    // a record and no draft; one written by hand could be the reverse. Reporting
+    // only the newest would hide the row an operator is deciding against, and
+    // reporting only one silently is what cost draft #54.
+    const all = [...new Set([...passesIn(store, base, '.json'), ...passesIn(join(root, DRAFT_DIR), base, '.md')])].sort((a, b) => a - b);
+    const passes = all.length === 0 ? [1] : all;
+    section(`issue #${issue} — ${passes.length} pass(es)`);
 
-    const path = join(store, `${request}.json`);
-    if (!existsSync(path)) note('no dispatch record');
-    else {
-      try {
-        const state = report(path);
-        const summary = state.summary ?? {};
-        note(`${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
-        // Never a fresh dispatch: the recorded mutation may still be running,
-        // and no snapshot can see one in flight.
-        if (!state.usable) {
-          if (heldRepaired(path)) {
-            note('a repaired held composer — this Dispatch settled `failed` and never will again, but its child IS running');
-            note('its report arrives by peer, and its work lands in the draft below — never `--resume`, which would be a second agent in one session');
-            note(dim(`ax worker transcript ${request}   # what it is doing`));
-          } else fix(`ax worker start --resume --request ${request}   # replays the recorded call (F-001)`);
+    for (const pass of passes) {
+      const identity = { ...base, pass };
+      const request = requestFor(identity);
+      // The number is printed even when there is only one of it: a number that
+      // shows up only once it matters is one nobody has learned to read.
+      note(`pass ${pass} — request ${request}`);
+
+      const path = join(store, `${request}.json`);
+      if (!existsSync(path)) note(dim('  no dispatch record'));
+      else {
+        try {
+          const state = report(path);
+          const summary = state.summary ?? {};
+          note(`  ${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
+          // Never a fresh dispatch: the recorded mutation may still be running,
+          // and no snapshot can see one in flight.
+          if (!state.usable) {
+            if (heldRepaired(path)) {
+              note('  a repaired held composer — this Dispatch settled `failed` and never will again, but its child IS running');
+              note('  its report arrives by peer, and its work lands in the draft below — never `--resume`, which would be a second agent in one session');
+              note(dim(`  ax worker transcript ${request}   # what it is doing`));
+            } else fix(`ax worker start --resume --request ${request}   # replays the recorded call (F-001)`);
+          }
+        } catch (error) {
+          bad(`pass ${pass} record unreadable: ${String(error.message ?? error)}`);
         }
-      } catch (error) {
-        bad(`record unreadable: ${String(error.message ?? error)}`);
       }
-    }
 
-    // The draft's IDENTITY, not merely its existence. A coordinator reads a
-    // draft, decides against it, and then folds or publishes — and in between,
-    // the child that owns it may rewrite it. Measured 2026-08-22: #54 went from
-    // 106 to 117 lines after its own peer report, with no signal, so every
-    // anchor a human had taken against it was silently stale. The sha is
-    // `git hash-object`'s, so it can be re-checked with a command an operator
-    // already trusts, and `ax triage fold --expect <sha>` refuses on it.
-    const draft = readDraft(root, identity);
-    if (draft.sha === '') note(dim(draft.reason));
-    else {
-      note(`draft ${draft.path}`);
-      note(dim(`${draft.sha.slice(0, 12)} · ${draft.lines} line(s)${draft.questions.length > 0 ? ` · ${draft.questions.length} open question(s)` : ''}${draft.ok ? '' : ` · NOT publishable: ${draft.reason}`}`));
+      // The draft's IDENTITY, not merely its existence. A coordinator reads a
+      // draft, decides against it, and in between the child that owns it may
+      // rewrite it. Measured 2026-08-22: #54 went from 106 to 117 lines after
+      // its own peer report, with no signal, so every anchor a human had taken
+      // against it was silently stale. The sha is `git hash-object`'s, so it can
+      // be re-checked with a command an operator already trusts.
+      const draft = readDraft(root, identity);
+      if (draft.sha === '') note(dim(`  ${draft.reason}`));
+      else {
+        note(`  draft ${draft.path}`);
+        note(dim(`  ${draft.sha.slice(0, 12)} · ${draft.lines} line(s)${draft.questions.length > 0 ? ` · ${draft.questions.length} open question(s)` : ''}${draft.ok ? '' : ` · NOT publishable: ${draft.reason}`}`));
+      }
     }
   }
   return 0;
