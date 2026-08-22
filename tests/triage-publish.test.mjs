@@ -377,9 +377,37 @@ test('an unknown argument is refused', () => {
 const runStatus = (argv, options = {}) => {
   const root = options.root ?? repo();
   const gh = options.gh ?? fakeGh();
-  const result = capture(() => status([...argv], { exec: gh.exec, env: { ORCA_DISPATCH_STORE: options.store ?? join(root, 'store') }, cwd: root }));
+  const result = capture(() =>
+    status([...argv], {
+      exec: gh.exec,
+      env: { ORCA_DISPATCH_STORE: options.store ?? join(root, 'store') },
+      cwd: root,
+      // A machine with no Orca unless the test says otherwise: the waiting
+      // state is Orca's, and these tests must answer identically beside a live
+      // runtime and on a bare CI box.
+      resolve: options.resolve ?? (() => null),
+      runner: options.runner,
+    }),
+  );
   return { ...result, root, calls: gh.calls };
 };
+
+/** An Orca whose inbox holds exactly these messages, newest-first like the real one. */
+function fakeInbox(messages, { readable = true } = {}) {
+  const calls = [];
+  const runner = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'orchestration' && args[1] === 'inbox') {
+        if (!readable) return { status: 1, stdout: '', stderr: 'runtime not reachable' };
+        return receipt({ count: messages.length, messages });
+      }
+      return { status: 1, stdout: '', stderr: 'unexpected orca call' };
+    },
+  });
+  return { runner, calls };
+}
 
 function record(store, request, { usable = true, repaired = false } = {}) {
   mkdirSync(store, { recursive: true });
@@ -475,6 +503,88 @@ test('status reads the record for the job it was asked about', () => {
   const r = runStatus(['--issue', '7', '--job', 'brief'], { root, store });
   assert.match(r.out, /request brief-acme-widgets-7/);
   assert.doesNotMatch(r.out, /no dispatch record/);
+});
+
+// ── status: the waiting state is Orca's, read from Orca ──────────────────────
+//
+// NEVER deduced from the draft: a count of `Q<n>:` lines cannot tell a child
+// blocked on its ask from a child that died after writing its questions, or
+// from an answer that arrived without a revision. A question is PENDING when
+// Orca holds a `type: "question"` message that no other message threads back
+// to — both shapes measured 2026-08-22.
+
+const question = (over = {}) => ({
+  id: 'msg_q1',
+  from_handle: 'term_child',
+  to_handle: 'run:run_owner',
+  type: 'question',
+  body: 'triage-acme-widgets-7 is blocked on the question(s) below, asked from draft abc. Each needs one ruling, paired by number.\nQ1: bug or enhancement?\nQ2: which priority?',
+  thread_id: null,
+  created_at: '2026-08-22T10:00:00Z',
+  ...over,
+});
+
+test('a pass whose child is blocked on questions says WAITING, names them, and names the repair', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([question({ from_handle: 'term_child' })]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /WAITING since 2026-08-22T10:00:00Z on Q1-Q2 — message msg_q1/);
+  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1 --file/);
+  assert.doesNotMatch(r.out, /waiting state unknown/);
+});
+
+test('an answered question is not WAITING: the reply that threads back to it closes the row', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([
+    { id: 'msg_a1', from_handle: 'run:run_owner', type: 'status', body: 'Q1: …\nA1: bug', thread_id: 'msg_q1', created_at: '2026-08-22T11:00:00Z' },
+    question(),
+  ]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /WAITING/);
+});
+
+test("another pane's question is not attributed to this pass", () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([question({ from_handle: 'term_other' })]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /WAITING/);
+});
+
+test('an unreadable mailbox is NAMED, never rendered as an absence of questions', () => {
+  // F-028 on the reading side: status still answers from records and drafts,
+  // but the gap has to be on the page — an operator deciding "nobody is
+  // waiting" from this output must be able to see the ground it stands on.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([], { readable: false });
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /waiting state unknown: orca orchestration inbox unreadable/);
+  assert.match(r.out, /request triage-acme-widgets-7/, 'the rest of the report survives');
+});
+
+test('a machine with no Orca at all names the gap the same way', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const r = runStatus(['--issue', '7'], { root, store });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /waiting state unknown: no Orca CLI on this machine/);
 });
 
 // ── which pass lands ─────────────────────────────────────────────────────────

@@ -850,14 +850,17 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // refused because the stall had revoked their capability, and the
   // coordinator's replies had no route left "after their report".
   //
-  // The command is named rather than described, for the same reason the label
-  // grammar is: an unnamed gesture gets improvised, and three children
-  // improvising an escalation produced three layouts nobody could fold.
+  // The command is ax's OWN, fully rendered — issue, job, repo, pass — for the
+  // same reason the label grammar is named: an unnamed gesture gets improvised,
+  // and a raw `orchestration ask` lets the questions on the wire diverge from
+  // the Q<n>: lines on record. One commit shipped the raw command; this pins
+  // its replacement.
   const r = run(['--issue', '7', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /orca orchestration ask --question/);
-  assert.match(r.out, /blocks until it is answered/);
-  assert.match(r.out, /--resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
+  assert.match(r.out, /ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/);
+  assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
+  assert.match(r.out, /blocks until they are answered/);
+  assert.match(r.out, /ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
   assert.match(r.out, /Do not report and do not end your turn while a question is open/);
   assert.match(r.out, /Report when the draft is FINAL/);
   assert.doesNotMatch(r.out, /Report when the draft is written/);
@@ -868,7 +871,7 @@ test('the same instruction reaches a brief child, because a brief escalates too'
   draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nThe triage pass.\n');
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { root });
   assert.equal(r.code, 0);
-  assert.match(r.out, /orca orchestration ask --question/);
+  assert.match(r.out, /ax triage ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
   assert.match(r.out, /Report when the draft is FINAL/);
 });
 

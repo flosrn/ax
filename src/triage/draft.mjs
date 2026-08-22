@@ -120,6 +120,48 @@ export function passesOf(storeDir, draftDir, identity) {
 }
 
 /**
+ * Every `Q<n>:` line of one text, in the order written.
+ *
+ * One extraction for three readers: `parseDraft` collects the draft's own
+ * questions with it, `ask` sends exactly what it returns, and `answer` runs it
+ * over the ask message it is about to answer to prove the wire and the record
+ * still agree. A second regex in any of them is a second grammar, which is how
+ * three children produced three escalation layouts on 2026-08-22.
+ */
+export function questionsIn(text) {
+  const questions = [];
+  for (const line of String(text ?? '').split('\n')) {
+    const match = /^Q([0-9]+):\s*(.*)$/.exec(line);
+    if (match !== null) questions.push({ n: Number(match[1]), text: match[2].trim() });
+  }
+  return questions;
+}
+
+/**
+ * Why a question set cannot be answered by number, or null when it can.
+ *
+ * Named once because it guards two gates: `parseDraft` refuses to call such a
+ * draft publishable, and `ask` refuses to put it on the wire — a ruling keyed
+ * by number must reach exactly one question, so blanks, repeats and gaps are
+ * all the same defect: a pairing that would drop or misroute an answer.
+ */
+export function questionProblem(questions) {
+  if (questions.some(question => question.text === '')) {
+    return 'a Q line carries no question — an empty ask cannot be answered, and a fold would pair a ruling to nothing';
+  }
+  const numbered = questions.map(question => question.n);
+  const twice = numbered.filter((n, index) => numbered.indexOf(n) !== index);
+  if (twice.length > 0) return `two questions are numbered Q${twice[0]} — a ruling keyed by number could not reach either`;
+  // Consecutive from 1, in order. A fold pairs answers BY NUMBER, so a gap is a
+  // question whose ruling would be silently dropped.
+  const misnumbered = numbered.findIndex((n, index) => n !== index + 1);
+  if (misnumbered !== -1) {
+    return `questions are numbered ${numbered.join(', ')} — they have to run 1..${numbered.length} in order, because a fold pairs rulings by number`;
+  }
+  return null;
+}
+
+/**
  * Read the labels and the comment out of a draft, or say why it cannot be
  * published.
  *
@@ -157,8 +199,10 @@ export function parseDraft(text) {
   const body = [];
   let close = false;
   let empty = false;
-  const questions = [];
-  let blank = false;
+  // Collected by the shared extraction, and deliberately NOT consumed out of
+  // the body below: a question is content — the human reads it on the issue —
+  // so eating it the way `Labels:` is eaten would delete the escalation.
+  const questions = questionsIn(text);
 
   const collect = (into, value) => {
     for (const entry of value.split(',')) {
@@ -189,30 +233,14 @@ export function parseDraft(text) {
       close = /^(yes|true)$/i.test(closeLine[1].trim());
       continue;
     }
-    // Matched, collected, and then deliberately NOT skipped: the question stays
-    // in the body so the human sees it on the issue.
-    const questionLine = /^Q([0-9]+):\s*(.*)$/.exec(line);
-    if (questionLine !== null) {
-      const text = questionLine[2].trim();
-      if (text === '') blank = true;
-      questions.push({ n: Number(questionLine[1]), text });
-    }
     body.push(line);
   }
 
   const comment = body.join('\n').trim();
   const out = { labels, remove, body: comment, close, questions };
   if (empty) return { ok: false, reason: 'a Labels line carries an empty label — a lost group is not a label', ...out };
-  if (blank) return { ok: false, reason: 'a Q line carries no question — an empty ask cannot be answered, and a fold would pair a ruling to nothing', ...out };
-  const numbered = questions.map(question => question.n);
-  const twice = numbered.filter((n, index) => numbered.indexOf(n) !== index);
-  if (twice.length > 0) return { ok: false, reason: `two questions are numbered Q${twice[0]} — a ruling keyed by number could not reach either`, ...out };
-  // Consecutive from 1, in order. A fold pairs answers BY NUMBER, so a gap is a
-  // question whose ruling would be silently dropped.
-  const misnumbered = numbered.findIndex((n, index) => n !== index + 1);
-  if (misnumbered !== -1) {
-    return { ok: false, reason: `questions are numbered ${numbered.join(', ')} — they have to run 1..${numbered.length} in order, because a fold pairs rulings by number`, ...out };
-  }
+  const asked = questionProblem(questions);
+  if (asked !== null) return { ok: false, reason: asked, ...out };
   if (labels.length === 0) return { ok: false, reason: 'this draft names no label, so there is nothing to apply', ...out };
   // Both directives naming one label is not a transition, it is a contradiction,
   // and `gh` would accept it and leave the outcome to its own ordering.

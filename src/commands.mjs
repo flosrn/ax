@@ -100,7 +100,9 @@ export const COMMANDS = [
     gated: 'orca',
     subcommands: [
       ['dispatch --issue N …', 'one session per issue, capped — no tree, no branch'],
+      ['ask --issue N', "send the draft's own Q<n> lines, and wait for rulings"],
       ['status [--issue N …]', 'what each dispatch recorded, and its recovery'],
+      ['answer --issue N --id <msg>', 'pair rulings from --file to the questions, then reply'],
       ['publish --issue N …', 'apply what a draft names — never closes an issue'],
     ],
   },

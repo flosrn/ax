@@ -13,13 +13,57 @@ import { join } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
+import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
+import { answer } from './answer.mjs';
+import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
-import { DRAFT_DIR, passesIn, readDraft, requestFor } from './draft.mjs';
+import { DRAFT_DIR, passesIn, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
+import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
 
 const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|custom] [--repo <owner/repo>]';
+
+/**
+ * Every unanswered question on this machine's mailbox, keyed by the pane that
+ * asked it.
+ *
+ * This is ORCA's state, read from Orca — never deduced from the draft. A count
+ * of `Q<n>:` lines cannot tell a child waiting on its ask from a child that
+ * died after writing its questions, or from an answer that arrived without a
+ * revision; the header comment below records what deducing it nearly cost.
+ * The shapes are measured (2026-08-22): a question is a message with
+ * `type: "question"`, and its answer — when one exists — is a message whose
+ * `thread_id` is the question's own id.
+ *
+ * Unreadable is NOT fatal and NOT silent: `status` answers from records and
+ * drafts on a machine with no Orca at all, but the gap is named on the output,
+ * because an absent answer is not an absent question (F-028).
+ */
+function readMailbox({ resolve, runner, env }) {
+  const bin = runner ? 'injected' : resolve({ env });
+  if (!runner && bin === null) return { ok: false, reason: 'no Orca CLI on this machine' };
+  const run = runner ?? createRunner({ bin });
+  const out = run(['orchestration', 'inbox', '--limit', String(INBOX_WINDOW), '--json']);
+  const receipt = out.receipt ?? {};
+  if (out.status !== 0 || receipt.ok !== true || !Array.isArray(receipt.result?.messages)) {
+    // Flattened: an unparseable receipt is multi-line JSON, and a reason that
+    // wraps the report is a reason nobody reads to the end.
+    const detail = String(receipt.unparseable ?? out.stderr ?? '').replace(/\s+/g, ' ');
+    return { ok: false, reason: `orca orchestration inbox unreadable (exit ${out.status})${detail ? `: ${detail.slice(0, 160)}` : ''}` };
+  }
+  const messages = receipt.result.messages.filter(entry => entry !== null && typeof entry === 'object');
+  const threaded = new Set(messages.map(entry => entry.thread_id).filter(Boolean));
+  const pending = new Map();
+  for (const entry of messages) {
+    if (entry.type !== 'question' || threaded.has(entry.id)) continue;
+    const list = pending.get(entry.from_handle) ?? [];
+    list.push(entry);
+    pending.set(entry.from_handle, list);
+  }
+  return { ok: true, pending };
+}
 
 /**
  * What each dispatch recorded, and the recovery it routes to.
@@ -45,7 +89,7 @@ const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|cu
  * for a pane whose status is `exited` — measured the same day — so the naive
  * probe answers "alive" over a corpse.
  */
-export function status(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
+export function status(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), resolve = resolveOrca, runner } = {}) {
   const issues = [];
   let job = 'triage';
   let repo = '';
@@ -86,6 +130,11 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     return 1;
   }
 
+  // One mailbox read for the whole report, before the loop: a question PENDING
+  // in Orca is the one state neither the record nor the draft can carry, and
+  // the budget of the parked children will be read off these rows.
+  const mailbox = readMailbox({ resolve, runner, env });
+  if (!mailbox.ok) note(dim(`waiting state unknown: ${mailbox.reason} — an absent answer is not an absent question (F-028)`));
   const store = defaultStore(env);
   for (const issue of issues) {
     const base = { job, repo: slug, issue };
@@ -105,11 +154,13 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       note(`pass ${pass} — request ${request}`);
 
       const path = join(store, `${request}.json`);
+      let handle = '';
       if (!existsSync(path)) note(dim('  no dispatch record'));
       else {
         try {
           const state = report(path);
           const summary = state.summary ?? {};
+          handle = typeof summary.terminal === 'string' ? summary.terminal : '';
           note(`  ${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
           // Never a fresh dispatch: the recorded mutation may still be running,
           // and no snapshot can see one in flight.
@@ -122,6 +173,17 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
           }
         } catch (error) {
           bad(`pass ${pass} record unreadable: ${String(error.message ?? error)}`);
+        }
+      }
+
+      // The pane's PENDING questions, matched by the handle the record holds.
+      // Only here — behind a real record — because a draft-only pass has no
+      // pane to have asked anything.
+      if (mailbox.ok && handle !== '') {
+        for (const question of mailbox.pending.get(handle) ?? []) {
+          const numbers = questionsIn(question.body).map(entry => entry.n);
+          note(`  WAITING since ${question.created_at ?? 'an unrecorded time'} on ${numbers.length > 0 ? questionSpan(numbers) : 'its question'} — message ${question.id}`);
+          fix(`ax triage answer --issue ${issue} --job ${job} --id ${question.id} --file <rulings.md>   # one A<n>: line per question`);
         }
       }
 
@@ -142,7 +204,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   return 0;
 }
 
-export const SUBCOMMANDS = { dispatch, status, publish };
+export const SUBCOMMANDS = { dispatch, ask, status, answer, publish };
 
 /** `ax triage <verb> [args]`. */
 export function triage(argv = []) {
