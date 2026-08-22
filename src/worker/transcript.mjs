@@ -473,7 +473,11 @@ function sessionFileForNeedle({ needle, request = '', env = process.env, session
   let dirs;
   try {
     dirs = readdirSync(root, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && (entry.name === tail || entry.name.endsWith(`-${tail}`)))
+      .filter(entry => {
+        if (!entry.isDirectory()) return false;
+        const slug = entry.name.replace(/-+$/, '');
+        return slug === tail || slug.endsWith(`-${tail}`);
+      })
       .map(entry => join(root, entry.name));
   } catch {
     return null;

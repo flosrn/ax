@@ -266,7 +266,7 @@ test('a request id selects one triage session among siblings sharing the current
 
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
   const root = scratch();
-  const dir = join(root, '-repo-worker');
+  const dir = join(root, '--srv-orca-gapila-.worktrees-worker--');
   mkdirSync(dir, { recursive: true });
   const older = join(dir, 'older.jsonl');
   const newer = join(dir, 'newer.jsonl');
