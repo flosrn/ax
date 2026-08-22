@@ -204,11 +204,17 @@ test('a refused label call posts nothing for that issue', () => {
   );
 });
 
-test('a state transition removes and adds in ONE gh edit, never two', () => {
+test('a state transition asks for the removal, in the same invocation as the adds', () => {
   // Reported by the first real coordinator campaign, 2026-08-22: publish only
   // ever built `--add-label`, so publishing a draft that moved an issue off
-  // `needs-triage` left BOTH state labels on it. Two calls would also work and
-  // would be wrong: they invent a window where the issue holds both.
+  // `needs-triage` left BOTH state labels on it.
+  //
+  // This proves ONE INVOCATION carrying both directions, and deliberately not
+  // atomicity — an earlier version of this name claimed that and was wrong. `gh`
+  // runs the two directions as concurrent GraphQL mutations in an errgroup, and
+  // GitHub offers no atomic add-and-remove at all, so no argv here could buy
+  // one. What one invocation buys is the absence of a SECOND window, plus a
+  // single exit status to react to.
   const root = repo();
   draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nTwo rulings are missing.\n');
   const r = run(['--issue', '7'], { root });
@@ -218,6 +224,20 @@ test('a state transition removes and adds in ONE gh edit, never two', () => {
   assert.equal(edits.length, 1, 'one edit carries both directions');
   assert.match(edits[0], /--add-label needs-info/);
   assert.match(edits[0], /--remove-label needs-triage/);
+});
+
+test('a refused edit says the label state is indeterminate, and how to read it', () => {
+  // gh's errgroup returns the FIRST error, so the other direction may have
+  // landed. A refusal that only says "nothing was posted" reads as "nothing
+  // changed" and invites a blind retry onto a half-applied transition.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nTwo rulings are missing.\n');
+  const r = run(['--issue', '7'], { root, answers: { labels: { status: 1, stderr: 'HTTP 502' } } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /may have landed/);
+  assert.match(r.out, /issue view 7 .*--json labels/, 'the repair reads the state first');
+  assert.ok(r.calls.every(line => !line.includes('issue comment')), 'no comment on an unknown label state');
 });
 
 test('a directive naming a label the repository does not have is refused before any call', () => {

@@ -123,11 +123,23 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // It is rendered HERE, in the loop that can still refuse: a render that fails
     // after `gh issue edit` has run leaves the labels applied and the comment
     // missing, which is the half-landed state this batch is ordered to avoid.
-    // ONE `gh issue edit` carries both directions, because `--add-label` and
-    // `--remove-label` are one API call and splitting them would invent a window
-    // where an issue holds two state labels at once — the state machine broken
-    // by the tool that was supposed to serve it. Atomicity here is free; a
-    // second call for the removes would be a choice to lose it.
+    // ONE `gh issue edit` carries both directions, and that is one INVOCATION,
+    // not one transaction. Read the claim this comment used to make, because it
+    // was wrong: `gh` runs the two label directions as two concurrent GraphQL
+    // mutations in an errgroup (`pkg/cmd/pr/shared/editable_http.go`, `UpdateIssue`
+    // → `addLabels` / `removeLabels`), so `--add-label` and `--remove-label` are
+    // NOT one API call and nothing here makes them atomic.
+    //
+    // It is still the right shape, for a reason worth keeping straight: GitHub
+    // offers no atomic add-and-remove. `addLabelsToLabelable` and
+    // `removeLabelsFromLabelable` are separate mutations, and gh chose that split
+    // deliberately — its own comment says "to avoid having to replace the entire
+    // list of labels and risking race conditions". The only single-mutation
+    // alternative is `updateIssue(labelIds: …)`, which REPLACES the whole set and
+    // therefore clobbers any concurrent label change. One invocation is the best
+    // available; two invocations would merely add a second window for no gain.
+    //
+    // What follows from that is the refusal below, not this argv.
     const labels = [
       'issue',
       'edit',
@@ -166,7 +178,13 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     const applied = gh(labels);
     if (applied.error || applied.status !== 0) {
       bad(`#${issue} labels refused — ${firstLine(applied.stderr) || `exit ${applied.status}`}`);
-      fix(`gh ${labels.join(' ')} # nothing was posted for this issue`);
+      // The label state is INDETERMINATE here, and saying "nothing was posted"
+      // alone invites a blind retry. gh's errgroup returns the FIRST error, so
+      // the other direction may have landed: the issue can now hold both state
+      // labels, neither, or the right one behind an unrelated failure.
+      note('  ^ the add and the remove are two concurrent mutations, so one of them may have landed');
+      fix(`gh issue view ${issue} --repo ${slug} --json labels # read the state before retrying anything`);
+      fix(`gh ${labels.join(' ')} # no comment was posted for this issue`);
       failed = 1;
       continue;
     }
