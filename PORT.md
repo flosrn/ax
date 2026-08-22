@@ -174,6 +174,19 @@ les tables complètes, gating appliqué après.
       `ax worker launch`. ⚠ `record.py` garde ses 28 verbes alors que 24 sont morts : il disparaît
       ENTIER à l'étape 7, et le découper deux fois est du bruit. Le rouge unique de
       `orca-triage.test.ts` est toujours celui d'avant l'étape 5.
+      Revue 3 lentilles (correctness, adversarial, testing) après le premier commit, 10 correctifs,
+      chacun avec son test : **P0** un tableau argv ne protège de rien sur ssh — un target en `-`
+      est une option LOCALE (ProxyCommand s'exécute ici) et tout ce qui suit le target est recollé
+      par ssh en commande shell distante ; UNE frontière (grammaire de target fermée, `--`, chaque
+      valeur quotée), parce que ces valeurs viennent d'un `ax.config.json` qu'une PR peut changer.
+      Puis : `defaultExec` dupliqué (déjà perdu une fois dans un refactor) importé de `release.mjs` ;
+      contrat, Run et brief opérateur résolus AVANT tout placement (exit 1 promet que rien n'a été
+      créé) ; un arbre qui existe mais n'est pas provisionné répond 3 et se nomme ; un arbre
+      réutilisé est prouvé habitable, pas supposé ; le parent relu doit être celui qu'on a posé ;
+      le marker refuse un transcript voisin (match ancré, ambiguïté = null) ; `--needs-ref` en
+      pattern refusé (`ls-remote` matche des motifs et répondrait 0 pour n'importe quel ref) ;
+      balayage distant muet en dry-run ; sol dont le transport a échoué compté NON PROUVÉ.
+      Suite ax 503/503.
 - [ ] **7. `ax triage`** — cas de `orca-triage.test.ts`. Meurt : le coordinator ENTIER.
 - [ ] **8. `ax worktree new` + `ax pr gate`** — parallélisables avec 6-7. Meurt : `merge-gate.sh`.
 - [ ] **9. Rôles** — `~/.omp/agent/agents/{coordinateur,orchestrateur}.md`, minces, appellent ax.
