@@ -106,7 +106,12 @@ export function createRunner({ bin, exec, timeoutMs = 30000 } = {}) {
   const run =
     exec ??
     ((command, args) => {
-      const out = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
+      // maxBuffer is NOT the Node default on purpose. Measured 2026-08-22: a
+      // real `orchestration inbox --limit 500 --json` overflows spawnSync's
+      // 1 MiB cap, which KILLS the child mid-print — status null, receipt
+      // truncated — and turns a healthy runtime into "unreadable". Receipts are
+      // bounded by Orca's own row caps, so 64 MiB is headroom, not a policy.
+      const out = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
       return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
     });
   return args => {

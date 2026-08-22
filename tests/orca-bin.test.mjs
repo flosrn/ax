@@ -1,5 +1,7 @@
-// Binary resolution, the two-level gate and the runner. Everything injected:
-// no test here touches PATH, spawns a process, or needs an Orca.
+// Binary resolution, the two-level gate and the runner. Everything injected —
+// no PATH, no Orca — except the last test, which MUST spawn a real process:
+// the defect it pins lives in the real spawnSync path and no injected exec can
+// reach it.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -71,4 +73,16 @@ test('runtimeReady demands reachable:true — an executable shim with no runtime
     exec: () => ({ status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: false } } }), stderr: '' }),
   });
   assert.equal(runtimeReady(half).ready, false, 'a half-up Orca must not pass the execution gate');
+});
+
+test('a receipt past 1 MiB survives the real spawn path', () => {
+  // Measured 2026-08-22: a real `orchestration inbox --limit 500 --json`
+  // overflows Node's default maxBuffer, which KILLS the child mid-print —
+  // status null, receipt truncated — and made `status` report a healthy
+  // runtime's mailbox as unreadable. The spawned binary is this same Node, so
+  // the test stays offline and PATH-free.
+  const run = createRunner({ bin: process.execPath });
+  const out = run(['-e', 'process.stdout.write(JSON.stringify({ ok: true, result: { pad: "x".repeat(2 * 1024 * 1024) } }))']);
+  assert.equal(out.status, 0, `the child was cut short: ${String(out.error ?? '')}`);
+  assert.equal(out.receipt.ok, true, 'the receipt came back truncated');
 });
