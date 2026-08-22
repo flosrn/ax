@@ -28,6 +28,7 @@ import {
   claimRecord,
   defaultStore,
   initRecord,
+  markHeldRepair,
   newIdentity,
   phaseArgv,
   phaseBegin,
@@ -205,15 +206,24 @@ function cursorRead(run, handle, executionEnv) {
   return pane.exit === 0 ? pane.cursor : null;
 }
 
-/** A held initial composer is an upstream race; one guarded Enter repairs it. */
+/**
+ * A held initial composer is an upstream race; one guarded Enter repairs it.
+ *
+ * Returns WHAT HAPPENED, because one caller decides on it whether a child is
+ * running: `'submitted'` (the Enter went in and the pane advanced), `'unheld'`
+ * (the pane was already emitting, so nothing needed sending), or `'unknown'` —
+ * autosubmit off, no pane, an unreadable cursor, a refused send, or a pane that
+ * did not move afterwards. `'unknown'` is the only honest answer for all five:
+ * none of them proves a brief was delivered.
+ */
 export function ensureSpecSubmitted(path, { run, env = process.env, sleep = sleepDefault } = {}) {
-  if (String(env.ORCA_DISPATCH_AUTOSUBMIT ?? '1') === '0') return;
+  if (String(env.ORCA_DISPATCH_AUTOSUBMIT ?? '1') === '0') return 'unknown';
 
   let pane;
   try {
     pane = workerPane(path);
   } catch {
-    return;
+    return 'unknown';
   }
 
   const tries = Math.max(1, Number(env.ORCA_DISPATCH_AUTOSUBMIT_TRIES ?? 4));
@@ -223,7 +233,7 @@ export function ensureSpecSubmitted(path, { run, env = process.env, sleep = slee
 
   for (let i = 0; i < tries; i += 1) {
     const current = cursorRead(run, pane.handle, pane.env);
-    if (current === null) return;
+    if (current === null) return 'unknown';
     if (previous !== null && current === previous) {
       held = true;
       break;
@@ -231,21 +241,22 @@ export function ensureSpecSubmitted(path, { run, env = process.env, sleep = slee
     previous = current;
     if (i + 1 < tries) sleep(gapMs);
   }
-  if (!held) return;
+  if (!held) return 'unheld';
 
   const sendArgs = ['terminal', 'send', '--terminal', pane.handle];
   if (pane.env) sendArgs.push('--environment', pane.env);
   sendArgs.push('--enter', '--json');
   const sent = run(sendArgs);
-  if (sent.status !== 0) return;
+  if (sent.status !== 0) return 'unknown';
 
   sleep(gapMs);
   const after = cursorRead(run, pane.handle, pane.env);
   if (after !== null && after !== previous) {
     ok('SPEC WAS HELD unsent in the pane — one Enter submitted it, and the worker is emitting.');
-  } else {
-    note(redactSecrets(`SPEC MAY STILL BE HELD — inspect with: orca terminal read --terminal ${pane.handle} --limit 60 --json`));
+    return 'submitted';
   }
+  note(redactSecrets(`SPEC MAY STILL BE HELD — inspect with: orca terminal read --terminal ${pane.handle} --limit 60 --json`));
+  return 'unknown';
 }
 
 /**
@@ -295,6 +306,68 @@ function finishUsable(path, context) {
 }
 
 /**
+ * The dispatch whose pane exists and whose BRIEF never left the composer.
+ *
+ * `agent_prompt_stalled` at the `dispatch_input` stage is not a partial
+ * mutation: the worktree, the pane and the agent are all there, and the only
+ * thing missing is the Enter that submits text Orca has already typed. This file
+ * ALREADY owns that repair — `ensureSpecSubmitted`, "one guarded Enter repairs
+ * it" — and it was wired only to the path where the race did not happen, so the
+ * failure it was written for never reached it. Measured 2026-08-22: three
+ * launches on this Mac, three held composers, three panes each repaired by one
+ * Enter typed by hand, after the verb had already exited telling the operator
+ * not to relaunch.
+ */
+const heldComposer = summary =>
+  summary.state === 'failed'
+  && summary.stage === 'dispatch_input'
+  && summary.lastError === 'agent_prompt_stalled'
+  && summary.terminal !== null;
+
+/**
+ * Submit the held brief, arm the watcher, and then say exactly what is NOT true.
+ *
+ * The child runs. It is not a supervised worker: its Dispatch already settled
+ * `failed`, so its capability is revoked and every lifecycle message it sends is
+ * rejected — measured 2026-08-22, `Orca rejected this worker_done: Dispatch …
+ * capability is revoked`. What still reaches the coordinator is the child's own
+ * peer report and this watcher, which sends from the PARENT's pane and needs no
+ * capability of the child's.
+ *
+ * So this is exit 3, never 0: claiming USABLE would promise a `worker_done` that
+ * cannot arrive. And it never offers a relaunch — a second dispatch into that
+ * worktree is the duplicate agent F-001 is about, and the pane it would race is
+ * the one this just repaired.
+ */
+function repairHeld(path, context) {
+  note('agent_prompt_stalled — the worktree, the pane and the agent exist; only the brief never left the composer.');
+  const outcome = ensureSpecSubmitted(path, context);
+  const running = outcome === 'submitted' || outcome === 'unheld';
+
+  // WRITE-AHEAD, for the same reason every mutation in this file is. The watcher
+  // armed below is a DETACHED process that reads this marker ONCE, at startup:
+  // arming first races it, and a watcher that lost that race treats the child it
+  // is supervising as unrepaired and reports its ORDINARY end as a death.
+  if (running) markHeldRepair(path);
+
+  // Armed in both branches: a brief that may still be sitting unsent is the case
+  // most in need of a net, and it is the branch that writes no marker — so that
+  // watcher keeps its right to report the pane's death.
+  (context.arm ?? armStallWatcher)({ request: context.request, bin: context.bin, env: context.env });
+  bad('NOT A SUPERVISED WORKER — this Dispatch settled `failed`, so its capability is revoked and any worker_done it sends will be rejected.');
+
+  if (running) {
+    note('The child itself is running: its own peer report, and the watcher armed above, are the channels that still reach you.');
+  } else {
+    bad('The brief is NOT PROVEN SUBMITTED either — no child is known to be running behind it.');
+    note('No repair is recorded, so the watcher above will report this pane as a death if it stops.');
+  }
+
+  fix(redactSecrets(`ax worker transcript ${context.request}   # what it is doing. Do NOT relaunch: that is a second agent in one worktree.`));
+  return 3;
+}
+
+/**
  * A recovery must speak to the runtime it MUTATED. `--orca` on a resume names
  * the binary this process resolved today; the pane, the dispatch and the task
  * live in the one recorded on disk, and on a host carrying both `orca` and
@@ -341,6 +414,7 @@ function resume(path, context) {
 
   const result = summarize(path);
   if (!result.usable) {
+    if (heldComposer(result.summary)) return repairHeld(path, recovered);
     return refuse('the replay faithfully returned a partial mutation, not a working worker', `ax worker start --resume --request ${context.request}`);
   }
   return finishUsable(path, recovered);
@@ -448,7 +522,9 @@ function fresh(path, spec, passthru, context) {
   if (workerFailed !== null) return workerFailed;
 
   const result = summarize(path);
-  if (!result.usable) return stranded(context.request);
+  if (!result.usable) {
+    return heldComposer(result.summary) ? repairHeld(path, context) : stranded(context.request);
+  }
   return finishUsable(path, context);
 }
 

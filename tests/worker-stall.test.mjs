@@ -15,11 +15,15 @@ const receipt = result => {
   return { status: 0, stdout: JSON.stringify(body), stderr: '', receipt: body };
 };
 
-function writeRecord(store, request, { on = 'envx', terminal = true } = {}) {
+function writeRecord(store, request, { on = 'envx', terminal = true, repaired = false } = {}) {
   mkdirSync(store, { recursive: true });
   const path = join(store, `${request}.json`);
   writeFileSync(path, JSON.stringify({
     request,
+    // The fact `start.mjs` persists after a CONFIRMED submission, and the only
+    // thing that tells this watcher a repaired child is alive behind a `failed`
+    // dispatch.
+    ...(repaired ? { heldRepairAt: '2026-08-22T11:43:00.000Z' } : {}),
     attempts: [{ n: 1, settled: false, phases: [
       {
         name: 'task-create',
@@ -42,7 +46,7 @@ function writeRecord(store, request, { on = 'envx', terminal = true } = {}) {
   return path;
 }
 
-function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 6], readFails = 0, cards = ['in-progress\t1/4 · Work · task'], worktree = '/tmp/work', worktrees = null, sendFails = false } = {}) {
+function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 6], readFails = 0, cards = ['in-progress\t1/4 · Work · task'], worktree = '/tmp/work', worktrees = null, sendFails = false, omittedHosts = [], showFails = false, paneStatus = null } = {}) {
   const calls = [];
   let cursorIndex = 0;
   let cardIndex = 0;
@@ -65,6 +69,10 @@ function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 
       return receipt({ message: { id: `msg_${calls.length}` } });
     }
     if (command === 'orchestration worker-show') {
+      if (showFails) {
+        const body = { ok: false, error: { message: 'runtime unreachable' } };
+        return { status: 1, stdout: JSON.stringify(body), stderr: 'unreachable', receipt: body };
+      }
       if (status) return receipt({ dispatch: { status: status.dispatch }, worker: { state: status.worker } });
       return receipt({ dispatch: { status: settled ? 'completed' : 'running' }, worker: { state: settled ? 'succeeded' : 'working' } });
     }
@@ -75,12 +83,20 @@ function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 
       }
       const value = cursors[Math.min(cursorIndex, Math.max(0, cursors.length - 1))];
       cursorIndex += 1;
-      return receipt({ terminal: value === null || value === undefined ? {} : { latestCursor: value } });
+      // The measured shape of a dead pane: a real status beside a real cursor.
+      const terminal = value === null || value === undefined ? {} : { latestCursor: value };
+      if (paneStatus !== null) terminal.status = paneStatus;
+      return receipt({ terminal });
     }
     if (command === 'terminal list') {
       const value = listSeries[Math.min(listIndex, Math.max(0, listSeries.length - 1))] ?? '';
       listIndex += 1;
-      return receipt({ terminals: value ? [{ handle: 'term_t1', worktreePath: value }] : [] });
+      return receipt({
+        terminals: value ? [{ handle: 'term_t1', worktreePath: value }] : [],
+        // Only when asked for: every other test asserts against a runtime that
+        // could account for every host, which is what makes an absence a death.
+        ...(omittedHosts.length > 0 ? { hostScope: { omittedHostIds: omittedHosts } } : {}),
+      });
     }
     if (command === 'worktree ps') {
       const value = cards[Math.min(cardIndex, Math.max(0, cards.length - 1))] ?? '';
@@ -428,4 +444,158 @@ test('a failed silence alert is retried on the next tick, then ends the watch', 
   assert.equal(sends(r.calls).length, 2);
   assert.match(r.log, /stall alert failed; will retry next tick/);
   assert.match(r.log, /ALERT sent to run:run_test123; exiting/);
+});
+
+test('a card change feeds the silence clock, so one child is never woken twice', () => {
+  // Measured 2026-08-22: `comm-ax-card` published `DECISION: …`, its parent was
+  // woken, and 58 seconds later the SAME watcher sent a silence alert about the
+  // same child. Only cursor movement fed the clock, so the one channel that
+  // crosses hosts did not count as being alive — and a coordinator was woken
+  // twice about a worker that had just spoken to it.
+  const runner = fakeRunner({
+    cursors: [7],
+    cards: ['in-progress\tstarted', 'in-progress\tstarted', 'in-progress\tDECISION: answer me'],
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '3', ORCA_STALL_LIFETIME: '4' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 1, 'the card woke the parent; the silence alert must not repeat it');
+  assert.match(sent[0].join(' '), /published a checkpoint/);
+  assert.match(r.log, /lifetime/, 'the watch ended on its lifetime, not on a second alert');
+});
+
+test('a pane proven gone on an unsettled dispatch is reported once, and named as gone', () => {
+  // The one stop no in-process hook can announce: measured 2026-08-22, closing
+  // the pane of a worker holding an unfinished todo produced no report at all,
+  // and the silence net would have taken the full stall window to say anything.
+  // `worktrees: ['']` and not a series: card watch is off for a local dispatch, so
+  // `paneGone` is the only reader of the inventory here.
+  const runner = fakeRunner({ cursors: [null], worktrees: [''] });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '30', ORCA_STALL_LIFETIME: '60' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].join(' '), /is GONE without reporting/);
+  assert.match(sent[0].join(' '), /no completion report will ever arrive/);
+  assert.match(r.log, /GONE alert sent/);
+});
+
+test('an inventory that omits a host never claims a death', () => {
+  // Absence is only proof on a list that could account for every host, which is
+  // `terminalInventory`'s own contract. A paired remote runtime makes the local
+  // list partial, and a watcher that read that as a corpse would send a
+  // coordinator to bury a worker that is still building.
+  const runner = fakeRunner({ cursors: [null], worktrees: [''], omittedHosts: ['runtime:elsewhere'] });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '6' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].join(' '), /has gone silent/, 'the silence net still fires; the death does not');
+  assert.doesNotMatch(r.log, /GONE alert/);
+});
+
+test('an unknown dispatch state never becomes a death, however absent the pane', () => {
+  // Fail-open, the rule this file states at the top: only a value that was really
+  // READ may stop a dispatch. An unreachable `worker-show` reports
+  // `settled: false`, which is indistinguishable from a live dispatch — so a
+  // watcher reading it as "not settled, and the pane is gone" would bury a worker
+  // on the strength of a probe that never answered.
+  const runner = fakeRunner({ cursors: [null], worktrees: [''], showFails: true });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '6' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].join(' '), /has gone silent/, 'the silence net still fires; the death does not');
+  assert.doesNotMatch(r.log, /GONE alert/);
+});
+
+test('a silence alert measured from a card says so, instead of claiming a quiet pane', () => {
+  // The clock now counts two signs of life, so the alert must name the one it
+  // measured from. Wording it "no new terminal line" after a card would be a
+  // false sentence in an alert — and it would hide from the reader that they had
+  // already been sent that card.
+  const runner = fakeRunner({
+    cursors: [7],
+    cards: ['in-progress\tstarted', 'in-progress\tstarted', 'in-progress\tDECISION: answer me'],
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '3', ORCA_STALL_LIFETIME: '20' } });
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 2, 'the card wake, then a silence claim measured from it');
+  const body = sent[1][sent[1].indexOf('--body') + 1];
+  assert.match(body, /last sign of life was a WORKTREE CARD/);
+  assert.doesNotMatch(body, /pane cursor has not advanced/);
+});
+
+test('a pane that reads back exited is a death, cursor or no cursor', () => {
+  // Measured 2026-08-22 against a real closed REMOTE pane: `terminal read`
+  // answered ok:true with `status: "exited"` and `latestCursor: "0"`. The cursor
+  // on a corpse is a NUMBER, so it reads exactly like a live pane that has not
+  // moved — and an absent cursor, which was the first trigger written here,
+  // never arrives at all. Orca left that dispatch `dispatched`/`ready` with its
+  // pane dead, so nothing but this watcher could say the work had stopped.
+  const runner = fakeRunner({ cursors: [0], paneStatus: 'exited', worktrees: ['/tmp/work', ''] });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '600', ORCA_STALL_LIFETIME: '60' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].join(' '), /is GONE without reporting/);
+  assert.match(r.log, /GONE alert sent/);
+});
+
+test('a REPAIRED held composer is never announced as gone', () => {
+  // `repairHeld` in start.mjs arms a watcher on a dispatch that already settled
+  // `failed` and will never settle again, so `!settled` stays true for the whole
+  // life of the child it repaired. When that child finishes its real work and
+  // its pane closes, the death check would fire and say it went "without
+  // reporting" — while its peer report, the one channel a revoked capability
+  // leaves it, had already arrived. Measured 2026-08-22: `comm-held` was
+  // repaired, worked, and reported `finished its work` that way.
+  const runner = fakeRunner({
+    status: { dispatch: 'failed', worker: 'failed' },
+    cursors: [0],
+    paneStatus: 'exited',
+    worktrees: ['/tmp/work', ''],
+  });
+  const r = invoke({ runner, recordOptions: { repaired: true }, env: { ORCA_STALL_AFTER: '600', ORCA_STALL_LIFETIME: '8' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0, 'no death claimed over a child that may have reported by peer');
+  assert.doesNotMatch(r.log, /GONE alert/);
+});
+
+test('an ORDINARY failure whose pane is gone is still announced as a death', () => {
+  // The scope the exclusion above must NOT swallow. Orca files every failure
+  // under `failed`, so keying the exclusion on that word would silence exactly
+  // the case worth reporting: a dispatch that failed, whose pane then died, and
+  // whose Run was told nothing about either event. No repair marker, so this one
+  // is still a death.
+  const runner = fakeRunner({
+    status: { dispatch: 'failed', worker: 'failed' },
+    cursors: [0],
+    paneStatus: 'exited',
+    worktrees: ['/tmp/work', ''],
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '600', ORCA_STALL_LIFETIME: '8' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].join(' '), /is GONE without reporting/);
+});
+
+test('card watch is off for a same-host dispatch, whose peer report already reaches home', () => {
+  // The card is the CROSS-HOST fallback: `brief.mjs` tells a remote child its
+  // board is the only thing that reaches home, and `alertCard` says "Remote
+  // worker" outright. A same-host child has lineage, so its own peer report
+  // arrives — measured 2026-08-22 on the repaired `comm-held3`: one trivial task
+  // produced its peer report AND two card wakes, the second calling a child on
+  // this machine remote. Three messages for one task, two of them the watcher
+  // narrating what the child had already said.
+  const runner = fakeRunner({
+    cursors: [1, 2, 3, 4, 5],
+    cards: ['in-progress\tstarted', 'in-review\tDECISION: answer me'],
+  });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '4' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0, 'no card wake for a child that can speak for itself');
+  assert.equal(r.calls.some(args => `${args[0]} ${args[1]}` === 'worktree ps'), false, 'the local board is never read');
+  assert.match(r.log, /card watch: off for a same-host dispatch/);
 });

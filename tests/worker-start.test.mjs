@@ -70,6 +70,9 @@ const receipt = (result, ok = true, status = 0) => {
 function fakeRunner({
   task = 'task_abc123',
   workerState = 'ready',
+  workerStage = '',
+  workerLastError = '',
+  workerExit = 0,
   workerError = '',
   workerTimeout = false,
   terminal = true,
@@ -110,9 +113,11 @@ function fakeRunner({
         taskId: task,
         dispatchId: 'ctx_abc123',
         state: workerState,
+        stage: workerStage || undefined,
+        lastError: workerLastError || undefined,
         mutation: { replayed: calls.filter(call => call.includes('worker-start')).length > 1 },
         effects: terminal ? [{ kind: 'terminal', id: 'term_abc123' }] : [{ kind: 'worktree', id: 'wt_1' }],
-      });
+      }, true, workerExit);
     }
     if (line.includes('task-update')) return receipt({ task: { id: task, status: updateStatus } });
     if (line.includes('terminal read')) {
@@ -421,6 +426,95 @@ test('a held brief gets one Enter on the exact pane, then reports movement', () 
   assert.equal(sends.length, 1);
   assert.equal(sends[0][sends[0].indexOf('--terminal') + 1], 'term_abc123');
   assert.match(r.out, /SPEC WAS HELD/);
+});
+
+test('a held composer is repaired and named, never stranded into a second dispatch', () => {
+  // Measured 2026-08-22, three times on this Mac: `worker-start` answered
+  // ok:true with state=failed stage=dispatch_input lastError=agent_prompt_stalled
+  // AND a created pane. The worktree, the pane and the agent all existed; only
+  // the Enter was missing. The verb stranded, the documented resume replayed the
+  // same held pane and refused it, and the operator typed the Enter by hand —
+  // the repair this file already owns, wired only to the path that never needs it.
+  const home = scratch();
+  const run = fakeRunner({
+    workerState: 'failed',
+    workerStage: 'dispatch_input',
+    workerLastError: 'agent_prompt_stalled',
+    workerExit: 1,
+    cursor: [7, 7, 8],
+  });
+  const armed = [];
+  const r = invoke(freshArgs(home), {
+    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
+    run,
+    arm: options => armed.push(options),
+  });
+
+  assert.equal(r.code, 3, 'the child runs, but a revoked capability is not a supervised worker');
+  const sent = run.calls.filter(call => call.includes('terminal') && call.includes('send'));
+  assert.equal(sent.length, 1, 'the held brief was submitted');
+  assert.equal(sent[0][sent[0].indexOf('--terminal') + 1], 'term_abc123');
+  assert.match(r.out, /agent_prompt_stalled/);
+  assert.match(r.out, /NOT A SUPERVISED WORKER/);
+  assert.doesNotMatch(r.out, /STRANDED/, 'a held composer is not a half-made mutation');
+  assert.equal(armed.length, 1, 'the watcher sends from the parent, so it survives the revoked capability');
+  const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
+  assert.equal(typeof record.heldRepairAt, 'string', 'a CONFIRMED submission is recorded, so the watcher will not bury this child');
+});
+
+test('a held composer whose brief cannot be proven submitted records no repair', () => {
+  // The marker silences the watcher's death check, so it may only be written for
+  // a submission that was CONFIRMED. With autosubmit off nothing is sent at all:
+  // the pane may still hold the brief and no child is known to run, so the
+  // watcher must keep its right to report that pane's death.
+  const home = scratch();
+  const run = fakeRunner({
+    workerState: 'failed',
+    workerStage: 'dispatch_input',
+    workerLastError: 'agent_prompt_stalled',
+    workerExit: 1,
+    cursor: [7, 7, 8],
+  });
+  const armed = [];
+  const r = invoke(freshArgs(home), {
+    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '0' },
+    run,
+    arm: options => armed.push(options),
+  });
+
+  assert.equal(r.code, 3);
+  assert.equal(run.calls.some(call => call.includes('terminal') && call.includes('send')), false, 'nothing was sent');
+  assert.match(r.out, /NOT PROVEN SUBMITTED/);
+  assert.equal(armed.length, 1, 'the net matters most when the brief may still be unsent');
+  const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
+  assert.equal(record.heldRepairAt, undefined, 'no repair recorded, so the death check stays armed');
+});
+
+test('the repair marker is written BEFORE the watcher is armed', () => {
+  // The watcher is a DETACHED process that reads the marker once, at startup, so
+  // arming first races it — and a watcher that lost that race treats the child it
+  // supervises as unrepaired and reports its ordinary end as a death. Same
+  // write-ahead rule as every other mutation in this file.
+  const home = scratch();
+  const recordPath = join(home, 'dispatch', 'req-1.json');
+  const run = fakeRunner({
+    workerState: 'failed',
+    workerStage: 'dispatch_input',
+    workerLastError: 'agent_prompt_stalled',
+    workerExit: 1,
+    cursor: [7, 7, 8],
+  });
+  let markerAtArm;
+  const r = invoke(freshArgs(home), {
+    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
+    run,
+    arm: () => {
+      markerAtArm = JSON.parse(readFileSync(recordPath, 'utf8')).heldRepairAt;
+    },
+  });
+
+  assert.equal(r.code, 3);
+  assert.equal(typeof markerAtArm, 'string', 'the watcher can already see the repair the moment it starts');
 });
 
 test('an emitting pane is not submitted', () => {

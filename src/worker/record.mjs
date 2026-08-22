@@ -376,11 +376,47 @@ export function report(path) {
       dispatchId: result.dispatchId,
       stage: result.stage,
       state: result.state,
+      // Named, because ONE failure is not a half-made dispatch: a held composer
+      // (`agent_prompt_stalled`) leaves the worktree, the pane and the agent all
+      // in place, and its caller owns a repair for exactly that. A summary that
+      // cannot tell it from a stranded mutation forces the generic recovery,
+      // which replays the same held pane and refuses it again.
+      lastError: result.lastError,
       terminal,
       effects: result.effects ?? [],
       residualResources: result.residualResources ?? [],
     },
   };
+}
+
+/**
+ * Record that a held composer was REPAIRED: the brief was submitted and a
+ * watcher armed, so a child is running behind a Dispatch that already settled
+ * `failed` and will never settle again.
+ *
+ * PERSISTED, never inferred from the receipt. The receipt shape only says the
+ * dispatch was repairABLE — with `ORCA_DISPATCH_AUTOSUBMIT=0`, an unreachable
+ * pane, or an older ax, the same receipt describes a brief still sitting unsent
+ * and no child at all. Whether the Enter was actually sent is a fact about what
+ * a process DID, and `stall.mjs` decides on it whether to narrate that child's
+ * death: guessing would either bury a live child or silence a real corpse.
+ */
+export function markHeldRepair(path, { now = () => new Date().toISOString() } = {}) {
+  const rec = load(path);
+  rec.heldRepairAt = now();
+  save(rec, path);
+}
+
+/**
+ * Did a held composer get repaired for this record? Lenient: an unreadable
+ * record has no marker, and the caller reading this is a fail-open watcher.
+ */
+export function heldRepaired(path) {
+  try {
+    return typeof load(path).heldRepairAt === 'string';
+  } catch {
+    return false;
+  }
 }
 
 /**
