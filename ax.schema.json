@@ -123,6 +123,17 @@
         }
       }
     },
+    "triage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What `ax triage` has to know about THIS project to put a session in front of an issue. A triage child mutates nothing: it writes a draft, and you publish it — so what a project declares here is the vocabulary that draft has to speak.",
+      "properties": {
+        "labels": {
+          "type": "string",
+          "description": "Path to this project's label mapping — repo-relative, or absolute when shared. It names the groups a finished triage has to fill, which `skill://triage` does not carry: left to the skill alone a session recommends in prose and stops, and on 2026-08-10 four issues landed with three empty groups each while the maintainer did the data entry. Absent or unreadable is a refusal for the jobs that apply labels: `gh label list` enumerates names but knows nothing about groups or completeness, so a child dispatched without this is under-specified before it starts."
+        }
+      }
+    },
     "launch": {
       "type": "object",
       "additionalProperties": false,

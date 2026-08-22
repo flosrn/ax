@@ -64,6 +64,7 @@ import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { CONTEXT_PATH } from '../worktree/context.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { defaultStore, workerPane } from './record.mjs';
+import { peerRun } from './peers.mjs';
 import { readPane } from './pane.mjs';
 import { modelMarker } from './transcript.mjs';
 import { start as startVerb } from './start.mjs';
@@ -261,7 +262,7 @@ export function launch(
     );
   }
 
-  const runId = flags.run || recordedRun(env);
+  const runId = flags.run || peerRun(env);
   if (runId === '') {
     return cannot(
       'no Run to own the Task: this session is in no peer registry and --run was not given',
@@ -602,18 +603,6 @@ function setLineage({ run, worktree, on, dry, env }) {
     return `NOT SET — parentWorktreeId reads ${recorded}, not the ${parent} this launch set (F-002: the set was discarded and answered ok); this child reports to whoever that is, not to this session`;
   }
   return recorded;
-}
-
-/** The Run this session's own receiver consumes, from the peer registry. */
-function recordedRun(env) {
-  const handle = env.ORCA_TERMINAL_HANDLE ?? '';
-  if (handle === '') return '';
-  const path = join(env.HOME ?? '', '.omp', 'run', 'orca-peers', `${handle}.json`);
-  try {
-    return String(JSON.parse(readFileSync(path, 'utf8')).run ?? '');
-  } catch {
-    return '';
-  }
 }
 
 /** The contract a project declares, or ax's own mechanics when it declares none. */

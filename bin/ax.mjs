@@ -9,6 +9,7 @@ import { init } from '../src/init.mjs';
 import { fatal } from '../src/log.mjs';
 import { supabase } from '../src/supabase-guard.mjs';
 import { worktree } from '../src/worktree/index.mjs';
+import { triage } from '../src/triage/index.mjs';
 
 const RUNNERS = {
   doctor: () => (doctor() === 0 ? 0 : 1),
@@ -29,6 +30,8 @@ const RUNNERS = {
   board: () => board(args.slice(1)),
   // Verbs of one noun get the remaining argv, unparsed — same as worktree.
   worker: () => worker(args.slice(1)),
+  // Same, and its verbs each carry their own repeated --issue positionals.
+  triage: () => triage(args.slice(1)),
 };
 
 const args = process.argv.slice(2);

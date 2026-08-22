@@ -91,6 +91,19 @@ export const COMMANDS = [
     ],
   },
   {
+    name: 'triage',
+    summary: 'one session per issue, and the drafts they write — you publish',
+    // Gated on the same predicate as `worker`: the dispatch needs an Orca CLI.
+    // `publish` needs only `gh`, but it publishes what a dispatched session
+    // wrote, so a machine that cannot dispatch has nothing to publish either.
+    gated: 'orca',
+    subcommands: [
+      ['dispatch --issue N …', 'one session per issue, capped — no tree, no branch'],
+      ['status [--issue N …]', 'what each dispatch recorded, and its recovery'],
+      ['publish --issue N …', 'apply what a draft names — never closes an issue'],
+    ],
+  },
+  {
     name: 'init',
     summary: 'write ax.config.json, bin/ax and the managed blocks',
     options: [
