@@ -85,6 +85,12 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       `gh label list --repo ${slug} # then re-run once it answers`,
     );
   }
+  if (known.truncated) {
+    return refuse(
+      `gh returned ${LABEL_CAP} labels, exactly the cap it was asked for, so this list may be missing names — and a name missing from a truncated list reads identically to one this repository does not have`,
+      `gh label list --repo ${slug} --limit 5000 # confirm the names by hand, then raise LABEL_CAP in ax`,
+    );
+  }
 
   // ── every draft read before the first mutation ────────────────────────────
   section(`drafts — ${slug} (job: ${job})`);
@@ -98,7 +104,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       blocked = true;
       continue;
     }
-    const unknown = [...draft.labels, ...draft.remove].filter(label => !known.has(label));
+    const unknown = [...draft.labels, ...draft.remove].filter(label => !known.names.has(label));
     if (unknown.length > 0) {
       bad(`#${issue} names ${unknown.length} label(s) this repository does not have: ${unknown.join(' | ')}`);
       fix(`edit ${draft.path} # a directive carries label NAMES only — no group prefix, no justification`);
@@ -188,6 +194,13 @@ function resolveRepo(gh) {
 }
 
 /**
+ * How many labels one `gh label list` is asked for. `gh` paginates up to this
+ * and then stops SILENTLY, which is why the cap is read back below rather than
+ * trusted.
+ */
+const LABEL_CAP = 500;
+
+/**
  * Every label this repository actually has, or `null` when `gh` could not say.
  *
  * This exists because ax cannot know what a label name looks like. GitHub allows
@@ -198,14 +211,22 @@ function resolveRepo(gh) {
  *
  * `null` is not an empty set: an unreachable `gh` must not read as "no label
  * exists", which would refuse every draft. It is a NAMED inability instead.
+ *
+ * And a FULL page is the same kind of inability, for the same reason a partial
+ * `terminal list` cannot prove a pane is dead (`pane.mjs`). This check exists to
+ * decide ABSENCE, and a list that stopped at the cap cannot establish one: the
+ * missing name and the never-existing name read identically. Measured on the
+ * repository that prompted this: 34 labels against a cap of 500, so the branch
+ * is unreachable today and is written for the repo where it is not.
  */
 function repoLabels(gh) {
-  const out = gh(['label', 'list', '--limit', '500', '--json', 'name']);
+  const out = gh(['label', 'list', '--limit', String(LABEL_CAP), '--json', 'name']);
   if (out.error || out.status !== 0) return null;
   try {
     const parsed = JSON.parse(String(out.stdout ?? ''));
     if (!Array.isArray(parsed)) return null;
-    return new Set(parsed.map(entry => String(entry?.name ?? '')).filter(name => name !== ''));
+    const names = new Set(parsed.map(entry => String(entry?.name ?? '')).filter(name => name !== ''));
+    return { names, truncated: parsed.length >= LABEL_CAP };
   } catch {
     return null;
   }

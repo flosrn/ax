@@ -269,6 +269,22 @@ test('a gh that cannot list labels refuses the batch instead of checking nothing
   assert.deepEqual(mutations(r.calls), [], 'no issue was touched');
 });
 
+test('a label list that came back AT the cap refuses, because absence is what it would prove', () => {
+  // Same rule as a partial `terminal list` in pane.mjs: a truncated list cannot
+  // establish an absence, and absence is the only thing this check decides. `gh
+  // label list` stops at its cap silently, so a legitimate name past the page
+  // would read exactly like one the repository does not have — a false refusal
+  // that sends the operator hunting a typo that is not there.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const capped = Array.from({ length: 500 }, (_, i) => ({ name: `filler/${i}` }));
+  const r = run(['--issue', '7'], { root, answers: { labelList: { status: 0, stdout: JSON.stringify(capped), stderr: '' } } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /exactly the cap/);
+  assert.deepEqual(mutations(r.calls), [], 'no issue was touched on an unprovable absence');
+});
+
 test('a non-numeric --issue is refused before any draft is read', () => {
   const r = run(['--issue', 'GAP-353']);
   assert.equal(r.code, 2);
