@@ -254,7 +254,9 @@ les tables complètes, gating appliqué après.
       Accepté parce qu'il résout comme le coordinator le faisait, pas parce qu'il gênait.
       `ORCA_BROWSER_REAP_AGE_MIN` est mort avec le script (remplacé par `AX_SWEEP_MAX_AGE_MIN`) ;
       rien ne le posait dans un profil, vérifié. 434 tests OMP verts, 605 côté ax.
-- [ ] **8. `ax worker launch --name` + `ax pr gate`** — **`--name` fait le 2026-08-22** (`7052902`).
+- [ ] **8. `ax worker launch --name` + `ax pr gate`** — **les deux verbes faits le 2026-08-22**
+      (`7052902`, `a04fa7d`) ; la case reste ouverte parce que `merge-gate.sh` vit encore, et une
+      étape n'est cochée ici que quand son legacy est supprimé.
       Pas de `worktree new` : créer un worktree sans ticket est le MÊME verbe sans ticket, donc la
       chaîne claim → create → ax setup → agent EN DERNIER n'existe qu'une fois, et l'anti-doublon
       avec elle. Exactement une identité : `--issue` ou `--name`, jamais les deux.
@@ -270,7 +272,31 @@ les tables complètes, gating appliqué après.
       forme différente, la puce est remplacée et non supprimée (l'enfant ne doit pas ouvrir un ticket
       pour combler le vide), `MECHANICS` reste identique octet pour octet, et la sonde tracker
       distante annonce son absence au lieu de sauter en silence. 617 tests.
-      Reste : `ax pr gate`. Meurt : `merge-gate.sh` (624 L).
+      **`ax pr gate`** : les 7 sols du bash, dans l'ordre, et rien ne court-circuite (F-033 : deux
+      sols ont tiré sur le même merge, et un gate qui s'arrête au premier apprend à réparer une
+      chose et à revenir). Les fils de revue ne sont lus qu'APRÈS que la CI soit décidée — un fil
+      vide lu avant ne vaut rien (F-031, #1847) ; l'obsolescence se lit par ancêtre et jamais par
+      `mergeStateStatus` (F-033.2) ; atterri-par-contenu est consultatif et ne refuse jamais
+      (F-033.1 : un squash fait répondre « pas mergé » à toute branche) ; les commits depuis
+      l'ouverture sont un DÉTECTEUR qui refuse jusqu'à `--ack-body` (KTD9) ; le corps des fils
+      n'est jamais reproduit dans le canal de décision (R11/KTD7).
+      La déclaration quitte le fichier machine-wide clé par `owner/repo` pour
+      `ax.config.json:prGate`, parce que le verbe tourne DANS le checkout dont il parle — donc
+      `--repo` qui nomme un autre projet est un refus, ce qui tue ce fichier. `residualFindings`
+      est déclaré pour la même raison (`docs/residual-review-findings` était la disposition d'un
+      projet dans un outil). Codes : 0 passe, 1 refus, 2 usage, 3 impossible d'établir — le « 2
+      réservé » du bash était mort. 683 tests (66 neufs), 6 mutations falsifiées, plus le garde du
+      SHA 40-hex qui ne tuait aucun test : couvert maintenant sur la longueur, la casse et le trim.
+      **Le smoke live a refusé la PR gapila #1999 que je venais de merger**, sur un fil de revue
+      non résolu — un P2 correct de `chatgpt-codex-connector` : le repli `command -v ax` retombait
+      sur `node_modules/.bin/ax`, la copie épinglée que le commentaire au-dessus dit d'éviter.
+      Correctif prêt sur `fix/orca-ax-fallback-rejects-repo-pinned` (`18b225714`), non poussé.
+      **RESTE, et c'est la même règle qu'à l'étape 7** : `merge-gate.sh` (624 L) +
+      `merge-gate.test.ts` (749) + `merge-gate.json` ne meurent qu'APRÈS que gapila et ofmchat
+      déclarent leur `prGate` dans leur propre `ax.config.json` — aucun des deux n'en a un
+      aujourd'hui, et supprimer avant laisserait les deux repos sans gate du tout. Puis retirer
+      `merge-gate.sh` de `check-orchestration-surface.sh` (dernier exécutable sanctionné) et
+      basculer la prose qui le nomme.
 - [ ] **9. Deux rôles** — décidé le 2026-08-22 : ils se séparent par le GENRE de travail, pas par
       le nombre d'enfants. Un rôle mène les sessions de triage (l'enfant écrit un brouillon, le
       parent publie), l'autre les sessions d'implémentation (l'enfant ouvre une PR, le parent
