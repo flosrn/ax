@@ -297,6 +297,37 @@ test('a head SHA that is not 40 hex characters is never used to validate anythin
   assert.notEqual(run(['--pr', '1845'], { receipt: prView({ headRefOid: `  ${HEAD_SHA}\n` }) }).code, 3);
 });
 
+test('a checkout may declare its gate WITHOUT the provisioning contract', () => {
+  // Measured 2026-08-22: the two repositories whose merge gate this replaces have
+  // no `ax.config.json` at all and provision themselves with their own hooks.
+  // Requiring them to declare a web app, a port range and a vendor remote in
+  // order to gate a pull request would be this package asserting a layout it does
+  // not own — and this verb reads none of those values.
+  const root = repos.current;
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } }));
+  const { code, out } = capture(() =>
+    gate(['--pr', '1845'], {
+      gh: args => {
+        const [verb, target] = args;
+        if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
+        if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView()));
+        if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([])));
+        if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
+        if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
+        return answered('');
+      },
+      git: realGit,
+      cwd: root,
+    }),
+  );
+  // It ran every ground rather than refusing over `project`, and the residual
+  // ground it declared was READ rather than silently reported as not run.
+  assert.notEqual(code, 3, out);
+  assert.doesNotMatch(out, /missing required key/);
+  assert.doesNotMatch(out, /residual findings: NOT RUN/);
+});
+
+
 test('--repo naming another repository is a refusal: the declaration read is this checkout\'s', () => {
   const { code, out, calls } = run(['--pr', '1845', '--repo', 'goodluckagency/ofmchat']);
   assert.equal(code, 1);

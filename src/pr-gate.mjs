@@ -46,7 +46,10 @@
 // The git-backed grounds (staleness, landed-by-content, residual findings) run
 // against the current checkout, which must hold the PR branch.
 
-import { loadCheckoutConfig, repoPaths } from './config.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { CONFIG_FILE, repoPaths } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
 import { defaultExec } from './worker/release.mjs';
 
@@ -129,6 +132,39 @@ function payload(out) {
   } catch (error) {
     return { ok: false, reason: `answered something that is not JSON (${error.message})` };
   }
+}
+
+/**
+ * The `prGate` key alone, read from the checkout's own `ax.config.json`.
+ *
+ * Deliberately NOT `loadCheckoutConfig`, which also enforces `project`, `apps`
+ * and `vendor` — the provisioning contract `worktree setup` and `doctor` are
+ * built on. This verb reads no port, no app path and no vendor remote, so a
+ * project may declare what its merge must prove without adopting a contract it
+ * does not use. Measured 2026-08-22: the two repositories whose merge gate this
+ * replaces have no `ax.config.json` at all and provision themselves with their
+ * own hooks; requiring them to declare a web app in order to gate a pull request
+ * would be this package asserting a layout it does not own.
+ *
+ * A problem elsewhere in the file is a NOTE, never fatal: it cannot change this
+ * verdict, so it must not decide it either. An unreadable or absent file, and a
+ * `prGate` that is incoherent, both fall through to Ground 0's refusal.
+ */
+function declarationOf({ root, main }) {
+  const notes = [];
+  const candidates = [root, main].filter((dir, index, all) => dir && all.indexOf(dir) === index);
+  for (const dir of candidates) {
+    const path = join(dir, CONFIG_FILE);
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      if (parsed?.prGate !== undefined) return { prGate: parsed.prGate, path, notes };
+      notes.push(`${path} declares no prGate`);
+    } catch (error) {
+      notes.push(`${path} is not readable JSON (${String(error.message ?? error).slice(0, 120)})`);
+    }
+  }
+  return { prGate: undefined, path: join(root, CONFIG_FILE), notes };
 }
 
 /**
@@ -219,11 +255,19 @@ export function gate(
     );
   }
 
-  const loaded = loadCheckoutConfig(paths);
-  if (loaded.errors.length > 0) return cannot(`${loaded.path} is not usable: ${loaded.errors[0]}`, 'ax doctor   # then re-run');
+  // This verb reads ONE key and uses no provisioning value — no port, no app
+  // path, no vendor remote. So it asks the config for that key alone, rather
+  // than through the loader that also enforces `project`/`apps`/`vendor`: a
+  // project may declare what its merge must prove without adopting a
+  // provisioning contract it does not use, and this package runs in other
+  // people's repos. It therefore says NOTHING about the rest of the file —
+  // `ax doctor` is where the whole config is judged, and a verdict about a web
+  // app has no place in a verdict about a merge.
+  const loaded = declarationOf(paths);
+  for (const line of loaded.notes) note(line);
 
   // ── Ground 0. The declaration ──────────────────────────────────────────────
-  const declared = readDeclaration(loaded.config?.prGate);
+  const declared = readDeclaration(loaded.prGate);
   if (!declared.ok) {
     return cannot(
       `${declared.reason} in ${loaded.path} — an undeclared repository is not a repository with nothing left to check`,
@@ -406,7 +450,7 @@ export function gate(
   }
 
   // ── Grounds 3, 4 and 5 are git-backed and read this checkout ───────────────
-  const residualDir = typeof loaded.config?.prGate?.residualFindings === 'string' ? loaded.config.prGate.residualFindings : '';
+  const residualDir = typeof loaded.prGate?.residualFindings === 'string' ? loaded.prGate.residualFindings : '';
   // Declared, never assumed: absent means this ground is NOT RUN, and the gate
   // says so instead of passing it silently.
   if (residualDir === '') {
@@ -586,7 +630,7 @@ export function gate(
   // as its queue then re-dispatches delivered work. F-018 exactly: PR #1831
   // opened on `Ferme #1786`, merged, and #1786 stayed OPEN and `ready-for-agent`.
   // Only the matched phrase is echoed, never the surrounding prose.
-  const tracker = loaded.config?.prGate?.tracker;
+  const tracker = loaded.prGate?.tracker;
   const matched = new RegExp(`\\b(?:${KEYWORDS})\\b\\s*:?\\s+${TARGET}`, 'i').exec(body);
   const intended = new RegExp(`\\b(?:${INTENT})\\b\\s*:?\\s+${TARGET}`, 'i').exec(body);
   if (matched) {

@@ -180,6 +180,10 @@
       "additionalProperties": false,
       "description": "What `ax pr gate` must be able to decide before a merge. The Bash this replaces kept one machine-wide file keyed by owner/repo, because it was a machine-wide script; this key lives in the checkout it is about, so the repo name is not part of it. An ABSENT prGate is not `nothing expected, therefore nothing missing`: the gate cannot establish anything and says so.",
       "properties": {
+        "$comment": {
+          "type": "string",
+          "description": "Why THIS expectation and not another. Kept in the file rather than in a commit message because the reasoning is what a later reader needs before changing the value: which job aggregates what, which one is deliberately absent, and what a green verdict therefore does not cover."
+        },
         "aggregate": {
           "type": "string",
           "description": "The ONE check-run name whose verdict covers this repository's CI. Use it where a single job aggregates the rest: the set of runs on a SHA depends on the diff, on labels and on bots that decide for themselves whether to run — 21 on one PR and 15 on another an hour apart (F-014), so counting them proves nothing."
@@ -200,6 +204,7 @@
           "required": ["name", "pattern"],
           "description": "The tracker this project's issues live in, when they do not live in GitHub. Both halves or neither: a name with no pattern cannot find a ref, and a pattern with no name cannot say what it found.",
           "properties": {
+            "$comment": { "type": "string", "description": "Why this project's issues do not live in GitHub, so a later reader does not delete the key as redundant." },
             "name": { "type": "string", "description": "Human name of the tracker, e.g. Linear — printed so the reader knows where the ticket is." },
             "pattern": { "type": "string", "description": "Regular expression matching one of its refs, e.g. `GAP-[0-9]+`. Measured 2026-08-16: without this, the gate printed `the body closes no issue and expresses no intent to` on three PRs that each carried `Fixes GAP-3xx` — the issues were disabled on GitHub and lived in Linear." }
           }
