@@ -29,21 +29,29 @@ src/worker/release.mjs     ax worker release        (preuve d'atterrissage, jama
 src/worker/pane.mjs        LE lecteur de `terminal read` + `terminal list` (F-041/F-028)
 src/worker/transcript.mjs  ax worker transcript     (redacted par défaut, jamais de bypass capability)
 src/worker/stall.mjs       watcher détaché fail-open (fichier séparé du fail-closed — ADR 0025)
-src/worker/launch.mjs      ax worker launch --issue (gardes hôte → contrat de config par repo +
-                           sondes injectées ; provisionnement délégué à ax worktree setup)
+src/worker/launch.mjs      ax worker launch --issue <ref> | --name <nom>
+                           (gardes hôte → contrat de config par repo + sondes injectées ;
+                           provisionnement délégué à ax worktree setup. Décidé le 2026-08-22 :
+                           on GARDE launch, et créer un worktree sans issue est le MÊME verbe
+                           sans ticket (`--name <nom>`), pas un second fichier — la chaîne
+                           claim → create → ax setup → agent EN DERNIER n'existe qu'une fois.
+                           Contrainte : l'identité de requête doit rester INJECTIVE. `requestIdFor`
+                           normalise à perte, donc deux noms distincts peuvent viser
+                           `.worktrees/<request>` et dispatcher dans l'arbre d'un autre : refuser
+                           un nom non canonique, avec le test de collision.)
 src/worker/{ticket,hosts,brief,child}.mjs  ses quatre pièces séparables
 src/triage/{index,dispatch,publish,draft}.mjs
                            ax triage dispatch|status|publish (cap par record↔pane vivant F-048,
                            F-030, l'enfant écrit un brouillon .scratch et ne mute rien, le parent
                            publie ; `publish` ne ferme jamais, `custom` non publiable)
+src/worker/sweep.mjs       ax worker sweep          (ex-`reap` : appartenance déclarée par --under,
+                           verdict par ÂGE DE LA RACINE, re-preuve entre TERM et KILL)
 src/pr-gate.mjs            ax pr gate               (pur gh/git — seul verbe non gaté sur orca)
-src/worktree/new.mjs       ax worktree new <nom> [--agent] [--prompt] [--brief] [--model] [--issue]
-                           (claim → create → ax setup → agent EN DERNIER ; read-back parentWorktreeId)
 ```
 
 Gating : un seul prédicat injectable (binaire orca résoluble) traversé par l'aide ET le dispatch.
-Gatés : les noms `worker`, `board`, `triage`, et le VERBE `worktree new` (le nom `worktree` reste
-visible partout). Aucun `agentLine` pour les verbes gatés. Le test `SUBCOMMANDS` = registre compare
+Gatés : les noms `worker`, `board` et `triage`. Le nom `worktree` reste visible partout. Aucun
+`agentLine` pour les verbes gatés. Le test `SUBCOMMANDS` = registre compare
 les tables complètes, gating appliqué après.
 
 ## Ordre — chaque étape : tests d'abord, parité prouvée, legacy supprimé, commit
@@ -206,22 +214,60 @@ les tables complètes, gating appliqué après.
       Deux fail-open trouvés en écrivant les tests : cap non numérique (`> NaN` toujours faux) et
       record illisible lu comme zéro enfant — les deux refusent. `peerRun` extrait de `launch.mjs`
       dans `src/worker/peers.mjs` plutôt que dupliqué. 585 tests, smoke live sur les deux verbes.
-      **Reste ouvert** (« on verra le coordinator après ») : basculer `/launch`, `orca-sessions` et
-      `orca-orchestrator` sur `ax triage`, supprimer `cmd_triage`, `cmd_checkpoint` (doublon mort
-      de `ax board` — tous les écrivains vivants passent par lui depuis l'étape 2), `record.py`
-      (ses 4 derniers verbes : `peer-run` → `peerRun`, `record-status` → `report()`,
-      `active-count`/`active-list` → supprimés avec le comptage par `worker-list`), et la table de
-      paires de `check-test-proof.ts:100` qui exige `record.py` ↔ `record.test.ts`.
-      **Renommage décidé, pas encore fait** : `reap` → **`sweep`**, parce que `ax.schema.json`
-      appelle déjà ce geste `sweep` (`launch.hosts.<h>.sweep`) et que cette clé pointe aujourd'hui
-      sur `orca-coordinator.sh reap --apply` — un mot pour un geste des deux côtés de la frontière
-      ssh. Pas `clean` : `ax worktree clean` récupère déjà des processus scopés par cwd (sa liste
-      `DEV_TOOLS` contient `chrome|chromium|playwright`), alors que ce geste-là est à l'échelle de
-      l'hôte et son signal est l'ÂGE DE LA RACINE (19 processus / 825 MB qui n'étaient pas trois
-      arbres orphelins mais UN navigateur tenu deux heures dont les pages n'ont jamais été fermées).
-- [ ] **8. `ax worktree new` + `ax pr gate`** — parallélisables avec 6-7. Meurt : `merge-gate.sh`.
-- [ ] **9. Rôles** — `~/.omp/agent/agents/{coordinateur,orchestrateur}.md`, minces, appellent ax.
-      Meurent : `orca-sessions`, `orca-orchestrator`, `check-orchestration-surface.sh`.
+      **`sweep` fait le 2026-08-22** (`dcf84fb`) : `ax worker sweep`, ex-`reap`, 18 tests.
+      Le mot vient de `ax.schema.json` (`launch.hosts.<h>.sweep`), dont la clé pointait sur le
+      bash — un mot pour un geste des deux côtés de la frontière ssh. Pas `clean` :
+      `ax worktree clean` récupère des processus scopés par cwd, celui-ci est à l'échelle de
+      l'hôte. Appartenance DÉCLARÉE (`--under`, absolu, sans segment non résolu, dans le home de
+      l'appelant) et non supposée : aucune liste en dur, sur le précédent que `src/proc.mjs` écrit
+      déjà à côté de son reaper. Cinq fail-open que le bash ne pouvait pas dire : `--max-age lots`
+      (`$(( lots * 60 ))` = 0, plancher effondré, toute racine vivante éligible — validé
+      lexicalement, `Number(' ')` vaut 0), le plancher d'environnement, un chemin qui revendique un
+      home, le match par COMPOSANT, et le SIGKILL qui rejouait la liste d'origine (un pid libéré
+      pendant les 4 s peut être donné au navigateur frais de l'étape suivante SOUS LE MÊME CHEMIN :
+      l'instantané d'après est reclassé par le prédicat entier). Et un mensonge mesuré hérité du
+      bash : son commentaire disait `etimes` vérifié sur macOS 26 — faux, `/bin/ps` y répond
+      `keyword not found`, sort 1, et imprime quand même 162 KB ; la vérification passait par un
+      `ps` du harness sur le PATH. Colonne portable : `etime`, parseur exporté et testé.
+      **Prose basculée** : `orca-orchestrator` (cap + mode triage) et `orca-sessions` (inventaire)
+      nomment `ax triage`/`ax board`, plus le bash.
+      **BLOQUÉ sur une PR gapila, et l'ordre n'est pas négociable.** `gapilabs/gapila` appelle
+      `orca-coordinator.sh checkpoint` en vrai (`scripts/orca/worktree-setup.sh`) et son
+      `install-agent-tools.sh` liste `scripts/orca-coordinator.sh` dans `EXPECTED`. Le commentaire
+      de cette liste énonce la règle, payée le 2026-08-11 : « le retrait d'une entrée part AVANT
+      que le fichier disparaisse en amont ». Migration écrite et commitée en local sur gapila
+      (`b3f75d860` : `ax board`, mêmes 5 flags, résolution par chemin avec repli
+      `~/.local/bin/ax`, 3/3 de son test de gardes, smoke avec l'argv exact du hook) — mais leur
+      convention est la PR, donc elle doit ATTERRIR sur leur main d'abord. Sans ça, toute branche
+      gapila non rebasée perd son seed de sidebar derrière `|| warn` (dégradé, pas fatal : les deux
+      appels sont gardés). Une fois la PR passée, dans cet ordre :
+      supprimer `orca-coordinator.sh` (709 L) + `orca-triage.test.ts` (710) + `orca-reap.test.ts`
+      (134) + `orca-checkpoint.test.ts` + `orca-test-harness.ts` (plus aucun consommateur), puis
+      `record.py` (788) + `record.test.ts` (588) — ses 4 derniers verbes ont chacun leur
+      destination : `peer-run` → `peerRun`, `record-status` → `report()`, `active-count`/
+      `active-list` supprimés avec le comptage par `worker-list` — puis la paire
+      `record.py` ↔ `record.test.ts` de `check-test-proof.ts` (sinon le gate casse, pas le code),
+      l'entrée `orca-coordinator.sh` de `check-orchestration-surface.sh:34` et sa fixture
+      (`.test.ts:97`). `ORCA_BROWSER_REAP_AGE_MIN` meurt avec le script (remplacé par
+      `AX_SWEEP_MAX_AGE_MIN`) ; rien ne le pose dans un profil, vérifié.
+- [ ] **8. `ax worker launch --name` + `ax pr gate`** — décidé le 2026-08-22 : pas de
+      `worktree new`, c'est `launch` sans ticket (voir la surface cible). Meurt : `merge-gate.sh`.
+- [ ] **9. Deux rôles** — décidé le 2026-08-22 : ils se séparent par le GENRE de travail, pas par
+      le nombre d'enfants. Un rôle mène les sessions de triage (l'enfant écrit un brouillon, le
+      parent publie), l'autre les sessions d'implémentation (l'enfant ouvre une PR, le parent
+      merge). Fichiers anglais (`agent/agents/*.md`), prose française interdite dans ce qui est
+      commité. `coordinator.md` EXISTE déjà (71 L, `autoloadSkills: orca-sessions`) : l'étape le
+      réécrit, elle ne le crée pas. À lire d'abord, parce que rien de tout ça n'est dans ax :
+      `skill://omp-internals` (ce qui est surchargeable et où), `skill://model-routing` (quel
+      modèle sur quel rôle), `rule://orca-peer-messaging`, et le fait que `~/.omp` est un checkout
+      git dont `agent/config.yml` (`task.disabledAgents`) et les en-têtes `agent/agents/*.md`
+      (modèle, effort, outils, `autoloadSkills`, `disable-model-invocation`) décident du
+      comportement. Un persona se dispatche avec `agent: <stem>`, sinon tout tourne sur le modèle
+      `task` en silence. Les prompts restent des skills (`lfg`, `lfg-full`) : elles sont déjà
+      découplées du bash, une seule ligne les relie (`lfg/SKILL.md:60`).
+      Meurent : `orca-sessions` (562), `orca-orchestrator` (617),
+      `check-orchestration-surface.sh` — et l'entrée `skills/orca-sessions/SKILL.md` de
+      l'`EXPECTED` de gapila doit partir AVANT, même règle qu'au-dessus.
 - [ ] **10. Ce fichier est supprimé.**
 
 ## Les invariants qui ne se renégocient pas (chacun payé, date en source)
