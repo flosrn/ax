@@ -464,6 +464,14 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) 
   const marker = `[omp role=triage-worker model=${model}]`;
   const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted.`;
 
+  // HOW to ask, not merely permission to. Both drafting jobs can escalate, and
+  // before this the three children that did each invented a layout ("What we
+  // still need from you", a/b/c sub-points, inline forks) — so every fold of the
+  // maintainer's answers was a bespoke markdown edit, against anchors that went
+  // stale when a child rewrote its draft. The number is what `ax triage fold`
+  // pairs a ruling to, so the shape is declared here instead of left to taste.
+  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own. Those lines stay in the body — the human reads them on the issue — and they are what a fold pairs answers to, so a question that needs three paragraphs to state is more than one decision: split it.`;
+
   if (job === 'triage') {
     return [
       marker,
@@ -473,7 +481,8 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) 
       `A directive carries label NAMES ONLY — never a group name, never a parenthetical: \`Labels: <name>[, <name>…]\`, repeatable so one line per group stays cheap to correct; \`Remove labels: <name>[, <name>…]\` for the labels your transition supersedes; \`Close: yes\` if you conclude wontfix, and say why — you are recommending it, not doing it.`,
       `Leaving a group empty means you have not finished. Every name is checked against this repository's own label list before anything is applied, so \`Labels: state → needs-info\` and \`Remove labels: needs-triage (superseded)\` are both refused: they name no label that exists.`,
       nothing,
-      'If anything load-bearing is underdetermined, ask me rather than deciding alone. Report when the draft is written.',
+      asking,
+      'Report when the draft is written.',
     ].join(' ');
   }
 
@@ -483,7 +492,8 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) 
       `Read skill://triage and its reference file AGENT-BRIEF.md, and ${labels}.`,
       `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass: do not redo it, do not re-measure what is established, and do not render a competing verdict.`,
       `Write the Agent Brief that follows from that pass to ${draft}, absorbing everything its "what is missing" section asks for, with a \`Labels:\` line for any label the pass left unapplied and a \`Remove labels:\` line for any state label your transition supersedes — label names only, no group prefix and no parenthetical, each checked against this repository's label list before it is applied.`,
-      `If ANY acceptance criterion is underdetermined, write nothing and ask me. If you find the pass itself is wrong, do not correct it silently: ask me.`,
+      `An underdetermined acceptance criterion is not something to fill in: write no criterion for it and ask instead. If you find the pass itself is wrong, do not correct it silently — ask.`,
+      asking,
       nothing,
       'Report when the draft is written.',
     ].join(' ');

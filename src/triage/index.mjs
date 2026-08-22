@@ -16,7 +16,7 @@ import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
 import { dispatch } from './dispatch.mjs';
-import { draftPath, requestFor } from './draft.mjs';
+import { readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
 
 const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|custom] [--repo <owner/repo>]';
@@ -113,9 +113,19 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       }
     }
 
-    const draft = draftPath(root, identity);
-    if (existsSync(draft)) note(`draft ${draft}`);
-    else note(dim(`no draft at ${draft} — nothing to publish yet`));
+    // The draft's IDENTITY, not merely its existence. A coordinator reads a
+    // draft, decides against it, and then folds or publishes — and in between,
+    // the child that owns it may rewrite it. Measured 2026-08-22: #54 went from
+    // 106 to 117 lines after its own peer report, with no signal, so every
+    // anchor a human had taken against it was silently stale. The sha is
+    // `git hash-object`'s, so it can be re-checked with a command an operator
+    // already trusts, and `ax triage fold --expect <sha>` refuses on it.
+    const draft = readDraft(root, identity);
+    if (draft.sha === '') note(dim(draft.reason));
+    else {
+      note(`draft ${draft.path}`);
+      note(dim(`${draft.sha.slice(0, 12)} · ${draft.lines} line(s)${draft.questions.length > 0 ? ` · ${draft.questions.length} open question(s)` : ''}${draft.ok ? '' : ` · NOT publishable: ${draft.reason}`}`));
+    }
   }
   return 0;
 }
