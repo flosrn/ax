@@ -32,7 +32,10 @@ src/worker/stall.mjs       watcher détaché fail-open (fichier séparé du fail
 src/worker/launch.mjs      ax worker launch --issue (gardes hôte → contrat de config par repo +
                            sondes injectées ; provisionnement délégué à ax worktree setup)
 src/worker/{ticket,hosts,brief,child}.mjs  ses quatre pièces séparables
-src/triage.mjs             ax triage                (cap par pane, F-030, sorties .scratch, le parent publie)
+src/triage/{index,dispatch,publish,draft}.mjs
+                           ax triage dispatch|status|publish (cap par record↔pane vivant F-048,
+                           F-030, l'enfant écrit un brouillon .scratch et ne mute rien, le parent
+                           publie ; `publish` ne ferme jamais, `custom` non publiable)
 src/pr-gate.mjs            ax pr gate               (pur gh/git — seul verbe non gaté sur orca)
 src/worktree/new.mjs       ax worktree new <nom> [--agent] [--prompt] [--brief] [--model] [--issue]
                            (claim → create → ax setup → agent EN DERNIER ; read-back parentWorktreeId)
@@ -187,7 +190,35 @@ les tables complètes, gating appliqué après.
       pattern refusé (`ls-remote` matche des motifs et répondrait 0 pour n'importe quel ref) ;
       balayage distant muet en dry-run ; sol dont le transport a échoué compté NON PROUVÉ.
       Suite ax 503/503.
-- [ ] **7. `ax triage`** — cas de `orca-triage.test.ts`. Meurt : le coordinator ENTIER.
+- [ ] **7. `ax triage`** — cas de `orca-triage.test.ts`. **Côté ax : fait le 2026-08-22** (`110a662`).
+      `ax triage dispatch|status|publish`. Décision prise avant d'écrire : l'enfant ne mute plus
+      rien — il écrit UN brouillon dans `.scratch/triage/<request>.md`, le parent relit, corrige,
+      et publie à la fin d'une chaîne de PRD. Ce qui rend `publish` la seule surface qui touche le
+      tracker : applique exactement ce que le brouillon nomme, tous les brouillons lus et rendus
+      avant le premier `gh`, ne ferme JAMAIS une issue, `custom` non publiable par son nom.
+      42 propositions du bash portées, 5 non verbatim et chacune dit pourquoi à son site : le
+      contrat de labels quitte le spec de l'enfant pour `ax.config.json:triage.labels` (absent,
+      illisible ou vide = refus — `gh label list` donne des noms sans groupes ni complétude) ;
+      `brief` accepte un brouillon non publié ; le cap compte les records dont le pane est vivant
+      (F-048) et non tous les panes d'Orca ; le dry-run lit la même source ; `custom` non publiable
+      n'existait pas en bash. `release.mjs` NE bouge PAS : un brouillon non relu est la parole de
+      l'enfant, et `--no-proof --dispatch <id>` est déjà le geste attesté pour un pane relu.
+      Deux fail-open trouvés en écrivant les tests : cap non numérique (`> NaN` toujours faux) et
+      record illisible lu comme zéro enfant — les deux refusent. `peerRun` extrait de `launch.mjs`
+      dans `src/worker/peers.mjs` plutôt que dupliqué. 585 tests, smoke live sur les deux verbes.
+      **Reste ouvert** (« on verra le coordinator après ») : basculer `/launch`, `orca-sessions` et
+      `orca-orchestrator` sur `ax triage`, supprimer `cmd_triage`, `cmd_checkpoint` (doublon mort
+      de `ax board` — tous les écrivains vivants passent par lui depuis l'étape 2), `record.py`
+      (ses 4 derniers verbes : `peer-run` → `peerRun`, `record-status` → `report()`,
+      `active-count`/`active-list` → supprimés avec le comptage par `worker-list`), et la table de
+      paires de `check-test-proof.ts:100` qui exige `record.py` ↔ `record.test.ts`.
+      **Renommage décidé, pas encore fait** : `reap` → **`sweep`**, parce que `ax.schema.json`
+      appelle déjà ce geste `sweep` (`launch.hosts.<h>.sweep`) et que cette clé pointe aujourd'hui
+      sur `orca-coordinator.sh reap --apply` — un mot pour un geste des deux côtés de la frontière
+      ssh. Pas `clean` : `ax worktree clean` récupère déjà des processus scopés par cwd (sa liste
+      `DEV_TOOLS` contient `chrome|chromium|playwright`), alors que ce geste-là est à l'échelle de
+      l'hôte et son signal est l'ÂGE DE LA RACINE (19 processus / 825 MB qui n'étaient pas trois
+      arbres orphelins mais UN navigateur tenu deux heures dont les pages n'ont jamais été fermées).
 - [ ] **8. `ax worktree new` + `ax pr gate`** — parallélisables avec 6-7. Meurt : `merge-gate.sh`.
 - [ ] **9. Rôles** — `~/.omp/agent/agents/{coordinateur,orchestrateur}.md`, minces, appellent ax.
       Meurent : `orca-sessions`, `orca-orchestrator`, `check-orchestration-surface.sh`.
