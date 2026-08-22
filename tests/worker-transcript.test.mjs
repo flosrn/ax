@@ -9,13 +9,13 @@
 // Offline by construction: the Orca runner is always injected, and every file
 // read is a fixture in a tmpdir.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
-import { slugOf, stampOf, transcript } from '../src/worker/transcript.mjs';
+import { launchProof, slugOf, stampOf, transcript } from '../src/worker/transcript.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-transcript-'));
 
@@ -183,6 +183,105 @@ test('model_change keeps WHO moved the model — boot, adapter and quota are thr
   assert.match(out, /role=boot \(session boot\)/);
   assert.match(out, /role=default \(model adapter\)/);
   assert.match(out, /role=fallback \(quota chain\)/);
+});
+
+test('launch proof keeps model selection separate from role and skill application', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-gap-353');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'session.jsonl'),
+    [
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-sonnet-5', role: 'default' }),
+      JSON.stringify({
+        type: 'custom_message',
+        customType: 'skill-prompt',
+        details: { role: 'worker', skills: ['lfg'], status: 'applied' },
+      }),
+    ].join('\n'),
+  );
+
+  assert.deepEqual(launchProof({ needle: 'gap-353', sessionsRoot: root }), {
+    model: { model: 'anthropic/claude-sonnet-5', role: 'default' },
+    sessionRole: { status: 'applied', role: 'worker', skills: ['lfg'] },
+  });
+
+  const { code, out } = capture(() =>
+    transcript(['--launch-proof', 'gap-353', '--sessions', root], { env: { HOME: root } }),
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(out), launchProof({ needle: 'gap-353', sessionsRoot: root }));
+});
+
+test('launch proof carries the exact pre-turn role refusal', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-gap-353');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'session.jsonl'),
+    [
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-sonnet-5', role: 'default' }),
+      JSON.stringify({
+        type: 'custom_message',
+        customType: 'role-refused',
+        details: { role: 'worker', reason: 'skill-not-found', missingSkills: ['lfg'] },
+      }),
+    ].join('\n'),
+  );
+
+  assert.deepEqual(launchProof({ needle: 'gap-353', sessionsRoot: root })?.sessionRole, {
+    status: 'refused',
+    role: 'worker',
+    reason: 'skill-not-found',
+    missingSkills: ['lfg'],
+  });
+});
+
+test('a request id selects one triage session among siblings sharing the current checkout', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+  for (const request of ['triage-acme-7', 'triage-acme-8']) {
+    writeFileSync(
+      join(dir, `${request}.jsonl`),
+      [
+        JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
+        JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
+        JSON.stringify({
+          type: 'custom_message',
+          customType: 'skill-prompt',
+          details: { role: 'triage-worker', skills: ['triage'], status: 'applied' },
+        }),
+      ].join('\n'),
+    );
+  }
+
+  assert.deepEqual(launchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole, {
+    status: 'applied',
+    role: 'triage-worker',
+    skills: ['triage'],
+  });
+  assert.equal(launchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
+});
+
+test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-worker');
+  mkdirSync(dir, { recursive: true });
+  const older = join(dir, 'older.jsonl');
+  const newer = join(dir, 'newer.jsonl');
+  const sidecar = join(dir, '__advisor.default.jsonl');
+  writeFileSync(older, JSON.stringify({ type: 'model_change', model: 'old', role: 'default' }));
+  writeFileSync(newer, JSON.stringify({ type: 'model_change', model: 'new', role: 'default' }));
+  writeFileSync(sidecar, JSON.stringify({ type: 'model_change', model: 'advisor', role: 'slow' }));
+  utimesSync(older, new Date(1_000), new Date(1_000));
+  utimesSync(newer, new Date(2_000), new Date(2_000));
+  utimesSync(sidecar, new Date(3_000), new Date(3_000));
+
+  assert.deepEqual(launchProof({ needle: 'worker', sessionsRoot: root })?.model, {
+    model: 'new',
+    role: 'default',
+  });
 });
 
 test('displayed text is capped, so one pasted preamble cannot become the whole output', () => {

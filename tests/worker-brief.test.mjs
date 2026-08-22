@@ -13,7 +13,7 @@ const TICKET = { id: 'T-353', title: 'Loading states are missing on the dashboar
 
 const brief = (extra = {}) =>
   renderBrief({
-    marker: '@task',
+    model: '@task',
     instruction: '/entry T-353',
     ticket: TICKET,
     readCommand: 'tracker MCP `get_issue`, then `list_comments` on the same issue',
@@ -21,12 +21,12 @@ const brief = (extra = {}) =>
     ...extra,
   });
 
-test('the marker and the instruction are on ONE line, and it is the first', () => {
-  // Field-proven shape: marker and instruction together is what applied
-  // `role: default` on five measured dispatches. A marker alone on its own line
-  // is untested, so it is never assumed.
+test('the worker role, model marker and instruction are on ONE first line', () => {
+  // The role and model share one order-independent marker. Keeping the instruction
+  // on that line preserves the field-proven shape that the child adapter reads
+  // before its first provider turn.
   const first = brief().split('\n')[0];
-  assert.equal(first, '[omp model=@task] /entry T-353');
+  assert.equal(first, '[omp role=worker model=@task] /entry T-353');
 });
 
 test('a launch with NO ticket never tells the child to read one', () => {
@@ -72,11 +72,9 @@ test('a ticketless launch still gets the mechanics, and a project contract still
   assert.doesNotMatch(owned, /There is NO ticket for this work/);
 });
 
-test('a caller holding the composed marker gets the same single line', () => {
-  // The seam carries either the alias or the marker, and neither end has to know
-  // which the other keeps. What is refused is two lines.
-  const first = brief({ marker: '[omp model=@default]' }).split('\n')[0];
-  assert.equal(first, '[omp model=@default] /entry T-353');
+test('the caller supplies a model alias, never a hand-composed marker', () => {
+  const first = brief({ model: '@default' }).split('\n')[0];
+  assert.equal(first, '[omp role=worker model=@default] /entry T-353');
 });
 
 test('the taught read command and the ticket URL are both in the brief', () => {

@@ -126,13 +126,29 @@ function record(store, request, handle = 'term_child') {
   );
 }
 
-/** A session transcript carrying one `model_change`, the marker's only evidence. */
-function transcript(root, needle, role) {
+/** A session transcript carrying the model mover and the session-role receipt. */
+function transcript(root, needle, role, { sessionRole = 'worker', skills = ['lfg'], refusal = null } = {}) {
   const dir = join(root, `-x-${needle}`);
   mkdirSync(dir, { recursive: true });
-  const entry = { type: 'model_change', model: 'claude-sonnet-5' };
-  if (role !== null) entry.role = role;
-  writeFileSync(join(dir, 'a.jsonl'), `${JSON.stringify(entry)}\n`);
+  const entries = [];
+  const model = { type: 'model_change', model: 'claude-sonnet-5' };
+  if (role !== null) model.role = role;
+  entries.push(model);
+  if (sessionRole !== null) {
+    entries.push({
+      type: 'custom_message',
+      customType: 'skill-prompt',
+      details: { role: sessionRole, skills, status: 'applied' },
+    });
+  }
+  if (refusal !== null) {
+    entries.push({
+      type: 'custom_message',
+      customType: 'role-refused',
+      details: refusal,
+    });
+  }
+  writeFileSync(join(dir, 'a.jsonl'), `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`);
   return root;
 }
 
@@ -453,7 +469,7 @@ test('the brief is a FILE, and its first line carries the marker with the instru
   const spec = r.started[0].match(/--spec-file (\S+)/)[1];
   assert.ok(existsSync(spec), 'the dispatch is handed a path, not a payload');
   const brief = readFileSync(spec, 'utf8');
-  assert.equal(brief.split('\n')[0], '[omp model=@task] /entry GAP-353');
+  assert.equal(brief.split('\n')[0], '[omp role=worker model=@task] /entry GAP-353');
   assert.match(brief, /https:\/\/linear\.test\/GAP-353/);
 });
 
@@ -463,7 +479,7 @@ test('--dry-run prints the brief and mutates nothing', () => {
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root });
 
   assert.equal(r.code, 0);
-  assert.match(r.out, /\[omp model=@default\] \/entry GAP-353/);
+  assert.match(r.out, /\[omp role=worker model=@default\] \/entry GAP-353/);
   assert.match(r.out, /would run: ax worker start/);
   assert.deepEqual(r.started, [], 'a dry run dispatches nothing');
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
@@ -489,10 +505,10 @@ test('a STRANDED dispatch is replayed here, and the child is still verified', ()
   assert.ok(!r.started[1].includes('--spec-file'), 'the replay is the recorded call, not a second composed one');
   // The proposition is that the replay reaches a full green verdict in ONE run.
   assert.equal(r.code, 0);
-  assert.match(r.out, /role=default/);
+  assert.match(r.out, /model .*\|default/);
 });
 
-test('the marker applied WITH a role and a moving pane is a green verdict', () => {
+test('the model and worker+lfg receipts with a moving pane are a green verdict', () => {
   const root = repo();
   provisioned(root, `${ISSUE}-${SLUG}`);
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
@@ -500,8 +516,36 @@ test('the marker applied WITH a role and a moving pane is a green verdict', () =
   const r = run(['--issue', ISSUE, '--slug', SLUG], { root, home });
 
   assert.equal(r.code, 0);
-  assert.match(r.out, /role=default/);
-  assert.match(r.out, /the pane advanced/);
+  assert.match(r.out, /model .*\|default/);
+  assert.match(r.out, /session .*worker.*lfg/);
+  assert.match(r.out, /the role, skill, model marker, and pane movement are proven/);
+});
+
+test('an applied model without a session-role receipt is exit 3', () => {
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, 'default', { sessionRole: null });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, home });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /UNPROVEN session role/);
+  assert.match(r.out, /Do NOT relaunch/);
+});
+
+test('a pre-turn role refusal is exit 3 with its exact cause', () => {
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, 'default', {
+    sessionRole: null,
+    refusal: { role: 'worker', reason: 'skill-not-found', missingSkills: ['lfg'] },
+  });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, home });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /REFUSED session role worker: skill-not-found/);
+  assert.match(r.out, /missing lfg/);
 });
 
 test('a child on its BOOT model is exit 3, and says not to relaunch', () => {

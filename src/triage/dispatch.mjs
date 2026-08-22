@@ -21,17 +21,18 @@
 // without colliding because a triage child writes only its own draft.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
-import { bad, dim, fix, note, raw, section } from '../log.mjs';
+import { bad, dim, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, dispatchIndex } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
 import { start as startVerb } from '../worker/start.mjs';
+import { launchProof } from '../worker/transcript.mjs';
 import { draftPath, readDraft, requestFor } from './draft.mjs';
 
 const USAGE =
@@ -57,6 +58,73 @@ function capOf(env) {
   return { ok: true, cap };
 }
 
+const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
+
+const roleWaitOf = env => {
+  const value = Number(env.AX_TRIAGE_ROLE_WAIT ?? 30);
+  return Number.isFinite(value) && value >= 0 ? value : 30;
+};
+
+/**
+ * Prove the child-side effect, not the marker ax composed.
+ *
+ * A missing role cannot mutate — orca-model removes the tool surface and blocks
+ * every tool call before the first provider turn — but the parent still needs
+ * the exact refusal rather than a green "dispatch recorded" line.
+ */
+function verifyTriageRole({ request, root, env, sessionsRoot, proofFn, now, sleep }) {
+  const wait = roleWaitOf(env);
+  const deadline = now() + wait * 1000;
+  let proof = null;
+  do {
+    try {
+      proof = proofFn({ needle: basename(root), request, env, sessionsRoot });
+    } catch {
+      proof = null;
+    }
+    if (proof !== null || now() >= deadline) break;
+    sleep(250);
+  } while (true);
+
+  if (proof === null) {
+    bad(`CANNOT ESTABLISH — ${request}: no child-side role receipt appeared within ${wait}s`);
+    note('The dispatch DID happen. Do NOT relaunch; inspect its recorded pane with `ax worker ls`.');
+    return 'CANNOT-ESTABLISH';
+  }
+
+  const model = proof.model;
+  const role = proof.sessionRole;
+  const skills = role?.status === 'applied' ? role.skills : [];
+  note(`proof ${request}: model ${model === null ? 'unreadable' : `${model.model}|${model.role}`} · session ${
+    role === null
+      ? 'unreadable'
+      : role.status === 'refused'
+        ? `${role.role}|REFUSED ${role.reason}`
+        : `${role.role}|${skills.join(',') || 'no skills'}`
+  }`);
+
+  if (
+    model?.role === 'default' &&
+    role?.status === 'applied' &&
+    role.role === 'triage-worker' &&
+    skills.includes('triage')
+  ) {
+    ok(`${request}: triage-worker + triage reached the first turn`);
+    return 'VERIFIED';
+  }
+
+  if (model?.role !== 'default') bad(`${request}: model marker unproven (${model === null ? 'no model receipt' : `${model.model}|${model.role}`})`);
+  if (role === null) bad(`${request}: no session-role receipt`);
+  else if (role.status === 'refused') {
+    const missing = role.missingSkills.length === 0 ? '' : `; missing ${role.missingSkills.join(', ')}`;
+    bad(`${request}: role ${role.role} refused — ${role.reason}${missing}`);
+  } else if (role.role !== 'triage-worker') bad(`${request}: expected triage-worker, got ${role.role}`);
+  else if (!skills.includes('triage')) bad(`${request}: triage skill was not applied`);
+  note('The dispatch DID happen. Do NOT relaunch; inspect its recorded pane with `ax worker ls`.');
+  return 'CANNOT-ESTABLISH';
+}
+
 export function dispatch(
   argv = [],
   {
@@ -66,6 +134,10 @@ export function dispatch(
     env = process.env,
     cwd = process.cwd(),
     startFn = startVerb,
+    proofFn = launchProof,
+    sessionsRoot,
+    now = Date.now,
+    sleep = defaultSleep,
   } = {},
 ) {
   const usageError = message => {
@@ -276,7 +348,7 @@ export function dispatch(
     note(`spec: ${spec}`);
 
     if (dry) {
-      results.push([issue, 'DRY']);
+      results.push({ issue, request, verdict: 'DRY' });
       continue;
     }
 
@@ -296,15 +368,34 @@ export function dispatch(
         { env, runner: run },
       );
     }
-    results.push([issue, verdictOf(code)]);
+    results.push({ issue, request, verdict: verdictOf(code) });
+  }
+
+  // Start the whole batch before waiting on any child. Triage sessions share
+  // the current checkout, and each request id appears in exactly one first task
+  // spec, so the transcript reader can distinguish them without a worktree per
+  // comment.
+  if (!dry) {
+    for (const result of results) {
+      if (result.verdict !== 'DISPATCHED') continue;
+      result.verdict = verifyTriageRole({
+        request: result.request,
+        root: paths.root,
+        env,
+        sessionsRoot,
+        proofFn,
+        now,
+        sleep,
+      });
+    }
   }
 
   // ── 8. summary ───────────────────────────────────────────────────────────
   section('summary');
   let failed = 0;
-  for (const [issue, verdict] of results) {
+  for (const { issue, verdict } of results) {
     note(`#${issue} ${verdict}`);
-    if (verdict !== 'DISPATCHED' && verdict !== 'DRY') failed = 1;
+    if (verdict !== 'VERIFIED' && verdict !== 'DRY') failed = 1;
   }
   if (!dry) {
     note('each session wakes you when it reports — do not poll, and never run `orchestration check --wait`: the peer extension owns the only consuming loop on this Run');
@@ -370,7 +461,7 @@ function readLabels(declared, root) {
  * belongs to `ax triage publish`. What the child owes is one file.
  */
 function renderSpec({ job, model, issue, draft, labels, triaged, instruction }) {
-  const marker = `[omp model=${model}]`;
+  const marker = `[omp role=triage-worker model=${model}]`;
   const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted.`;
 
   if (job === 'triage') {

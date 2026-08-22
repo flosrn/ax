@@ -232,29 +232,28 @@ export function renderEntry(entry) {
 
 export function transcript(argv = [], { resolve = resolveOrca, runner, env = process.env, sessionsRoot } = {}) {
   let target = '';
-  // `--marker <needle>` is the one mode that reads a transcript WITHOUT
-  // rendering it: `ax worker launch` asks which model a child ended up running
-  // and who moved it there, and it asks the same question on the machine the
-  // transcript lives on. So it crosses a transport (`ssh <host> ax worker
-  // transcript --marker …`) and answers in one parseable line instead of
-  // degrading into a weaker local proxy. It reads a file and asks the runtime
-  // nothing, which is why it answers before the gate below.
-  const markerAt = argv.indexOf('--marker');
-  if (markerAt !== -1) {
-    const needle = argv[markerAt + 1];
+  // Launch verification is the one mode that reads a transcript WITHOUT
+  // rendering it. It returns both independent proofs — model mover and session
+  // role/skills — as one JSON line, locally or through the remote transport.
+  // It asks no runtime question, so it answers before the readiness gate below.
+  const proofAt = argv.indexOf('--launch-proof');
+  if (proofAt !== -1) {
+    const needle = argv[proofAt + 1];
     if (needle === undefined || needle.startsWith('-')) {
-      bad('ax worker transcript --marker expects the session needle (a worktree directory name)');
+      bad('ax worker transcript --launch-proof expects the session needle (a worktree directory name)');
       return 2;
     }
     const rootAt = argv.indexOf('--sessions');
-    const found = modelMarker({ needle, env, sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1] });
-    // Absence is "too early to tell", never "boot model": exit 1 says nothing
-    // was found, and a caller that read it as a verdict would report a marker
-    // failure on a child that was merely slow to start.
+    const found = launchProof({
+      needle,
+      env,
+      sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1],
+    });
     if (found === null) return 1;
-    raw(`${found.model}|${found.role}`);
+    raw(JSON.stringify(found));
     return 0;
   }
+
 
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') {
@@ -401,28 +400,73 @@ function resolveTarget(target, { env, sessionsRoot }) {
 }
 
 /**
- * What model a dispatched child actually runs, and WHO put it there.
+ * The launch proof written by the child session itself.
  *
- * The child's own word for it is stale the moment it switches, so the transcript
- * is the evidence: in a `model_change` entry the `role` field names the mover —
- * absent is the boot model, `default` is the spec's `[omp model=…]` marker
- * applying, `fallback` is the quota chain moving the session on its own. That
- * distinction was paid for: an early adapter was believed to work because a
- * fallback happened to land on the intended model at the right moment.
- *
- * `null` means NO TRANSCRIPT YET — "too early to tell", never "boot model". A
- * caller that conflated the two would report a marker failure on a child that
- * was merely slow to start.
- *
- * The needle is a worktree directory NAME, and a session directory is the cwd
- * slug it ran in — so the match is anchored at the END of that slug, never
- * anywhere inside it. Unanchored, `GAP-35` would read the transcript of
- * `GAP-357`, and a sibling session that happens to carry `role: default` would
- * green this child's model proof. Two slugs ending in the same worktree name is
- * a real ambiguity (the same branch checked out under two repositories), and it
- * answers null rather than picking the newest.
+ * The model mover and the session role are independent. `model_change.role`
+ * says who selected the model (`default` is the spec adapter); a hidden custom
+ * message says whether the top-level role and every declared autoload skill
+ * reached the first turn. Neither proposition can stand in for the other.
  */
-export function modelMarker({ needle, env = process.env, sessionsRoot } = {}) {
+export function launchProof({ needle, request = '', env = process.env, sessionsRoot } = {}) {
+  const file = sessionFileForNeedle({ needle, request, env, sessionsRoot });
+  if (file === null) return null;
+
+  let model = null;
+  let sessionRole = null;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (line === '' || (!line.includes('model_change') && !line.includes('skill-prompt') && !line.includes('role-refused'))) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    // The LAST model mover wins: a quota fallback after the marker is the model
+    // the child actually serves, and must not be reported as marker-applied.
+    if (entry?.type === 'model_change') {
+      model = { model: String(entry.model ?? ''), role: entry.role ?? '' };
+      continue;
+    }
+    if (!['custom', 'custom_message'].includes(entry?.type)) continue;
+    const details = entry?.details;
+    if (entry.customType === 'skill-prompt' && details?.status === 'applied' && typeof details.role === 'string' && Array.isArray(details.skills)) {
+      sessionRole = {
+        status: 'applied',
+        role: details.role,
+        skills: details.skills.filter(skill => typeof skill === 'string'),
+      };
+    } else if (entry.customType === 'role-refused' && typeof details?.role === 'string') {
+      sessionRole = {
+        status: 'refused',
+        role: details.role,
+        reason: String(details.reason ?? 'unknown'),
+        missingSkills: Array.isArray(details.missingSkills)
+          ? details.missingSkills.filter(skill => typeof skill === 'string')
+          : [],
+      };
+    }
+  }
+  return { model, sessionRole };
+}
+
+
+const mtime = path => {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+};
+
+/**
+ * Exactly one session file under the cwd slug ending in `needle`.
+ *
+ * A worker owns a unique worktree, so newest is unambiguous. Triage sessions
+ * share the current checkout; there the recorded request id appears in the
+ * first task spec and selects exactly one file. Zero or two matches is an
+ * inability to establish, never newest-wins.
+ */
+function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
   const root = sessionsRootOf(env, sessionsRoot);
   const tail = String(needle ?? '');
   if (tail === '') return null;
@@ -435,40 +479,27 @@ export function modelMarker({ needle, env = process.env, sessionsRoot } = {}) {
     return null;
   }
   if (dirs.length !== 1) return null;
-  const dir = dirs[0];
-  const newest = paths => paths.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);
 
   let files;
   try {
-    files = readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => join(dir, name));
+    files = readdirSync(dirs[0])
+      .filter(name => name.endsWith('.jsonl') && !name.startsWith('__advisor.'))
+      .map(name => join(dirs[0], name));
   } catch {
     return null;
   }
-  const file = newest(files);
-  if (file === null) return null;
-
-  let last = null;
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    if (line === '' || !line.includes('model_change')) continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    // The LAST one wins: a session that switched twice is running the newest.
-    if (entry?.type === 'model_change') last = { model: String(entry.model ?? ''), role: entry.role ?? '' };
+  if (request !== '') {
+    const matching = files.filter(path => {
+      try {
+        return readFileSync(path, 'utf8').includes(request);
+      } catch {
+        return false;
+      }
+    });
+    return matching.length === 1 ? matching[0] : null;
   }
-  return last;
+  return files.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);
 }
-
-const mtime = path => {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return 0;
-  }
-};
 
 /** Exported for the doctor of a wrong answer: which files a target would consider. */
 export { findRecords, sessionCandidates, worktreesOf };

@@ -133,6 +133,12 @@ const run = (argv, options = {}) => {
         started.push(args.join(' '));
         return options.startCodes ? options.startCodes.shift() : 0;
       },
+      proofFn: options.proofFn ?? (() => ({
+        model: { model: 'claude-opus-5', role: 'default' },
+        sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] },
+      })),
+      now: options.now ?? (() => 0),
+      sleep: options.sleep ?? (() => {}),
     }),
   );
   return { ...result, calls, started, root, home, store, asked: gh.asked };
@@ -522,7 +528,7 @@ test('the triage spec sends the child to the project contract, and forbids every
   // the child applied it. The child applies nothing now, so what the spec has to
   // carry is the vocabulary its draft must speak — and the refusal to mutate.
   const r = run(['--issue', '7', '--dry-run']);
-  assert.match(r.out, /\[omp model=@default\]/);
+  assert.match(r.out, /\[omp role=triage-worker model=@default\]/);
   assert.match(r.out, /Read skill:\/\/triage AND .*triage-labels\.md/);
   assert.match(r.out, /issue:\/\/7/);
   assert.match(r.out, /Apply no label, post no comment, close nothing/);
@@ -559,7 +565,7 @@ test('the custom spec omits the already-triaged prefix on an untriaged issue', (
 
 test('--model travels in the spec marker rather than in a worker-start flag', () => {
   const r = run(['--issue', '7', '--model', '@smol', '--dry-run']);
-  assert.match(r.out, /\[omp model=@smol\]/);
+  assert.match(r.out, /\[omp role=triage-worker model=@smol\]/);
   assert.match(r.out, /model @smol/);
 });
 
@@ -590,12 +596,42 @@ test('a dry run renders the spec and creates no session', () => {
 
 // ── the dispatch itself ──────────────────────────────────────────────────────
 
-test('a real run creates one session per issue, and reports each as DISPATCHED', () => {
+test('a real run creates one verified triage-worker session per issue', () => {
   const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, env: { ORCA_TRIAGE_SESSION_CAP: '5' } });
   assert.equal(r.code, 0);
   assert.equal(r.started.length, 2, 'one session per issue, never one session for two');
-  assert.match(r.out, /#7 DISPATCHED/);
-  assert.match(r.out, /#8 DISPATCHED/);
+  assert.match(r.out, /#7 VERIFIED/);
+  assert.match(r.out, /#8 VERIFIED/);
+});
+
+test('a dispatch with no role receipt is cannot-establish and is never relaunched', () => {
+  let reads = 0;
+  const r = run(['--issue', '7'], {
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
+    proofFn: () => (reads += 1, null),
+  });
+  assert.equal(r.code, 1);
+  assert.equal(r.started.length, 1);
+  assert.equal(reads, 1);
+  assert.match(r.out, /#7 CANNOT-ESTABLISH/);
+  assert.match(r.out, /Do NOT relaunch/);
+});
+
+test('a pre-turn triage role refusal names the missing skill', () => {
+  const r = run(['--issue', '7'], {
+    proofFn: () => ({
+      model: { model: 'claude-opus-5', role: 'default' },
+      sessionRole: {
+        status: 'refused',
+        role: 'triage-worker',
+        reason: 'skill-not-found',
+        missingSkills: ['triage'],
+      },
+    }),
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /role triage-worker refused — skill-not-found; missing triage/);
+  assert.match(r.out, /#7 CANNOT-ESTABLISH/);
 });
 
 test('the session is placed in the CURRENT worktree, with no tree and no setup', () => {

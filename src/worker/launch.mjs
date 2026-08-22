@@ -66,7 +66,7 @@ import { setup as setupVerb } from '../worktree/setup.mjs';
 import { defaultStore, workerPane } from './record.mjs';
 import { peerRun } from './peers.mjs';
 import { readPane } from './pane.mjs';
-import { modelMarker } from './transcript.mjs';
+import { launchProof } from './transcript.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, remote, repoIdFor } from './hosts.mjs';
@@ -427,7 +427,7 @@ export function launch(
 
   // ── 6. the brief, as a FILE ────────────────────────────────────────────────
   const brief = renderBrief({
-    marker: flags.model,
+    model: flags.model,
     instruction,
     ticket,
     name: flags.name,
@@ -693,16 +693,15 @@ function readContract(launchConfig, root) {
 }
 
 /**
- * Two proofs, one verdict shape on both hosts: the marker applied WITH a role,
- * and the pane emitting.
+ * Four proofs, one verdict shape on both hosts: the model marker was applied by
+ * the adapter, the `worker` role and its `lfg` skill reached the first turn,
+ * and the pane emitted.
  *
- * The marker is read from the child's own transcript because its own word for
- * its model is stale the moment it switches, and `role` is what says WHO moved
- * it — `default` is the spec's marker applying, `fallback` is the quota chain
- * moving the session on its own, and absence is the boot model. Remotely that
- * transcript lives on the other machine, so the same read runs there over the
- * declared transport rather than being replaced by a weaker check; a transport
- * that cannot answer is UNPROVEN, never a pass.
+ * The transcript is authoritative for both configuration effects. A child's
+ * own model word is stale after a switch; a composed `[omp role=…]` line proves
+ * only that the parent wrote an intention. The hidden role receipt is written
+ * by the child-side extension after OMP discovery and skill loading. Remotely
+ * the identical reader runs on the machine holding that transcript.
  *
  * Liveness is CURSOR MOVEMENT, never duration: two samples, and any advance
  * proves the pty emitted.
@@ -735,12 +734,12 @@ function verify({ run, env, on, wait, worktree, request, ticket, instruction, li
   const needle = basename(worktree === '' ? request : worktree);
   const deadline = now() + wait * 1000;
   const tickMs = tickOf(env);
-  let marker = null;
+  let proof = null;
   let first = null;
   let moved = null;
 
   for (;;) {
-    if (marker === null) marker = readMarker({ needle, env, sessionsRoot, host, exec, cwd });
+    if (proof === null) proof = readProof({ needle, env, sessionsRoot, host, exec, cwd });
     if (pane !== '') {
       const sample = readPane(run, pane, { limit: 1, environment: on });
       const cursor = sample.cursor;
@@ -749,28 +748,54 @@ function verify({ run, env, on, wait, worktree, request, ticket, instruction, li
         else if (cursor !== first) moved = cursor;
       }
     }
-    if (marker !== null && moved !== null) break;
+    if (proof !== null && moved !== null) break;
     if (now() >= deadline) break;
     sleep(tickMs);
   }
 
-  note(`model     ${marker === null ? 'unreadable' : `${marker.model}|${marker.role}`}`);
+  const model = proof?.model ?? null;
+  const sessionRole = proof?.sessionRole ?? null;
+  const skillNames = sessionRole?.status === 'applied' ? sessionRole.skills : [];
+  note(`model     ${model === null ? 'unreadable' : `${model.model}|${model.role}`}`);
+  note(
+    `session   ${
+      sessionRole === null
+        ? 'unreadable'
+        : sessionRole.status === 'refused'
+          ? `${sessionRole.role}|REFUSED ${sessionRole.reason}`
+          : `${sessionRole.role}|${skillNames.join(',') || 'no skills'}`
+    }`,
+  );
   note(`liveness  cursor ${first === null ? 'unreadable' : first} -> ${moved === null ? 'unchanged' : moved}`);
 
-  if (marker !== null && marker.role === 'default' && moved !== null) {
-    ok('verified  the marker applied with role=default, and the pane advanced');
+  const roleReady =
+    sessionRole?.status === 'applied' &&
+    sessionRole.role === 'worker' &&
+    skillNames.includes('lfg');
+  if (model !== null && model.role === 'default' && roleReady && moved !== null) {
+    ok('verified  the role, skill, model marker, and pane movement are proven');
     fix(`ax worker tail ${pane || '<pane>'}`);
     return 0;
   }
 
-  if (marker === null) {
+  if (model === null) {
     bad('UNPROVEN model: no transcript yet. The child may still be booting, or its transcript sits on another host and was unreadable from here.');
-  } else if (marker.role === '') {
+  } else if (model.role === '') {
     bad('UNPROVEN model: the child runs its BOOT model — the spec marker did not apply.');
-  } else if (marker.role === 'fallback') {
+  } else if (model.role === 'fallback') {
     bad('UNPROVEN model: the quota chain moved this session, so the marker is not what decided.');
   } else {
-    bad(`UNPROVEN model: ${marker.model}|${marker.role}`);
+    bad(`UNPROVEN model: ${model.model}|${model.role}`);
+  }
+  if (sessionRole === null) {
+    bad('UNPROVEN session role: no child-side role receipt was found.');
+  } else if (sessionRole.status === 'refused') {
+    const missing = sessionRole.missingSkills.length === 0 ? '' : `; missing ${sessionRole.missingSkills.join(', ')}`;
+    bad(`REFUSED session role ${sessionRole.role}: ${sessionRole.reason}${missing}`);
+  } else if (sessionRole.role !== 'worker') {
+    bad(`UNPROVEN session role: expected worker, got ${sessionRole.role}`);
+  } else if (!skillNames.includes('lfg')) {
+    bad(`UNPROVEN session skill: worker did not receive lfg (received ${skillNames.join(', ') || 'none'})`);
   }
   if (moved === null) {
     bad(`UNPROVEN liveness: the pane cursor did not advance within ${wait}s. A live in-place spinner also emits no new line — read the pane before concluding.`);
@@ -780,21 +805,26 @@ function verify({ run, env, on, wait, worktree, request, ticket, instruction, li
   return 3;
 }
 
-/** The same marker read, wherever the transcript lives. */
-function readMarker({ needle, env, sessionsRoot, host, exec, cwd }) {
-  if (host === null) return modelMarker({ needle, env, sessionsRoot });
+/** The same launch proof read, wherever the transcript lives. */
+function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
+  if (host === null) return launchProof({ needle, env, sessionsRoot });
   const root = host.sessions ?? '';
   if (root === '') return null;
-  // The identical question, asked on the machine the transcript lives on: `ax`
-  // is there too, so this is the same verb rather than a weaker proxy for it.
-  //
-  // Through the ssh boundary, because ssh rejoins its arguments into ONE remote
-  // shell command: the needle and the declared sessions root are quoted there,
-  // and a target that would be read as a local option is refused.
-  const out = remote(args => exec('ssh', args, cwd), host.ssh, `ax worker transcript --marker ${quote(needle)} --sessions ${quote(root)}`);
+  // Through ssh because ssh rejoins its arguments into one remote command.
+  // Every value is quoted as data, and the target grammar is closed by remote().
+  const out = remote(
+    args => exec('ssh', args, cwd),
+    host.ssh,
+    `ax worker transcript --launch-proof ${quote(needle)} --sessions ${quote(root)}`,
+  );
   if (out.error || out.status !== 0) return null;
   const answer = firstLine(out.stdout);
   if (answer === '') return null;
-  const [model, role = ''] = answer.split('|');
-  return { model, role };
+  try {
+    const parsed = JSON.parse(answer);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }

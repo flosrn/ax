@@ -141,15 +141,14 @@ const REMOTE = [
 ].join('\n');
 
 /**
- * The composed marker line. A caller may hold the model alias (`@task`) or the
- * composed marker (`[omp model=@task]`); both render the same single line, so
- * neither end of the seam has to know which shape the other keeps. What is
- * refused is two lines.
+ * The composed marker line. A worker role and a model alias are two independent
+ * obligations in the same order-independent bracket; neither may be inferred
+ * from the other. The caller supplies the model as data, never a precomposed
+ * marker, so one renderer owns the grammar.
  */
-function markerLine(marker, instruction) {
-  const text = String(marker ?? '').trim();
-  const head = /^\[omp model=/.test(text) ? text : `[omp model=${text}]`;
-  return `${head} ${String(instruction ?? '').trim()}`.trim();
+function markerLine(model, instruction) {
+  const value = String(model ?? '').trim();
+  return `[omp role=worker model=${value}] ${String(instruction ?? '').trim()}`.trim();
 }
 
 /**
@@ -170,7 +169,7 @@ function markerLine(marker, instruction) {
  * `ticket: null` says the launch HAS no ticket, which renders differently from a
  * ticket that could not be read.
  */
-export function renderBrief({ marker, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '' } = {}) {
+export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '' } = {}) {
   // `ticket: null` is not "a ticket I could not read" — it is a launch that has
   // none (`--name`). The two must not render the same: the tracked shape says
   // "read the ticket, it is canonical", and pointing that at nothing is how a
@@ -183,7 +182,7 @@ export function renderBrief({ marker, instruction, ticket = {}, readCommand, run
     : [`# ${name}`, '', 'This launch carries NO ticket: what follows is the whole definition of the work.'];
 
   const lines = [
-    markerLine(marker, instruction),
+    markerLine(model, instruction),
     ...head,
     '',
     `PILOT CONTRACT — coordinator Run ${run ?? ''}, execution host ${host || 'here'}`,
