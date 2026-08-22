@@ -119,6 +119,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   for (const issue of issues) {
     const base = { job, repo: slug, issue };
     const written = passesIn(join(paths.root, DRAFT_DIR), base, '.md');
+    const recorded = passesIn(store, base, '.json');
     const all = passesOf(store, join(paths.root, DRAFT_DIR), base);
     // Only a written pass can be published, so the default target is the newest
     // DRAFT; an unwritten newer pass shows up in `later` and forces the probe.
@@ -133,7 +134,11 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     }
     if (all.length > 1 && pass === target) note(`#${issue} passes ${all.join(', ')} — publishing ${pass}, the newest with a draft`);
 
-    const later = all.filter(other => other > pass);
+    // Only a DISPATCHED newer pass can be holding a child. A newer pass with a
+    // draft and no record was written by hand and never had one, so probing it
+    // would refuse on an absence that means nothing. The record is the evidence
+    // a child exists; the pane probe then says whether it is still there.
+    const later = all.filter(other => other > pass && recorded.includes(other));
     if (later.length > 0) {
       // Built once, on the first issue that needs it.
       if (probe === null) probe = livenessProbe({ resolve, runner, exec, env, store });

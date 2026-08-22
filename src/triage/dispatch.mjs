@@ -580,13 +580,27 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction, pa
   const marker = `[omp role=triage-worker model=${model}]`;
   const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted.`;
 
-  // HOW to ask, not merely permission to. Both drafting jobs can escalate, and
-  // before this the three children that did each invented a layout ("What we
-  // still need from you", a/b/c sub-points, inline forks) — so every fold of the
-  // maintainer's answers was a bespoke markdown edit, against anchors that went
-  // stale when a child rewrote its draft. The number is what `ax triage fold`
-  // pairs a ruling to, so the shape is declared here instead of left to taste.
-  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own. Those lines stay in the body — the human reads them on the issue — and they are what a fold pairs answers to, so a question that needs three paragraphs to state is more than one decision: split it.`;
+  // HOW to ask, and — the part that was wrong on the first cut — WHEN to stop.
+  //
+  // The shape is declared because three children escalated in three layouts
+  // ("What we still need from you", a/b/c sub-points, inline forks), and a
+  // numbered ask is one a parent can answer by number without quoting it.
+  //
+  // But the first version of this string ended on "Report when the draft is
+  // written", which told a child with open questions to FINISH. That is what
+  // broke the answer channel, and the coordinator measured both halves of the
+  // breakage on 2026-08-22: children's `ask` refused because the stall had
+  // revoked their capability, and its own replies with no route left "after
+  // their report". Both are consequences of the child ending its turn. A child
+  // that asks and WAITS is a live child with an open question to its parent, and
+  // that channel needs nothing built for it.
+  //
+  // So the ask is not a note left in a file for someone to find later. It is a
+  // question put to the parent that dispatched this child, and the child holds
+  // its own context — the issue read, the code explored — until the answer comes
+  // back. That context is the whole reason not to let it finish: a later child
+  // re-deriving it is the expensive path this avoids.
+  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and keep those lines in the draft so the decision is on record. Then ASK THE PARENT THAT DISPATCHED YOU those same numbered questions, and WAIT for the answer — do not report, do not end your turn, and do not decide any of them yourself. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
 
   // What a SECOND pass is told, and it is told before anything else it reads.
   // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.
@@ -611,7 +625,7 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction, pa
       `Leaving a group empty means you have not finished. Every name is checked against this repository's own label list before anything is applied, so \`Labels: state → needs-info\` and \`Remove labels: needs-triage (superseded)\` are both refused: they name no label that exists.`,
       nothing,
       asking,
-      'Report when the draft is written.',
+      'Report when the draft is FINAL — which means it carries no open question.',
     ].filter(Boolean).join(' ');
   }
 
@@ -625,7 +639,7 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction, pa
       `An underdetermined acceptance criterion is not something to fill in: write no criterion for it and ask instead. If you find the pass itself is wrong, do not correct it silently — ask.`,
       asking,
       nothing,
-      'Report when the draft is written.',
+      'Report when the draft is FINAL — which means it carries no open question.',
     ].filter(Boolean).join(' ');
   }
 

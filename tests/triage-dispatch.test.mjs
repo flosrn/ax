@@ -840,3 +840,39 @@ test('a plain dispatch on an issue that has two passes replays the NEWEST, never
   assert.equal(r.started.length, 1);
   assert.match(r.started[0], /--resume --request triage-acme-widgets-7-p2/);
 });
+
+// ── what a child with open questions is told to do ───────────────────────────
+
+test('a child that must ask is told to ask its PARENT and wait, never to report', () => {
+  // The first cut of this spec ended on "Report when the draft is written",
+  // which told a child with open questions to FINISH — and finishing is what
+  // broke the answer channel both ways on 2026-08-22: the children's `ask` was
+  // refused because the stall had revoked their capability, and the coordinator's
+  // replies had no route left "after their report". A child that asks and waits
+  // is a live child with an open question to its parent, and that needs nothing
+  // built for it.
+  const r = run(['--issue', '7', '--dry-run']);
+  assert.equal(r.code, 0);
+  assert.match(r.out, /ASK THE PARENT THAT DISPATCHED YOU/);
+  assert.match(r.out, /WAIT for the answer/);
+  assert.match(r.out, /do not report, do not end your turn/);
+  assert.match(r.out, /Report when the draft is FINAL/);
+  assert.doesNotMatch(r.out, /Report when the draft is written/);
+});
+
+test('the same instruction reaches a brief child, because a brief escalates too', () => {
+  const root = repo();
+  draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nThe triage pass.\n');
+  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { root });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /ASK THE PARENT THAT DISPATCHED YOU/);
+  assert.match(r.out, /Report when the draft is FINAL/);
+});
+
+test('the child keeps its own context: the spec says why the answer comes back to IT', () => {
+  // The reason a later session is not the answer: it would re-derive the issue
+  // and the code this child has already read.
+  const r = run(['--issue', '7', '--dry-run']);
+  assert.match(r.out, /You hold the issue and the code you have already read/);
+  assert.match(r.out, /revise the draft into a final verdict/);
+});

@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { createRunner } from '../src/orca-bin.mjs';
 import { publish } from '../src/triage/publish.mjs';
 import { status } from '../src/triage/index.mjs';
 
@@ -74,12 +75,66 @@ const capture = fn => {
     process.stderr.write = stderr;
   }
 };
+/** A settled dispatch record for one PASS, with a pane handle to probe. */
+function passRecord(store, request, { handle = 'term_child', dispatchId = 'd-1' } = {}) {
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, `${request}.json`),
+    JSON.stringify({
+      request,
+      createdAt: '2026-08-20T10:00:00.000Z',
+      attempts: [
+        {
+          n: 1,
+          phases: [
+            {
+              name: 'worker-start',
+              beganAt: '2026-08-20T10:00:00.000Z',
+              exit: 0,
+              receipt: { ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: handle }] } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+}
+
+const receipt = result => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' });
+
+/** An Orca that owns the panes it is told to own, and records every argv. */
+function fakeOrca({ panes = [], omitted = [], reachable = true } = {}) {
+  const calls = [];
+  const runner = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'status') return receipt({ runtime: { reachable } });
+      if (args.join(' ').startsWith('terminal list')) {
+        return receipt({ terminals: panes.map(handle => ({ handle })), hostScope: { omittedHostIds: omitted } });
+      }
+      return { status: 1, stdout: '', stderr: 'unexpected orca call' };
+    },
+  });
+  return { runner, calls };
+}
 
 const run = (argv, options = {}) => {
   const root = options.root ?? repo();
   const gh = options.gh ?? fakeGh(options.answers);
-  const result = capture(() => publish([...argv], { exec: gh.exec, env: options.env ?? {}, cwd: root }));
-  return { ...result, root, calls: gh.calls };
+  const orca = options.orca === undefined ? null : fakeOrca(options.orca);
+  const result = capture(() =>
+    publish([...argv], {
+      exec: gh.exec,
+      env: options.env ?? {},
+      cwd: root,
+      runner: orca?.runner,
+      // Never a real binary: an un-injected probe must answer "no Orca here"
+      // rather than reach for the one on this machine.
+      resolve: () => null,
+    }),
+  );
+  return { ...result, root, calls: gh.calls, orcaCalls: orca?.calls ?? [] };
 };
 
 // `repo view` and `label list` are reads: publish asks both before it decides.
@@ -420,4 +475,126 @@ test('status reads the record for the job it was asked about', () => {
   const r = runStatus(['--issue', '7', '--job', 'brief'], { root, store });
   assert.match(r.out, /request brief-acme-widgets-7/);
   assert.doesNotMatch(r.out, /no dispatch record/);
+});
+
+// ── which pass lands ─────────────────────────────────────────────────────────
+//
+// Once one issue can hold two verdicts, "publish it" stops being unambiguous.
+// Every case below is a way the wrong one could land silently.
+
+const passStore = () => join(realpathSync(mkdtempSync(join(tmpdir(), 'ax-store-'))), 'store');
+
+test('with two drafts and no --pass, the NEWEST lands', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  draft(root, 'triage-acme-widgets-7-p2', 'Labels: priority/P2\n\nPass two.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /passes 1, 2 — publishing 2/);
+  const edit = r.calls.find(line => line.includes('issue edit'));
+  assert.match(edit, /--add-label priority\/P2/);
+  assert.ok(!edit.includes('category/bug'), 'pass 1 did not land');
+});
+
+test('naming an older pass IS the permission to publish it', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  draft(root, 'triage-acme-widgets-7-p2', 'Labels: priority/P2\n\nPass two.\n');
+  const r = run(['--issue', '7', '--pass', '1'], { root });
+
+  assert.equal(r.code, 0);
+  assert.match(r.calls.find(line => line.includes('issue edit')), /--add-label category\/bug/);
+});
+
+test('naming a pass nobody wrote is refused, and the refusal lists the ones that exist', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  draft(root, 'triage-acme-widgets-7-p2', 'Labels: priority/P2\n\nPass two.\n');
+  const r = run(['--issue', '7', '--pass', '5'], { root });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /has no pass 5 — it has 1, 2/);
+  assert.ok(r.calls.every(line => !line.includes('issue edit')), 'nothing was mutated');
+});
+
+test('an UNWRITTEN newer pass with a live pane blocks the older one', () => {
+  // The union case, and the reason the pass universe is records ∪ drafts: pass 2
+  // has been dispatched and its child is writing right now, so it owns no `.md`
+  // yet. Reading drafts alone would call pass 1 the newest and land it under a
+  // child that is at that moment replacing it.
+  const root = repo();
+  const store = passStore();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  passRecord(store, 'triage-acme-widgets-7-p2', { handle: 'term_busy' });
+  const r = run(['--issue', '7'], { root, env: { ORCA_DISPATCH_STORE: store }, orca: { panes: ['term_busy'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /pass 2 is VIVANT/);
+  assert.ok(r.calls.every(line => !line.includes('issue edit')), 'nothing was mutated');
+});
+
+test('an unwritten newer pass whose pane is gone does not block the older one', () => {
+  const root = repo();
+  const store = passStore();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  passRecord(store, 'triage-acme-widgets-7-p2', { handle: 'term_gone' });
+  const r = run(['--issue', '7'], { root, env: { ORCA_DISPATCH_STORE: store }, orca: { panes: [] } });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /newer pass\(es\) 2 are finished/);
+  assert.match(r.calls.find(line => line.includes('issue edit')), /--add-label category\/bug/);
+});
+
+test('a newer pane that cannot be read blocks the older pass, rather than being assumed finished', () => {
+  // F-028 at the publishing end: an absence from a list that omits hosts is not
+  // a death, and this mutation cannot be taken back.
+  const root = repo();
+  const store = passStore();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  passRecord(store, 'triage-acme-widgets-7-p2', { handle: 'term_elsewhere' });
+  const r = run(['--issue', '7'], { root, env: { ORCA_DISPATCH_STORE: store }, orca: { panes: [], omitted: ['host_b'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /pass 2 is INCONNU/);
+  assert.ok(r.calls.every(line => !line.includes('issue edit')));
+});
+
+test('with no Orca at all, a newer dispatched pass still blocks — the probe fails closed', () => {
+  const root = repo();
+  const store = passStore();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  passRecord(store, 'triage-acme-widgets-7-p2', { handle: 'term_busy' });
+  const r = run(['--issue', '7'], { root, env: { ORCA_DISPATCH_STORE: store } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /no Orca CLI on this machine/);
+  assert.ok(r.calls.every(line => !line.includes('issue edit')));
+});
+
+test('a newer pass that was never dispatched is not probed, because no child ever existed', () => {
+  // A hand-written newer draft has no record. Probing it would refuse on an
+  // absence that means nothing, and this path must not need Orca at all.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nPass one.\n');
+  draft(root, 'triage-acme-widgets-7-p2', 'Labels: priority/P2\n\nPass two.\n');
+  const r = run(['--issue', '7', '--pass', '1'], { root });
+
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.orcaCalls, [], 'no Orca round-trip on this path');
+});
+
+test('an ordinary publish on a single pass never reaches for Orca', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nOne pass.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.orcaCalls, []);
+});
+
+test('--pass expects a number', () => {
+  const r = run(['--issue', '7', '--pass', 'latest']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--pass expects a number/);
 });
