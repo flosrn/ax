@@ -10,6 +10,7 @@ import { fatal } from '../src/log.mjs';
 import { supabase } from '../src/supabase-guard.mjs';
 import { worktree } from '../src/worktree/index.mjs';
 import { triage } from '../src/triage/index.mjs';
+import { pr } from '../src/pr/index.mjs';
 
 const RUNNERS = {
   doctor: () => (doctor() === 0 ? 0 : 1),
@@ -32,6 +33,8 @@ const RUNNERS = {
   worker: () => worker(args.slice(1)),
   // Same, and its verbs each carry their own repeated --issue positionals.
   triage: () => triage(args.slice(1)),
+  // Same again: `gate --pr <n>` carries its own flags, and none is whole-command.
+  pr: () => pr(args.slice(1)),
 };
 
 const args = process.argv.slice(2);

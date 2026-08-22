@@ -105,6 +105,14 @@ export const COMMANDS = [
     ],
   },
   {
+    name: 'pr',
+    summary: 'decide whether a pull request may merge, and merge it',
+    // The one verb here reads `gh` and `git` only, so unlike `worker` and
+    // `triage` this noun carries no `gated` key: it answers wherever ax is
+    // installed, which is the whole point of porting the Bash into the package.
+    subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
+  },
+  {
     name: 'init',
     summary: 'write ax.config.json, bin/ax and the managed blocks',
     options: [
