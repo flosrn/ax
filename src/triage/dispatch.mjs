@@ -606,8 +606,14 @@ function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, inst
   // the owning Run's mailbox; a timeout leaves the question PENDING and a
   // resume goes back to waiting on the same one, which is what makes an
   // unbounded human latency survivable without the child dying or deciding).
-  const askCommand = `ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
-  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
+  //
+  // `pnpm -w ax`, not bare `ax`: the child is a FRESH agent in a consuming
+  // repo, where nothing puts `ax` on PATH — `ax init` installs only `bin/ax`
+  // and the `ax` package script — and where the AGENTS block already teaches
+  // exactly this form (`agentLine`, commands.mjs). A rendered command the
+  // shell cannot find is an improvisation invitation with extra steps.
+  const askCommand = `pnpm -w ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
+  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`pnpm -w ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
 
   // What a SECOND pass is told, and it is told before anything else it reads.
   // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.

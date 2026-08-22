@@ -857,10 +857,10 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // its replacement.
   const r = run(['--issue', '7', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/);
+  assert.match(r.out, /pnpm -w ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the invocation a consuming repo actually has — nothing puts bare `ax` on PATH there');
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
-  assert.match(r.out, /ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
+  assert.match(r.out, /pnpm -w ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
   assert.match(r.out, /Do not report and do not end your turn while a question is open/);
   assert.match(r.out, /Report when the draft is FINAL/);
   assert.doesNotMatch(r.out, /Report when the draft is written/);
@@ -871,7 +871,7 @@ test('the same instruction reaches a brief child, because a brief escalates too'
   draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nThe triage pass.\n');
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { root });
   assert.equal(r.code, 0);
-  assert.match(r.out, /ax triage ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
+  assert.match(r.out, /pnpm -w ax triage ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
   assert.match(r.out, /Report when the draft is FINAL/);
 });
 
