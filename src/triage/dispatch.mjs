@@ -588,19 +588,22 @@ function renderSpec({ job, model, issue, draft, labels, triaged, instruction, pa
   //
   // But the first version of this string ended on "Report when the draft is
   // written", which told a child with open questions to FINISH. That is what
-  // broke the answer channel, and the coordinator measured both halves of the
-  // breakage on 2026-08-22: children's `ask` refused because the stall had
-  // revoked their capability, and its own replies with no route left "after
-  // their report". Both are consequences of the child ending its turn. A child
-  // that asks and WAITS is a live child with an open question to its parent, and
-  // that channel needs nothing built for it.
+  // broke the answer channel, and the coordinator measured both halves of it on
+  // 2026-08-22: children's `ask` refused because the stall had revoked their
+  // capability, and its own replies with no route left "after their report".
+  // Both are consequences of the child ending its turn.
   //
-  // So the ask is not a note left in a file for someone to find later. It is a
-  // question put to the parent that dispatched this child, and the child holds
-  // its own context — the issue read, the code explored — until the answer comes
-  // back. That context is the whole reason not to let it finish: a later child
-  // re-deriving it is the expensive path this avoids.
-  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and keep those lines in the draft so the decision is on record. Then ASK THE PARENT THAT DISPATCHED YOU those same numbered questions, and WAIT for the answer — do not report, do not end your turn, and do not decide any of them yourself. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
+  // The command is NAMED rather than left as "ask your parent", for the same
+  // reason the label grammar is named: an unnamed gesture gets improvised, and
+  // three children improvising an escalation is what produced three layouts.
+  // Measured from `orca agent-context` (2026-08-22): `orchestration ask` blocks
+  // until answered and, from an active Dispatch, defaults to its owning Run
+  // mailbox — so the parent sees it in `orchestration inbox` and answers with
+  // `orchestration reply --id`. A timeout leaves the question PENDING and
+  // `--resume <message_id>` goes back to waiting on the same one, which is what
+  // makes an unbounded human latency survivable without the child dying or
+  // blocking forever.
+  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and keep those lines in the draft so the decision is on record. Then put those same numbered questions to the parent that dispatched you with \`orca orchestration ask --question <text> --timeout-ms <n> --json\`, which blocks until it is answered; if it times out the question stays pending, so go back to waiting on it with \`--resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
 
   // What a SECOND pass is told, and it is told before anything else it reads.
   // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.

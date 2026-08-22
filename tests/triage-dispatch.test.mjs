@@ -843,19 +843,22 @@ test('a plain dispatch on an issue that has two passes replays the NEWEST, never
 
 // ── what a child with open questions is told to do ───────────────────────────
 
-test('a child that must ask is told to ask its PARENT and wait, never to report', () => {
+test('a child that must ask is told the exact command, and told to wait on it', () => {
   // The first cut of this spec ended on "Report when the draft is written",
   // which told a child with open questions to FINISH — and finishing is what
   // broke the answer channel both ways on 2026-08-22: the children's `ask` was
-  // refused because the stall had revoked their capability, and the coordinator's
-  // replies had no route left "after their report". A child that asks and waits
-  // is a live child with an open question to its parent, and that needs nothing
-  // built for it.
+  // refused because the stall had revoked their capability, and the
+  // coordinator's replies had no route left "after their report".
+  //
+  // The command is named rather than described, for the same reason the label
+  // grammar is: an unnamed gesture gets improvised, and three children
+  // improvising an escalation produced three layouts nobody could fold.
   const r = run(['--issue', '7', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /ASK THE PARENT THAT DISPATCHED YOU/);
-  assert.match(r.out, /WAIT for the answer/);
-  assert.match(r.out, /do not report, do not end your turn/);
+  assert.match(r.out, /orca orchestration ask --question/);
+  assert.match(r.out, /blocks until it is answered/);
+  assert.match(r.out, /--resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
+  assert.match(r.out, /Do not report and do not end your turn while a question is open/);
   assert.match(r.out, /Report when the draft is FINAL/);
   assert.doesNotMatch(r.out, /Report when the draft is written/);
 });
@@ -865,7 +868,7 @@ test('the same instruction reaches a brief child, because a brief escalates too'
   draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nThe triage pass.\n');
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { root });
   assert.equal(r.code, 0);
-  assert.match(r.out, /ASK THE PARENT THAT DISPATCHED YOU/);
+  assert.match(r.out, /orca orchestration ask --question/);
   assert.match(r.out, /Report when the draft is FINAL/);
 });
 
