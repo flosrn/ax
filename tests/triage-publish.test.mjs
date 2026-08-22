@@ -33,14 +33,27 @@ const draft = (root, name, text) => {
   return join(root, '.scratch', 'triage', `${name}.md`);
 };
 
-/** A `gh` that records every call and answers per verb from a table. */
-function fakeGh({ labels = { status: 0 }, comment = { status: 0 } } = {}) {
+/** Every label the fake repository has. A name outside this set is refused locally. */
+const REPO_LABELS = ['category/bug', 'priority/P2', 'domains/api', 'state/wontfix', 'needs-triage', 'needs-info'];
+
+/**
+ * A `gh` that records every call and answers per verb from a table.
+ *
+ * `label list` is answered because `publish` reads the repository's vocabulary
+ * before it mutates: ax cannot know what a label name looks like, so the list is
+ * the only authority. `labelList` overrides it, which is how the tests exercise
+ * both an unknown name and a `gh` that cannot answer at all.
+ */
+function fakeGh({ labels = { status: 0 }, comment = { status: 0 }, labelList = null } = {}) {
   const calls = [];
   return {
     calls,
     exec: (bin, args) => {
       calls.push(`${bin} ${args.join(' ')}`);
       if (args[0] === 'repo') return { status: 0, stdout: `${REPO}\n`, stderr: '' };
+      if (args[0] === 'label' && args[1] === 'list') {
+        return labelList ?? { status: 0, stdout: JSON.stringify(REPO_LABELS.map(name => ({ name }))), stderr: '' };
+      }
       if (args[1] === 'edit') return { stdout: '', stderr: '', ...labels };
       if (args[1] === 'comment') return { stdout: '', stderr: '', ...comment };
       return { status: 0, stdout: '', stderr: '' };
@@ -69,7 +82,8 @@ const run = (argv, options = {}) => {
   return { ...result, root, calls: gh.calls };
 };
 
-const mutations = calls => calls.filter(line => !line.includes('repo view'));
+// `repo view` and `label list` are reads: publish asks both before it decides.
+const mutations = calls => calls.filter(line => !line.includes('repo view') && !line.includes('label list'));
 
 // ── publish: the mutation, and every way it refuses to make one ──────────────
 
@@ -175,9 +189,12 @@ test('labels land before the comment, and a refused comment names the repair', (
 });
 
 test('a refused label call posts nothing for that issue', () => {
+  // The label EXISTS here, on purpose. A name the repository does not carry is
+  // refused locally now, before any call — so to prove this proposition the call
+  // has to reach `gh` and be refused for a reason ax could not have predicted.
   const root = repo();
-  draft(root, 'triage-acme-widgets-7', 'Labels: category/nope\n\nIt reproduces.\n');
-  const r = run(['--issue', '7'], { root, answers: { labels: { status: 1, stderr: 'label not found' } } });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { labels: { status: 1, stderr: 'HTTP 403: Resource not accessible by integration' } } });
 
   assert.equal(r.code, 1);
   assert.match(r.out, /labels refused/);
@@ -185,6 +202,71 @@ test('a refused label call posts nothing for that issue', () => {
     r.calls.every(line => !line.includes('issue comment')),
     'nothing was posted for this issue',
   );
+});
+
+test('a state transition removes and adds in ONE gh edit, never two', () => {
+  // Reported by the first real coordinator campaign, 2026-08-22: publish only
+  // ever built `--add-label`, so publishing a draft that moved an issue off
+  // `needs-triage` left BOTH state labels on it. Two calls would also work and
+  // would be wrong: they invent a window where the issue holds both.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nTwo rulings are missing.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 0);
+  const edits = mutations(r.calls).filter(line => line.includes('issue edit'));
+  assert.equal(edits.length, 1, 'one edit carries both directions');
+  assert.match(edits[0], /--add-label needs-info/);
+  assert.match(edits[0], /--remove-label needs-triage/);
+});
+
+test('a directive naming a label the repository does not have is refused before any call', () => {
+  // Measured across the campaign's three drafts, which used three grammars. One
+  // wrote `Labels: category → enhancement`; comma-split-and-trim makes that a
+  // label name, and ax cannot tell it from a real one — GitHub allows arrows,
+  // spaces and parentheses in a label. The repository's list can.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category → category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /does not have/);
+  assert.match(r.out, /category → category\/bug/, 'the refusal quotes what it read');
+  assert.deepEqual(mutations(r.calls), [], 'refused before the first mutation');
+});
+
+test('an unknown name on the REMOVE side is refused too, because a wrong remove does not undo', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\nRemove labels: needs-triage (superseded by needs-info).\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /does not have/);
+  assert.deepEqual(mutations(r.calls), [], 'nothing was removed on a guess');
+});
+
+test('a draft that both applies and removes one label is a contradiction, not a transition', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-info\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /both applies and removes needs-info/);
+  assert.deepEqual(mutations(r.calls), [], 'gh would have accepted it and picked an order');
+});
+
+test('a gh that cannot list labels refuses the batch instead of checking nothing', () => {
+  // Fail CLOSED, and say which measurement is missing. Treating an unreachable
+  // `gh` as "no label exists" would refuse every draft with the wrong reason;
+  // treating it as "every name is fine" would let a guessed remove through.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { labelList: { status: 1, stderr: 'gh: not authenticated' } } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /could not list/);
+  assert.match(r.out, /unchecked remove/);
+  assert.deepEqual(mutations(r.calls), [], 'no issue was touched');
 });
 
 test('a non-numeric --issue is refused before any draft is read', () => {

@@ -75,6 +75,17 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   const slug = repo || resolveRepo(gh);
   if (slug === '') return refuse('could not resolve the current repository', 'ax triage publish --repo <owner>/<repo>');
 
+  // The repository's own vocabulary, read ONCE for the batch and before any
+  // mutation — a name this list does not carry is refused here rather than
+  // discovered by `gh` halfway through a batch.
+  const known = repoLabels(gh);
+  if (known === null) {
+    return refuse(
+      'gh could not list this repository\'s labels, so no name in any draft can be checked — and an unchecked remove is the one mistake that does not undo',
+      `gh label list --repo ${slug} # then re-run once it answers`,
+    );
+  }
+
   // ── every draft read before the first mutation ────────────────────────────
   section(`drafts — ${slug} (job: ${job})`);
   const ready = [];
@@ -87,7 +98,15 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       blocked = true;
       continue;
     }
+    const unknown = [...draft.labels, ...draft.remove].filter(label => !known.has(label));
+    if (unknown.length > 0) {
+      bad(`#${issue} names ${unknown.length} label(s) this repository does not have: ${unknown.join(' | ')}`);
+      fix(`edit ${draft.path} # a directive carries label NAMES only — no group prefix, no justification`);
+      blocked = true;
+      continue;
+    }
     note(`#${issue} ${draft.labels.length} label(s) ${dim(draft.labels.join(', '))}`);
+    if (draft.remove.length > 0) note(`  ^ removing ${dim(draft.remove.join(', '))} in the same edit`);
     if (draft.close) note('  ^ this draft recommends closing — publish applies the labels and the comment, and leaves the issue OPEN');
 
     // Free text never touches argv. A verdict is multi-line prose written by an
@@ -98,7 +117,20 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // It is rendered HERE, in the loop that can still refuse: a render that fails
     // after `gh issue edit` has run leaves the labels applied and the comment
     // missing, which is the half-landed state this batch is ordered to avoid.
-    const labels = ['issue', 'edit', issue, '--repo', slug, ...draft.labels.flatMap(label => ['--add-label', label])];
+    // ONE `gh issue edit` carries both directions, because `--add-label` and
+    // `--remove-label` are one API call and splitting them would invent a window
+    // where an issue holds two state labels at once — the state machine broken
+    // by the tool that was supposed to serve it. Atomicity here is free; a
+    // second call for the removes would be a choice to lose it.
+    const labels = [
+      'issue',
+      'edit',
+      issue,
+      '--repo',
+      slug,
+      ...draft.labels.flatMap(label => ['--add-label', label]),
+      ...draft.remove.flatMap(label => ['--remove-label', label]),
+    ];
     const bodyPath = `${draft.path.slice(0, -'.md'.length)}.body.md`;
     const body = `${DISCLAIMER}\n\n${draft.body}\n`;
     if (!dry) {
@@ -153,4 +185,28 @@ function resolveRepo(gh) {
   const out = gh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']);
   if (out.error || out.status !== 0) return '';
   return String(out.stdout ?? '').trim().split('\n')[0] ?? '';
+}
+
+/**
+ * Every label this repository actually has, or `null` when `gh` could not say.
+ *
+ * This exists because ax cannot know what a label name looks like. GitHub allows
+ * spaces, arrows and parentheses, so no local pattern can separate a real name
+ * from a child's improvised prose — and three of three drafts measured on
+ * 2026-08-22 improvised differently. The repository's own list is the only
+ * authority, and asking it is one call for a whole batch.
+ *
+ * `null` is not an empty set: an unreachable `gh` must not read as "no label
+ * exists", which would refuse every draft. It is a NAMED inability instead.
+ */
+function repoLabels(gh) {
+  const out = gh(['label', 'list', '--limit', '500', '--json', 'name']);
+  if (out.error || out.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(String(out.stdout ?? ''));
+    if (!Array.isArray(parsed)) return null;
+    return new Set(parsed.map(entry => String(entry?.name ?? '')).filter(name => name !== ''));
+  } catch {
+    return null;
+  }
 }

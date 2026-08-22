@@ -47,24 +47,49 @@ export const draftPath = (root, identity) => join(root, DRAFT_DIR, `${requestFor
  * that makes a correction cheap, and the shape the spec asks for. Everything
  * that is not a directive line is the comment body, verbatim: it is what a human
  * will read on the issue months later, so nothing here rewrites it.
+ *
+ * A directive value is split on commas and trimmed, and NOTHING else is done to
+ * it. No group prefix is stripped, no trailing justification is removed, and
+ * that restraint is the whole design. Measured 2026-08-22 across the first three
+ * real drafts, which used three different grammars: `Labels: category → enhancement`,
+ * `Labels: enhancement` plus an invented `Remove on publish: needs-triage
+ * (superseded by needs-info).`, and the canonical bare form. Normalising those
+ * would mean guessing what a label name looks like, which this package cannot
+ * know — GitHub allows spaces, arrows and parentheses in a label. On the add
+ * side a guess merely fails at the API; on the REMOVE side a guess that happens
+ * to hit an existing name deletes something no child ever asked for, silently
+ * and irreversibly. So the names travel verbatim, and `publish` checks them
+ * against the repository's own label list before it mutates anything.
  */
 export function parseDraft(text) {
   const labels = [];
+  const remove = [];
   const body = [];
   let close = false;
   let empty = false;
 
+  const collect = (into, value) => {
+    for (const entry of value.split(',')) {
+      const label = entry.trim();
+      // A trailing or doubled comma is how a hand-edited draft loses a group
+      // without saying so. Dropping it silently applies less than its author
+      // meant, which is the failure this whole file exists to prevent.
+      if (label === '') empty = true;
+      else if (!into.includes(label)) into.push(label);
+    }
+  };
+
   for (const line of String(text ?? '').split('\n')) {
+    // Ordered longest-first: `Labels:` is a prefix of nothing here, but
+    // `Remove labels:` must be tried before any looser pattern is added later.
+    const removeLine = /^Remove labels:\s*(.*)$/.exec(line);
+    if (removeLine !== null) {
+      collect(remove, removeLine[1]);
+      continue;
+    }
     const labelLine = /^Labels:\s*(.*)$/.exec(line);
     if (labelLine !== null) {
-      for (const entry of labelLine[1].split(',')) {
-        const label = entry.trim();
-        // A trailing or doubled comma is how a hand-edited draft loses a group
-        // without saying so. Dropping it silently applies less than its author
-        // meant, which is the failure this whole file exists to prevent.
-        if (label === '') empty = true;
-        else if (!labels.includes(label)) labels.push(label);
-      }
+      collect(labels, labelLine[1]);
       continue;
     }
     const closeLine = /^Close:\s*(.*)$/.exec(line);
@@ -76,10 +101,15 @@ export function parseDraft(text) {
   }
 
   const comment = body.join('\n').trim();
-  if (empty) return { ok: false, reason: 'a Labels line carries an empty label — a lost group is not a label', labels, body: comment, close };
-  if (labels.length === 0) return { ok: false, reason: 'this draft names no label, so there is nothing to apply', labels, body: comment, close };
-  if (comment === '') return { ok: false, reason: 'this draft names no verdict — a label set with no reasoning is the data entry it replaced', labels, body: comment, close };
-  return { ok: true, labels, body: comment, close };
+  const out = { labels, remove, body: comment, close };
+  if (empty) return { ok: false, reason: 'a Labels line carries an empty label — a lost group is not a label', ...out };
+  if (labels.length === 0) return { ok: false, reason: 'this draft names no label, so there is nothing to apply', ...out };
+  // Both directives naming one label is not a transition, it is a contradiction,
+  // and `gh` would accept it and leave the outcome to its own ordering.
+  const both = labels.filter(label => remove.includes(label));
+  if (both.length > 0) return { ok: false, reason: `this draft both applies and removes ${both.join(', ')} — one of the two lines is wrong`, ...out };
+  if (comment === '') return { ok: false, reason: 'this draft names no verdict — a label set with no reasoning is the data entry it replaced', ...out };
+  return { ok: true, ...out };
 }
 
 /**
