@@ -167,7 +167,7 @@
               "sweep": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "argv run on the host before memory is measured, to reclaim browsers an earlier stage left open. Refusing over dead renderers is a refusal about garbage."
+                "description": "argv run on the host before memory is measured, to reclaim browsers an earlier stage left open. Refusing over dead renderers is a refusal about garbage. `ax worker sweep --apply --under <dir>` is that verb: it names the paths it owns, judges a browser by the AGE OF ITS ROOT, and exits 0 whatever it finds so a sweep is never why a dispatch stops."
               },
               "sessions": { "type": "string", "description": "Session transcript root on that host, so the marker check crosses the transport unchanged instead of degrading into a weaker one." }
             }

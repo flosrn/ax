@@ -73,6 +73,7 @@ export const COMMANDS = [
       ['gate <task>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
       ['transcript <cible>', 'a child’s full session, structured and redacted'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
+      ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
     ],
   },
   {

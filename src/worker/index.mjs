@@ -14,8 +14,9 @@ import { tail } from './tail.mjs';
 import { transcript } from './transcript.mjs';
 import { release } from './release.mjs';
 import { launch } from './launch.mjs';
+import { sweep } from './sweep.mjs';
 
-export const SUBCOMMANDS = { start, launch, ls, tail, gate, transcript, release };
+export const SUBCOMMANDS = { start, launch, ls, tail, gate, transcript, release, sweep };
 
 /**
  * `ax worker <verb> [args]`.
