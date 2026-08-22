@@ -254,8 +254,23 @@ les tables complètes, gating appliqué après.
       Accepté parce qu'il résout comme le coordinator le faisait, pas parce qu'il gênait.
       `ORCA_BROWSER_REAP_AGE_MIN` est mort avec le script (remplacé par `AX_SWEEP_MAX_AGE_MIN`) ;
       rien ne le posait dans un profil, vérifié. 434 tests OMP verts, 605 côté ax.
-- [ ] **8. `ax worker launch --name` + `ax pr gate`** — décidé le 2026-08-22 : pas de
-      `worktree new`, c'est `launch` sans ticket (voir la surface cible). Meurt : `merge-gate.sh`.
+- [ ] **8. `ax worker launch --name` + `ax pr gate`** — **`--name` fait le 2026-08-22** (`7052902`).
+      Pas de `worktree new` : créer un worktree sans ticket est le MÊME verbe sans ticket, donc la
+      chaîne claim → create → ax setup → agent EN DERNIER n'existe qu'une fois, et l'anti-doublon
+      avec elle. Exactement une identité : `--issue` ou `--name`, jamais les deux.
+      Le nom EST l'id de requête, donc refusé plutôt que normalisé, par un motif ancré et non par un
+      aller-retour dans `requestIdFor` — qui n'est ni injectif (`My Feature`, `my/feature`,
+      `my@@feature` donnent tous `my-feature`, donc deux noms clé-raient un arbre) ni sûr sur les
+      segments (`.` et `..` passent intacts, et `.worktrees/<request>` résout alors sur la base ou
+      sur le répertoire au-dessus). La réutilisation d'arbre devient EXACTE pour un nom : la règle de
+      préfixe est faite pour les tickets, et donnerait à `--name auth` l'arbre de `auth-refactor`.
+      Sans ticket il faut `--task` ou `--brief` : `launch.entry` seul composerait `/entry <nom>` et
+      rien d'autre. Et trois endroits mentaient — le brief disait « lis le ticket, il est canonique »
+      et les mécaniques « tiens le ticket à jour, le coordinateur le lit » : `ticket: null` rend une
+      forme différente, la puce est remplacée et non supprimée (l'enfant ne doit pas ouvrir un ticket
+      pour combler le vide), `MECHANICS` reste identique octet pour octet, et la sonde tracker
+      distante annonce son absence au lieu de sauter en silence. 617 tests.
+      Reste : `ax pr gate`. Meurt : `merge-gate.sh` (624 L).
 - [ ] **9. Deux rôles** — décidé le 2026-08-22 : ils se séparent par le GENRE de travail, pas par
       le nombre d'enfants. Un rôle mène les sessions de triage (l'enfant écrit un brouillon, le
       parent publie), l'autre les sessions d'implémentation (l'enfant ouvre une PR, le parent
