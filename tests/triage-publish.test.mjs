@@ -753,6 +753,38 @@ test('--brief names an EMITTING pane, and never probes behind a FINAL row', () =
   assert.equal(orca.calls.filter(line => line.startsWith('terminal read')).length, 2, 'one pane, two samples — the FINAL row was not probed');
 });
 
+test("--brief probes a REMOTE pane in its recorded environment — without --on it would read UNREADABLE", () => {
+  const root = repo();
+  const store = join(root, 'store');
+  // A record whose worker-start argv carries --on, like a remote dispatch does.
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, 'triage-acme-widgets-7.json'),
+    JSON.stringify({
+      request: 'triage-acme-widgets-7',
+      createdAt: '2026-08-20T10:00:00.000Z',
+      attempts: [{
+        n: 1,
+        phases: [{
+          name: 'worker-start',
+          identity: 'id-1',
+          argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1', '--on', 'env_remote', '--retry-request', 'id-1', '--json'],
+          exit: 0,
+          receipt: { ok: true, result: { dispatchId: 'd-1', state: 'ready', stage: 'dispatched', effects: [{ kind: 'terminal', role: 'agent', id: 'term_remote' }] } },
+        }],
+      }],
+    }),
+  );
+  const orca = fakeInbox([], { cursors: [5, 5] });
+  const r = runStatus(['--issue', '7', '--brief'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /pane QUIET/);
+  const reads = orca.calls.filter(line => line.startsWith('terminal read'));
+  assert.equal(reads.length, 2);
+  for (const read of reads) assert.match(read, /--environment env_remote/, 'the recorded --on rides with every probe');
+});
+
 // ── which pass lands ─────────────────────────────────────────────────────────
 //
 // Once one issue can hold two verdicts, "publish it" stops being unambiguous.

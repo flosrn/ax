@@ -16,7 +16,7 @@ import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { readPane } from '../worker/pane.mjs';
 import { defaultExec } from '../worker/release.mjs';
-import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
+import { defaultStore, heldRepaired, report, workerPane } from '../worker/record.mjs';
 import { answer } from './answer.mjs';
 import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
@@ -191,13 +191,19 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       const recordPath = join(store, `${requestFor(identity)}.json`);
       let recordState = 'no record';
       let handle = '';
+      let paneEnv = '';
       if (existsSync(recordPath)) {
         try {
           const state = report(recordPath);
           handle = typeof state.summary?.terminal === 'string' ? state.summary.terminal : '';
           recordState = state.usable ? 'settled' : heldRepaired(recordPath) ? 'child running (repaired)' : 'UNSETTLED';
+          // The execution ENVIRONMENT rides with the handle, exactly as
+          // workerPane preserves it for autosubmit: a remote child (--on) read
+          // without it answers nothing, and the probe below would call a
+          // healthy remote pane UNREADABLE.
+          paneEnv = workerPane(recordPath).env;
         } catch {
-          recordState = 'record UNREADABLE';
+          recordState = recordState === 'no record' ? 'record UNREADABLE' : recordState;
         }
       }
       const draft = readDraft(root, identity);
@@ -211,7 +217,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
             : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
       const pending = mailbox.ok && handle !== '' ? (mailbox.pending.get(handle) ?? []) : [];
       const waiting = pending.length > 0 ? ` · WAITING on ${pending[0].id}` : '';
-      rows.push({ line: `#${issue} p${pass} · ${shape} · ${recordState}${waiting}`, handle: final ? '' : handle });
+      rows.push({ line: `#${issue} p${pass} · ${shape} · ${recordState}${waiting}`, handle: final ? '' : handle, paneEnv });
     }
 
     // The pane, sampled ONLY behind an unfinished row: measured 2026-08-23,
@@ -230,7 +236,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         const orca = runner ?? createRunner({ bin });
         const gapMs = Math.max(0, Number(env.ORCA_DISPATCH_AUTOSUBMIT_GAP ?? 8) * 1000);
         const sample = () => new Map(probed.map(row => {
-          const pane = readPane(orca, row.handle, { limit: 1 });
+          const pane = readPane(orca, row.handle, { environment: row.paneEnv, limit: 1 });
           return [row.handle, pane.exit === 0 ? pane.cursor : null];
         }));
         const before = sample();
