@@ -1,0 +1,17 @@
+# Bun owns `omp/`, and nothing else in this repository.
+#
+# `tests/*.test.mjs` (52 files) are written for `node --test` and are green under
+# it — they are the `test:node` half of the release gate. Bun's default test scan
+# is the whole repository, so a bare `bun test` at the root ALSO picks them up,
+# runs them under the wrong runner, and reports 9 failures that do not exist.
+#
+# That is not hypothetical: on 2026-08-23 a bare `bun test` was taken as the
+# truth and "9 pre-existing failures gate the release" was reported twice, while
+# `pnpm test` — the command the release workflow actually runs, and the one
+# AGENTS.md names — was 1168 pass / 0 fail the whole time. A prose convention
+# nobody executes is a convention that gets violated on the day it matters.
+#
+# So the scan is scoped here rather than restated in a doc. `bun test` now
+# answers for the 18 files Bun owns; the node half runs through its own script.
+[test]
+root = "omp"
