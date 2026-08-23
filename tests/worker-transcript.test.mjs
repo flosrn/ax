@@ -501,3 +501,46 @@ test('a string-content message still answers — the older session shape is a me
   assert.equal(r.code, 0);
   assert.match(r.out, /plain string report/);
 });
+
+// ── a session id is a valid target — what a card shows is enough ─────────────
+
+function idFixtures(dir) {
+  const root = join(dir, 'sessions');
+  const a = join(root, '-Code-fake-proj-a');
+  const b = join(root, '-Code-fake-proj-b');
+  mkdirSync(a, { recursive: true });
+  mkdirSync(b, { recursive: true });
+  writeFileSync(join(a, '2026-08-22T12-04-59-329Z_01a0295c-2341-77c8-bf40-dec648fe300a.jsonl'), [
+    JSON.stringify({ type: 'session', version: 3, id: '01a0295c-2341-77c8-bf40-dec648fe300a', timestamp: '2026-08-22T12:04:59.329Z', cwd: '/x' }),
+    JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'the report of session A' }] } }),
+  ].join('\n'));
+  writeFileSync(join(b, '2026-08-23T09-00-00-000Z_01a02fff-9999-7000-8000-aaaaaaaaaaaa.jsonl'), [
+    JSON.stringify({ type: 'session', version: 3, id: '01a02fff-9999-7000-8000-aaaaaaaaaaaa', timestamp: '2026-08-23T09:00:00.000Z', cwd: '/y' }),
+  ].join('\n'));
+  return { root, env: { ORCA_DISPATCH_STORE: join(dir, 'store') } };
+}
+
+test('a session id prefix resolves alone when it names ONE file — the card is enough', () => {
+  const { root, env } = idFixtures(scratch());
+  const r = capture(() => transcript(['01a0295c', '--last-message'], { runner: fakeRunner(), env, sessionsRoot: root }));
+  assert.equal(r.code, 0);
+  assert.match(r.out, /the report of session A/);
+  assert.match(r.out, /resolved as a session id under/, 'the via line says HOW, so a wrong answer is diagnosable');
+});
+
+test('a prefix shared by two sessions is a refusal naming both — never newest-wins', () => {
+  const { root, env } = idFixtures(scratch());
+  const r = capture(() => transcript(['01a0', '--last-message'], { runner: fakeRunner(), env, sessionsRoot: root }));
+  assert.equal(r.code, 3);
+  assert.match(r.out, /prefix of 2 session ids — refusing to guess/);
+  assert.match(r.out, /01a0295c-2341/);
+  assert.match(r.out, /01a02fff-9999/);
+});
+
+test('a hex target no record and no session knows names BOTH absences', () => {
+  const { root, env } = idFixtures(scratch());
+  const r = capture(() => transcript(['deadbeef', '--last-message'], { runner: fakeRunner(), env, sessionsRoot: root }));
+  assert.equal(r.code, 3);
+  assert.match(r.out, /no dispatch record names "deadbeef"/);
+  assert.match(r.out, /no session id under .* starts with it/);
+});

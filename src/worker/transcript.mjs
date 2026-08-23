@@ -422,8 +422,29 @@ function resolveTarget(target, { env, sessionsRoot }) {
     fix(`cat ${join(store, name)}   # repair or remove it`);
   }
   if (missing || hits.length === 0) {
+    // A hex-and-dash target is what a session CARD shows (`01a0295c`), and no
+    // record ever names one — so it is resolved under the sessions root
+    // itself, with OMP's own `--resume <id>` semantics: the id after the
+    // timestamp in `<timestamp>_<sessionId>.jsonl`, matched by prefix. One
+    // match answers; zero or several are refusals by name (F-028) — two
+    // sessions sharing a prefix is one keystroke away from rendering the
+    // wrong agent's history.
+    if (SESSION_ID.test(target)) {
+      const root = sessionsRootOf(env, sessionsRoot);
+      const sessions = sessionsById(root, target);
+      if (sessions.length === 1) return { path: sessions[0], via: `resolved as a session id under ${root}` };
+      if (sessions.length > 1) {
+        bad(`"${target}" is a prefix of ${sessions.length} session ids — refusing to guess`);
+        for (const path of sessions) note(`candidate: ${path}`);
+        fix(`ax worker transcript ${target}…   # more of the id, or the path.jsonl directly`);
+        return {};
+      }
+      bad(`no dispatch record names "${target}" in ${store}, and no session id under ${root} starts with it`);
+      fix(`ls ${root}   # the session directories on this machine`);
+      return {};
+    }
     bad(`no dispatch record names "${target}" in ${store}`);
-    fix(`ls ${store}   # the dispatch records on this host, then pass a request id or a path.jsonl`);
+    fix(`ls ${store}   # the dispatch records on this host, then pass a request id, a session id, or a path.jsonl`);
     return {};
   }
   if (hits.length > 1) {
@@ -463,6 +484,36 @@ function resolveTarget(target, { env, sessionsRoot }) {
   // The path is printed by the caller; this line says HOW we got there, so a
   // wrong answer is diagnosable without re-deriving the chain.
   return { path: candidates[0].path, via: `resolved from record ${name} → worktree ${worktrees[0]}` };
+}
+
+/** What a session card shows: a hex-and-dash id prefix, at least four characters. */
+const SESSION_ID = /^[0-9a-f][0-9a-f-]{3,}$/i;
+
+/** Every session file under `root` whose id starts with `target`, any slug. */
+function sessionsById(root, target) {
+  const needle = target.toLowerCase();
+  const matches = [];
+  let dirs = [];
+  try {
+    dirs = readdirSync(root);
+  } catch {
+    return matches;
+  }
+  for (const dir of dirs) {
+    let files = [];
+    try {
+      files = readdirSync(join(root, dir));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue;
+      const at = file.indexOf('_');
+      if (at === -1) continue;
+      if (file.slice(at + 1, -'.jsonl'.length).toLowerCase().startsWith(needle)) matches.push(join(root, dir, file));
+    }
+  }
+  return matches;
 }
 
 /**
