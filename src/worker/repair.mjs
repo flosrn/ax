@@ -146,6 +146,14 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   // A spec sent into a WORKING session is a second prompt injected mid-task, so
   // the cursor decides first: sampled twice, a moving pane refuses.
   const gapMs = Math.max(0, Number(env.ORCA_DISPATCH_AUTOSUBMIT_GAP ?? 8) * 1000);
+  // The brief travels on `--text`, ONE argv element, and that is a decision to
+  // keep straight against the package's own "bodies go to files" rule: that
+  // rule holds where a file channel EXISTS (`gh --body-file`, `--spec-file`) or
+  // where a SHELL could mangle the text. Neither is true here — the live CLI
+  // exposes no file or stdin payload for `terminal send` (measured 2026-08-23:
+  // `--text` is its only transport), and this runner is spawnSync over an argv
+  // ARRAY with no shell anywhere between. The exact gesture was field-proven
+  // the same day: 3298 bytes of spec, accepted, child working.
   const send = extra => {
     const args = ['terminal', 'send', '--terminal', pane.handle];
     if (pane.env) args.push('--environment', pane.env);
