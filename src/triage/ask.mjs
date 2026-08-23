@@ -30,7 +30,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { defaultStore } from '../worker/record.mjs';
+import { defaultStore, heldRepaired } from '../worker/record.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { DRAFT_DIR, passesOf, questionProblem, readDraft, requestFor } from './draft.mjs';
 import { composeAsk } from './rulings.mjs';
@@ -102,6 +102,11 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
 
   // ── 2. the ask, composed from the draft (never improvised) ────────────────
   let body = '';
+  // The record of the pass this ask belongs to, kept for the verdict below: a
+  // `dispatch_inactive` refusal can PROVE the repaired-stall case by reading
+  // `heldRepairAt` off this file instead of asserting a disjunction — the same
+  // rule as everywhere else, a measure available is consulted at the verdict.
+  let recordPath = '';
   if (issue !== '') {
     const paths = repoPaths(cwd);
     if (!paths.root) return refuse('not inside a git repository — the draft this ask reads lives in one');
@@ -140,7 +145,9 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     if (problem !== null) {
       return refuse(problem, `renumber the Q<n>: lines in ${draft.path} — 1..n, consecutive, no repeats — then re-run`);
     }
-    body = composeAsk({ request: requestFor(identity), sha: draft.sha, questions: draft.questions });
+    const request = requestFor(identity);
+    recordPath = join(store, `${request}.json`);
+    body = composeAsk({ request, sha: draft.sha, questions: draft.questions });
   }
 
   if (dry) {
@@ -176,17 +183,23 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     const code = receipt.error?.code ?? '';
     const detail = receipt.error?.message ?? 'unnamed error';
     if (code === 'dispatch_inactive') {
-      // Two very different situations answer with this one code, and the first
-      // cut of this refusal named only the innocent one. The measured one
-      // (3/3 on the first equipped wave, 2026-08-23) is a child that IS a
-      // dispatched session — but its Dispatch settled `failed` at the composer
-      // stall, and the capability died with the settlement (start.mjs already
-      // documents the repaired child as NOT A SUPERVISED WORKER). No ask can
-      // ever land from such a child, for its whole life, so the refusal must
-      // hand it the protocol that still works instead of an accusation.
-      bad(`${detail} — either this session was never a dispatched child, or its Dispatch settled \`failed\` at the composer stall and the capability died with it: a repaired child runs UNSUPERVISED, and no ask can ever land from it`);
-      fix('keep the Q<n>: lines in the draft, and report NOW — quote them, and say the supervised channel is unavailable; your peer report is the one channel that still reaches the parent, and it answers by peer');
-      note('do not decide the open questions yourself, and do not drop them from the draft until the answers arrive');
+      // Proven when it can be: in question mode this pass's own record says
+      // whether a repaired composer stall is what killed the capability
+      // (`heldRepairAt` is written only after a confirmed submission behind a
+      // `failed` Dispatch — start.mjs documents that child as NOT A SUPERVISED
+      // WORKER, and 3/3 children of the first equipped wave, 2026-08-23, hit
+      // exactly this). A child told the truth follows its fallback; a child
+      // accused of not being a dispatched session — the first cut of this
+      // refusal — improvises. On `--resume` there is no identity to consult,
+      // so the refusal stays a named disjunction rather than a guess.
+      if (recordPath !== '' && heldRepaired(recordPath)) {
+        bad(`${detail} — this pass's own record proves why: its Dispatch settled \`failed\` at the composer stall and the capability died with the settlement, so this child runs UNSUPERVISED and no ask can ever land from it`);
+        fix('keep the Q<n>: lines in the draft, and report NOW — quote them, and say the supervised channel is unavailable; your peer report is the one channel that still reaches the parent, and it answers by peer');
+        note('do not decide the open questions yourself, and do not drop them from the draft until the answers arrive');
+        return 1;
+      }
+      bad(`${detail} — either this session was never a dispatched child, or its Dispatch is no longer active`);
+      fix('ax triage status   # what this issue\'s passes recorded, and whether a child is behind them');
       return 1;
     }
     if (code === 'question_not_found') {

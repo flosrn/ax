@@ -187,23 +187,43 @@ test('a cut connection is CANNOT ESTABLISH, and the question is not declared dea
   assert.match(r.out, /pnpm -w ax triage ask --resume msg_q9/);
 });
 
-test('dispatch_inactive names BOTH causes and hands the child the protocol that still works', () => {
+test('dispatch_inactive over a repaired stall is PROVEN from the record, and hands the child its real channel', () => {
   // Measured 3/3 on the first equipped wave (2026-08-23): every child of a
   // repaired composer stall got this refusal — their Dispatch settled `failed`
-  // at dispatch time and the capability died with it. The first cut of this
-  // refusal accused the child of not being a dispatched session, which is
-  // exactly wrong for the measured case; a child reading it must instead be
-  // told the peer protocol, or it improvises.
+  // at dispatch time and the capability died with it. The proof is the pass's
+  // own record: `heldRepairAt` is written only after a confirmed submission
+  // behind a `failed` Dispatch. A child told the truth follows its fallback;
+  // the first cut of this refusal accused it of not being a dispatched
+  // session, and a child accused improvises.
+  const root = repo();
+  const store = join(root, 'store');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(store, 'triage-acme-widgets-7.json'), JSON.stringify({ heldRepairAt: '2026-08-23T17:04:49.000Z' }));
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'ask requires an active supervised Dispatch.' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /record proves why/);
+  assert.match(r.out, /the capability died with the settlement/);
+  assert.match(r.out, /report NOW/, 'the finding names its repair: the peer report that still reaches the parent');
+  assert.match(r.out, /do not decide the open questions yourself/);
+});
+
+test('dispatch_inactive with no repaired-stall proof stays a named disjunction, never a guess', () => {
+  // Same transport code, different world: an operator running ask outside any
+  // Dispatch, or a pass whose record shows no repaired stall. Asserting "the
+  // stall killed your capability" here would be the same defect the proven
+  // branch fixes — a diagnosis stated without its measure.
   const root = repo();
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'ask requires an active supervised Dispatch.' } }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
 
   assert.equal(r.code, 1);
-  assert.match(r.out, /the capability died with it/);
-  assert.match(r.out, /runs UNSUPERVISED, and no ask can ever land/);
-  assert.match(r.out, /report NOW/, 'the finding names its repair: the peer report that still reaches the parent');
-  assert.match(r.out, /do not decide the open questions yourself/);
+  assert.match(r.out, /either this session was never a dispatched child, or its Dispatch is no longer active/);
+  assert.match(r.out, /ax triage status/);
+  assert.doesNotMatch(r.out, /composer stall/, 'no stall diagnosis without the record that proves it');
 });
 
 test('an unreachable runtime refuses before anything is sent', () => {
