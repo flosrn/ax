@@ -19,12 +19,12 @@ import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
 import { answer } from './answer.mjs';
 import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
-import { DRAFT_DIR, passesIn, questionsIn, readDraft, requestFor } from './draft.mjs';
+import { DRAFT_DIR, passesIn, passesOf, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
 import { triageRelease } from './release.mjs';
 import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
 
-const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|custom] [--repo <owner/repo>]';
+const USAGE = 'ax triage status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom] [--repo <owner/repo>]';
 
 /**
  * Every unanswered question on this machine's mailbox, keyed by the pane that
@@ -94,6 +94,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   const issues = [];
   let job = 'triage';
   let repo = '';
+  let brief = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -101,6 +102,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     if (arg === '--issue') issues.push(value());
     else if (arg === '--job') job = value();
     else if (arg === '--repo') repo = value();
+    else if (arg === '--brief') brief = true;
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else {
       process.stderr.write(`ax triage status: unknown argument "${arg}"\n${USAGE}\n`);
@@ -111,11 +113,27 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     process.stderr.write(`ax triage status: no --issue given\n${USAGE}\n`);
     return 2;
   }
+  // A wave is a RANGE, and typing seven --issue flags to poll one is the
+  // friction that left #59 finished and unread (2026-08-23): the final report
+  // travelled a peer transport that loses messages, nothing else signals
+  // completion, and the pull that would have caught it was expensive to type.
+  const expanded = [];
   for (const issue of issues) {
+    const range = /^([1-9][0-9]*)-([1-9][0-9]*)$/.exec(issue);
+    if (range !== null) {
+      const [from, to] = [Number(range[1]), Number(range[2])];
+      if (from >= to) {
+        process.stderr.write(`ax triage status: --issue ${issue} is not a range — N-M needs N < M\n${USAGE}\n`);
+        return 2;
+      }
+      for (let n = from; n <= to; n += 1) expanded.push(String(n));
+      continue;
+    }
     if (!/^[1-9][0-9]*$/.test(issue)) {
-      process.stderr.write(`ax triage status: --issue expects a number, got "${issue}"\n${USAGE}\n`);
+      process.stderr.write(`ax triage status: --issue expects a number or a range N-M, got "${issue}"\n${USAGE}\n`);
       return 2;
     }
+    expanded.push(issue);
   }
 
   const paths = repoPaths(cwd);
@@ -137,7 +155,50 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   const mailbox = readMailbox({ resolve, runner, env });
   if (!mailbox.ok) note(dim(`waiting state unknown: ${mailbox.reason} — an absent answer is not an absent question (F-028)`));
   const store = defaultStore(env);
-  for (const issue of issues) {
+
+  // ── the completion view: one line per issue, built to be POLLED ────────────
+  // The push half of the loop is lossy by measurement (five peer messages lost
+  // on 2026-08-23, one of them a final report — the wave stalled on finished
+  // work until a human noticed). A cheap pull is the floor that survives every
+  // transport, so this renders the NEWEST pass of each issue as one greppable
+  // line: what the coordinator polls between reports it may never receive.
+  if (brief) {
+    for (const issue of expanded) {
+      const base = { job, repo: slug, issue };
+      const all = passesOf(store, join(root, DRAFT_DIR), base);
+      if (all.length === 0) {
+        note(`#${issue} — no pass`);
+        continue;
+      }
+      const pass = all[all.length - 1];
+      const identity = { ...base, pass };
+      const recordPath = join(store, `${requestFor(identity)}.json`);
+      let recordState = 'no record';
+      let handle = '';
+      if (existsSync(recordPath)) {
+        try {
+          const state = report(recordPath);
+          handle = typeof state.summary?.terminal === 'string' ? state.summary.terminal : '';
+          recordState = state.usable ? 'settled' : heldRepaired(recordPath) ? 'child running (repaired)' : 'UNSETTLED';
+        } catch {
+          recordState = 'record UNREADABLE';
+        }
+      }
+      const draft = readDraft(root, identity);
+      const shape = draft.sha === ''
+        ? 'no draft'
+        : draft.questions.length > 0
+          ? `ASKING ${questionSpan(draft.questions.map(question => question.n))} · ${draft.sha.slice(0, 12)}`
+          : draft.ok
+            ? `FINAL ${draft.sha.slice(0, 12)} · ${draft.lines} ln`
+            : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
+      const pending = mailbox.ok && handle !== '' ? (mailbox.pending.get(handle) ?? []) : [];
+      const waiting = pending.length > 0 ? ` · WAITING on ${pending[0].id}` : '';
+      note(`#${issue} p${pass} · ${shape} · ${recordState}${waiting}`);
+    }
+    return 0;
+  }
+  for (const issue of expanded) {
     const base = { job, repo: slug, issue };
     // Every pass, oldest first, records UNION drafts. A pass just dispatched has
     // a record and no draft; one written by hand could be the reverse. Reporting

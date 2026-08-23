@@ -659,6 +659,51 @@ test('a refused batch offers NO release anywhere — nothing landed, so nothing 
   assert.doesNotMatch(r.out, /ax triage release/);
 });
 
+// ── status --brief: the completion view, built to be POLLED ─────────────────
+//
+// Measured 2026-08-23: the final report of a finished child travelled a peer
+// transport that loses messages (five lost that day), nothing else signals
+// completion, and the wave stalled on FINISHED work until a human noticed. A
+// cheap pull is the floor that survives every transport.
+
+test('--brief renders one line per issue — the newest pass, its draft shape, its record', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nFinal verdict.\n');
+  draft(root, 'triage-acme-widgets-8', 'Labels: x\n\nQ1: [technical] which cardinality?\n\nParked.\n');
+  const r = runStatus(['--issue', '7-9', '--brief'], { root, store });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /#7 p1 · FINAL [0-9a-f]{12} · 4 ln · settled/);
+  assert.match(r.out, /#8 p1 · ASKING Q1 · [0-9a-f]{12} · no record/);
+  assert.match(r.out, /#9 — no pass/);
+});
+
+test('--brief shows the NEWEST pass, and a pending question as WAITING with its id', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: old\n\nPass one.\n');
+  draft(root, 'triage-acme-widgets-7-p2', 'Labels: x\n\nQ1: open?\n\nParked.\n');
+  const orca = fakeInbox([question({ from_handle: 'term_child', id: 'msg_p2' })]);
+  const p2record = () => {
+    // The newest pass owns the pane the question came from.
+    record(store, 'triage-acme-widgets-7-p2');
+  };
+  p2record();
+  const r = runStatus(['--issue', '7', '--brief'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /#7 p2 · ASKING Q1 .* · WAITING on msg_p2/);
+  assert.doesNotMatch(r.out, /p1/, 'brief is the verdict state: one line, the newest pass');
+});
+
+test('a malformed range refuses with the shape named', () => {
+  assert.equal(runStatus(['--issue', '9-7']).code, 2);
+  assert.equal(runStatus(['--issue', '7-']).code, 2);
+});
+
 // ── which pass lands ─────────────────────────────────────────────────────────
 //
 // Once one issue can hold two verdicts, "publish it" stops being unambiguous.
