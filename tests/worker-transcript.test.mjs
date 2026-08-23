@@ -434,3 +434,70 @@ test('a target no record knows, and an unreadable record, are both said out loud
   assert.match(out, /record broken\.json is not readable JSON/);
   assert.match(out, /no dispatch record names "ctx_unknown"/);
 });
+
+// ── --last-message: the last thing the agent SAID, not the last thing it DID ──
+//
+// Built for the lost-report case (8 peer messages lost in transit on
+// 2026-08-23): the session file is the copy that cannot be lost, and the final
+// assistant text is the report. The measured tail of a real session ends
+// `toolCall → toolResult → assistant text → session_exit`, so "last entry"
+// would answer with a tool move — these tests pin every exclusion separately.
+
+const say = (role, parts) => JSON.stringify({ type: 'message', message: { role, content: parts } });
+
+function lastFixture(dir) {
+  const path = join(dir, 'last.jsonl');
+  writeFileSync(path, [
+    JSON.stringify({ type: 'session', version: 3, id: 'sess', timestamp: '2026-08-22T12:04:59.329Z', cwd: '/Users/fake/Code/proj' }),
+    say('user', [{ type: 'text', text: 'do the thing' }]),
+    say('assistant', [{ type: 'text', text: 'an EARLY word that must never win' }]),
+    say('assistant', [
+      { type: 'thinking', thinking: 'private reasoning, never printed' },
+      { type: 'text', text: `Final report: 11/11 done.\nThe capability was ${DCAP} and must not survive.` },
+      { type: 'toolCall', name: 'bash', arguments: { command: 'echo done' } },
+    ]),
+    say('toolResult', [{ type: 'text', text: 'done' }]),
+    say('assistant', [{ type: 'toolCall', name: 'bash', arguments: { command: 'git push' } }]),
+    JSON.stringify({ type: 'custom', customType: 'session_exit' }),
+    '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"a truncated fina',
+  ].join('\n'));
+  return path;
+}
+
+test('--last-message answers with the last WORD: tool moves, thinking and truncation after it are not it', () => {
+  const path = lastFixture(scratch());
+  const r = capture(() => transcript([path, '--last-message'], { runner: fakeRunner() }));
+  assert.equal(r.code, 0);
+  assert.match(r.out, /Final report: 11\/11 done\./);
+  assert.match(r.out, /must not survive/, 'the text is rendered in FULL, not capped');
+  assert.doesNotMatch(r.out, /dcap_[0-9a-f]/, 'the capability is redacted with no bypass');
+  assert.doesNotMatch(r.out, /an EARLY word/, 'only the last message, never the history');
+  assert.doesNotMatch(r.out, /private reasoning/, 'thinking is the model’s own, not something said');
+  assert.match(r.out, /1 later line\(s\) unparseable and skipped/, 'the crash-mid-append tail is named, not fatal');
+});
+
+test('--last-message on a session with no assistant text is exit 1 — an absence, never a failure to look', () => {
+  const dir = scratch();
+  const path = join(dir, 'mute.jsonl');
+  writeFileSync(path, [
+    JSON.stringify({ type: 'session', version: 3, id: 'sess', timestamp: '2026-08-22T12:04:59.329Z', cwd: '/x' }),
+    say('user', [{ type: 'text', text: 'hello?' }]),
+    say('assistant', [{ type: 'toolCall', name: 'bash', arguments: { command: 'ls' } }]),
+  ].join('\n'));
+  const r = capture(() => transcript([path, '--last-message'], { runner: fakeRunner() }));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /no assistant message with text/);
+  assert.match(r.out, /ax worker transcript/, 'the repair names the full-history reader');
+});
+
+test('a string-content message still answers — the older session shape is a message too', () => {
+  const dir = scratch();
+  const path = join(dir, 'plain.jsonl');
+  writeFileSync(path, [
+    JSON.stringify({ type: 'session', version: 3, id: 'sess', timestamp: '2026-08-22T12:04:59.329Z', cwd: '/x' }),
+    JSON.stringify({ type: 'message', message: { role: 'assistant', content: 'plain string report' } }),
+  ].join('\n'));
+  const r = capture(() => transcript([path, '--last-message'], { runner: fakeRunner() }));
+  assert.equal(r.code, 0);
+  assert.match(r.out, /plain string report/);
+});

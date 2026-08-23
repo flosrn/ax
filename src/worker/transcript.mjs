@@ -25,7 +25,10 @@
 // (F-028: named keys, refuse rather than default).
 //
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
-//   0  a transcript was rendered
+//   0  a transcript (or, under --last-message, a message) was rendered
+//   1  --last-message only: the session is readable but holds no assistant
+//      message with text yet — a real absence, never confused with a failure
+//      to look (the same split tail draws between SILENT and CANNOT ESTABLISH)
 //   2  usage error (no target, unknown flag)
 //   3  cannot establish: no orca, runtime silent, target unresolvable or
 //      ambiguous, source file unreadable
@@ -230,6 +233,42 @@ export function renderEntry(entry) {
   return type;
 }
 
+/**
+ * The last assistant entry that carries TEXT, scanned from the end.
+ *
+ * Three deliberate exclusions. A toolCall-only turn is a move, not a word — the
+ * measured tail of a real session (2026-08-23, 882 lines) ends on one, and
+ * answering with it would hand the caller an argv instead of a report. A
+ * thinking part is reasoning the models emit for themselves, not something the
+ * agent said to anyone. And an unparseable line is SKIPPED, not fatal: the
+ * crash-mid-append that truncates the FINAL line is precisely the situation
+ * this mode exists to recover from, so aborting on it would make the reader
+ * fail exactly when it is needed.
+ */
+export function lastMessageIn(lines) {
+  let skipped = 0;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line.trim() === '') continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    if (entry.type !== 'message') continue;
+    const message = entry.message ?? {};
+    if (message.role !== 'assistant') continue;
+    const content = message.content;
+    const parts = Array.isArray(content) ? content : [{ type: 'text', text: String(content ?? '') }];
+    const texts = parts.filter(part => part.type === 'text').map(part => String(part.text ?? '')).filter(text => text.trim() !== '');
+    if (texts.length === 0) continue;
+    return { line: i + 1, text: texts.join('\n'), skipped };
+  }
+  return { line: 0, text: null, skipped };
+}
+
 export function transcript(argv = [], { resolve = resolveOrca, runner, env = process.env, sessionsRoot } = {}) {
   let target = '';
   // Launch verification is the one mode that reads a transcript WITHOUT
@@ -255,15 +294,21 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
   }
 
 
+  let wantLast = false;
   for (const arg of argv) {
     if (arg === '--help' || arg === '-h') {
-      section('ax worker transcript <handle|dispatch_id|path.jsonl>');
+      section('ax worker transcript <handle|dispatch_id|path.jsonl> [--last-message]');
       note('the full session history of one child, structured and redacted (no bypass flag)');
+      note('--last-message: only the last thing the agent SAID — its final report, in full, still redacted');
       return 0;
+    }
+    if (arg === '--last-message') {
+      wantLast = true;
+      continue;
     }
     if (arg.startsWith('-')) {
       bad(`ax worker transcript: unknown argument: ${arg}`);
-      fix('ax worker transcript <handle|dispatch_id|path.jsonl>');
+      fix('ax worker transcript <handle|dispatch_id|path.jsonl> [--last-message]');
       return 2;
     }
     if (target !== '') {
@@ -306,6 +351,27 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
     bad(`cannot read ${found.path}: ${String(error.message ?? error)}`);
     fix(`ls -l ${found.path}   # the session file named above`);
     return 3;
+  }
+
+  // The last thing the agent SAID — not the last thing it DID. The measured
+  // tail of a real session ends `toolCall → toolResult → assistant text →
+  // session_exit`, so "last entry" would usually answer with a tool move, and
+  // the caller of this mode wants the final report (the lost-peer-message case:
+  // 8 reports lost in transit on 2026-08-23 alone — this file is the copy that
+  // cannot be lost). Rendered IN FULL through the same redaction boundary,
+  // because a report capped at 160 chars is a teaser, not a recovery.
+  if (wantLast) {
+    const last = lastMessageIn(lines);
+    if (last.text === null) {
+      bad(`no assistant message with text in ${found.path}${last.skipped > 0 ? ` (${last.skipped} unparseable line(s) skipped)` : ''}`);
+      fix(`ax worker transcript ${target}   # the full history, to see what the session did instead`);
+      return 1;
+    }
+    section(`last message ${found.path}`);
+    if (found.via) note(found.via);
+    note(`line ${last.line} of ${lines.length}${last.skipped > 0 ? ` — ${last.skipped} later line(s) unparseable and skipped` : ''}`);
+    raw(last.text);
+    return 0;
   }
 
   section(`transcript ${found.path}`);
