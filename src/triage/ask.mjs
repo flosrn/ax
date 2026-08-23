@@ -176,7 +176,18 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     const code = receipt.error?.code ?? '';
     const detail = receipt.error?.message ?? 'unnamed error';
     if (code === 'dispatch_inactive') {
-      return refuse(`${detail} — \`ask\` runs inside the child that \`ax triage dispatch\` created, nowhere else`);
+      // Two very different situations answer with this one code, and the first
+      // cut of this refusal named only the innocent one. The measured one
+      // (3/3 on the first equipped wave, 2026-08-23) is a child that IS a
+      // dispatched session — but its Dispatch settled `failed` at the composer
+      // stall, and the capability died with the settlement (start.mjs already
+      // documents the repaired child as NOT A SUPERVISED WORKER). No ask can
+      // ever land from such a child, for its whole life, so the refusal must
+      // hand it the protocol that still works instead of an accusation.
+      bad(`${detail} — either this session was never a dispatched child, or its Dispatch settled \`failed\` at the composer stall and the capability died with it: a repaired child runs UNSUPERVISED, and no ask can ever land from it`);
+      fix('keep the Q<n>: lines in the draft, and report NOW — quote them, and say the supervised channel is unavailable; your peer report is the one channel that still reaches the parent, and it answers by peer');
+      note('do not decide the open questions yourself, and do not drop them from the draft until the answers arrive');
+      return 1;
     }
     if (code === 'question_not_found') {
       return refuse(`${detail} — a resume only reaches a question this same Dispatch asked`, 'ax triage status   # which questions are actually pending');

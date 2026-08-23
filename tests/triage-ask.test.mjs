@@ -187,14 +187,23 @@ test('a cut connection is CANNOT ESTABLISH, and the question is not declared dea
   assert.match(r.out, /pnpm -w ax triage ask --resume msg_q9/);
 });
 
-test('dispatch_inactive is a refusal that names where ask may run', () => {
+test('dispatch_inactive names BOTH causes and hands the child the protocol that still works', () => {
+  // Measured 3/3 on the first equipped wave (2026-08-23): every child of a
+  // repaired composer stall got this refusal — their Dispatch settled `failed`
+  // at dispatch time and the capability died with it. The first cut of this
+  // refusal accused the child of not being a dispatched session, which is
+  // exactly wrong for the measured case; a child reading it must instead be
+  // told the peer protocol, or it improvises.
   const root = repo();
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'ask requires an active supervised Dispatch.' } }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
 
   assert.equal(r.code, 1);
-  assert.match(r.out, /inside the child that `ax triage dispatch` created/);
+  assert.match(r.out, /the capability died with it/);
+  assert.match(r.out, /runs UNSUPERVISED, and no ask can ever land/);
+  assert.match(r.out, /report NOW/, 'the finding names its repair: the peer report that still reaches the parent');
+  assert.match(r.out, /do not decide the open questions yourself/);
 });
 
 test('an unreachable runtime refuses before anything is sent', () => {
