@@ -861,7 +861,14 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
   assert.match(r.out, /pnpm -w ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
-  assert.match(r.out, /Do not report and do not end your turn while a question is open/);
+  assert.match(r.out, /Do not report and do not end your turn while a question is open — with ONE exception/);
+  // The exception exists because the rule and ask's proven-stall repair would
+  // otherwise contradict each other on the 9/9 measured path of this machine:
+  // the spec said "never report with a question open" while the only working
+  // recovery says "report NOW". A child holding both either deadlocks parked
+  // or improvises; the spec now says which sentence wins, and when.
+  assert.match(r.out, /follow that refusal instead of this sentence/);
+  assert.match(r.out, /the parent answers by peer/);
   assert.match(r.out, /Report when the draft is FINAL/);
   assert.doesNotMatch(r.out, /Report when the draft is written/);
 });
