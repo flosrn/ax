@@ -12,6 +12,12 @@
 # nobody executes is a convention that gets violated on the day it matters.
 #
 # So the scan is scoped here rather than restated in a doc. `bun test` now
-# answers for the 18 files Bun owns; the node half runs through its own script.
+# answers for the files Bun owns; the node half runs through its own script.
+#
+# Scoping alone would trade one silent failure for another: a Bun test added
+# outside `omp/` would stop being discovered. It never was — `bun test omp` is a
+# substring filter, so CI missed such a file before this file existed — and
+# `omp/runner-ownership.test.ts` is what now refuses it, by name, in the run
+# that would otherwise skip it.
 [test]
 root = "omp"
