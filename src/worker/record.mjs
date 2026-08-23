@@ -453,6 +453,31 @@ export function workerPane(path) {
 }
 
 /**
+ * The brief this record dispatched — the `task-create --spec` text, byte for
+ * byte, found NEWEST-PHASE-FIRST across the whole record.
+ *
+ * NOT worker-start's `--task`: that flag carries the task ID (`task_…`), and a
+ * repair that confused the two would inject an id into a child's composer. The
+ * whole-record scan matters for the same reason `recordedRun`'s does: a
+ * replacement worker-start reuses the task, so its `task-create` — and the only
+ * copy of the spec — lives in an older attempt.
+ *
+ * This exists for the composer-empty repair: a replay can create the terminal
+ * and the agent and still deliver NO input at all (measured 2026-08-23 on #59
+ * pass 1 — pane alive, agent at its banner, composer empty). The record is the
+ * only source that can re-deliver the exact brief without recomposing it, and
+ * recomposition is the F-001 hazard this whole file exists to prevent.
+ */
+export function workerSpec(path) {
+  for (const candidate of allPhases(load(path)).reverse()) {
+    if (candidate.name !== 'task-create') continue;
+    const spec = argvValue(must(candidate, 'argv', 'task-create phase'), '--spec');
+    if (typeof spec === 'string' && spec !== '') return spec;
+  }
+  throw new Error('no task-create phase carries a --spec text');
+}
+
+/**
  * The Run this record belongs to, recovered NEWEST-PHASE-FIRST across the
  * complete record.
  *

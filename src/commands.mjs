@@ -67,6 +67,7 @@ export const COMMANDS = [
     gated: 'orca',
     subcommands: [
       ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
+      ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['launch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle>', 'alive-with-content / alive-and-silent / cannot-establish'],

@@ -8,6 +8,7 @@
 // Orca CLI and fail closed on a runtime that does not answer.
 
 import { start } from './start.mjs';
+import { repair } from './repair.mjs';
 import { gate } from './gate.mjs';
 import { ls } from './ls.mjs';
 import { tail } from './tail.mjs';
@@ -16,7 +17,7 @@ import { release } from './release.mjs';
 import { launch } from './launch.mjs';
 import { sweep } from './sweep.mjs';
 
-export const SUBCOMMANDS = { start, launch, ls, tail, gate, transcript, release, sweep };
+export const SUBCOMMANDS = { start, repair, launch, ls, tail, gate, transcript, release, sweep };
 
 /**
  * `ax worker <verb> [args]`.

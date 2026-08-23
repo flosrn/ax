@@ -882,6 +882,25 @@ test('a call that never concluded strands a fresh start and is refused — never
   assert.match(resumed.out, /--resume --request req-timeout/);
 });
 
+test('a resume whose replay CONCLUDES settles — the timeout corpse never freezes the verdict', () => {
+  // Measured 2026-08-23 on #59, class "circular repair": the fresh call timed
+  // out, the resume replayed the exact argv, Orca answered in 196ms — and the
+  // verdict still said UNKNOWN, because the stale `transport` marker survived
+  // the successful phaseEnd and phaseVerdict reads it before the fresh receipt.
+  // The refusal printed the same resume as its own repair, forever.
+  const home = scratch();
+  const timedOut = invoke(freshArgs(home, 'req-thaw'), { env: { HOME: home }, run: fakeRunner({ workerTimeout: true }) });
+  assert.equal(timedOut.code, 4, timedOut.out);
+
+  const resumed = invoke(['--resume', '--request', 'req-thaw'], { env: { HOME: home }, run: fakeRunner() });
+  assert.equal(resumed.code, 0, resumed.out);
+  assert.doesNotMatch(resumed.out, /UNKNOWN/, 'the fresh receipt speaks, not the corpse');
+  const record = JSON.parse(readFileSync(recordAt(resumed.env, 'req-thaw'), 'utf8'));
+  for (const phase of record.attempts[0].phases) {
+    assert.equal(phase.transport, undefined, 'no stale transport survives a concluded replay');
+  }
+});
+
 // ── The watcher is fail-open in all three ways it can fail to arm ───────────
 
 function captureErr(fn) {
