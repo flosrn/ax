@@ -1,6 +1,6 @@
 {
   "name": "@flosrn/ax",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Agent-experience tooling for MakerKit turbo projects: worktrees, debug-as, vendor ownership.",
   "type": "module",
   "license": "UNLICENSED",
