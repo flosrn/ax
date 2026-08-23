@@ -403,21 +403,26 @@ const runStatus = (argv, options = {}) => {
   const result = capture(() =>
     status([...argv], {
       exec: gh.exec,
-      env: { ORCA_DISPATCH_STORE: options.store ?? join(root, 'store') },
+      env: { ORCA_DISPATCH_STORE: options.store ?? join(root, 'store'), ORCA_DISPATCH_AUTOSUBMIT_GAP: '0' },
       cwd: root,
       // A machine with no Orca unless the test says otherwise: the waiting
       // state is Orca's, and these tests must answer identically beside a live
       // runtime and on a bare CI box.
       resolve: options.resolve ?? (() => null),
       runner: options.runner,
+      sleep: () => {},
     }),
   );
   return { ...result, root, calls: gh.calls };
 };
 
-/** An Orca whose inbox holds exactly these messages, newest-first like the real one. */
-function fakeInbox(messages, { readable = true } = {}) {
+/**
+ * An Orca whose inbox holds exactly these messages, newest-first like the real
+ * one — and whose pane cursors follow a script, for the --brief pane states.
+ */
+function fakeInbox(messages, { readable = true, cursors = [] } = {}) {
   const calls = [];
+  let at = 0;
   const runner = createRunner({
     bin: 'stub-orca',
     exec: (bin, args) => {
@@ -425,6 +430,12 @@ function fakeInbox(messages, { readable = true } = {}) {
       if (args[0] === 'orchestration' && args[1] === 'inbox') {
         if (!readable) return { status: 1, stdout: '', stderr: 'runtime not reachable' };
         return receipt({ count: messages.length, messages });
+      }
+      if (args[0] === 'terminal' && args[1] === 'read') {
+        const value = cursors[Math.min(at, Math.max(0, cursors.length - 1))];
+        at += 1;
+        if (value === undefined) return { status: 1, stdout: '', stderr: 'no cursor scripted' };
+        return receipt({ terminal: { status: 'running', latestCursor: value } });
       }
       return { status: 1, stdout: '', stderr: 'unexpected orca call' };
     },
@@ -710,6 +721,36 @@ test('an oversized range is a typo, not a wave — refused before any expansion'
   const r = runStatus(['--issue', '55-610000000']);
   assert.equal(r.code, 2);
   assert.match(r.out, /is a typo, not a wave/);
+});
+
+test('--brief samples the pane behind an unfinished row: QUIET is the alarm #60 needed', () => {
+  // Measured 2026-08-23: #60 finished long before anyone knew — its draft
+  // could not be written (the verdict lived in its scrollback) and its report
+  // was the day's sixth lost peer message. "no draft · child running" was
+  // indistinguishable from a child at work; the pane's cursor tells them apart.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([], { cursors: [5, 5] });
+  const r = runStatus(['--issue', '7', '--brief'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /#7 p1 · no draft · settled · pane QUIET/);
+});
+
+test('--brief names an EMITTING pane, and never probes behind a FINAL row', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  record(store, 'triage-acme-widgets-8');
+  draft(root, 'triage-acme-widgets-8', 'Labels: x\n\nFinal verdict.\n');
+  const orca = fakeInbox([], { cursors: [5, 9] });
+  const r = runStatus(['--issue', '7', '--issue', '8', '--brief'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /#7 p1 · no draft · settled · pane EMITTING/);
+  assert.match(r.out, /#8 p1 · FINAL [0-9a-f]{12} · 4 ln · settled$/m, 'a FINAL row costs no probe and carries no pane state');
+  assert.equal(orca.calls.filter(line => line.startsWith('terminal read')).length, 2, 'one pane, two samples — the FINAL row was not probed');
 });
 
 // ── which pass lands ─────────────────────────────────────────────────────────

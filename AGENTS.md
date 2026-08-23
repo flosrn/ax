@@ -4,7 +4,7 @@
 no build step: `bin/ax.mjs` runs the files in `src/` directly.
 
 ```bash
-node --test "tests/*.test.mjs"    # 842 tests, ~11s, offline
+node --test "tests/*.test.mjs"    # 845 tests, ~11s, offline
 node bin/ax.mjs                   # the command surface
 node bin/ax.mjs doctor            # run it against any checkout
 ```

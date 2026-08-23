@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
+import { readPane } from '../worker/pane.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, heldRepaired, report } from '../worker/record.mjs';
 import { answer } from './answer.mjs';
@@ -28,6 +29,9 @@ const USAGE = 'ax triage status --issue N|N-M [--issue …] [--brief] [--job tri
 
 /** The widest --issue range status will expand — see the refusal for why. */
 const RANGE_MAX = 100;
+
+const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
 /**
  * Every unanswered question on this machine's mailbox, keyed by the pane that
@@ -93,7 +97,7 @@ function readMailbox({ resolve, runner, env }) {
  * for a pane whose status is `exited` — measured the same day — so the naive
  * probe answers "alive" over a corpse.
  */
-export function status(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), resolve = resolveOrca, runner } = {}) {
+export function status(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), resolve = resolveOrca, runner, sleep = sleepDefault } = {}) {
   const issues = [];
   let job = 'triage';
   let repo = '';
@@ -174,11 +178,12 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   // transport, so this renders the NEWEST pass of each issue as one greppable
   // line: what the coordinator polls between reports it may never receive.
   if (brief) {
+    const rows = [];
     for (const issue of expanded) {
       const base = { job, repo: slug, issue };
       const all = passesOf(store, join(root, DRAFT_DIR), base);
       if (all.length === 0) {
-        note(`#${issue} — no pass`);
+        rows.push({ line: `#${issue} — no pass`, handle: '' });
         continue;
       }
       const pass = all[all.length - 1];
@@ -196,6 +201,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         }
       }
       const draft = readDraft(root, identity);
+      const final = draft.sha !== '' && draft.ok && draft.questions.length === 0;
       const shape = draft.sha === ''
         ? 'no draft'
         : draft.questions.length > 0
@@ -205,8 +211,39 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
             : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
       const pending = mailbox.ok && handle !== '' ? (mailbox.pending.get(handle) ?? []) : [];
       const waiting = pending.length > 0 ? ` · WAITING on ${pending[0].id}` : '';
-      note(`#${issue} p${pass} · ${shape} · ${recordState}${waiting}`);
+      rows.push({ line: `#${issue} p${pass} · ${shape} · ${recordState}${waiting}`, handle: final ? '' : handle });
     }
+
+    // The pane, sampled ONLY behind an unfinished row: measured 2026-08-23,
+    // #60 finished long before anyone knew — its draft could not be written
+    // (the verdict lived in its scrollback) and its report was the day's sixth
+    // lost peer message, so "no draft · child running" was indistinguishable
+    // from a child at work. Two cursor reads around ONE shared sleep name the
+    // observation: EMITTING is a child producing; QUIET is the alarm — yielded,
+    // parked or stuck, a QUIET pane with no draft is the row to inspect with
+    // `ax worker tail`. It is an observation, never a verdict: a child mid-
+    // think is QUIET too, which is why the poll loop reads it, not one shot.
+    const probed = rows.filter(row => row.handle !== '');
+    if (probed.length > 0) {
+      const bin = runner ? 'injected' : resolve({ env });
+      if (bin !== null) {
+        const orca = runner ?? createRunner({ bin });
+        const gapMs = Math.max(0, Number(env.ORCA_DISPATCH_AUTOSUBMIT_GAP ?? 8) * 1000);
+        const sample = () => new Map(probed.map(row => {
+          const pane = readPane(orca, row.handle, { limit: 1 });
+          return [row.handle, pane.exit === 0 ? pane.cursor : null];
+        }));
+        const before = sample();
+        sleep(gapMs);
+        const after = sample();
+        for (const row of probed) {
+          const [a, b] = [before.get(row.handle), after.get(row.handle)];
+          row.line += a === null || b === null ? ' · pane UNREADABLE' : a === b ? ' · pane QUIET' : ' · pane EMITTING';
+        }
+      }
+    }
+
+    for (const row of rows) note(row.line);
     return 0;
   }
   for (const issue of expanded) {

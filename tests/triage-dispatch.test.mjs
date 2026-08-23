@@ -869,6 +869,12 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   assert.match(r.out, /\[technical\].*coordinator rules itself/);
   assert.match(r.out, /\[product\].*goes up to the maintainer/);
   assert.match(r.out, /Do not report and do not end your turn while a question is open — with ONE exception/);
+  // The write-failure ladder (measured 2026-08-23 on #60: an unwritable draft
+  // left the verdict in a scrollback and the report was a lost peer message —
+  // the transcript is the one channel here that never loses).
+  assert.match(r.out, /If that write FAILS, retry it once/);
+  assert.match(r.out, /BEGIN DRAFT and a line reading END DRAFT/);
+  assert.match(r.out, /the pane transcript is the recovery channel/);
   // The exception exists because the rule and ask's proven-stall repair would
   // otherwise contradict each other on the 9/9 measured path of this machine:
   // the spec said "never report with a question open" while the only working

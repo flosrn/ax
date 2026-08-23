@@ -579,7 +579,14 @@ function readLabels(declared, root) {
  */
 function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, instruction, pass = 1, previous = null, because = '' }) {
   const marker = `[omp role=triage-worker model=${model}]`;
-  const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted.`;
+  // The write-failure ladder exists because #60 (2026-08-23) could not write
+  // its draft at all, put the verdict in its terminal, and its report was the
+  // day's sixth lost peer message: the wave stalled on finished work nobody
+  // could see. The pane transcript is the one channel on this machine that
+  // never loses — `ax worker transcript` reads it back — so a verdict that
+  // cannot reach its file must land there IN FULL, between markers a recovery
+  // can find, with the exact error that kept it out of the file.
+  const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted. If that write FAILS, retry it once; if it still fails, do not let the verdict live only in prose: print the exact error (errno and path) and then the COMPLETE draft between a line reading BEGIN DRAFT and a line reading END DRAFT in your final message — the pane transcript is the recovery channel, and an unwritten draft reported without its full text is a verdict lost.`;
 
   // HOW to ask, and — the part that was wrong on the first cut — WHEN to stop.
   //
