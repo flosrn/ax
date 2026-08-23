@@ -243,6 +243,32 @@ test('an outcome nobody knows is UNKNOWN, never failed — the mutation may be c
   assert.equal(phaseVerdict(closed(JSON.stringify({ ok: true })), 'last').verdict, 'unknown', 'a success with no result is unknown');
 });
 
+test('a replay that CONCLUDES erases the corpse of the timeout before it — the verdict thaws', () => {
+  // Measured 2026-08-23 (#59), class "circular repair": a worker-start timed
+  // out (transport ETIMEDOUT recorded), the resume replayed the exact argv and
+  // Orca answered fast — but the stale transport survived the successful
+  // phaseEnd, phaseVerdict reads transport FIRST, and the outcome answered
+  // `unknown` forever, printing the same resume as its own repair. The field
+  // answers "did Orca hear the LAST execution", so a concluded call must clear
+  // the one before it.
+  const path = closed('', {
+    exit: null,
+    argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1', '--json'],
+    error: new Error('spawnSync /usr/bin/orca ETIMEDOUT'),
+  });
+  assert.equal(phaseVerdict(path, 'last').verdict, 'unknown', 'frozen until something concludes');
+
+  // The resume path: same phase index, re-executed, this time answered.
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { state: 'ready', mutation: { replayed: true }, taskId: 't1' } }) });
+  assert.equal(phaseVerdict(path, 'last').verdict, 'replayed', 'the fresh receipt now speaks, not the corpse');
+  const phase = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases[0];
+  assert.equal(phase.transport, undefined, 'the stale transport is gone from the record itself');
+
+  // And a replay that times out AGAIN stays honestly unknown.
+  phaseEnd(path, 'last', { exit: null, receiptText: '', error: new Error('spawnSync /usr/bin/orca ETIMEDOUT') });
+  assert.equal(phaseVerdict(path, 'last').verdict, 'unknown');
+});
+
 test('taskId is the strict gate: one receipt shape, refusal when absent', () => {
   const path = begun();
   phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { task: { id: 'task_abc' } } }) });

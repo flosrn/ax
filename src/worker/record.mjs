@@ -281,7 +281,15 @@ export function phaseEnd(path, index, { exit, receiptText, stderr = '', error = 
   if (stderr && ph.receipt !== null && typeof ph.receipt === 'object') {
     ph.receipt.stderr = String(stderr).slice(0, 4000);
   }
+  // Set on a transport that never concluded — and CLEARED on one that did.
+  // Measured 2026-08-23 (#59): a worker-start timed out (ETIMEDOUT recorded),
+  // the resume replayed the argv and Orca answered in 196ms — but this field
+  // survived the successful replay, `phaseVerdict` reads it FIRST, and the
+  // verdict answered `unknown` forever: a refusal whose printed repair was the
+  // same resume, circularly. The field answers "did Orca hear the LAST
+  // execution", so a concluded call must erase the corpse of the one before.
   if (error) ph.transport = String(error.message ?? error).slice(0, 1000);
+  else delete ph.transport;
   save(rec, path);
 }
 
