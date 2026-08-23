@@ -214,19 +214,16 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   if (receipt.timedOut === true) {
     bad(`no answer within ${receipt.timeoutMs ?? timeout}ms — the question is PENDING, not dead`);
     note(redactSecrets(`message ${receipt.messageId} stays open on the parent's mailbox; do not report, do not end your turn, do not decide it yourself`));
-    // `pnpm -w ax`, like the spec that got the child here: this line is read by
-    // a FRESH agent in a consuming repo, where bare `ax` resolves nowhere, and
-    // it is read at the worst possible moment — parked, forbidden to end its
-    // turn, with this repair as its only way back to waiting. Every other fix()
-    // in this package keeps bare `ax` because its reader just invoked ax and
-    // knows the runner; a parked child copies verbatim.
-    fix(redactSecrets(`pnpm -w ax triage ask --resume ${receipt.messageId} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
+    // The global command delegates to the exact package version this repo
+    // pinned. A parked child copies this repair verbatim, so it must use the
+    // same entry point the generated AGENTS.md teaches.
+    fix(redactSecrets(`ax triage ask --resume ${receipt.messageId} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
     return 4;
   }
   if (receipt.cancelled === true) {
     return cannot(
       `the wait was cut (${receipt.connectionLost === true ? 'connection lost' : 'cancelled'}) — question ${receipt.messageId} may still be pending`,
-      `pnpm -w ax triage ask --resume ${receipt.messageId}   # nothing was lost; go back to waiting`,
+      `ax triage ask --resume ${receipt.messageId}   # nothing was lost; go back to waiting`,
     );
   }
   if (typeof receipt.answer === 'string') {

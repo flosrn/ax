@@ -694,8 +694,8 @@ function readContract(launchConfig, root) {
 
 /**
  * Four proofs, one verdict shape on both hosts: the model marker was applied by
- * the adapter, the `worker` role and its `lfg` skill reached the first turn,
- * and the pane emitted.
+ * the adapter, the `worker` role and its implementation playbook reached the
+ * first turn, and the pane emitted.
  *
  * The transcript is authoritative for both configuration effects. A child's
  * own model word is stale after a switch; a composed `[omp role=…]` line proves
@@ -771,9 +771,9 @@ function verify({ run, env, on, wait, worktree, request, ticket, instruction, li
   const roleReady =
     sessionRole?.status === 'applied' &&
     sessionRole.role === 'worker' &&
-    skillNames.includes('lfg');
+    skillNames.includes('implementation');
   if (model !== null && model.role === 'default' && roleReady && moved !== null) {
-    ok('verified  the role, skill, model marker, and pane movement are proven');
+    ok('verified  the role, playbook, model marker, and pane movement are proven');
     fix(`ax worker tail ${pane || '<pane>'}`);
     return 0;
   }
@@ -794,8 +794,8 @@ function verify({ run, env, on, wait, worktree, request, ticket, instruction, li
     bad(`REFUSED session role ${sessionRole.role}: ${sessionRole.reason}${missing}`);
   } else if (sessionRole.role !== 'worker') {
     bad(`UNPROVEN session role: expected worker, got ${sessionRole.role}`);
-  } else if (!skillNames.includes('lfg')) {
-    bad(`UNPROVEN session skill: worker did not receive lfg (received ${skillNames.join(', ') || 'none'})`);
+  } else if (!skillNames.includes('implementation')) {
+    bad(`UNPROVEN session playbook: worker did not receive implementation (received ${skillNames.join(', ') || 'none'})`);
   }
   if (moved === null) {
     bad(`UNPROVEN liveness: the pane cursor did not advance within ${wait}s. A live in-place spinner also emits no new line — read the pane before concluding.`);

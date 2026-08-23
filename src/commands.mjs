@@ -11,6 +11,7 @@
 // asserts the block names nothing absent from here. A command becomes visible
 // to agents on the day it becomes runnable, not before.
 
+import { description } from './config.mjs';
 import { bold, dim } from './log.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 
@@ -33,8 +34,7 @@ export const COMMANDS = [
   {
     name: 'doctor',
     summary: 'is this checkout coherent? exit 0 when it is',
-    agentLine:
-      "`pnpm -w ax doctor` — check this checkout's ax config and wiring (`-w`: a workspace package has no `ax` script of its own).",
+    agentLine: "`ax doctor` — check this checkout's config, project wiring and recorded worktree state.",
   },
   {
     name: 'worktree',
@@ -45,8 +45,7 @@ export const COMMANDS = [
       ['clean [path]', 'reclaim processes, containers and caches; keep the tree'],
       ['rm <name> [--force]', 'reclaim, then remove the tree'],
     ],
-    agentLine:
-      '`pnpm -w ax worktree setup` — make a fresh worktree runnable, and `ax worktree ls` to see the port and database each one holds.',
+    agentLine: '`ax worktree setup` — make a fresh worktree runnable, and `ax worktree ls` to see the port and database each one holds.',
   },
   {
     name: 'supabase',
@@ -118,15 +117,15 @@ export const COMMANDS = [
   },
   {
     name: 'pin',
-    summary: 'move this project onto an ax tag — edit, install, prove, doctor',
+    summary: 'move this project onto an ax release — edit, install, prove, doctor',
     options: [
-      ['<tag>', 'the release tag to pin, e.g. v0.6.6 — the git gesture stays yours'],
+      ['<version>', 'the release to pin, e.g. 0.6.6 or v0.6.6 — the git gesture stays yours'],
       ['--dry-run', 'say what would move without touching anything'],
     ],
   },
   {
     name: 'init',
-    summary: 'write ax.config.json, bin/ax and the managed blocks',
+    summary: 'write config, bootstrap, OMP package root and managed blocks',
     options: [
       ['--vendor <owner>/<repo>', 'upstream kit, when no remote names it'],
       ['--dry-run', 'report what would change, write nothing'],
@@ -158,6 +157,13 @@ export const subcommandNames = name =>
   (COMMANDS.find(command => command.name === name)?.subcommands ?? []).map(([verb]) => verb.split(' ')[0]);
 
 /**
+ * The column budget every help line is held to, asserted by the test suite: a
+ * split pane in an editor is narrower than a terminal, and a help that wraps
+ * there is read as noise.
+ */
+export const WIDTH = 96;
+
+/**
  * Help composed on the command NAME, never on a usage string.
  *
  * `init [--vendor <owner>/<repo>] [--dry-run]` as a left column is 42
@@ -171,8 +177,14 @@ export function renderUsage(version, availability = {}) {
   const visible = visibleCommands(availability);
   const width = Math.max(...visible.map(command => command.name.length));
 
+  // The banner is a name, a version and the one sentence that says what ax is.
+  // That sentence is the package description, so it grows when the product's
+  // pitch does — and at 96 columns it wraps in a split pane, which is exactly
+  // what the width budget below exists to prevent. So it moves to its own line
+  // rather than being shortened to fit a line it does not have to share.
+  const banner = `ax ${version} — ${description}`;
   const lines = [
-    `${bold('ax')} ${version} — agent-experience tooling for MakerKit turbo projects`,
+    ...(banner.length <= WIDTH ? [`${bold('ax')} ${version} — ${description}`] : [`${bold('ax')} ${version}`, `  ${dim(description)}`]),
     '',
     bold('Usage'),
     '  ax <command> [options]',

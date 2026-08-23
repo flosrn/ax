@@ -1,9 +1,16 @@
-// `ax pin` — move a consuming project onto an ax tag, without owning its git.
+// `ax pin` — move a consuming project onto an ax RELEASE, without owning its git.
 //
 // The bump ritual was measured at four manual gestures, seven times in one day
 // (2026-08-23): edit the pin, install, verify, commit-and-push. This verb does
-// the mechanical half — edit, install, PROVE the installed version is the tag,
-// run doctor — and then PRINTS the commit it earned, ready to paste.
+// the mechanical half — edit, install, PROVE the installed version is the one
+// asked for, run doctor — and then PRINTS the commit it earned, ready to paste.
+//
+// The pin is an exact npm version, not a git tag: ax is published to the
+// registry, so `0.9.0` is what the lockfile resolves and what the global CLI
+// delegates to. `vX.Y.Z` is accepted as an argument because that is what the
+// release tag and the changelog say, and typing what you just read should not
+// be an error — but the manifest is written without the `v`, because that is
+// the only form npm understands.
 //
 // It deliberately never runs `git commit` or `git push`. A push publishes every
 // local commit on the branch, including another actor's unpushed work, and no
@@ -20,7 +27,10 @@ import { setJsonPath } from './blocks.mjs';
 import { PACKAGE_NAME, repoPaths } from './config.mjs';
 import { bad, fix, note, ok, raw } from './log.mjs';
 
-const USAGE = 'ax pin <vX.Y.Z> [--dry-run]';
+const USAGE = 'ax pin <X.Y.Z|vX.Y.Z> [--dry-run]';
+
+/** A release, however it was typed: `0.9.0` or the tag `v0.9.0`. */
+const RELEASE = /^v?([0-9]+\.[0-9]+\.[0-9]+)$/;
 
 /**
  * Installs take minutes, not the 30 seconds every other exec in this package
@@ -44,17 +54,21 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     return 1;
   };
 
-  let tag = '';
+  let asked = '';
   let dry = false;
   for (const arg of argv) {
     if (arg === '--dry-run') dry = true;
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else if (arg.startsWith('-')) return usageError(`unknown argument "${arg}"`);
-    else if (tag !== '') return usageError(`one tag only, got "${tag}" and "${arg}"`);
-    else tag = arg;
+    else if (asked !== '') return usageError(`one version only, got "${asked}" and "${arg}"`);
+    else asked = arg;
   }
-  if (tag === '') return usageError('no tag given');
-  if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(tag)) return usageError(`a pin is a release tag shaped vX.Y.Z, got "${tag}"`);
+  if (asked === '') return usageError('no version given');
+  const matched = RELEASE.exec(asked);
+  if (!matched) return usageError(`a pin is a release shaped X.Y.Z, or its tag vX.Y.Z, got "${asked}"`);
+  // Stored without the `v`: npm resolves versions, and the tag form is only an
+  // input convenience so the string on the release page can be pasted as-is.
+  const target = matched[1];
 
   const paths = repoPaths(cwd);
   if (!paths.root) return refuse('not inside a git repository');
@@ -72,75 +86,72 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   if (typeof current !== 'string') {
     return refuse(`package.json declares no ${PACKAGE_NAME} pin`, 'ax init   # writes the pin and the ax script this verb moves');
   }
-  // The SOURCE comes from the pin already there, never from a constant: a fork
-  // or mirror distributes ax under its own owner, and a `link:` pin — the dev
-  // workflow AGENTS.md itself teaches — carries no tag to move at all. Only the
-  // fragment after `#` is this verb's business.
-  const hash = current.lastIndexOf('#');
-  if (hash === -1) {
+  // A `link:` or `file:` pin — the dev workflow AGENTS.md itself teaches — names
+  // a checkout on this machine, not a release. Moving it to a version would
+  // silently end that workflow, so it is refused by name. A `github:` pin is
+  // NOT refused: migrating it to the registry is exactly this verb's job now.
+  if (current.startsWith('link:') || current.startsWith('file:')) {
     return refuse(
-      `the current pin is "${current}", which carries no #tag — a link: or branchless pin is not moved by tag`,
+      `the current pin is "${current}", a local checkout rather than a release — a version does not replace it`,
       'edit package.json by hand if this checkout is meant to leave that pin',
     );
   }
-  const target = `${current.slice(0, hash)}#${tag}`;
-  if (current === target) {
-    ok(`already pinned to ${tag} — nothing to move`);
-    return 0;
-  }
+  const changing = current !== target;
+  if (changing) {
+    // Ownership of the DIFF this verb creates, not of the repo: if the two
+    // files it is about to change already carry someone's edits, moving the
+    // pin would weld this bump to work that is not its own.
+    const dirty = exec('git', ['status', '--porcelain', '--', 'package.json', 'pnpm-lock.yaml'], root);
+    if (dirty.error || dirty.status !== 0) {
+      return refuse(`git cannot answer whether package.json is clean: ${String(dirty.error ?? dirty.stderr ?? '').trim() || `exit ${dirty.status}`}`);
+    }
+    if (String(dirty.stdout ?? '').trim() !== '') {
+      return refuse(
+        'package.json or pnpm-lock.yaml already carries uncommitted changes — this bump refuses to weld its diff to work that is not its own',
+        'commit or stash those changes first, then re-run',
+      );
+    }
 
-  // Ownership of the DIFF this verb creates, not of the repo: if the two files
-  // it is about to change already carry someone's edits, moving the pin would
-  // weld this bump to work that is not its own, and the printed commit below
-  // would invite committing both. Refused, named.
-  const dirty = exec('git', ['status', '--porcelain', '--', 'package.json', 'pnpm-lock.yaml'], root);
-  if (dirty.error || dirty.status !== 0) {
-    return refuse(`git cannot answer whether package.json is clean: ${String(dirty.error ?? dirty.stderr ?? '').trim() || `exit ${dirty.status}`}`);
-  }
-  if (String(dirty.stdout ?? '').trim() !== '') {
-    return refuse(
-      'package.json or pnpm-lock.yaml already carries uncommitted changes — this bump refuses to weld its diff to work that is not its own',
-      'commit or stash those changes first, then re-run',
-    );
-  }
+    note(`${current} → ${target}`);
+    if (dry) {
+      note('dry run — package.json untouched, nothing installed');
+      return 0;
+    }
 
-  note(`${current} → ${target}`);
-  if (dry) {
-    note('dry run — package.json untouched, nothing installed');
-    return 0;
-  }
+    setJsonPath(manifest, `devDependencies.${PACKAGE_NAME}`, target);
+    writeFileSync(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  setJsonPath(manifest, `devDependencies.${PACKAGE_NAME}`, target);
-  writeFileSync(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
-
-  const installed = exec('pnpm', ['install'], root);
-  if (installed.error || installed.status !== 0) {
-    const detail = String(installed.error ?? '').trim() || String(installed.stderr ?? '').split('\n').filter(Boolean).slice(-3).join(' | ') || `exit ${installed.status}`;
-    return refuse(`pnpm install refused the new pin: ${detail}`, `git checkout -- package.json && pnpm install   # back to ${current}`);
+    const installed = exec('pnpm', ['install'], root);
+    if (installed.error || installed.status !== 0) {
+      const detail = String(installed.error ?? '').trim() || String(installed.stderr ?? '').split('\n').filter(Boolean).slice(-3).join(' | ') || `exit ${installed.status}`;
+      return refuse(`pnpm install refused the new pin: ${detail}`, `git checkout -- package.json && pnpm install   # back to ${current}`);
+    }
+  } else {
+    note(`already pinned to ${target} — re-proving the installed package and doctor`);
   }
 
   // The PROOF, not the receipt: an install can exit 0 while a lockfile override
   // or a cache serves yesterday's build. The version on disk is what will run.
   const installedManifest = join(root, 'node_modules', PACKAGE_NAME, 'package.json');
-  let version = '';
+  let onDisk = '';
   try {
-    version = JSON.parse(readFileSync(installedManifest, 'utf8')).version;
+    onDisk = JSON.parse(readFileSync(installedManifest, 'utf8')).version;
   } catch {
     return refuse(`installed, but ${installedManifest} is unreadable — nothing proves which ax is on disk`);
   }
-  if (`v${version}` !== tag) {
-    return refuse(`the pin says ${tag} but the installed package is v${version} — the install served something else`, 'pnpm install --force   # then re-run this verb to re-prove');
+  if (onDisk !== target) {
+    return refuse(`the pin says ${target} but the installed package is ${onDisk} — the install served something else`, 'pnpm install --force   # then re-run this verb to re-prove');
   }
-  ok(`installed ${PACKAGE_NAME} ${tag}, proven from node_modules`);
+  ok(`installed ${PACKAGE_NAME} ${target}, proven from node_modules`);
 
-  const doctor = exec('pnpm', ['ax', 'doctor'], root);
+  const doctor = exec(join(root, 'bin', 'ax'), ['doctor'], root);
   if (doctor.error || doctor.status !== 0) {
-    return refuse(`ax doctor refuses this checkout under ${tag} — do not commit a pin the doctor rejects`, 'pnpm ax doctor   # read the findings, repair, then re-run this verb');
+    return refuse(`ax doctor refuses this checkout under ${target} — do not commit a pin the doctor rejects`, 'ax doctor   # read the findings, repair, then re-run this verb');
   }
   ok('doctor coherent under the new pin');
 
   // The git gesture stays yours, message included — see the header for why this
-  // verb never runs it.
-  fix(`git add package.json pnpm-lock.yaml && git commit -m "chore(deps): bump ${PACKAGE_NAME} to ${tag}" && git push`);
+  // verb never runs it. A verification-only invocation earned no diff.
+  if (changing) fix(`git add package.json pnpm-lock.yaml && git commit -m "chore(deps): bump ${PACKAGE_NAME} to ${target}" && git push`);
   return 0;
 }

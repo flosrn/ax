@@ -172,7 +172,7 @@ test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', (
   assert.equal(r.code, 4);
   assert.match(r.out, /PENDING, not dead/);
   assert.match(r.out, /do not report, do not end your turn/);
-  assert.match(r.out, /pnpm -w ax triage ask --resume msg_q9 --timeout-ms 5000/, 'copied verbatim by a parked child, so it must run verbatim in a consuming repo');
+  assert.match(r.out, /ax triage ask --resume msg_q9 --timeout-ms 5000/, 'copied verbatim by a parked child, so it must use the global dispatcher');
 });
 
 test('a cut connection is CANNOT ESTABLISH, and the question is not declared dead', () => {
@@ -184,7 +184,7 @@ test('a cut connection is CANNOT ESTABLISH, and the question is not declared dea
   assert.equal(r.code, 3);
   assert.match(r.out, /connection lost/);
   assert.match(r.out, /may still be pending/);
-  assert.match(r.out, /pnpm -w ax triage ask --resume msg_q9/);
+  assert.match(r.out, /ax triage ask --resume msg_q9/);
 });
 
 test('dispatch_inactive over a repaired stall is PROVEN from the record, and hands the child its real channel', () => {

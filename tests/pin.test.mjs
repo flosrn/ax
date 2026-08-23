@@ -15,11 +15,13 @@ import { test } from 'node:test';
 
 import { pin } from '../src/pin.mjs';
 
-// A NON-flosrn source on purpose: the target is derived from the pin already
-// there, never from a constant — a fork distributes ax under its own owner.
-const SOURCE = 'github:someone-else/ax-fork';
+// The pin is an exact npm version now, not a git ref: ax is published to the
+// registry, and a `github:` pin resolves outside the lockfile's version
+// arithmetic. Migrating one to a version is this verb's job, so the fixture
+// starts on the old shape on purpose.
+const LEGACY = 'github:flosrn/ax#v0.5.2';
 
-function repo({ pinned = `${SOURCE}#v0.5.2`, manifest = true } = {}) {
+function repo({ pinned = '0.5.2', manifest = true } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-pin-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
   if (manifest) {
@@ -69,7 +71,7 @@ function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, onInstall =
         if (onInstall) onInstall(at);
         return { stdout: '', stderr: '', ...install };
       }
-      if (bin === 'pnpm' && args[0] === 'ax') return { stdout: '', stderr: '', ...doctor };
+      if (bin.endsWith('/bin/ax') && args[0] === 'doctor') return { stdout: '', stderr: '', ...doctor };
       return { status: 1, stdout: '', stderr: `unexpected: ${bin} ${args.join(' ')}` };
     },
   };
@@ -80,17 +82,26 @@ const run = (argv, { root = repo(), exec = fakeExec() } = {}) => {
   return { ...result, root, calls: exec.calls };
 };
 
-test('a full bump: pin edited, install proven from node_modules, doctor run, commit PRINTED not run', () => {
+test('a full bump: exact version written, install proven from node_modules, doctor run, commit PRINTED not run', () => {
   const exec = fakeExec({ onInstall: at => installAs(at, '0.6.6') });
   const r = run(['v0.6.6'], { exec });
 
   assert.equal(r.code, 0);
   const manifest = JSON.parse(readFileSync(join(r.root, 'package.json'), 'utf8'));
-  assert.equal(manifest.devDependencies['@flosrn/ax'], `${SOURCE}#v0.6.6`, 'the source is the pin\'s own, not a constant');
-  assert.match(r.out, /installed @flosrn\/ax v0\.6\.6, proven from node_modules/);
+  assert.equal(manifest.devDependencies['@flosrn/ax'], '0.6.6', 'the tag form is an input; the manifest carries what npm resolves');
+  assert.match(r.out, /installed @flosrn\/ax 0\.6\.6, proven from node_modules/);
   assert.match(r.out, /doctor coherent/);
-  assert.match(r.out, /git add package\.json pnpm-lock\.yaml && git commit -m "chore\(deps\): bump @flosrn\/ax to v0\.6\.6" && git push/);
+  assert.match(r.out, /git add package\.json pnpm-lock\.yaml && git commit -m "chore\(deps\): bump @flosrn\/ax to 0\.6\.6" && git push/);
   assert.ok(r.calls.every(line => !line.startsWith('git commit') && !line.startsWith('git push')), 'the git gesture stays the caller\'s');
+});
+
+test('X.Y.Z and vX.Y.Z are the same pin, and a github: pin is migrated to it', () => {
+  const exec = fakeExec({ onInstall: at => installAs(at, '0.6.6') });
+  const r = run(['0.6.6'], { root: repo({ pinned: LEGACY }), exec });
+
+  assert.equal(r.code, 0);
+  assert.equal(JSON.parse(readFileSync(join(r.root, 'package.json'), 'utf8')).devDependencies['@flosrn/ax'], '0.6.6');
+  assert.match(r.out, new RegExp(`${LEGACY.replace(/[.#/]/g, '\\$&')} → 0\\.6\\.6`));
 });
 
 test('an install that served another version is refused — the proof is the disk, not the receipt', () => {
@@ -98,7 +109,7 @@ test('an install that served another version is refused — the proof is the dis
   const r = run(['v0.6.6'], { exec });
 
   assert.equal(r.code, 1);
-  assert.match(r.out, /the installed package is v0\.5\.2/);
+  assert.match(r.out, /the installed package is 0\.5\.2/);
   assert.doesNotMatch(r.out, /git add/, 'no commit line for a bump that did not happen');
 });
 
@@ -121,31 +132,41 @@ test('a dirty package.json refuses before anything moves — the diff must be it
   assert.ok(r.calls.every(line => !line.includes('pnpm install')), 'nothing was installed');
 });
 
-test('a pin with no #tag — the link: dev workflow — is refused by name', () => {
-  const r = run(['v0.6.6'], { root: repo({ pinned: 'link:../../flosrn/ax' }) });
+test('a link: pin — the dev workflow — is refused by name, not overwritten', () => {
+  const root = repo({ pinned: 'link:../../flosrn/ax' });
+  const r = run(['v0.6.6'], { root });
   assert.equal(r.code, 1);
-  assert.match(r.out, /carries no #tag/);
+  assert.match(r.out, /a local checkout rather than a release/);
+  assert.equal(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).devDependencies['@flosrn/ax'], 'link:../../flosrn/ax');
 });
 
-test('already on the tag is a no-op that says so', () => {
-  const r = run(['v0.5.2']);
+test('already on the version re-proves disk and doctor without reinstalling', () => {
+  const root = repo();
+  installAs(root, '0.5.2');
+  const r = run(['v0.5.2'], { root });
   assert.equal(r.code, 0);
-  assert.match(r.out, /already pinned to v0\.5\.2/);
-  assert.ok(r.calls.every(line => !line.includes('pnpm')), 'nothing installed for a pin already there');
+  assert.match(r.out, /already pinned to 0\.5\.2 — re-proving/);
+  assert.match(r.out, /installed @flosrn\/ax 0\.5\.2, proven/);
+  assert.match(r.out, /doctor coherent/);
+  assert.ok(r.calls.every(line => !line.startsWith('pnpm install')), 'verification does not reinstall an unchanged pin');
+  assert.ok(r.calls.some(line => line.endsWith('/bin/ax doctor')));
+  assert.doesNotMatch(r.out, /git add/, 'verification-only runs earn no commit');
 });
 
 test('--dry-run names the move and touches nothing', () => {
   const r = run(['v0.6.6', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /#v0\.5\.2 → .*#v0\.6\.6/);
+  assert.match(r.out, /0\.5\.2 → 0\.6\.6/);
   const manifest = JSON.parse(readFileSync(join(r.root, 'package.json'), 'utf8'));
-  assert.equal(manifest.devDependencies['@flosrn/ax'], `${SOURCE}#v0.5.2`);
+  assert.equal(manifest.devDependencies['@flosrn/ax'], '0.5.2');
   assert.ok(r.calls.every(line => !line.includes('pnpm install')));
 });
 
-test('usage: a tag is required and must be shaped vX.Y.Z; no pin key routes to init', () => {
+test('usage: a version is required, and X.Y.Z is accepted where a tag once was', () => {
   assert.equal(run([]).code, 2);
-  assert.equal(run(['0.6.6']).code, 2);
+  assert.equal(run(['0.6.6'], { root: repo({ pinned: LEGACY }), exec: fakeExec({ onInstall: at => installAs(at, '0.6.6') }) }).code, 0);
+  assert.equal(run(['0.6']).code, 2);
+  assert.equal(run(['^0.6.6']).code, 2);
   assert.equal(run(['v0.6.6', 'v0.6.7']).code, 2);
   const bare = repo({ manifest: false });
   writeFileSync(join(bare, 'package.json'), '{}');
