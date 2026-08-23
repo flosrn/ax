@@ -25,7 +25,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../worker/release.mjs';
-import { defaultStore, dispatchIndex, handlesByRequest } from '../worker/record.mjs';
+import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
 import { paneVerdict } from '../worker/ls.mjs';
 import { DRAFT_DIR, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
@@ -242,14 +242,26 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
         continue;
       }
     }
-    ready.push({ issue, draft, labels, bodyPath, lines: body.split('\n').length });
+    // Whether a dispatch record can ADDRESS this pass's pane, decided here with
+    // the store already in hand: the release hint after the mutation must never
+    // name a gesture that is guaranteed to refuse, and a hand-written pass has
+    // no record — `triage release` would answer "no dispatch record" every time.
+    let releasable = false;
+    if (recorded.includes(pass)) {
+      try {
+        releasable = typeof report(join(store, `${requestFor({ ...base, pass })}.json`)).summary?.dispatchId === 'string';
+      } catch {
+        releasable = false;
+      }
+    }
+    ready.push({ issue, pass, releasable, draft, labels, bodyPath, lines: body.split('\n').length });
   }
 
   if (blocked) return refuse('nothing was published — one draft per issue, complete and rendered, before the first gh call');
 
   // ── the mutation, per issue, labels and comment together ──────────────────
   let failed = 0;
-  for (const { issue, draft, labels, bodyPath, lines } of ready) {
+  for (const { issue, pass, releasable, draft, labels, bodyPath, lines } of ready) {
     section(`issue #${issue}`);
 
     if (dry) {
@@ -281,6 +293,13 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       continue;
     }
     note(`published — ${draft.labels.length} label(s) and one comment`);
+    // The next gesture, ready to paste, offered HERE and not in `status`: the
+    // comment that just landed is exactly the artifact `worker release` demands
+    // for a triage pane (a comment on the issue AFTER the dispatch), so the
+    // command below is one whose proof exists by construction. `status` cannot
+    // see publication without a per-issue probe, and offering it there printed
+    // a command that refused every time under the deferred-publish wave.
+    if (releasable) note(dim(`ax triage release --issue ${issue} --job ${job} --pass ${pass}   # this comment IS the landing proof release needs`));
     if (draft.close) note('the draft recommended closing: that is yours to do, and this verb never does it');
   }
   return failed;

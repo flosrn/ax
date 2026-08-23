@@ -21,6 +21,7 @@ import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
 import { DRAFT_DIR, passesIn, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
+import { triageRelease } from './release.mjs';
 import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
 
 const USAGE = 'ax triage status --issue N [--issue M …] [--job triage|brief|custom] [--repo <owner/repo>]';
@@ -204,7 +205,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   return 0;
 }
 
-export const SUBCOMMANDS = { dispatch, ask, status, answer, publish };
+export const SUBCOMMANDS = { dispatch, ask, status, answer, publish, release: triageRelease };
 
 /** `ax triage <verb> [args]`. */
 export function triage(argv = []) {

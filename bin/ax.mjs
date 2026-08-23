@@ -11,6 +11,7 @@ import { supabase } from '../src/supabase-guard.mjs';
 import { worktree } from '../src/worktree/index.mjs';
 import { triage } from '../src/triage/index.mjs';
 import { pr } from '../src/pr/index.mjs';
+import { pin } from '../src/pin.mjs';
 
 const RUNNERS = {
   doctor: () => (doctor() === 0 ? 0 : 1),
@@ -35,6 +36,8 @@ const RUNNERS = {
   triage: () => triage(args.slice(1)),
   // Same again: `gate --pr <n>` carries its own flags, and none is whole-command.
   pr: () => pr(args.slice(1)),
+  // One positional tag; --dry-run is whole-command but rides argv for symmetry.
+  pin: () => pin(args.slice(1)),
 };
 
 const args = process.argv.slice(2);

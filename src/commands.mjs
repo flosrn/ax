@@ -104,6 +104,7 @@ export const COMMANDS = [
       ['status [--issue N …]', 'what each dispatch recorded, and its recovery'],
       ['answer --issue N --id <msg>', 'pair rulings from --file to the questions, then reply'],
       ['publish --issue N …', 'apply what a draft names — never closes an issue'],
+      ['release --issue N', "free the finished pass's pane, resolving its dispatch"],
     ],
   },
   {
@@ -113,6 +114,14 @@ export const COMMANDS = [
     // `triage` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
     subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
+  },
+  {
+    name: 'pin',
+    summary: 'move this project onto an ax tag — edit, install, prove, doctor',
+    options: [
+      ['<tag>', 'the release tag to pin, e.g. v0.6.6 — the git gesture stays yours'],
+      ['--dry-run', 'say what would move without touching anything'],
+    ],
   },
   {
     name: 'init',

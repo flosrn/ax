@@ -610,6 +610,55 @@ test('a machine with no Orca at all names the gap the same way', () => {
   assert.match(r.out, /waiting state unknown: no Orca CLI on this machine/);
 });
 
+test('status NEVER offers the release command — the proof it needs is a published comment it cannot see', () => {
+  // The hint lived here for one commit and was wrong every time under the
+  // deferred-publish wave: `worker release` proves a triage landing by a
+  // comment on the issue AFTER the dispatch, and a FINAL draft says nothing
+  // about that. The offer now follows the publish that creates the proof.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nFinal verdict.\n');
+  const r = runStatus(['--issue', '7'], { root, store });
+
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /ax triage release/);
+});
+
+test('a published DISPATCHED pass is offered its release — the comment that just landed IS the proof', () => {
+  const root = repo();
+  const store = passStore();
+  passRecord(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, env: { ORCA_DISPATCH_STORE: store } });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /published — 1 label\(s\) and one comment/);
+  assert.match(r.out, /ax triage release --issue 7 --job triage --pass 1   # this comment IS the landing proof/);
+});
+
+test('a published HAND-WRITTEN pass gets no release offer — there is no dispatch to address', () => {
+  // The hint printed unconditionally for one commit, and for a draft with no
+  // record it named a gesture guaranteed to refuse ("no dispatch record").
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /published — 1 label\(s\) and one comment/);
+  assert.doesNotMatch(r.out, /ax triage release/);
+});
+
+test('a refused batch offers NO release anywhere — nothing landed, so nothing is provable', () => {
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nFinal verdict.\n');
+  draft(root, 'triage-acme-widgets-8', 'Labels: category/bug\n\nQ1: still open.\n\nParked.\n');
+  const r = run(['--issue', '7', '--issue', '8'], { root });
+
+  assert.equal(r.code, 1);
+  assert.doesNotMatch(r.out, /ax triage release/);
+});
+
 // ── which pass lands ─────────────────────────────────────────────────────────
 //
 // Once one issue can hold two verdicts, "publish it" stops being unambiguous.
