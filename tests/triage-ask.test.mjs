@@ -226,6 +226,22 @@ test('dispatch_inactive with no repaired-stall proof stays a named disjunction, 
   assert.doesNotMatch(r.out, /composer stall/, 'no stall diagnosis without the record that proves it');
 });
 
+test('a token-shaped receipt is redacted before it reaches the child’s eyes', () => {
+  // The error message is untrusted runtime output, exactly like a transcript:
+  // Orca's preamble embeds the dispatch capability, and an error that quotes
+  // the request can quote the token with it. These branches emit through
+  // bad()/note() directly, so the redaction has to be proven here, not assumed
+  // from refuse/cannot.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'Dispatch dcap_s3cr3tT0ken capability is revoked.' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 1);
+  assert.doesNotMatch(r.out, /dcap_s3cr3tT0ken/, 'the authority token must never be routine output');
+  assert.match(r.out, /dcap_<redacted>/);
+});
+
 test('an unreachable runtime refuses before anything is sent', () => {
   const root = repo();
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');

@@ -181,7 +181,11 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   }
   if (receipt.ok === false) {
     const code = receipt.error?.code ?? '';
-    const detail = receipt.error?.message ?? 'unnamed error';
+    // Untrusted runtime output, exactly like a transcript: the preamble embeds
+    // the dispatch capability, and an error message that quotes the request
+    // can quote the token with it. Redacted HERE, once, because the branches
+    // below emit through bad()/note()/fix() directly rather than refuse/cannot.
+    const detail = redactSecrets(receipt.error?.message ?? 'unnamed error');
     if (code === 'dispatch_inactive') {
       // Proven when it can be: in question mode this pass's own record says
       // whether a repaired composer stall is what killed the capability
@@ -209,14 +213,14 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   }
   if (receipt.timedOut === true) {
     bad(`no answer within ${receipt.timeoutMs ?? timeout}ms — the question is PENDING, not dead`);
-    note(`message ${receipt.messageId} stays open on the parent's mailbox; do not report, do not end your turn, do not decide it yourself`);
+    note(redactSecrets(`message ${receipt.messageId} stays open on the parent's mailbox; do not report, do not end your turn, do not decide it yourself`));
     // `pnpm -w ax`, like the spec that got the child here: this line is read by
     // a FRESH agent in a consuming repo, where bare `ax` resolves nowhere, and
     // it is read at the worst possible moment — parked, forbidden to end its
     // turn, with this repair as its only way back to waiting. Every other fix()
     // in this package keeps bare `ax` because its reader just invoked ax and
     // knows the runner; a parked child copies verbatim.
-    fix(`pnpm -w ax triage ask --resume ${receipt.messageId} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`);
+    fix(redactSecrets(`pnpm -w ax triage ask --resume ${receipt.messageId} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
     return 4;
   }
   if (receipt.cancelled === true) {
