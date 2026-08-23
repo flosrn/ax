@@ -861,6 +861,13 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
   assert.match(r.out, /pnpm -w ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
+  // The routing ruling (maintainer, 2026-08-23): technical questions are ruled
+  // by the coordinator itself, product/high-stakes ones go up — and the tag
+  // opens the question TEXT, because `Q<n> [technical]:` would break the one
+  // Q-line grammar while `Q<n>: [technical] …` travels verbatim.
+  assert.match(r.out, /OPEN each question's text with its routing tag/);
+  assert.match(r.out, /\[technical\].*coordinator rules itself/);
+  assert.match(r.out, /\[product\].*goes up to the maintainer/);
   assert.match(r.out, /Do not report and do not end your turn while a question is open — with ONE exception/);
   // The exception exists because the rule and ask's proven-stall repair would
   // otherwise contradict each other on the 9/9 measured path of this machine:
