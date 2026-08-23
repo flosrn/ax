@@ -704,6 +704,14 @@ test('a malformed range refuses with the shape named', () => {
   assert.equal(runStatus(['--issue', '7-']).code, 2);
 });
 
+test('an oversized range is a typo, not a wave — refused before any expansion', () => {
+  // Expansion is eager and every issue pays filesystem work: unbounded, a typo
+  // like 55-610000000 hangs the verb allocating six hundred million rows.
+  const r = runStatus(['--issue', '55-610000000']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /is a typo, not a wave/);
+});
+
 // ── which pass lands ─────────────────────────────────────────────────────────
 //
 // Once one issue can hold two verdicts, "publish it" stops being unambiguous.

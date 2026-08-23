@@ -26,6 +26,9 @@ import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
 
 const USAGE = 'ax triage status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom] [--repo <owner/repo>]';
 
+/** The widest --issue range status will expand — see the refusal for why. */
+const RANGE_MAX = 100;
+
 /**
  * Every unanswered question on this machine's mailbox, keyed by the pane that
  * asked it.
@@ -124,6 +127,14 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       const [from, to] = [Number(range[1]), Number(range[2])];
       if (from >= to) {
         process.stderr.write(`ax triage status: --issue ${issue} is not a range — N-M needs N < M\n${USAGE}\n`);
+        return 2;
+      }
+      // Bounded, because expansion is EAGER and every issue below pays real
+      // filesystem work (two readdirs, a record read): a typo like 55-610000000
+      // would hang the verb allocating six hundred million rows. A wave is
+      // seven tickets today; a hundred is headroom, not a policy.
+      if (to - from + 1 > RANGE_MAX) {
+        process.stderr.write(`ax triage status: --issue ${issue} spans ${to - from + 1} issues — more than ${RANGE_MAX} is a typo, not a wave; split the range\n${USAGE}\n`);
         return 2;
       }
       for (let n = from; n <= to; n += 1) expanded.push(String(n));
