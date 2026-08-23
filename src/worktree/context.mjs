@@ -60,12 +60,12 @@ export function renderContext({ plan, config, main }) {
     '## Commands',
     '',
     '```bash',
-    `pnpm --filter ${web.split('/').pop()} dev        # this worktree's own port`,
-    'pnpm -w ax doctor                # is this checkout still coherent?',
-    'pnpm -w ax worktree ls           # every checkout, and what it holds',
+    `pnpm --dir ${web} dev              # this worktree's own port`,
+    'ax doctor                          # is this checkout still coherent?',
+    'ax worktree ls                     # every checkout, and what it holds',
     '```',
     '',
-    'Every database command goes through `pnpm -w ax supabase …`. Calling the `supabase` binary',
+    'Every database command goes through `ax supabase …`. Calling the `supabase` binary',
     'directly bypasses the guard that keeps a migration or a reset off the shared database.',
     '',
   ];
@@ -86,9 +86,8 @@ function database({ supabase }) {
       "This worktree talks to the primary checkout's local database. A migration, a reset or a",
       'typegen here rewrites the data every other session is reading.',
       '',
-      'It is promoted to its own isolated stack automatically the first time a command through',
-      '`pnpm -w ax supabase …` would write. The database port changes then, so restart the dev',
-      'server afterwards.',
+      'It is promoted to its own isolated stack automatically the first time `ax supabase …`',
+      'would write. The database port changes then, so restart the dev server afterwards.',
       '',
     ];
   }
@@ -105,7 +104,7 @@ function database({ supabase }) {
     `| Studio | http://127.0.0.1:${supabase.ports.studio} |`,
     `| Mail | http://127.0.0.1:${supabase.ports.inbucket} |`,
     '',
-    'Migrations and resets here affect nothing else. Stop it with `pnpm -w ax worktree clean`.',
+    'Migrations and resets here affect nothing else. Stop it with `ax worktree clean`.',
     '',
   ];
 }

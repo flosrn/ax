@@ -1,9 +1,9 @@
 {
   "name": "@flosrn/ax",
   "version": "0.10.1",
-  "description": "Agent-experience tooling for MakerKit turbo projects: worktrees, debug-as, vendor ownership.",
+  "description": "Agent Experience for a repository: worktrees, sessions, and multi-agent orchestration.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "private": false,
   "repository": {
     "type": "git",
@@ -12,21 +12,54 @@
   "bin": {
     "ax": "./bin/ax.mjs"
   },
-  "//exports": "The public surface, deliberately small. `./dotenv` is here because a project's own scripts must read env files the way this package does: the launcher in one repo kept a second copy of that grammar, and the two disagreed twice. A shared reader is the only way that stops recurring. Everything else stays internal.",
+  "omp": {
+    "extensions": [
+      "./omp/index.ts"
+    ]
+  },
+  "//exports": "The public surface, deliberately small. `./dotenv` is shared because project launchers must parse env files exactly as ax does. `./omp` is the project-scoped OMP bundle; OMP reaches it through this package root and the `omp.extensions` manifest above. Everything else stays internal.",
   "exports": {
     ".": "./src/index.mjs",
+    "./omp": "./omp/index.ts",
     "./dotenv": "./src/dotenv.mjs",
     "./ax.schema.json": "./ax.schema.json",
     "./package.json": "./package.json"
   },
+  "//files": "The tarball is allowlisted: `omp/` carries the extension bundle, its session roles and its package-internal playbooks as one version.",
   "files": [
     "bin",
     "src",
     "assets",
-    "ax.schema.json"
+    "omp",
+    "ax.schema.json",
+    "CHANGELOG.md"
   ],
+  "keywords": [
+    "agent-experience",
+    "cli",
+    "developer-tooling",
+    "git-worktree",
+    "omp"
+  ],
+  "homepage": "https://github.com/flosrn/ax#readme",
+  "bugs": {
+    "url": "https://github.com/flosrn/ax/issues"
+  },
+  "//publishConfig": "A scoped package is private by default on npm, and Trusted Publishing does not change that — the access is declared here so a release cannot be published unlisted by accident. `provenance` is what links the tarball to the workflow that built it.",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "//packageManager": "Exact, no range: this string is what CI's corepack installs, and a range would let a release be built by a pnpm nobody chose.",
+  "packageManager": "pnpm@11.11.0",
+  "//scripts": "Node owns the CLI suite; Bun owns the OMP extension suite because that is the runtime which loads the TypeScript bundle. `test` is their ordered aggregate and is the release gate.",
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\""
+    "test": "pnpm run test:node && pnpm run test:omp",
+    "test:node": "node --test \"tests/*.test.mjs\"",
+    "test:omp": "bun test omp"
+  },
+  "devDependencies": {
+    "zod": "4.3.6"
   },
   "engines": {
     "node": ">=22"

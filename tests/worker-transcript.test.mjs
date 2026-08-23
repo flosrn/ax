@@ -196,14 +196,14 @@ test('launch proof keeps model selection separate from role and skill applicatio
       JSON.stringify({
         type: 'custom_message',
         customType: 'skill-prompt',
-        details: { role: 'worker', skills: ['lfg'], status: 'applied' },
+        details: { role: 'worker', skills: ['implementation'], status: 'applied' },
       }),
     ].join('\n'),
   );
 
   assert.deepEqual(launchProof({ needle: 'gap-353', sessionsRoot: root }), {
     model: { model: 'anthropic/claude-sonnet-5', role: 'default' },
-    sessionRole: { status: 'applied', role: 'worker', skills: ['lfg'] },
+    sessionRole: { status: 'applied', role: 'worker', skills: ['implementation'] },
   });
 
   const { code, out } = capture(() =>
@@ -224,7 +224,7 @@ test('launch proof carries the exact pre-turn role refusal', () => {
       JSON.stringify({
         type: 'custom_message',
         customType: 'role-refused',
-        details: { role: 'worker', reason: 'skill-not-found', missingSkills: ['lfg'] },
+        details: { role: 'worker', reason: 'skill-not-found', missingSkills: ['implementation'] },
       }),
     ].join('\n'),
   );
@@ -233,7 +233,7 @@ test('launch proof carries the exact pre-turn role refusal', () => {
     status: 'refused',
     role: 'worker',
     reason: 'skill-not-found',
-    missingSkills: ['lfg'],
+    missingSkills: ['implementation'],
   });
 });
 

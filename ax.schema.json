@@ -4,7 +4,7 @@
   "description": "Per-project configuration for the ax CLI. Every value that used to be hardcoded in a project's worktree scripts lives here.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["project", "apps", "vendor"],
+  "required": ["project"],
   "properties": {
     "$schema": { "type": "string" },
     "project": {
@@ -63,15 +63,16 @@
     "apps": {
       "type": "object",
       "additionalProperties": false,
+      "default": { "web": "." },
       "required": ["web"],
       "properties": {
-        "web": { "type": "string", "description": "Path to the Next.js app." },
-        "e2e": { "type": "string", "description": "Path to the Playwright workspace." },
+        "web": { "type": "string", "description": "Application root whose env and runtime files ax manages. Defaults to the repository root." },
+        "e2e": { "type": "string", "description": "Path to the end-to-end test workspace, when the repository has one." },
         "caches": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Extra workspace roots whose .next/.turbo/test output a worktree cleanup reclaims."
+          "description": "Extra workspace roots whose generated test/build output a worktree cleanup reclaims."
         }
       }
     },

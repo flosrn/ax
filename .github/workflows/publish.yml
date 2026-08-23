@@ -1,44 +1,137 @@
-# Publish to npm without a token.
+# Release Please owns the version, changelog, v-tag and GitHub Release. npm
+# publishing is a second, retryable job: creating a release and uploading its
+# tarball are two different external mutations, so a registry outage must not
+# require minting another release.
 #
-# The account runs 2FA in `auth-and-writes` mode, so a local `npm publish`
-# demands a one-time password every time, and the tokens that used to bypass
-# that are being restricted (npm says so during login:
-# https://gh.io/npm-gat-bypass2fa-deprecation). OIDC trusted publishing is the
-# path npm points at instead: GitHub signs a short-lived identity for this
-# workflow, npm verifies it, and no secret exists to leak or rotate.
-#
-# `id-token: write` is what mints that identity. Without it the publish falls
-# back to looking for a token and fails.
-# Dispatch-only on purpose. npm cannot accept an OIDC publish until a trusted
-# publisher is declared for the package, and a package must already EXIST to
-# have that setting — so the first publish needs one credential, once, by hand.
-# Firing on every `v*` tag before then would just paint the tag history red.
-# Measured 2026-08-21 (run 32455245327): the identity is minted, the provenance
-# is signed and logged to Sigstore, and the PUT returns 404 "or you do not have
-# permission" — the signature works, the authorisation is missing.
-name: Publish
+# npm authentication is Trusted Publishing (OIDC). The first package version is
+# the only manual bootstrap because npm cannot configure a trusted publisher for
+# a package that does not exist. Until that is done, leave the repository variable
+# NPM_TRUSTED_PUBLISHING_READY unset: releases stay green and print the bootstrap.
+# Trusted publisher: owner flosrn, repository ax, workflow publish.yml.
+name: Release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z GitHub Release whose failed npm publish should be retried
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+  issues: write
   id-token: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  release:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Explain the one-time npm bootstrap
+        if: ${{ steps.release.outputs.release_created == 'true' && vars.NPM_TRUSTED_PUBLISHING_READY != 'true' }}
+        run: |
+          {
+            echo "## ${{ steps.release.outputs.tag_name }} tagged, not published"
+            echo
+            echo "npm was skipped because NPM_TRUSTED_PUBLISHING_READY is not true. Once:"
+            echo "1. Check out this exact tag and run npm publish locally with the account OTP."
+            echo "2. Configure @flosrn/ax Trusted Publisher for flosrn/ax, workflow publish.yml."
+            echo "3. Set the repository variable NPM_TRUSTED_PUBLISHING_READY to true."
+            echo "Future releases publish automatically; workflow_dispatch retries this tag."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: release
+    if: >-
+      ${{
+        always() &&
+        vars.NPM_TRUSTED_PUBLISHING_READY == 'true' &&
+        (
+          (github.event_name == 'push' && needs.release.outputs.release_created == 'true') ||
+          github.event_name == 'workflow_dispatch'
+        )
+      }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
-      # OIDC publishing needs npm 11.5+; setup-node still ships npm 10.
-      - run: npm install -g npm@latest
+      - name: Validate the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must be shaped vX.Y.Z, got: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          VERSION="${RELEASE_TAG#v}"
+          ACTUAL="$(node -p "require('./package.json').version")"
+          if [ "$ACTUAL" != "$VERSION" ]; then
+            echo "tag $RELEASE_TAG contains package version $ACTUAL" >&2
+            exit 1
+          fi
 
-      - run: node --test "tests/*.test.mjs"
+      # Node 22 carries Corepack. Enable only pnpm: a Corepack npm shim refuses
+      # to run inside a project whose packageManager is pnpm.
+      - run: |
+          corepack enable pnpm
+          corepack install
+      - run: pnpm install --frozen-lockfile
+      # Pinned: the publisher itself is part of the release input.
+      - run: npm install --global npm@12.0.2
 
-      - run: npm publish --provenance --access public
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - run: pnpm test
+      - run: npm pack --dry-run
+
+      - id: registry
+        name: Decide whether npm still needs this version
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          set +e
+          OUTPUT="$(npm view "@flosrn/ax@$VERSION" version --json 2>&1)"
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "@flosrn/ax@$VERSION is already on npm; retry is complete."
+          elif [[ "$OUTPUT" == *"E404"* ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$OUTPUT" >&2
+            exit "$STATUS"
+          fi
+
+      - if: ${{ steps.registry.outputs.publish == 'true' }}
+        run: npm publish

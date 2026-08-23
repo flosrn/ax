@@ -127,7 +127,7 @@ function record(store, request, handle = 'term_child') {
 }
 
 /** A session transcript carrying the model mover and the session-role receipt. */
-function transcript(root, needle, role, { sessionRole = 'worker', skills = ['lfg'], refusal = null } = {}) {
+function transcript(root, needle, role, { sessionRole = 'worker', skills = ['implementation'], refusal = null } = {}) {
   const dir = join(root, `-x-${needle}`);
   mkdirSync(dir, { recursive: true });
   const entries = [];
@@ -508,7 +508,7 @@ test('a STRANDED dispatch is replayed here, and the child is still verified', ()
   assert.match(r.out, /model .*\|default/);
 });
 
-test('the model and worker+lfg receipts with a moving pane are a green verdict', () => {
+test('the model, worker and implementation receipts with a moving pane are a green verdict', () => {
   const root = repo();
   provisioned(root, `${ISSUE}-${SLUG}`);
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
@@ -517,8 +517,8 @@ test('the model and worker+lfg receipts with a moving pane are a green verdict',
 
   assert.equal(r.code, 0);
   assert.match(r.out, /model .*\|default/);
-  assert.match(r.out, /session .*worker.*lfg/);
-  assert.match(r.out, /the role, skill, model marker, and pane movement are proven/);
+  assert.match(r.out, /session .*worker.*implementation/);
+  assert.match(r.out, /the role, playbook, model marker, and pane movement are proven/);
 });
 
 test('an applied model without a session-role receipt is exit 3', () => {
@@ -539,13 +539,13 @@ test('a pre-turn role refusal is exit 3 with its exact cause', () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, 'default', {
     sessionRole: null,
-    refusal: { role: 'worker', reason: 'skill-not-found', missingSkills: ['lfg'] },
+    refusal: { role: 'worker', reason: 'skill-not-found', missingSkills: ['implementation'] },
   });
   const r = run(['--issue', ISSUE, '--slug', SLUG], { root, home });
 
   assert.equal(r.code, 3);
   assert.match(r.out, /REFUSED session role worker: skill-not-found/);
-  assert.match(r.out, /missing lfg/);
+  assert.match(r.out, /missing implementation/);
 });
 
 test('a child on its BOOT model is exit 3, and says not to relaunch', () => {

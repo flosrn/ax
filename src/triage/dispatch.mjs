@@ -1,10 +1,10 @@
 // `ax triage dispatch` — one Orca session per issue, and nothing else.
 //
 // It does not read the issue, judge it, or write a word about it. The session
-// does that, from `skill://triage` plus the project's own label mapping. This
-// only puts a correctly-addressed, correctly-instructed session in front of each
-// issue — and refuses every arrangement a human hand produced when told, in
-// prose, that N issues is N sessions.
+// does that, from the preloaded triage playbook plus the project's own label
+// mapping. This only puts a correctly-addressed, correctly-instructed session
+// in front of each issue — and refuses every arrangement a human hand produced
+// when told, in prose, that N issues is N sessions.
 //
 // That instruction was given four times on 2026-08-10 and violated four
 // different ways: one agent for four issues; three subagents, which cannot ask
@@ -121,8 +121,8 @@ function verifyTriageRole({ request, root, env, sessionsRoot, proofFn, now, slee
     const missing = role.missingSkills.length === 0 ? '' : `; missing ${role.missingSkills.join(', ')}`;
     bad(`${request}: role ${role.role} refused — ${role.reason}${missing}`);
   } else if (role.role !== 'triage-worker') bad(`${request}: expected triage-worker, got ${role.role}`);
-  else if (!skills.includes('triage')) bad(`${request}: triage skill was not applied`);
-  note('The dispatch DID happen. Do NOT relaunch; inspect its recorded pane with `ax worker ls`.');
+  else if (!skills.includes('triage')) bad(`${request}: triage playbook was not applied`);
+  fix('ax worker ls   # inspect the recorded pane and role receipt; do not relaunch');
   return 'CANNOT-ESTABLISH';
 }
 
@@ -614,12 +614,9 @@ function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, inst
   // resume goes back to waiting on the same one, which is what makes an
   // unbounded human latency survivable without the child dying or deciding).
   //
-  // `pnpm -w ax`, not bare `ax`: the child is a FRESH agent in a consuming
-  // repo, where nothing puts `ax` on PATH — `ax init` installs only `bin/ax`
-  // and the `ax` package script — and where the AGENTS block already teaches
-  // exactly this form (`agentLine`, commands.mjs). A rendered command the
-  // shell cannot find is an improvisation invitation with extra steps.
-  const askCommand = `pnpm -w ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
+  // The global command is the stable entry point a fresh child receives; its
+  // dispatcher hands this argv to the exact project package.
+  const askCommand = `ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
   // The routing tag lives INSIDE the question text, never between the number
   // and the colon: `Q<n> [technical]:` would break the one Q-line grammar
   // (draft.mjs), while `Q<n>: [technical] …` travels verbatim through ask and
@@ -629,7 +626,7 @@ function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, inst
   // questions itself, reversibly; product and high-stakes ones go up. The tag
   // is advisory, not validated — an untagged question costs the parent one
   // extra read, which is not a defect worth a refusal.
-  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and OPEN each question's text with its routing tag — \`[technical]\` for representation, cardinality, file placement, versioning, pure/impure, type unions or SQL mechanics, which the coordinator rules itself and reversibly; \`[product]\` for scope, user-visible behavior, security, money, data, or business taxonomy, which goes up to the maintainer — so the parent routes each question without reading it twice. Keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`pnpm -w ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open — with ONE exception: if the ask refuses saying this Dispatch is not supervised (its capability died at a composer stall, and no ask can ever land from this session), follow that refusal instead of this sentence — keep the \`Q<n>:\` lines in the draft and report immediately, quoting them and saying the supervised channel is unavailable; your report is then the only channel left, and the parent answers by peer. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
+  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and OPEN each question's text with its routing tag — \`[technical]\` for representation, cardinality, file placement, versioning, pure/impure, type unions or SQL mechanics, which the coordinator rules itself and reversibly; \`[product]\` for scope, user-visible behavior, security, money, data, or business taxonomy, which goes up to the maintainer — so the parent routes each question without reading it twice. Keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open — with ONE exception: if the ask refuses saying this Dispatch is not supervised (its capability died at a composer stall, and no ask can ever land from this session), follow that refusal instead of this sentence — keep the \`Q<n>:\` lines in the draft and report immediately, quoting them and saying the supervised channel is unavailable; your report is then the only channel left, and the parent answers by peer. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
 
   // What a SECOND pass is told, and it is told before anything else it reads.
   // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.
@@ -647,7 +644,7 @@ function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, inst
     return [
       marker,
       redo,
-      `Read skill://triage AND ${labels}, which overrides the skill wherever the two diverge.`,
+      `Use the preloaded triage playbook AND ${labels}, which overrides the playbook wherever the two diverge.`,
       `Then triage issue #${issue} (issue://${issue}).`,
       `Write your verdict to ${draft}. It opens with directive lines, then the comment body a human will read on the issue months from now, with your justification at one line per group.`,
       `A directive carries label NAMES ONLY — never a group name, never a parenthetical: \`Labels: <name>[, <name>…]\`, repeatable so one line per group stays cheap to correct; \`Remove labels: <name>[, <name>…]\` for the labels your transition supersedes; \`Close: yes\` if you conclude wontfix, and say why — you are recommending it, not doing it.`,
@@ -662,7 +659,7 @@ function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, inst
     return [
       marker,
       redo,
-      `Read skill://triage and its reference file AGENT-BRIEF.md, and ${labels}.`,
+      `Use the preloaded triage playbook, especially its Agent Brief section, and ${labels}.`,
       `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass: do not redo it, do not re-measure what is established, and do not render a competing verdict.`,
       `Write the Agent Brief that follows from that pass to ${draft}, absorbing everything its "what is missing" section asks for, with a \`Labels:\` line for any label the pass left unapplied and a \`Remove labels:\` line for any state label your transition supersedes — label names only, no group prefix and no parenthetical, each checked against this repository's label list before it is applied.`,
       `An underdetermined acceptance criterion is not something to fill in: write no criterion for it and ask instead. If you find the pass itself is wrong, do not correct it silently — ask.`,

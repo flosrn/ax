@@ -28,7 +28,7 @@ const run = args => {
  * contract: what it names must exist, must run, and must be a command we chose
  * to expose.
  */
-const advertisedCommands = () => [...agentsBody().matchAll(/pnpm (?:-w )?ax ([a-z-]+(?: [a-z-]+)?)/g)].map(match => match[1]);
+const advertisedCommands = () => [...agentsBody().matchAll(/`ax ([a-z-]+(?: [a-z-]+)?)/g)].map(match => match[1]);
 
 test('every command the AGENTS block advertises is a real command', () => {
   const advertised = advertisedCommands();
@@ -74,8 +74,8 @@ test('only commands meant for agents reach the AGENTS block', () => {
   // An explicit allow-list, not a count: `init` is a human's setup step, and
   // advertising it invites an agent to rewrite the project's managed files
   // mid-task. Adding a command here is a decision, so it belongs in a diff.
-  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'worktree setup']);
-  assert.doesNotMatch(agentsBody(), /pnpm (?:-w )?ax init/);
+  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'worktree ls', 'worktree setup']);
+  assert.doesNotMatch(agentsBody(), /`ax init/);
 });
 
 test('an unknown command exits 2 and prints the help', () => {

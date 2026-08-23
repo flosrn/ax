@@ -11,7 +11,17 @@ export const PACKAGE_NAME = '@flosrn/ax';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 export const schema = JSON.parse(readFileSync(join(HERE, '..', 'ax.schema.json'), 'utf8'));
-export const version = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).version;
+
+const manifest = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8'));
+export const version = manifest.version;
+
+/**
+ * The one sentence that says what ax is, read from the manifest so the help and
+ * the package metadata cannot describe two different tools. They did: for eight
+ * releases both advertised `debug-as`, which is a config section the schema
+ * validates and no command has ever implemented.
+ */
+export const description = manifest.description;
 
 /** Asset shipped with the package, resolved from this file so a moved install follows. */
 export const assetPath = (...parts) => join(HERE, '..', 'assets', ...parts);

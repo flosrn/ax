@@ -238,9 +238,9 @@ test('a checkout with no ax.config.json refuses, and dispatches nothing', () => 
 // ── the vocabulary the child is answerable to ────────────────────────────────
 
 test('an undeclared label contract refuses a triage job, and says what it would have cost', () => {
-  // `skill://triage` never mentions a project's groups: left to it alone a
-  // session recommends in prose and stops. That is measured — four issues, three
-  // empty groups each, and the maintainer doing the data entry.
+  // The generic playbook cannot name one project's label groups: left to it
+  // alone a session recommends in prose and stops. That is measured — four
+  // issues, three empty groups each, and the maintainer doing the data entry.
   const root = repo({ labels: '' });
   const r = run(['--issue', '7'], { root });
   assert.equal(r.code, 1);
@@ -529,7 +529,7 @@ test('the triage spec sends the child to the project contract, and forbids every
   // carry is the vocabulary its draft must speak — and the refusal to mutate.
   const r = run(['--issue', '7', '--dry-run']);
   assert.match(r.out, /\[omp role=triage-worker model=@default\]/);
-  assert.match(r.out, /Read skill:\/\/triage AND .*triage-labels\.md/);
+  assert.match(r.out, /preloaded triage playbook AND .*triage-labels\.md/);
   assert.match(r.out, /issue:\/\/7/);
   assert.match(r.out, /Apply no label, post no comment, close nothing/);
   assert.match(r.out, /\.scratch\/triage\/triage-acme-widgets-7\.md/);
@@ -537,9 +537,9 @@ test('the triage spec sends the child to the project contract, and forbids every
   assert.match(r.out, /Close: yes/, 'a wontfix verdict is recommended, never done');
 });
 
-test('the brief spec forbids a second verdict and names AGENT-BRIEF.md', () => {
+test('the brief spec forbids a second verdict and names the bundled Agent Brief contract', () => {
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { issues: { 7: 'OPEN|2|Triaged' } });
-  assert.match(r.out, /AGENT-BRIEF\.md/);
+  assert.match(r.out, /preloaded triage playbook, especially its Agent Brief section/);
   assert.match(r.out, /ALREADY had its triage pass/);
   assert.match(r.out, /do not render a competing verdict/);
   assert.match(r.out, /brief-acme-widgets-7\.md/, 'a brief writes its own draft, not the triage one');
@@ -617,7 +617,7 @@ test('a dispatch with no role receipt is cannot-establish and is never relaunche
   assert.match(r.out, /Do NOT relaunch/);
 });
 
-test('a pre-turn triage role refusal names the missing skill', () => {
+test('a pre-turn triage role refusal names the missing playbook', () => {
   const r = run(['--issue', '7'], {
     proofFn: () => ({
       model: { model: 'claude-opus-5', role: 'default' },
@@ -857,10 +857,10 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // its replacement.
   const r = run(['--issue', '7', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /pnpm -w ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the invocation a consuming repo actually has — nothing puts bare `ax` on PATH there');
+  assert.match(r.out, /ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the global dispatcher selects the consuming repo version');
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
-  assert.match(r.out, /pnpm -w ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
+  assert.match(r.out, /ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
   // The routing ruling (maintainer, 2026-08-23): technical questions are ruled
   // by the coordinator itself, product/high-stakes ones go up — and the tag
   // opens the question TEXT, because `Q<n> [technical]:` would break the one
@@ -891,7 +891,7 @@ test('the same instruction reaches a brief child, because a brief escalates too'
   draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nThe triage pass.\n');
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { root });
   assert.equal(r.code, 0);
-  assert.match(r.out, /pnpm -w ax triage ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
+  assert.match(r.out, /ax triage ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
   assert.match(r.out, /Report when the draft is FINAL/);
 });
 
