@@ -79,7 +79,7 @@ import { defaultExec } from './release.mjs';
 
 const USAGE =
   'ax worker launch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--brief <file>] ' +
-  '[--model <alias>] [--agent <name>] [--run <id>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
+  '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -181,6 +181,20 @@ export function launch(
       if (argv[i] === undefined) return usageError(`${arg} expects a value`);
       flags[NAMED[arg]] = argv[i];
     } else return usageError(`unknown argument "${arg}"`);
+  }
+
+  // `--run` is kept parseable ONLY to answer the operator who was told to pass
+  // it. The Run is never a flag (see ./peers.mjs): it is the one this pane's own
+  // receiver consumes, and any other value dispatches a child whose completion
+  // report is delivered to a session that will never read it. Measured
+  // 2026-08-24: this verb's own refusal prescribed `--run <run_id>`, an operator
+  // minted one by hand from a session with no adapter at all, and three children
+  // ran with no route home.
+  if (flags.run !== '') {
+    return usageError(
+      '--run is not a launch input: the Run is the one this pane\'s receiver consumes, and naming another dispatches a child that reports into silence',
+      'ax init   # then RESTART this session so its pane joins the peer registry, and drop --run',
+    );
   }
 
   // Exactly one identity. `--issue` names work a tracker owns; `--name` names
@@ -324,12 +338,19 @@ export function launch(
     );
   }
 
-  const runId = flags.run || peerRun(env);
+  // ONE source, and it is not an argument (./peers.mjs). An empty entry means
+  // nothing in this session consumes a Run, so there is no address a child's
+  // completion report could be sent to — measured 2026-08-24 on ofmchat, where
+  // `node_modules/@flosrn/ax` was installed and no `.omp/settings.json` named
+  // it, so the machine-wide bridge stood down and the project loaded nothing.
+  // Every session in that checkout had no adapter, which is why this reads as a
+  // resume defect and is not one.
+  const runId = peerRun(env);
   if (runId === '') {
-    return cannot(
-      'no Run to own the Task: this session is in no peer registry and --run was not given',
-      'ax worker launch --issue … --run <run_id>',
-    );
+    bad(redactSecrets('CANNOT ESTABLISH — no Run to own the Task: this session is in no peer registry, so nothing here consumes a Run and no child dispatched from it could report back'));
+    fix('ax init   # register the installed adapter in .omp/settings.json, then RESTART this session so its pane joins the registry');
+    note('A Run minted by hand does not help: the report would be addressed, accepted, and read by nobody.');
+    return 3;
   }
 
   let operator = null;

@@ -241,6 +241,38 @@ test('no Run to own the Task is a named inability, never a guess', () => {
   assert.equal(r.code, 3);
   assert.match(r.out, /no Run to own the Task/);
   assert.deepEqual(r.started, []);
+  // Measured 2026-08-24 on ofmchat: this refusal's repair line offered
+  // `--run <run_id>`, so the operator minted a Run by hand. But an empty
+  // registry means this session HAS NO RECEIVER — the adapter never loaded (the
+  // repo carried `node_modules/@flosrn/ax` and no `.omp/settings.json` naming
+  // it, so the machine-wide bridge stood down and the project loaded nothing).
+  // A child dispatched into a hand-minted Run then reports into a Run nobody
+  // consumes, which is the silent non-delivery peers.mjs refuses to allow. So
+  // the repair named FIRST is the receiver, never the flag.
+  const runFlagAt = r.out.indexOf('--run <run_id>');
+  const initAt = r.out.indexOf('ax init');
+  assert.notEqual(initAt, -1, 'the repair must name the wiring that gives this session a receiver');
+  assert.match(r.out, /restart/i, 'a registered pane is what a restarted session gets, and nothing else does');
+  assert.ok(runFlagAt === -1 || initAt < runFlagAt, 'the flag may only appear after the repair that makes a report arrive');
+});
+
+test('--run is refused: a launch cannot name a Run its own receiver does not consume', () => {
+  // peers.mjs states the rule this closes: the Run is never a flag, because a
+  // guessed one sends the child's completion report to a session that will
+  // never read it. The refusal above used to PRESCRIBE `--run`, and a Run minted
+  // by hand from an unregistered session is precisely that void — the report is
+  // addressed, accepted, and consumed by nobody.
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const empty = run(['--issue', ISSUE, '--slug', SLUG, '--run', 'run_minted', '--wait', '0'], { registry: false, root });
+  assert.equal(empty.code, 2, 'refused on the argument alone, before anything is read');
+  assert.match(empty.out, /--run is not a launch input/);
+  assert.deepEqual(empty.started, [], 'a hand-minted Run buys no dispatch');
+
+  const registered = run(['--issue', ISSUE, '--slug', SLUG, '--run', 'run_other', '--wait', '0'], { root });
+  assert.equal(registered.code, 2);
+  assert.match(registered.out, /--run/);
+  assert.deepEqual(registered.started, [], 'not even a Run that exists may override the registry');
 });
 
 test('an unreadable ticket creates nothing, and cannot be established', () => {
