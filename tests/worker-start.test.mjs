@@ -181,28 +181,53 @@ function freshArgs(dir, request = 'req-1', passthru = ['--worktree', 'current', 
 }
 
 /**
- * The child's own session, as `briefDelivered` reads it — the witness that now
- * gates every automatic send.
+ * The child's own session, as `briefDelivered` reads it.
  *
  * `brief: false` is a BOOTED session with no user message, which is exactly
  * what a genuinely held composer looks like on disk (#56: session file at
- * 10:49:25.669Z, first user message only at 10:49:40.338Z). `brief: true` is
- * the child that already has it. Returns the worktree path to hand to
- * `fakeRunner({ worktree })`, so the record's effects name what this file wrote.
+ * 10:49:25.669Z, first user message only at 10:49:40.338Z) — and it names no
+ * dispatch, because the preamble that carries `ctx_…` is the thing that never
+ * got submitted. `brief: true` is the child that already has it. Returns the
+ * worktree path for `fakeRunner({ worktree })`, so the record's effects name
+ * what this file wrote.
  */
-function witness(home, name, { brief = false } = {}) {
+function witness(home, name, { brief = false, dispatch = 'ctx_abc123', ahead = 60_000 } = {}) {
   const dir = join(home, '.omp', 'agent', 'sessions', `-scratch-.worktrees-${name}`);
   mkdirSync(dir, { recursive: true });
   // A child session always postdates the record that dispatched it, and the
   // witness enforces that floor so an earlier agent's history in the same
   // worktree can never be read as this dispatch's proof.
-  const at = new Date(Date.now() + 60_000).toISOString();
-  const entries = [{ type: 'session', timestamp: at }];
+  const at = new Date(Date.now() + ahead).toISOString();
+  // The `session` record shape is the live one, `cwd` included: that field is
+  // why the request id cannot select a session, and the fixture must carry it
+  // or the test proves nothing.
+  const entries = [{ type: 'session', version: 3, timestamp: at, cwd: join(home, '.worktrees', name) }];
   if (brief) {
-    entries.push({ type: 'message', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker.' }] } });
+    entries.push({
+      type: 'message',
+      timestamp: at,
+      message: { role: 'user', content: [{ type: 'text', text: `You are a dispatched worker. Your dispatch is ${dispatch}` }] },
+    });
   }
   writeFileSync(join(dir, `${at.replace(/[:.]/g, '-')}_w.jsonl`), `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`);
   return join(home, '.worktrees', name);
+}
+
+/**
+ * Another agent's session in the SAME worktree, started LATER and belonging to
+ * no dispatch — an operator who opened a pane there to look around. It carries
+ * the same `cwd`, so it matches the worktree and the request id exactly as the
+ * real child's history does; only the dispatch id tells them apart.
+ */
+function intruderSession(home, name) {
+  const dir = join(home, '.omp', 'agent', 'sessions', `-scratch-.worktrees-${name}`);
+  mkdirSync(dir, { recursive: true });
+  const at = new Date(Date.now() + 600_000).toISOString();
+  const entries = [
+    { type: 'session', version: 3, timestamp: at, cwd: join(home, '.worktrees', name) },
+    { type: 'message', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: 'what does this worktree do?' }] } },
+  ];
+  writeFileSync(join(dir, `${at.replace(/[:.]/g, '-')}_intruder.jsonl`), `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`);
 }
 
 const recordAt = (env, request = 'req-1') => join(env.ORCA_DISPATCH_STORE, `${request}.json`);
@@ -441,35 +466,32 @@ test('replace with no recorded task cannot establish rather than inventing one',
   assert.match(r.out, /first phase never succeeded|no task id/);
 });
 
-// ── Autosubmit is fail-open and exact-handle only ────────────────────────────
+// ── The pane is never touched from the automatic path ────────────────────────
 
-test('a held brief gets one Enter on the exact pane, then reports movement', () => {
+test('a USABLE dispatch touches the pane not at all', () => {
+  // Orca verified `dispatch_input` itself to answer `ready`, so the brief is
+  // submitted by construction. The old code still polled the cursor here and
+  // typed an Enter when it had not moved — into a child that was, necessarily,
+  // already working.
   const home = scratch();
-  const run = fakeRunner({ cursor: [7, 7, 8], worktree: witness(home, 'req-1') });
-  const r = invoke(freshArgs(home), {
-    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
-    run,
-  });
+  const run = fakeRunner({ cursor: [7, 7, 8], worktree: witness(home, 'req-1', { brief: true }) });
+  const r = invoke(freshArgs(home), { env: { HOME: home }, run });
   assert.equal(r.code, 0);
-  const sends = run.calls.filter(call => call.includes('terminal') && call.includes('send'));
-  assert.equal(sends.length, 1);
-  assert.equal(sends[0][sends[0].indexOf('--terminal') + 1], 'term_abc123');
-  assert.match(r.out, /SPEC WAS HELD/);
+  assert.equal(
+    run.calls.some(call => call.includes('terminal') && call.includes('send')),
+    false,
+    'nothing is sent to a worker Orca already proved ready',
+  );
 });
 
-test('a held composer is repaired and named when the child session shows no brief', () => {
-  // Measured 2026-08-22, three times on this Mac: `worker-start` answered
-  // ok:true with state=failed stage=dispatch_input lastError=agent_prompt_stalled
-  // AND a created pane. The worktree, the pane and the agent all existed; only
-  // the Enter was missing. The verb stranded, the documented resume replayed the
-  // same held pane and refused it, and the operator typed the Enter by hand —
-  // the repair this file already owns, wired only to the path that never needs it.
-  //
-  // The entry condition is now that state SEEN rather than assumed: the child
-  // wrote its session file at boot (#56: session 10:49:25.669Z, brief only at
-  // 10:49:40.338Z), so a session with no user message in it is exactly "booted,
-  // nothing submitted" — and it cannot be a working child, which is what the
-  // cursor alone could never rule out.
+test('a stalled dispatch whose child session shows no brief sends nothing and records nothing', () => {
+  // Measured 2026-08-22: a real held composer, rescued by one Enter typed by
+  // hand. It stays unrepaired by the automatic path on purpose. The witness is
+  // the child's session, and the only token tying a session to this dispatch is
+  // the `ctx_…` in Orca's preamble — which is exactly what an unsubmitted
+  // composer is still holding. So a held composer reads as UNPROVEN, and
+  // unproven never authorises typing into a live pane (15 false positives out of
+  // 15 on 2026-08-24 came from doing so on a cursor reading).
   const home = scratch();
   const run = fakeRunner({
     workerState: 'failed',
@@ -480,22 +502,22 @@ test('a held composer is repaired and named when the child session shows no brie
     cursor: [7, 7, 8],
   });
   const armed = [];
-  const r = invoke(freshArgs(home), {
-    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
-    run,
-    arm: options => armed.push(options),
-  });
+  const r = invoke(freshArgs(home), { env: { HOME: home }, run, arm: options => armed.push(options) });
 
-  assert.equal(r.code, 3, 'the child runs, but a revoked capability is not a supervised worker');
-  const sent = run.calls.filter(call => call.includes('terminal') && call.includes('send'));
-  assert.equal(sent.length, 1, 'the held brief was submitted');
-  assert.equal(sent[0][sent[0].indexOf('--terminal') + 1], 'term_abc123');
+  assert.equal(r.code, 3, 'the child may run, but a revoked capability is not a supervised worker');
+  assert.equal(
+    run.calls.some(call => call.includes('terminal') && call.includes('send')),
+    false,
+    'no unwitnessed Enter',
+  );
   assert.match(r.out, /agent_prompt_stalled/);
+  assert.match(r.out, /BRIEF NOT PROVEN/);
   assert.match(r.out, /NOT A SUPERVISED WORKER/);
+  assert.match(r.out, /ax worker repair/, 'the explicit gesture owns the Enter now');
   assert.doesNotMatch(r.out, /STRANDED/, 'a held composer is not a half-made mutation');
   assert.equal(armed.length, 1, 'the watcher sends from the parent, so it survives the revoked capability');
   const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
-  assert.equal(typeof record.heldRepairAt, 'string', 'a CONFIRMED submission is recorded, so the watcher will not bury this child');
+  assert.equal(record.heldRepairAt, undefined, 'nothing was proven, so the watcher keeps its right to report a death');
 });
 
 test('with no session to witness it, a stalled dispatch is never sent an unwitnessed Enter', () => {
@@ -528,14 +550,14 @@ test('with no session to witness it, a stalled dispatch is never sent an unwitne
     false,
     'no witness, no send',
   );
-  assert.match(r.out, /NOT PROVEN SUBMITTED/);
+  assert.match(r.out, /NOT PROVEN delivered/);
   assert.match(r.out, /ax worker repair/, 'the explicit gesture is named, since the automatic one refused');
   assert.equal(armed.length, 1, 'the net matters most when the brief may still be unsent');
   const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
   assert.equal(record.heldRepairAt, undefined, 'nothing was proven, so nothing is recorded');
 });
 
-test('a stalled dispatch whose child ALREADY recorded the brief sends nothing and records the repair', () => {
+test('a stalled dispatch whose child ALREADY recorded the brief sends nothing, and still records no repair', () => {
   // Measured 2026-08-24 on ofmchat #55/#56/#58 and the 12 triage dispatches
   // before them: 15 of 15 `agent_prompt_stalled` verdicts covered a child that
   // had the brief and was working. Orca gives the pane 5s to report `working`
@@ -555,11 +577,7 @@ test('a stalled dispatch whose child ALREADY recorded the brief sends nothing an
     cursor: [7, 7, 7],
   });
   const armed = [];
-  const r = invoke(freshArgs(home), {
-    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
-    run,
-    arm: options => armed.push(options),
-  });
+  const r = invoke(freshArgs(home), { env: { HOME: home }, run, arm: options => armed.push(options) });
 
   assert.equal(r.code, 3, 'the capability is still revoked, so this is not a supervised worker');
   assert.equal(
@@ -572,7 +590,50 @@ test('a stalled dispatch whose child ALREADY recorded the brief sends nothing an
   assert.match(r.out, /NOT A SUPERVISED WORKER/);
   assert.equal(armed.length, 1);
   const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
-  assert.equal(typeof record.heldRepairAt, 'string', 'the child runs, so the watcher must not report its ordinary end as a death');
+  // A recorded brief proves RECEIPT, never liveness — a child can record it and
+  // then crash. AGENTS.md is explicit: liveness is cursor movement. The marker
+  // silences the watcher's death check, so it may only be written on evidence
+  // that the pane is alive, and this path has none: it deliberately reads no
+  // cursor. `ax worker repair` is where that evidence exists.
+  assert.equal(record.heldRepairAt, undefined, 'receipt is not liveness, so the watcher keeps its death check');
+});
+
+test('a stranger\'s newer session in the same worktree is not this dispatch\'s witness', () => {
+  // The witness selects ONE session, and newest-wins is not that selection: a
+  // worktree outlives a dispatch, so an operator opening a pane there to look
+  // around — or a later `--replace` — leaves a newer history whose first user
+  // message has nothing to do with this brief. Reading it as proof would
+  // suppress a genuine repair AND write the marker that tells the watcher a
+  // child is running behind a pane that is merely holding text.
+  //
+  // The recorded request id is the discriminator: Orca's dispatch preamble names
+  // the worktree, so the real child's history contains it and a stranger's does
+  // not. No match, or two matches, is an inability to testify (F-028) — never
+  // the newest file.
+  const home = scratch();
+  const worktree = witness(home, 'held-work');
+  intruderSession(home, 'held-work');
+
+  const run = fakeRunner({
+    workerState: 'failed',
+    workerStage: 'dispatch_input',
+    workerLastError: 'agent_prompt_stalled',
+    workerExit: 1,
+    worktree,
+    cursor: [7, 7, 8],
+  });
+  const r = invoke(freshArgs(home), {
+    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
+    run,
+  });
+
+  assert.equal(r.code, 3);
+  assert.doesNotMatch(r.out, /BRIEF DELIVERED/, 'a stranger\'s message is not this dispatch\'s brief');
+  assert.equal(
+    run.calls.some(call => call.includes('terminal') && call.includes('send')),
+    false,
+    'and an unproven state is never typed into',
+  );
 });
 
 test('a held composer whose brief cannot be proven submitted records no repair', () => {
@@ -597,17 +658,18 @@ test('a held composer whose brief cannot be proven submitted records no repair',
 
   assert.equal(r.code, 3);
   assert.equal(run.calls.some(call => call.includes('terminal') && call.includes('send')), false, 'nothing was sent');
-  assert.match(r.out, /NOT PROVEN SUBMITTED/);
+  assert.match(r.out, /NOT PROVEN delivered/);
   assert.equal(armed.length, 1, 'the net matters most when the brief may still be unsent');
   const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
   assert.equal(record.heldRepairAt, undefined, 'no repair recorded, so the death check stays armed');
 });
 
-test('the repair marker is written BEFORE the watcher is armed', () => {
-  // The watcher is a DETACHED process that reads the marker once, at startup, so
-  // arming first races it — and a watcher that lost that race treats the child it
-  // supervises as unrepaired and reports its ordinary end as a death. Same
-  // write-ahead rule as every other mutation in this file.
+test('no automatic path writes the repair marker at all', () => {
+  // The marker's write-ahead rule (written BEFORE the detached watcher, which
+  // reads it once at startup) still stands — it moved to `ax worker repair`,
+  // which is now its only writer, and worker-repair.test.mjs pins the ordering
+  // there. Here the contract is simpler and stricter: this path never writes it,
+  // because it never measures the pane it would be speaking for.
   const home = scratch();
   const recordPath = join(home, 'dispatch', 'req-1.json');
   const run = fakeRunner({
@@ -615,12 +677,12 @@ test('the repair marker is written BEFORE the watcher is armed', () => {
     workerStage: 'dispatch_input',
     workerLastError: 'agent_prompt_stalled',
     workerExit: 1,
-    worktree: witness(home, 'marker-work'),
+    worktree: witness(home, 'marker-work', { brief: true }),
     cursor: [7, 7, 8],
   });
   let markerAtArm;
   const r = invoke(freshArgs(home), {
-    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
+    env: { HOME: home },
     run,
     arm: () => {
       markerAtArm = JSON.parse(readFileSync(recordPath, 'utf8')).heldRepairAt;
@@ -628,19 +690,8 @@ test('the repair marker is written BEFORE the watcher is armed', () => {
   });
 
   assert.equal(r.code, 3);
-  assert.equal(typeof markerAtArm, 'string', 'the watcher can already see the repair the moment it starts');
-});
-
-test('an emitting pane is not submitted', () => {
-  const home = scratch();
-  const run = fakeRunner({ cursor: [1, 2, 3, 4] });
-  const r = invoke(freshArgs(home), {
-    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
-    run,
-  });
-  assert.equal(r.code, 0);
-  assert.equal(run.calls.some(call => call.includes('terminal') && call.includes('send')), false);
-  assert.doesNotMatch(r.out, /SPEC/);
+  assert.equal(markerAtArm, undefined, 'the watcher starts with its death check intact');
+  assert.equal(JSON.parse(readFileSync(recordPath, 'utf8')).heldRepairAt, undefined, 'and nothing writes it afterwards either');
 });
 
 test('a dispatch with no agent pane is STRANDED, and autosubmit stays inert', () => {
@@ -885,7 +936,6 @@ test('a second --replace inside the first cannot establish, and only one worker-
   assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 1);
   const record = JSON.parse(readFileSync(recordAt(first.env), 'utf8'));
   assert.equal(record.attempts.length, 2, 'exactly one new attempt was opened');
-
   // The lock is released with the gesture, so the next replace is free to run.
   const after = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, gateFn: () => 0 });
   assert.equal(after.code, 0, after.out);
@@ -938,8 +988,11 @@ test('a resume replays, probes and arms through the RECORDED binary, not the one
 
   assert.equal(r.code, 0, r.out);
   assert.ok(calls.some(call => call.includes('worker-start')), 'the replay happened');
-  assert.ok(calls.some(call => call.includes('terminal') && call.includes('read')), 'the pane was probed');
-  assert.ok(calls.some(call => call.includes('terminal') && call.includes('send')), 'and the held brief submitted');
+  assert.equal(
+    calls.some(call => call.includes('terminal') && call.includes('send')),
+    false,
+    'the automatic path sends nothing at all now — the binary that matters is the one the watcher gets',
+  );
   assert.deepEqual([...new Set(calls.map(call => call[0]))], ['/old/orca-ide'], 'every call went to the recorded runtime');
   assert.equal(armedBin, '/old/orca-ide', 'the watcher watches the runtime that holds the pane');
 });

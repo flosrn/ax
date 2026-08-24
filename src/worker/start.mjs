@@ -28,7 +28,6 @@ import {
   claimRecord,
   defaultStore,
   initRecord,
-  markHeldRepair,
   newIdentity,
   phaseArgv,
   phaseBegin,
@@ -43,14 +42,13 @@ import {
   taskId,
   taskIdScan,
   taskUpdateOk,
-  workerPane,
 } from './record.mjs';
-import { readPane } from './pane.mjs';
 import { briefDelivered } from './delivered.mjs';
 
 const STALL_MODULE = fileURLToPath(new URL('./stall.mjs', import.meta.url));
-const waitCell = new Int32Array(new SharedArrayBuffer(4));
-const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
+// No sleep here any more: nothing in this verb waits on a pane. The cursor
+// polling that used to live in `ensureSpecSubmitted` is gone with it, and the
+// one place that still measures a pane over time is `ax worker repair`.
 
 const usage = 'ax worker start --request <id> --run <run_id> --spec-file <path> [-- <worker-start args>]';
 
@@ -202,87 +200,37 @@ function summarize(path) {
   return result;
 }
 
-function cursorRead(run, handle, executionEnv) {
-  const pane = readPane(run, handle, { environment: executionEnv, limit: 1 });
-  return pane.exit === 0 ? pane.cursor : null;
-}
-
 /**
- * Is the brief in front of the child? Evidence first, cursor only after.
+ * Does the child have its brief? `'delivered'` or `'unproven'`, and NOTHING is
+ * ever sent to the pane from here.
  *
- * Returns WHAT HAPPENED, because one caller decides on it whether a child is
- * running: `'delivered'` (the child's own session recorded the brief, so
- * nothing was sent), `'submitted'` (the Enter went in and the pane advanced),
- * `'unheld'` (the pane was already emitting, so nothing needed sending), or
- * `'unknown'` — autosubmit off, no pane, an unreadable cursor, a refused send,
- * or a pane that did not move afterwards. `'unknown'` is the only honest answer
- * for all five: none of them proves a brief was delivered.
+ * This function used to type one Enter into a pane whose cursor had not moved,
+ * and report that as the repair. Three findings killed that, in order:
  *
- * `'delivered'` comes FIRST and answers before the cursor is read at all,
- * because the cursor cannot tell a held composer from a child waiting on a
- * model — see ./delivered.mjs for the 15/15 measurement where it did not, and
- * this function announced a phantom Enter as the repair. A proven-delivered
- * brief is never sent an Enter: at best it is a no-op, and at worst it submits
- * whatever a working child has since typed into its own composer.
+ *   1. The cursor cannot tell a held composer from a child waiting on a model.
+ *      15 dispatches of 15 on 2026-08-24 were working children; #56 recorded its
+ *      brief at 10:49:40.338Z and the "repair" Enter went in at 10:49:48.203Z.
+ *   2. Movement after the Enter proves nothing either — the model answering
+ *      reads exactly like a brief being submitted.
+ *   3. And once the witness is the child's own session, a HELD composer can no
+ *      longer be recognised automatically at all: the only token tying a session
+ *      to this dispatch is the `ctx_…` in Orca's preamble, and an unsubmitted
+ *      preamble is precisely what a held composer is holding. So the automatic
+ *      path would have had to act on `unproven`, which is what (1) forbids.
+ *
+ * The Enter therefore has ONE owner left: `ax worker repair`, invoked by an
+ * operator against one named request, which probes the cursor, sends the Enter
+ * as a discriminator, and only then decides. An automatic gesture that cannot
+ * name what it is repairing does not get to touch a live pane.
  */
-export function ensureSpecSubmitted(path, { run, env = process.env, sleep = sleepDefault, sessionsRoot } = {}) {
+export function briefWitness(path, { env = process.env, sessionsRoot } = {}) {
   const witness = briefDelivered(path, { env, sessionsRoot });
   if (witness.known && witness.delivered) {
-    ok(redactSecrets(`BRIEF DELIVERED — the child's own session recorded it${witness.at ? ` at ${witness.at}` : ''}; nothing was sent.`));
+    ok(redactSecrets(`BRIEF DELIVERED — the child's own session recorded it${witness.at ? ` at ${witness.at}` : ''}.`));
     return 'delivered';
   }
-  // NO WITNESS, NO SEND. The cursor cannot tell a held composer from a child
-  // waiting on a model, and movement AFTER the Enter cannot either — the model
-  // answering reads exactly like a brief being submitted. That pair of blind
-  // spots is the whole 15-of-15 false-positive mechanism, so an unlocatable or
-  // unreadable session (a remote child's JSONL lives on its own host) stops this
-  // automatic path here. `ax worker repair` is the explicit gesture that may act
-  // on an unproven state, because an operator chose it for one named request.
-  if (!witness.known) {
-    note(redactSecrets(`NO SESSION WITNESS — ${witness.reason}; nothing was sent, because a silent pane and a working child read the same.`));
-    return 'unknown';
-  }
-
-  if (String(env.ORCA_DISPATCH_AUTOSUBMIT ?? '1') === '0') return 'unknown';
-
-  let pane;
-  try {
-    pane = workerPane(path);
-  } catch {
-    return 'unknown';
-  }
-
-  const tries = Math.max(1, Number(env.ORCA_DISPATCH_AUTOSUBMIT_TRIES ?? 4));
-  const gapMs = Math.max(0, Number(env.ORCA_DISPATCH_AUTOSUBMIT_GAP ?? 8) * 1000);
-  let previous = null;
-  let held = false;
-
-  for (let i = 0; i < tries; i += 1) {
-    const current = cursorRead(run, pane.handle, pane.env);
-    if (current === null) return 'unknown';
-    if (previous !== null && current === previous) {
-      held = true;
-      break;
-    }
-    previous = current;
-    if (i + 1 < tries) sleep(gapMs);
-  }
-  if (!held) return 'unheld';
-
-  const sendArgs = ['terminal', 'send', '--terminal', pane.handle];
-  if (pane.env) sendArgs.push('--environment', pane.env);
-  sendArgs.push('--enter', '--json');
-  const sent = run(sendArgs);
-  if (sent.status !== 0) return 'unknown';
-
-  sleep(gapMs);
-  const after = cursorRead(run, pane.handle, pane.env);
-  if (after !== null && after !== previous) {
-    ok('SPEC WAS HELD unsent in the pane — one Enter submitted it, and the worker is emitting.');
-    return 'submitted';
-  }
-  note(redactSecrets(`SPEC MAY STILL BE HELD — inspect with: orca terminal read --terminal ${pane.handle} --limit 60 --json`));
-  return 'unknown';
+  note(redactSecrets(`BRIEF NOT PROVEN — ${witness.known ? `the child's session names no user message yet` : witness.reason}.`));
+  return 'unproven';
 }
 
 /**
@@ -326,7 +274,9 @@ export function armStallWatcher({ request, bin, env = process.env, spawnProcess 
 
 
 function finishUsable(path, context) {
-  ensureSpecSubmitted(path, context);
+  // No witness call here: a USABLE dispatch is one whose `dispatch_input` stage
+  // Orca itself verified, so the brief is submitted by construction and there is
+  // nothing left to establish.
   (context.arm ?? armStallWatcher)({ request: context.request, bin: context.bin, env: context.env });
   return 0;
 }
@@ -341,8 +291,9 @@ function finishUsable(path, context) {
  * which one it found.
  *
  * A HELD COMPOSER: the brief typed, the Enter missing. Measured 2026-08-22,
- * three launches on this Mac, each rescued by one Enter typed by hand after the
- * verb had exited telling the operator not to relaunch.
+ * three launches on this Mac, each rescued by one Enter typed by hand. It is NOT
+ * separable from the case below by any automatic reading — see `briefWitness` —
+ * so `ax worker repair` owns it.
  *
  * ORCA'S READINESS VERDICT ON A HEALTHY CHILD, which is the common case:
  * 15 dispatches of 15 on 2026-08-24. `verifyAgentPromptSubmission` allows 5s
@@ -376,35 +327,30 @@ function repairHeld(path, context) {
   // brief never left the composer" before looking is how a coordinator came to
   // relay a phantom Enter as the rescue of three children that had each been
   // working for eight seconds already.
-  const outcome = ensureSpecSubmitted(path, context);
-  const running = outcome === 'delivered' || outcome === 'submitted' || outcome === 'unheld';
+  const outcome = briefWitness(path, context);
 
   if (outcome === 'delivered') {
     note('agent_prompt_stalled — the child HAS the brief: Orca allows 5s for the pane to report `working` and a cold session cannot, so it settled a working worker `failed`.');
   } else {
-    note('agent_prompt_stalled — the worktree, the pane and the agent exist; the brief is not proven delivered by the child\'s own session.');
+    note('agent_prompt_stalled — the worktree, the pane and the agent exist; nothing here proves the brief reached the child.');
   }
 
-  // WRITE-AHEAD, for the same reason every mutation in this file is. The watcher
-  // armed below is a DETACHED process that reads this marker ONCE, at startup:
-  // arming first races it, and a watcher that lost that race treats the child it
-  // is supervising as unrepaired and reports its ORDINARY end as a death.
-  if (running) markHeldRepair(path);
-
-  // Armed in both branches: a brief that may still be sitting unsent is the case
-  // most in need of a net, and it is the branch that writes no marker — so that
-  // watcher keeps its right to report the pane's death.
+  // NO MARKER FROM HERE, EVER. `heldRepairAt` silences the watcher's death
+  // check, and a recorded brief proves RECEIPT, not liveness — a child can
+  // record its brief and then crash, and AGENTS.md is explicit that liveness is
+  // cursor movement. This path deliberately reads no cursor (that reading is
+  // what produced 15 false positives out of 15), so it holds no evidence that
+  // could justify the marker. `ax worker repair` measures the pane and owns it.
   (context.arm ?? armStallWatcher)({ request: context.request, bin: context.bin, env: context.env });
   bad('NOT A SUPERVISED WORKER — this Dispatch settled `failed`, so its capability is revoked and any worker_done it sends will be rejected.');
 
-  if (running) {
-    note('The child itself is running: its own peer report, and the watcher armed above, are the channels that still reach you.');
+  if (outcome === 'delivered') {
+    note('The child has its brief: its own peer report, and the watcher armed above, are the channels that still reach you.');
   } else {
-    bad('The brief is NOT PROVEN SUBMITTED either — no child is known to be running behind it.');
-    note('No repair is recorded, so the watcher above will report this pane as a death if it stops.');
-    fix(redactSecrets(`ax worker repair --request ${context.request}   # measure the pane, then deliver or record what is already there`));
+    bad('The brief is NOT PROVEN delivered either — no child is known to be working behind that pane.');
   }
-
+  note('No repair is recorded, so the watcher above keeps its right to report this pane as a death.');
+  fix(redactSecrets(`ax worker repair --request ${context.request}   # measure the pane: it owns the Enter, and records a repair on live evidence`));
   fix(redactSecrets(`ax worker transcript ${context.request}   # what it is doing. Do NOT relaunch: that is a second agent in one worktree.`));
   return 3;
 }
@@ -577,7 +523,6 @@ export function start(
     runner,
     makeRunner = options => createRunner(options),
     env = process.env,
-    sleep = sleepDefault,
     gateFn,
     arm,
     now = () => new Date().toISOString(),
@@ -630,7 +575,6 @@ export function start(
     execute,
     makeRun,
     env,
-    sleep,
     gateFn,
     arm,
   };

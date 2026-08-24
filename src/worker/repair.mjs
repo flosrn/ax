@@ -137,26 +137,26 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
     return finish();
   }
 
-  // THE SESSION OUTRANKS THE CURSOR, and it is consulted before a single byte
-  // is sent. Measured 2026-08-24: `agent_prompt_stalled` normally covers a child
-  // that already HAS the brief and is waiting on a model — Orca allows the pane
-  // 5s to report `working` through its status title and a cold OMP session
-  // cannot (see ./delivered.mjs). Such a child is silent, so the cursor probes
-  // below read it as idle and the Enter probe finds an empty composer, and the
-  // send that follows would put the whole spec in front of a session already
-  // working on it. The `--delivered` outcome is exactly right for that state,
-  // so it is taken automatically when the child's own session proves it.
-  const witness = briefDelivered(path, { env });
-  if (witness.known && witness.delivered) {
-    ok(redactSecrets(`BRIEF DELIVERED — the child's own session recorded it${witness.at ? ` at ${witness.at}` : ''}; nothing was sent, and no second copy exists.`));
-    return finish();
-  }
-  // Unlike the automatic path in start.mjs, a silent witness does NOT stop this
-  // verb: an operator aimed it at one named request, and the measured
+  // THE SESSION SAYS WHETHER THE BRIEF ARRIVED; THE CURSOR SAYS WHETHER ANYONE
+  // IS THERE. Neither answers the other's question, so both are read and the
+  // decision waits for both.
+  //
+  // Measured 2026-08-24: `agent_prompt_stalled` normally covers a child that
+  // already HAS the brief and is waiting on a model — Orca allows the pane 5s to
+  // report `working` through its status title and a cold OMP session cannot (see
+  // ./delivered.mjs). Such a child is silent, so the cursor probes below read it
+  // as idle and the Enter probe finds an empty composer; the send that follows
+  // would put the whole spec in front of a session already working on it.
+  //
+  // A silent witness does NOT stop this verb, unlike the automatic path in
+  // start.mjs: an operator aimed it at one named request, and the measured
   // empty-composer case (#59, 2026-08-23) has no other repair. What it does get
   // is the truth about what is being decided on — a remote child's session lives
   // on its own host, so this line is the normal answer for `--on`.
-  if (!witness.known) {
+  const witness = briefDelivered(path, { env });
+  if (witness.known && witness.delivered) {
+    note(redactSecrets(`the child's own session recorded the brief${witness.at ? ` at ${witness.at}` : ''}, so nothing may be delivered into that pane again.`));
+  } else if (!witness.known) {
     note(redactSecrets(`NO SESSION WITNESS — ${witness.reason}; what follows is decided on the pane's cursor alone, which cannot tell an idle composer from a child waiting on a model.`));
   }
 
@@ -188,11 +188,34 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   sleep(gapMs);
   const again = cursorOf(run, pane.handle, pane.env);
   if (again === null) return cannot('the pane\'s cursor cannot be re-read — nothing proves the pane is idle');
-  if (again !== before) {
+  const emitting = again !== before;
+
+  // ALIVE and it HAS the brief: that is the one state where a marker is honest,
+  // and it is why the emitting pane is no longer a flat refusal. Cursor movement
+  // is the liveness proof AGENTS.md demands, the session is the receipt proof,
+  // and only together do they license silencing the watcher's death check for a
+  // Dispatch Orca settled `failed`.
+  if (emitting && witness.known && witness.delivered) {
+    ok('the pane is EMITTING and its session holds the brief — the child is alive and working on it; nothing was sent.');
+    return finish();
+  }
+  if (emitting) {
     return refuse(
       'the pane is EMITTING — a brief sent into a working session is a second prompt, not a repair',
       `ax worker tail ${request}   # read what it is doing; if that is not the task, release it and redo`,
     );
+  }
+
+  // IDLE, but the brief is already in its session: a child between turns, or one
+  // that recorded the brief and then died. Receipt is not liveness, so nothing is
+  // sent AND nothing is recorded — the watcher keeps its death check, which is
+  // the only thing that can tell those two apart later.
+  if (witness.known && witness.delivered) {
+    bad('the pane is IDLE while its session already holds the brief — the child received it, but nothing here proves it is still alive.');
+    note('No repair is recorded, so the watcher will report this pane as a death if it stops.');
+    fix(redactSecrets(`ax worker transcript ${request}   # what it did with the brief`));
+    fix(redactSecrets(`ax worker repair --request ${request} --delivered   # if you can see it working, record that yourself`));
+    return 3;
   }
 
   // An idle pane is still TWO different worlds, and no receipt tells them

@@ -130,6 +130,26 @@ test('an EMPTY composer is proven by the Enter no-op, then gets the RECORDED bri
   assert.equal(r.armed.length, 1, 'the watcher supervises the repaired child');
 });
 
+/** The child's own session for `req-56`, named by the record's dispatch id. */
+function childSession(home, { dispatch = 'ctx_1' } = {}) {
+  const sessions = join(home, 'sessions');
+  const slug = join(sessions, '-scratch-.worktrees-56-work');
+  mkdirSync(slug, { recursive: true });
+  // After the record's createdAt: a child session cannot predate its dispatch.
+  // And it is the DISPATCH id that ties this session to this dispatch — every
+  // session record carries `cwd`, so the worktree and the request id are shared
+  // by anything else ever opened there.
+  writeFileSync(join(slug, '2026-08-23T10-02-00-000Z_a.jsonl'), [
+    JSON.stringify({ type: 'session', version: 3, timestamp: '2026-08-23T10:02:00.000Z', cwd: join(home, '.worktrees', '56-work') }),
+    JSON.stringify({
+      type: 'message',
+      timestamp: '2026-08-23T10:02:01.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: `You are a dispatched worker. Your dispatch is ${dispatch}` }] },
+    }),
+  ].join('\n'));
+  return { sessions, worktree: join(home, '.worktrees', '56-work') };
+}
+
 test('a child whose session already recorded the brief is never sent a second copy', () => {
   // The measured hazard, 2026-08-24: `agent_prompt_stalled` normally covers a
   // child that HAS the brief and is waiting on a model (Orca allows the pane 5s
@@ -139,25 +159,39 @@ test('a child whose session already recorded the brief is never sent a second co
   // spec a SECOND time, into a session already working on the first.
   const dir = store();
   const home = store();
-  const worktree = join(home, '.worktrees', '56-work');
-  const sessions = join(home, 'sessions');
-  const slug = join(sessions, '-scratch-.worktrees-56-work');
-  mkdirSync(slug, { recursive: true });
-  // After the record's createdAt: a child session cannot predate its dispatch.
-  writeFileSync(join(slug, '2026-08-23T10-02-00-000Z_a.jsonl'), `${JSON.stringify({
-    type: 'message',
-    timestamp: '2026-08-23T10:02:01.000Z',
-    message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker.' }] },
-  })}\n`);
+  const { sessions, worktree } = childSession(home);
   record(dir, 'req-56', { worktree });
 
   const r = run(['--request', 'req-56'], { dir, orca: fakeOrca({ cursors: [5, 5, 5, 5] }), env: { AX_SESSIONS_ROOT: sessions } });
 
   assert.equal(r.code, 3, r.out);
   assert.deepEqual(sends(r.calls), [], 'nothing is sent into a child that already has its brief — not even the Enter probe');
-  assert.match(r.out, /BRIEF DELIVERED/);
+  assert.match(r.out, /already holds the brief/);
+  // Receipt is not liveness: an idle pane whose session holds the brief is
+  // either a child between turns or one that recorded it and died. The marker
+  // silences the watcher's death check, so it may not be written on a guess.
+  assert.equal(marked(r.dir, 'req-56'), false, 'no liveness evidence, no marker');
+  assert.equal(r.armed.length, 0, 'and no watcher is armed on a state this verb refused to settle');
+});
+
+test('an EMITTING pane whose session holds the brief is the one state that records a repair', () => {
+  // Cursor movement is the liveness proof AGENTS.md demands; the session is the
+  // receipt proof. Together they mean "alive, and working on the brief it got" —
+  // the only reading that justifies silencing the death check for a Dispatch
+  // Orca settled `failed`. Before the witness existed, an emitting pane was a
+  // flat refusal, which left a working child recorded as unrepaired forever.
+  const dir = store();
+  const home = store();
+  const { sessions, worktree } = childSession(home);
+  record(dir, 'req-56', { worktree });
+
+  const r = run(['--request', 'req-56'], { dir, orca: fakeOrca({ cursors: [5, 9] }), env: { AX_SESSIONS_ROOT: sessions } });
+
+  assert.equal(r.code, 3, r.out);
+  assert.deepEqual(sends(r.calls), [], 'a working child is never typed into');
+  assert.match(r.out, /alive and working on it/);
   assert.match(r.out, /NOT A SUPERVISED WORKER/);
-  assert.equal(marked(r.dir, 'req-56'), true, 'the child runs, so the watcher must not report its ordinary end as a death');
+  assert.equal(marked(r.dir, 'req-56'), true, 'liveness plus receipt is what the marker asserts');
   assert.equal(r.armed.length, 1);
 });
 
