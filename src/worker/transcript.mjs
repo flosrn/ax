@@ -624,3 +624,10 @@ function sessionFileForNeedle({ needle, request = '', env = process.env, session
 
 /** Exported for the doctor of a wrong answer: which files a target would consider. */
 export { findRecords, sessionCandidates, worktreesOf };
+
+/**
+ * Exported for `./delivered.mjs`, which asks the same question this file
+ * answers — WHICH session file is this dispatch's child — and must not own a
+ * second resolver that can disagree with this one.
+ */
+export { sessionFileForNeedle };

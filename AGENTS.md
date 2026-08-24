@@ -52,6 +52,7 @@ them.
 | `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
 | `src/worker/start.mjs`, `src/worker/launch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs` | dispatch, prove, repair and close |
 | `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes |
+| `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup, tracker, placement and parent route |
 | `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
 | `src/pr-gate.mjs` | every merge ground, executed against the exact head SHA |

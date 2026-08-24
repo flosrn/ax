@@ -30,6 +30,7 @@ import { bad, fix, note, ok, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { paneVerdict } from './ls.mjs';
+import { briefDelivered } from './delivered.mjs';
 import { readPane, terminalInventory } from './pane.mjs';
 import { defaultStore, heldRepaired, markHeldRepair, report, requestIdOk, workerPane, workerSpec } from './record.mjs';
 import { armStallWatcher } from './start.mjs';
@@ -134,6 +135,29 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   if (delivered) {
     note('--delivered: recording a repair the operator already performed — nothing is sent.');
     return finish();
+  }
+
+  // THE SESSION OUTRANKS THE CURSOR, and it is consulted before a single byte
+  // is sent. Measured 2026-08-24: `agent_prompt_stalled` normally covers a child
+  // that already HAS the brief and is waiting on a model — Orca allows the pane
+  // 5s to report `working` through its status title and a cold OMP session
+  // cannot (see ./delivered.mjs). Such a child is silent, so the cursor probes
+  // below read it as idle and the Enter probe finds an empty composer, and the
+  // send that follows would put the whole spec in front of a session already
+  // working on it. The `--delivered` outcome is exactly right for that state,
+  // so it is taken automatically when the child's own session proves it.
+  const witness = briefDelivered(path, { env });
+  if (witness.known && witness.delivered) {
+    ok(redactSecrets(`BRIEF DELIVERED — the child's own session recorded it${witness.at ? ` at ${witness.at}` : ''}; nothing was sent, and no second copy exists.`));
+    return finish();
+  }
+  // Unlike the automatic path in start.mjs, a silent witness does NOT stop this
+  // verb: an operator aimed it at one named request, and the measured
+  // empty-composer case (#59, 2026-08-23) has no other repair. What it does get
+  // is the truth about what is being decided on — a remote child's session lives
+  // on its own host, so this line is the normal answer for `--on`.
+  if (!witness.known) {
+    note(redactSecrets(`NO SESSION WITNESS — ${witness.reason}; what follows is decided on the pane's cursor alone, which cannot tell an idle composer from a child waiting on a model.`));
   }
 
   let spec;

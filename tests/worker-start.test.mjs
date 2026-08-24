@@ -76,6 +76,7 @@ function fakeRunner({
   workerError = '',
   workerTimeout = false,
   terminal = true,
+  worktree = '',
   mismatch = false,
   cursor = [],
   gate = 0,
@@ -116,7 +117,10 @@ function fakeRunner({
         stage: workerStage || undefined,
         lastError: workerLastError || undefined,
         mutation: { replayed: calls.filter(call => call.includes('worker-start')).length > 1 },
-        effects: terminal ? [{ kind: 'terminal', id: 'term_abc123' }] : [{ kind: 'worktree', id: 'wt_1' }],
+        effects: [
+          ...(worktree ? [{ kind: 'worktree', id: `repo_1::${worktree}` }] : []),
+          ...(terminal ? [{ kind: 'terminal', id: 'term_abc123' }] : [{ kind: 'worktree', id: 'wt_1' }]),
+        ],
       }, true, workerExit);
     }
     if (line.includes('task-update')) return receipt({ task: { id: task, status: updateStatus } });
@@ -174,6 +178,31 @@ function freshArgs(dir, request = 'req-1', passthru = ['--worktree', 'current', 
   const spec = join(dir, 'brief.md');
   writeFileSync(spec, '[omp model=@smol] Do the exact task.');
   return ['--request', request, '--run', 'run_parent', '--spec-file', spec, '--', ...passthru];
+}
+
+/**
+ * The child's own session, as `briefDelivered` reads it — the witness that now
+ * gates every automatic send.
+ *
+ * `brief: false` is a BOOTED session with no user message, which is exactly
+ * what a genuinely held composer looks like on disk (#56: session file at
+ * 10:49:25.669Z, first user message only at 10:49:40.338Z). `brief: true` is
+ * the child that already has it. Returns the worktree path to hand to
+ * `fakeRunner({ worktree })`, so the record's effects name what this file wrote.
+ */
+function witness(home, name, { brief = false } = {}) {
+  const dir = join(home, '.omp', 'agent', 'sessions', `-scratch-.worktrees-${name}`);
+  mkdirSync(dir, { recursive: true });
+  // A child session always postdates the record that dispatched it, and the
+  // witness enforces that floor so an earlier agent's history in the same
+  // worktree can never be read as this dispatch's proof.
+  const at = new Date(Date.now() + 60_000).toISOString();
+  const entries = [{ type: 'session', timestamp: at }];
+  if (brief) {
+    entries.push({ type: 'message', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker.' }] } });
+  }
+  writeFileSync(join(dir, `${at.replace(/[:.]/g, '-')}_w.jsonl`), `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`);
+  return join(home, '.worktrees', name);
 }
 
 const recordAt = (env, request = 'req-1') => join(env.ORCA_DISPATCH_STORE, `${request}.json`);
@@ -416,7 +445,7 @@ test('replace with no recorded task cannot establish rather than inventing one',
 
 test('a held brief gets one Enter on the exact pane, then reports movement', () => {
   const home = scratch();
-  const run = fakeRunner({ cursor: [7, 7, 8] });
+  const run = fakeRunner({ cursor: [7, 7, 8], worktree: witness(home, 'req-1') });
   const r = invoke(freshArgs(home), {
     env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
     run,
@@ -428,19 +457,26 @@ test('a held brief gets one Enter on the exact pane, then reports movement', () 
   assert.match(r.out, /SPEC WAS HELD/);
 });
 
-test('a held composer is repaired and named, never stranded into a second dispatch', () => {
+test('a held composer is repaired and named when the child session shows no brief', () => {
   // Measured 2026-08-22, three times on this Mac: `worker-start` answered
   // ok:true with state=failed stage=dispatch_input lastError=agent_prompt_stalled
   // AND a created pane. The worktree, the pane and the agent all existed; only
   // the Enter was missing. The verb stranded, the documented resume replayed the
   // same held pane and refused it, and the operator typed the Enter by hand —
   // the repair this file already owns, wired only to the path that never needs it.
+  //
+  // The entry condition is now that state SEEN rather than assumed: the child
+  // wrote its session file at boot (#56: session 10:49:25.669Z, brief only at
+  // 10:49:40.338Z), so a session with no user message in it is exactly "booted,
+  // nothing submitted" — and it cannot be a working child, which is what the
+  // cursor alone could never rule out.
   const home = scratch();
   const run = fakeRunner({
     workerState: 'failed',
     workerStage: 'dispatch_input',
     workerLastError: 'agent_prompt_stalled',
     workerExit: 1,
+    worktree: witness(home, 'held-work'),
     cursor: [7, 7, 8],
   });
   const armed = [];
@@ -460,6 +496,83 @@ test('a held composer is repaired and named, never stranded into a second dispat
   assert.equal(armed.length, 1, 'the watcher sends from the parent, so it survives the revoked capability');
   const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
   assert.equal(typeof record.heldRepairAt, 'string', 'a CONFIRMED submission is recorded, so the watcher will not bury this child');
+});
+
+test('with no session to witness it, a stalled dispatch is never sent an unwitnessed Enter', () => {
+  // The cursor alone is the mechanism that produced 15 false positives out of
+  // 15 on 2026-08-24: a child waiting on a model is exactly as silent as a held
+  // composer, and movement after the Enter proves nothing either — the model
+  // answering looks identical to a brief being submitted. So an unlocatable or
+  // unreadable session (a remote child's JSONL lives on the other host) fails
+  // CLOSED here: nothing is sent, no repair is recorded, the watcher keeps its
+  // right to report the pane's death, and the operator's explicit
+  // `ax worker repair` remains the gesture that may act on an unproven state.
+  const home = scratch();
+  const run = fakeRunner({
+    workerState: 'failed',
+    workerStage: 'dispatch_input',
+    workerLastError: 'agent_prompt_stalled',
+    workerExit: 1,
+    cursor: [7, 7, 8],
+  });
+  const armed = [];
+  const r = invoke(freshArgs(home), {
+    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
+    run,
+    arm: options => armed.push(options),
+  });
+
+  assert.equal(r.code, 3);
+  assert.equal(
+    run.calls.some(call => call.includes('terminal') && call.includes('send')),
+    false,
+    'no witness, no send',
+  );
+  assert.match(r.out, /NOT PROVEN SUBMITTED/);
+  assert.match(r.out, /ax worker repair/, 'the explicit gesture is named, since the automatic one refused');
+  assert.equal(armed.length, 1, 'the net matters most when the brief may still be unsent');
+  const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
+  assert.equal(record.heldRepairAt, undefined, 'nothing was proven, so nothing is recorded');
+});
+
+test('a stalled dispatch whose child ALREADY recorded the brief sends nothing and records the repair', () => {
+  // Measured 2026-08-24 on ofmchat #55/#56/#58 and the 12 triage dispatches
+  // before them: 15 of 15 `agent_prompt_stalled` verdicts covered a child that
+  // had the brief and was working. Orca gives the pane 5s to report `working`
+  // through its status title and a cold OMP session cannot, so it fails a
+  // healthy worker. The cursor cannot see the difference — a child waiting on a
+  // model emits exactly as little as a held composer — and on #56 ax sent its
+  // "repair" Enter eight seconds AFTER the child had recorded the brief, then
+  // reported that Enter as the rescue. The child's own session is the witness.
+  const home = scratch();
+  const run = fakeRunner({
+    workerState: 'failed',
+    workerStage: 'dispatch_input',
+    workerLastError: 'agent_prompt_stalled',
+    workerExit: 1,
+    worktree: witness(home, '56-work', { brief: true }),
+    // A stable cursor: the reading that used to be called a held composer.
+    cursor: [7, 7, 7],
+  });
+  const armed = [];
+  const r = invoke(freshArgs(home), {
+    env: { HOME: home, ORCA_DISPATCH_AUTOSUBMIT: '1', ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ORCA_DISPATCH_AUTOSUBMIT_TRIES: '4' },
+    run,
+    arm: options => armed.push(options),
+  });
+
+  assert.equal(r.code, 3, 'the capability is still revoked, so this is not a supervised worker');
+  assert.equal(
+    run.calls.some(call => call.includes('terminal') && call.includes('send')),
+    false,
+    'a child that already has its brief is never sent a phantom Enter',
+  );
+  assert.match(r.out, /BRIEF DELIVERED/);
+  assert.doesNotMatch(r.out, /never left the composer/, 'the cause line must not claim a lost brief the session disproves');
+  assert.match(r.out, /NOT A SUPERVISED WORKER/);
+  assert.equal(armed.length, 1);
+  const record = JSON.parse(readFileSync(recordAt(r.env), 'utf8'));
+  assert.equal(typeof record.heldRepairAt, 'string', 'the child runs, so the watcher must not report its ordinary end as a death');
 });
 
 test('a held composer whose brief cannot be proven submitted records no repair', () => {
@@ -502,6 +615,7 @@ test('the repair marker is written BEFORE the watcher is armed', () => {
     workerStage: 'dispatch_input',
     workerLastError: 'agent_prompt_stalled',
     workerExit: 1,
+    worktree: witness(home, 'marker-work'),
     cursor: [7, 7, 8],
   });
   let markerAtArm;
@@ -792,12 +906,13 @@ function binRunner(calls, options = {}) {
 
 test('a resume replays, probes and arms through the RECORDED binary, not the one named today', () => {
   const home = scratch();
+  const worktree = witness(home, 'runtime-work');
   const recorded = [];
   const seedArgs = freshArgs(home, 'req-runtime');
   seedArgs.splice(seedArgs.indexOf('--'), 0, '--orca', '/old/orca-ide');
   const seed = invoke(seedArgs, {
     env: { HOME: home },
-    startDeps: { runner: undefined, resolve: () => '/new/orca', makeRunner: binRunner(recorded) },
+    startDeps: { runner: undefined, resolve: () => '/new/orca', makeRunner: binRunner(recorded, { worktree }) },
   });
   assert.equal(seed.code, 0, seed.out);
   assert.deepEqual([...new Set(recorded.map(call => call[0]))], ['/old/orca-ide']);
@@ -817,8 +932,7 @@ test('a resume replays, probes and arms through the RECORDED binary, not the one
     arm: ({ bin }) => { armedBin = bin; },
     startDeps: {
       runner: undefined,
-      resolve: () => '/new/orca',
-      makeRunner: binRunner(calls, { cursor: [7, 7, 8] }),
+      makeRunner: binRunner(calls, { cursor: [7, 7, 8], worktree }),
     },
   });
 

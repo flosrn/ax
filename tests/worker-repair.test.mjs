@@ -19,7 +19,7 @@ const SPEC = '[omp role=triage-worker] Read the issue and write ONLY the draft.'
 
 const store = () => realpathSync(mkdtempSync(join(tmpdir(), 'ax-repair-')));
 
-function record(dir, request, { state = 'failed', terminal = 'term_x', spec = SPEC, taskCreate = true, repaired = false } = {}) {
+function record(dir, request, { state = 'failed', terminal = 'term_x', spec = SPEC, taskCreate = true, repaired = false, worktree = '' } = {}) {
   mkdirSync(dir, { recursive: true });
   const phases = [];
   if (taskCreate) {
@@ -36,7 +36,18 @@ function record(dir, request, { state = 'failed', terminal = 'term_x', spec = SP
     identity: 'id-2',
     argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1', '--run', 'run_1', '--retry-request', 'id-2', '--json'],
     exit: 0,
-    receipt: { ok: true, result: { dispatchId: 'ctx_1', state, stage: 'dispatched', effects: [{ kind: 'terminal', role: 'agent', id: terminal }] } },
+    receipt: {
+      ok: true,
+      result: {
+        dispatchId: 'ctx_1',
+        state,
+        stage: 'dispatched',
+        effects: [
+          ...(worktree ? [{ kind: 'worktree', id: `repo_1::${worktree}` }] : []),
+          { kind: 'terminal', role: 'agent', id: terminal },
+        ],
+      },
+    },
   });
   writeFileSync(
     join(dir, `${request}.json`),
@@ -83,12 +94,12 @@ const capture = fn => {
   }
 };
 
-const run = (argv, { dir = store(), orca = fakeOrca() } = {}) => {
+const run = (argv, { dir = store(), orca = fakeOrca(), env = {} } = {}) => {
   const armed = [];
   const result = capture(() =>
     repair([...argv], {
       runner: orca.runner,
-      env: { ORCA_DISPATCH_STORE: dir, ORCA_DISPATCH_AUTOSUBMIT_GAP: '0' },
+      env: { ORCA_DISPATCH_STORE: dir, ORCA_DISPATCH_AUTOSUBMIT_GAP: '0', ...env },
       sleep: () => {},
       arm: options => armed.push(options),
     }),
@@ -117,6 +128,37 @@ test('an EMPTY composer is proven by the Enter no-op, then gets the RECORDED bri
   assert.match(r.out, /NOT A SUPERVISED WORKER/);
   assert.equal(marked(r.dir, 'req-59'), true, 'status now tells the truth');
   assert.equal(r.armed.length, 1, 'the watcher supervises the repaired child');
+});
+
+test('a child whose session already recorded the brief is never sent a second copy', () => {
+  // The measured hazard, 2026-08-24: `agent_prompt_stalled` normally covers a
+  // child that HAS the brief and is waiting on a model (Orca allows the pane 5s
+  // to report `working` and a cold OMP session cannot). Such a child emits
+  // nothing, so this verb's cursor probe reads it as idle, the Enter probe is a
+  // no-op on its empty composer — and the next step would deliver the whole
+  // spec a SECOND time, into a session already working on the first.
+  const dir = store();
+  const home = store();
+  const worktree = join(home, '.worktrees', '56-work');
+  const sessions = join(home, 'sessions');
+  const slug = join(sessions, '-scratch-.worktrees-56-work');
+  mkdirSync(slug, { recursive: true });
+  // After the record's createdAt: a child session cannot predate its dispatch.
+  writeFileSync(join(slug, '2026-08-23T10-02-00-000Z_a.jsonl'), `${JSON.stringify({
+    type: 'message',
+    timestamp: '2026-08-23T10:02:01.000Z',
+    message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker.' }] },
+  })}\n`);
+  record(dir, 'req-56', { worktree });
+
+  const r = run(['--request', 'req-56'], { dir, orca: fakeOrca({ cursors: [5, 5, 5, 5] }), env: { AX_SESSIONS_ROOT: sessions } });
+
+  assert.equal(r.code, 3, r.out);
+  assert.deepEqual(sends(r.calls), [], 'nothing is sent into a child that already has its brief — not even the Enter probe');
+  assert.match(r.out, /BRIEF DELIVERED/);
+  assert.match(r.out, /NOT A SUPERVISED WORKER/);
+  assert.equal(marked(r.dir, 'req-56'), true, 'the child runs, so the watcher must not report its ordinary end as a death');
+  assert.equal(r.armed.length, 1);
 });
 
 test('a HELD composer is submitted by the Enter probe alone — the spec is never appended on top', () => {

@@ -46,6 +46,7 @@ import {
   workerPane,
 } from './record.mjs';
 import { readPane } from './pane.mjs';
+import { briefDelivered } from './delivered.mjs';
 
 const STALL_MODULE = fileURLToPath(new URL('./stall.mjs', import.meta.url));
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -207,16 +208,41 @@ function cursorRead(run, handle, executionEnv) {
 }
 
 /**
- * A held initial composer is an upstream race; one guarded Enter repairs it.
+ * Is the brief in front of the child? Evidence first, cursor only after.
  *
  * Returns WHAT HAPPENED, because one caller decides on it whether a child is
- * running: `'submitted'` (the Enter went in and the pane advanced), `'unheld'`
- * (the pane was already emitting, so nothing needed sending), or `'unknown'` —
- * autosubmit off, no pane, an unreadable cursor, a refused send, or a pane that
- * did not move afterwards. `'unknown'` is the only honest answer for all five:
- * none of them proves a brief was delivered.
+ * running: `'delivered'` (the child's own session recorded the brief, so
+ * nothing was sent), `'submitted'` (the Enter went in and the pane advanced),
+ * `'unheld'` (the pane was already emitting, so nothing needed sending), or
+ * `'unknown'` — autosubmit off, no pane, an unreadable cursor, a refused send,
+ * or a pane that did not move afterwards. `'unknown'` is the only honest answer
+ * for all five: none of them proves a brief was delivered.
+ *
+ * `'delivered'` comes FIRST and answers before the cursor is read at all,
+ * because the cursor cannot tell a held composer from a child waiting on a
+ * model — see ./delivered.mjs for the 15/15 measurement where it did not, and
+ * this function announced a phantom Enter as the repair. A proven-delivered
+ * brief is never sent an Enter: at best it is a no-op, and at worst it submits
+ * whatever a working child has since typed into its own composer.
  */
-export function ensureSpecSubmitted(path, { run, env = process.env, sleep = sleepDefault } = {}) {
+export function ensureSpecSubmitted(path, { run, env = process.env, sleep = sleepDefault, sessionsRoot } = {}) {
+  const witness = briefDelivered(path, { env, sessionsRoot });
+  if (witness.known && witness.delivered) {
+    ok(redactSecrets(`BRIEF DELIVERED — the child's own session recorded it${witness.at ? ` at ${witness.at}` : ''}; nothing was sent.`));
+    return 'delivered';
+  }
+  // NO WITNESS, NO SEND. The cursor cannot tell a held composer from a child
+  // waiting on a model, and movement AFTER the Enter cannot either — the model
+  // answering reads exactly like a brief being submitted. That pair of blind
+  // spots is the whole 15-of-15 false-positive mechanism, so an unlocatable or
+  // unreadable session (a remote child's JSONL lives on its own host) stops this
+  // automatic path here. `ax worker repair` is the explicit gesture that may act
+  // on an unproven state, because an operator chose it for one named request.
+  if (!witness.known) {
+    note(redactSecrets(`NO SESSION WITNESS — ${witness.reason}; nothing was sent, because a silent pane and a working child read the same.`));
+    return 'unknown';
+  }
+
   if (String(env.ORCA_DISPATCH_AUTOSUBMIT ?? '1') === '0') return 'unknown';
 
   let pane;
@@ -306,17 +332,23 @@ function finishUsable(path, context) {
 }
 
 /**
- * The dispatch whose pane exists and whose BRIEF never left the composer.
+ * The dispatch whose pane, worktree and agent all exist, and whose Dispatch
+ * settled `failed` at `dispatch_input` regardless.
  *
- * `agent_prompt_stalled` at the `dispatch_input` stage is not a partial
- * mutation: the worktree, the pane and the agent are all there, and the only
- * thing missing is the Enter that submits text Orca has already typed. This file
- * ALREADY owns that repair — `ensureSpecSubmitted`, "one guarded Enter repairs
- * it" — and it was wired only to the path where the race did not happen, so the
- * failure it was written for never reached it. Measured 2026-08-22: three
- * launches on this Mac, three held composers, three panes each repaired by one
- * Enter typed by hand, after the verb had already exited telling the operator
- * not to relaunch.
+ * Two different failures wear this receipt, and the entry condition stays as
+ * broad as the receipt allows because the recovery is the same shape for both —
+ * measure whether the child has the brief, never relaunch. `repairHeld` names
+ * which one it found.
+ *
+ * A HELD COMPOSER: the brief typed, the Enter missing. Measured 2026-08-22,
+ * three launches on this Mac, each rescued by one Enter typed by hand after the
+ * verb had exited telling the operator not to relaunch.
+ *
+ * ORCA'S READINESS VERDICT ON A HEALTHY CHILD, which is the common case:
+ * 15 dispatches of 15 on 2026-08-24. `verifyAgentPromptSubmission` allows 5s
+ * for the pane to report `working` through its OSC status title, a cold OMP
+ * session cannot, and the Dispatch is failed with the brief already submitted.
+ * ./delivered.mjs carries the mechanism, the asar coordinates and the timestamps.
  */
 const heldComposer = summary =>
   summary.state === 'failed'
@@ -325,7 +357,7 @@ const heldComposer = summary =>
   && summary.terminal !== null;
 
 /**
- * Submit the held brief, arm the watcher, and then say exactly what is NOT true.
+ * Say what is true of this child, then say exactly what is NOT true of it.
  *
  * The child runs. It is not a supervised worker: its Dispatch already settled
  * `failed`, so its capability is revoked and every lifecycle message it sends is
@@ -337,12 +369,21 @@ const heldComposer = summary =>
  * So this is exit 3, never 0: claiming USABLE would promise a `worker_done` that
  * cannot arrive. And it never offers a relaunch — a second dispatch into that
  * worktree is the duplicate agent F-001 is about, and the pane it would race is
- * the one this just repaired.
+ * the one this just measured.
  */
 function repairHeld(path, context) {
-  note('agent_prompt_stalled — the worktree, the pane and the agent exist; only the brief never left the composer.');
+  // The cause line follows the evidence instead of preceding it. Announcing "the
+  // brief never left the composer" before looking is how a coordinator came to
+  // relay a phantom Enter as the rescue of three children that had each been
+  // working for eight seconds already.
   const outcome = ensureSpecSubmitted(path, context);
-  const running = outcome === 'submitted' || outcome === 'unheld';
+  const running = outcome === 'delivered' || outcome === 'submitted' || outcome === 'unheld';
+
+  if (outcome === 'delivered') {
+    note('agent_prompt_stalled — the child HAS the brief: Orca allows 5s for the pane to report `working` and a cold session cannot, so it settled a working worker `failed`.');
+  } else {
+    note('agent_prompt_stalled — the worktree, the pane and the agent exist; the brief is not proven delivered by the child\'s own session.');
+  }
 
   // WRITE-AHEAD, for the same reason every mutation in this file is. The watcher
   // armed below is a DETACHED process that reads this marker ONCE, at startup:
@@ -361,6 +402,7 @@ function repairHeld(path, context) {
   } else {
     bad('The brief is NOT PROVEN SUBMITTED either — no child is known to be running behind it.');
     note('No repair is recorded, so the watcher above will report this pane as a death if it stops.');
+    fix(redactSecrets(`ax worker repair --request ${context.request}   # measure the pane, then deliver or record what is already there`));
   }
 
   fix(redactSecrets(`ax worker transcript ${context.request}   # what it is doing. Do NOT relaunch: that is a second agent in one worktree.`));
