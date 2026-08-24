@@ -59,28 +59,40 @@ import { basename } from 'node:path';
 import { sessionFileForNeedle, stampOf, worktreesOf } from './transcript.mjs';
 
 /**
- * The newest Dispatch id this record produced, or `''`.
+ * The newest `worker-start` phase's dispatch id and issue time, or `''`.
  *
- * This is the ONLY token that identifies one dispatch inside a worktree's
- * session history. Measured 2026-08-24 on the live #56 file: every session
- * record carries `cwd` (`{"type":"session",…,"cwd":"…/.worktrees/56-work"}`), so
- * the request id matches EVERY session ever opened in that worktree, including a
- * stranger's. `ctx_…` is minted per Dispatch and injected into the worker's
- * preamble, and it was verified present in that same file.
+ * ONLY a `worker-start` phase may name a dispatch — every other phase that
+ * happens to carry a `dispatchId` is display metadata. That rule, and the
+ * `beganAt` floor below, are record.mjs's (`dispatchIndex`), and they are
+ * restated here rather than re-derived loosely: a witness that picks a different
+ * dispatch than the verb deciding whether a pane may be closed is worse than no
+ * witness.
  *
- * Newest, not any: a `--replace` opens a second dispatch into one worktree, and
- * the session that matters is the one the current attempt created.
+ * WHY THE ID AT ALL: it is the one token identifying one dispatch inside a
+ * worktree's session history. Measured 2026-08-24 on the live #56 file, every
+ * session record carries `cwd`
+ * (`{"type":"session",…,"cwd":"…/.worktrees/56-work"}`), so the request id
+ * matches EVERY session ever opened in that worktree, a stranger's included.
+ * `ctx_…` is minted per Dispatch and injected into the worker's preamble, and it
+ * was verified present in that same file.
+ *
+ * WHY `beganAt`: "a record claimed at 10:00 whose worker-start ran at 11:00
+ * would accept a 10:30 comment as after the dispatch" — a `--resume` or
+ * `--replace` can issue its mutation hours after the record was claimed, and
+ * `createdAt` is only the fallback for records written before the field existed.
  */
-function newestDispatchId(rec) {
+function newestDispatch(rec) {
   const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
   for (let a = attempts.length - 1; a >= 0; a -= 1) {
     const phases = Array.isArray(attempts[a].phases) ? attempts[a].phases : [];
     for (let p = phases.length - 1; p >= 0; p -= 1) {
-      const id = ((phases[p].receipt ?? {}).result ?? {}).dispatchId;
-      if (typeof id === 'string' && id !== '') return id;
+      const phase = phases[p];
+      if (phase.name !== 'worker-start') continue;
+      const id = ((phase.receipt ?? {}).result ?? {}).dispatchId;
+      if (typeof id === 'string' && id !== '') return { id, issuedAt: String(phase.beganAt ?? '') };
     }
   }
-  return '';
+  return { id: '', issuedAt: '' };
 }
 
 /**
@@ -127,17 +139,19 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
   // so it names the worktree whoever opened it. `sessionFileForNeedle` takes any
   // content needle, and the one that is unique per dispatch is `ctx_…`. Zero or
   // two matches is an inability to testify, which is the safe direction (F-028).
-  const dispatchId = newestDispatchId(rec);
+  const { id: dispatchId, issuedAt } = newestDispatch(rec);
   if (dispatchId === '') {
-    return { known: false, reason: `the record at ${recordPath} names no dispatch, so no session can be tied to it` };
+    return { known: false, reason: `the record at ${recordPath} names no dispatched worker, so no session can be tied to it` };
   }
   const file = sessionFileForNeedle({ needle: basename(worktree), request: dispatchId, env, sessionsRoot });
   if (file === null) return { known: false, reason: `no single session under ${worktree} names ${dispatchId}` };
 
-  // And a session that predates the record cannot be this dispatch's, whatever
-  // it names: the record is written before the mutation that creates the pane.
+  // And a session older than the mutation that created the pane cannot be that
+  // pane's, whatever it names. The floor is the dispatching phase's own
+  // `beganAt` — `createdAt` only for records written before that field existed,
+  // because a resume or replace issues its mutation long after the claim.
   const stamp = stampOf(basename(file));
-  const floor = Date.parse(String(rec.createdAt ?? ''));
+  const floor = Date.parse(issuedAt || String(rec.createdAt ?? ''));
   if (stamp !== null && !Number.isNaN(floor) && stamp < floor) {
     return { known: false, reason: `the session for ${worktree} predates this dispatch, so it is another agent's history` };
   }

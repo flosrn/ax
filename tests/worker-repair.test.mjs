@@ -19,7 +19,17 @@ const SPEC = '[omp role=triage-worker] Read the issue and write ONLY the draft.'
 
 const store = () => realpathSync(mkdtempSync(join(tmpdir(), 'ax-repair-')));
 
-function record(dir, request, { state = 'failed', terminal = 'term_x', spec = SPEC, taskCreate = true, repaired = false, worktree = '' } = {}) {
+function record(dir, request, {
+  state = 'failed',
+  terminal = 'term_x',
+  spec = SPEC,
+  taskCreate = true,
+  repaired = false,
+  worktree = '',
+  dispatch = 'ctx_1',
+  claimedAt = '2026-08-23T10:00:00.000Z',
+  beganAt = '',
+} = {}) {
   mkdirSync(dir, { recursive: true });
   const phases = [];
   if (taskCreate) {
@@ -28,18 +38,21 @@ function record(dir, request, { state = 'failed', terminal = 'term_x', spec = SP
       identity: 'id-1',
       argv: ['orca', 'orchestration', 'task-create', '--run', 'run_1', '--spec', spec, '--retry-request', 'id-1', '--json'],
       exit: 0,
-      receipt: { ok: true, result: { task: { id: 'task_1' } } },
+      // A `dispatchId` here is display metadata, never the identity: record.mjs
+      // says only a `worker-start` phase may name a dispatch.
+      receipt: { ok: true, result: { task: { id: 'task_1' }, dispatchId: 'ctx_stray' } },
     });
   }
   phases.push({
     name: 'worker-start',
     identity: 'id-2',
+    ...(beganAt ? { beganAt } : {}),
     argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1', '--run', 'run_1', '--retry-request', 'id-2', '--json'],
     exit: 0,
     receipt: {
       ok: true,
       result: {
-        dispatchId: 'ctx_1',
+        dispatchId: dispatch,
         state,
         stage: 'dispatched',
         effects: [
@@ -51,7 +64,7 @@ function record(dir, request, { state = 'failed', terminal = 'term_x', spec = SP
   });
   writeFileSync(
     join(dir, `${request}.json`),
-    JSON.stringify({ request, createdAt: '2026-08-23T10:00:00.000Z', ...(repaired ? { heldRepairAt: '2026-08-23T10:05:00.000Z' } : {}), attempts: [{ n: 1, phases }] }),
+    JSON.stringify({ request, createdAt: claimedAt, ...(repaired ? { heldRepairAt: '2026-08-23T10:05:00.000Z' } : {}), attempts: [{ n: 1, phases }] }),
   );
 }
 
@@ -171,7 +184,11 @@ test('a child whose session already recorded the brief is never sent a second co
   // either a child between turns or one that recorded it and died. The marker
   // silences the watcher's death check, so it may not be written on a guess.
   assert.equal(marked(r.dir, 'req-56'), false, 'no liveness evidence, no marker');
-  assert.equal(r.armed.length, 0, 'and no watcher is armed on a state this verb refused to settle');
+  // But the net stays: this is the case most in need of one — the brief is in
+  // the child's hands and its liveness is unknown, which is exactly what the
+  // watcher exists to resolve. Printing "the watcher will report a death" while
+  // arming nothing would be the same class of false claim as the phantom Enter.
+  assert.equal(r.armed.length, 1, 'unknown liveness is what a watcher is for');
 });
 
 test('an EMITTING pane whose session holds the brief is the one state that records a repair', () => {
@@ -213,15 +230,49 @@ test('a HELD composer is submitted by the Enter probe alone — the spec is neve
   assert.equal(r.armed.length, 1);
 });
 
-test('--delivered records an operator-performed repair and sends NOTHING', () => {
+test('--delivered records an operator-performed repair on their word, reading no cursor', () => {
+  // The marker admits exactly two sources: MEASURED (an emitting pane whose
+  // session holds the brief, or a send this verb made the pane advance for) and
+  // ASSERTED — this flag, where the operator states they watched it work. Never
+  // an inference by ax. So this path deliberately reads no cursor at all: the
+  // flag exists for 2026-08-23, a spec delivered by hand with the child plainly
+  // working while every ax verb reported the pass dead.
   const dir = store();
   record(dir, 'req-59');
   const r = run(['--request', 'req-59', '--delivered'], { dir });
 
   assert.equal(r.code, 3);
   assert.deepEqual(sends(r.calls), [], 'nothing was sent — the operator already did');
+  assert.equal(
+    r.calls.some(args => args.join(' ').startsWith('terminal read')),
+    false,
+    'and no cursor was read: the claim is the operator\'s, not a measurement ax pretends to have made',
+  );
   assert.equal(marked(r.dir, 'req-59'), true);
   assert.equal(r.armed.length, 1);
+});
+
+test('the witness reads its dispatch from the worker-start phase, and takes that phase\'s time as the floor', () => {
+  // record.mjs states both halves of this rule (dispatchIndex): only a
+  // `worker-start` phase may NAME a dispatch — every other phase carrying a
+  // `dispatchId` is display metadata — and the floor is that phase's own
+  // `beganAt`, never `createdAt` alone, because "a record claimed at 10:00 whose
+  // worker-start ran at 11:00 would accept a 10:30 comment as after the
+  // dispatch". The witness must obey the same rule as the verb that decides
+  // whether a pane may be closed.
+  const dir = store();
+  const home = store();
+  const { sessions, worktree } = childSession(home, { dispatch: 'ctx_real' });
+  record(dir, 'req-56', { worktree, dispatch: 'ctx_real', claimedAt: '2026-08-23T10:00:00.000Z', beganAt: '2026-08-23T11:00:00.000Z' });
+
+  // The child's session is stamped 10:02 — after the record was claimed, but
+  // BEFORE the dispatch that owns this pane was issued. It is therefore a
+  // previous attempt's history, and no proof of anything about this one.
+  const r = run(['--request', 'req-56'], { dir, orca: fakeOrca({ cursors: [5, 5, 5, 9] }), env: { AX_SESSIONS_ROOT: sessions } });
+
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /NO SESSION WITNESS/, 'a session older than the dispatch cannot testify about it');
+  assert.match(r.out, /predates this dispatch/);
 });
 
 test('an EMITTING pane refuses — a brief into a working session is a second prompt', () => {

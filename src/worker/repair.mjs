@@ -121,6 +121,23 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   }
 
   // ── the two modes ──────────────────────────────────────────────────────────
+  // `finish` is where the marker gets written, and the marker asserts something
+  // strong: this failed Dispatch has a child behind it that is genuinely
+  // running, so the watcher must not report its ordinary end as a death. Two
+  // sources may support that, and no third:
+  //
+  //   MEASURED — an emitting pane (cursor movement, the liveness proof
+  //   AGENTS.md names) whose session holds the brief, or an Enter/spec this verb
+  //   sent that made the pane advance.
+  //
+  //   ASSERTED — `--delivered`, where the operator states they watched it work.
+  //   That is deliberately not a cursor read: the flag exists for the case
+  //   measured 2026-08-23, a spec delivered by hand with the child plainly
+  //   working while every ax verb reported the pass dead. The claim is the
+  //   operator's, the flag names them, and ax records it as theirs.
+  //
+  // What may never write it is an INFERENCE by ax — a receipt with no liveness,
+  // or a still cursor read as a held composer.
   const finish = () => {
     // WRITE-AHEAD before arming, for the watcher-race reason start.mjs records:
     // the watcher reads this marker ONCE at startup.
@@ -133,7 +150,7 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   };
 
   if (delivered) {
-    note('--delivered: recording a repair the operator already performed — nothing is sent.');
+    note('--delivered: recording a repair the operator already performed, on their word — nothing is sent and no cursor is read.');
     return finish();
   }
 
@@ -208,13 +225,17 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
 
   // IDLE, but the brief is already in its session: a child between turns, or one
   // that recorded the brief and then died. Receipt is not liveness, so nothing is
-  // sent AND nothing is recorded — the watcher keeps its death check, which is
-  // the only thing that can tell those two apart later.
+  // sent and NOTHING IS RECORDED — the marker would silence the one check that
+  // can still tell those two apart. The watcher itself is armed, because this is
+  // the state most in need of it, and because a line promising a death report
+  // while arming nothing is the same class of false claim as the phantom Enter
+  // this whole change removed.
   if (witness.known && witness.delivered) {
+    arm({ request, bin: bin ?? 'injected', env });
     bad('the pane is IDLE while its session already holds the brief — the child received it, but nothing here proves it is still alive.');
-    note('No repair is recorded, so the watcher will report this pane as a death if it stops.');
+    note('No repair is recorded, so the watcher armed above keeps its right to report this pane as a death.');
     fix(redactSecrets(`ax worker transcript ${request}   # what it did with the brief`));
-    fix(redactSecrets(`ax worker repair --request ${request} --delivered   # if you can see it working, record that yourself`));
+    fix(redactSecrets(`ax worker repair --request ${request} --delivered   # if you can SEE it working, record that yourself`));
     return 3;
   }
 
