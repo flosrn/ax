@@ -78,6 +78,23 @@ test('a writing command on a shared, non-primary checkout promotes BEFORE it run
   assert.match(err, /RESTART the dev server/);
 });
 
+test('a promotion that stops addressing another stack says so', () => {
+  // The plan's WARN lines (a foreign config.toml claim, for instance) travel
+  // back as data and the guard prints them: they are the only notice anyone
+  // gets of containers left running under a name this checkout stopped using.
+  const { deps } = harness();
+  deps.promoteCheckout = () => ({
+    promoted: true,
+    projectId: 'demo-feature-1a2b3c4d',
+    offset: 100,
+    warnings: ['supabase/config.toml names stack "demo-old" on block +60, but this worktree resolves to "demo-feature-1a2b3c4d" — nothing here addresses the containers of "demo-old"'],
+  });
+  const { code, err } = capture(() => supabase(['db', 'reset'], deps));
+
+  assert.equal(code, 0);
+  assert.match(err, /nothing here addresses the containers of "demo-old"/);
+});
+
 test('a read-only command runs with no promotion at all', () => {
   const { calls, deps } = harness();
 

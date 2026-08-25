@@ -26,7 +26,7 @@ import {
   envKeys,
   isIsolatedConfig,
   ownsStack,
-  promote,
+  promoteFromPlan,
   recordedClaim,
   resolveOffset,
   resolveProjectId,
@@ -284,26 +284,26 @@ test('a promotion that died between the two writes keeps the stack it configured
   assert.equal(resolved.conflict, undefined);
 });
 
-test('promote keeps a renamed worktree on its own stack instead of minting a second one', () => {
+test('a renamed worktree promoted through the plan keeps its stack', () => {
+  // The plan is the only resolver: it already chose the RECORDED id over a
+  // fresh mint from the renamed branch (resolveProjectId, tested above). The
+  // promotion must write exactly that decision — re-deriving the id here is
+  // what used to mint a second stack on the first stack's ports.
   const cwd = repo({
     committed: configToml({ id: 'vendor-kit-baseline', offset: 0 }),
     working: configToml({ id: 'demo-412-chat', offset: 60 }),
   });
   const written = [];
 
-  const result = promote({
-    cwd,
-    identity: identity({ name: 'feat-412-chat-v2', branch: 'feat/412-chat-v2', issue: undefined }),
-    base: BASE, step: STEP, maxSlot: MAX_SLOT,
-    recorded: '',                        // .env.local offset gone
-    recordedProjectId: 'demo-412-chat',  // but the id was recorded
-    relativePath: RELATIVE,
-    envFiles: ['.env.local'],
-    envLabel: 'ax-supabase',
+  const result = promoteFromPlan({
+    plan: {
+      supabase: { mode: 'isolated', projectId: 'demo-412-chat', offset: 60 },
+      urls: { publishedUrl: 'http://127.0.0.1:3412' },
+    },
+    config: { project: { name: 'demo' }, apps: { web: '.' }, ports: { supabaseBase: BASE, step: STEP, maxSlot: MAX_SLOT } },
+    root: cwd,
     envPrefix: 'AX_',
-    prefix: PREFIX,
     start: { command: 'pnpm', args: ['run', 'supabase:start'] },
-    isBound: () => assert.fail('neither half of the claim may be re-scanned'),
     run: () => ({ status: 0, stdout: '', stderr: '' }),
     write: (file, block) => written.push([file, block]),
   });
@@ -311,15 +311,14 @@ test('promote keeps a renamed worktree on its own stack instead of minting a sec
   // Same id, same block, and the config was NOT renamed: no second stack, and
   // the seven containers already running stay addressable.
   assert.equal(result.projectId, 'demo-412-chat');
-  assert.equal(result.projectIdSource, 'recorded');
   assert.equal(result.offset, 60);
-  assert.equal(result.offsetSource, 'config');
   assert.equal(result.config.changed, false, 'an unchanged claim rewrites no bytes');
   assert.equal(configProjectId(join(cwd, RELATIVE)), 'demo-412-chat');
-  assert.equal(result.conflict, undefined);
 
-  // And the record is rebuilt from the recovered claim, so the next run does
-  // not depend on the config a second time.
+  // And the record is rebuilt from the plan's decision, under the one label
+  // every block writer shares.
+  assert.equal(written[0][0], join(cwd, '.env.local'));
+  assert.equal(written[0][1].label, 'Supabase endpoints');
   assert.equal(written[0][1].keys.AX_SUPABASE_OFFSET, '60');
   assert.equal(written[0][1].keys.AX_SUPABASE_PROJECT, 'demo-412-chat');
 });

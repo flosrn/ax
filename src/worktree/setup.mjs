@@ -25,7 +25,7 @@ import { CONTEXT_PATH, renderContext } from './context.mjs';
 import { identify } from './identity.mjs';
 import { PREFIX, planWorktree } from './plan.mjs';
 import { probeAll, readWorktreeRecord } from './probes.mjs';
-import { promote } from './supabase.mjs';
+import { promoteFromPlan } from './supabase.mjs';
 
 /** Runtime paths that exist in every worktree and belong in none of its diffs. */
 const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
@@ -117,19 +117,11 @@ function apply({ plan, config, root, main }) {
   ok(changed === 0 ? 'env files already match the plan' : `updated ${changed} env block(s)`);
 
   if (plan.supabase.mode === 'isolated') {
-    const started = promote({
-      cwd: root,
-      identity: plan.identity,
-      base: config.ports.supabaseBase,
-      step: config.ports.step,
-      maxSlot: config.ports.maxSlot,
-      recorded: String(plan.supabase.offset),
-      relativePath: join(config.apps.web, 'supabase', 'config.toml'),
-      envFiles: [join(config.apps.web, '.env.local')],
-      envLabel: 'Supabase endpoints',
+    const started = promoteFromPlan({
+      plan,
+      config,
+      root,
       envPrefix: PREFIX,
-      apiUrl: plan.urls.publishedUrl,
-      prefix: `${config.project.name}-`,
       start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'], cwd: root },
       write: writeBlock,
     });

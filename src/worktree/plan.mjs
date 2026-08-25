@@ -30,7 +30,7 @@
 // legitimately differ, and the doctor reports it as unrecorded rather than as a
 // mismatch.
 
-import { blockPorts, envKeys, recordedClaim, resolveOffset, resolveProjectId } from './supabase.mjs';
+import { SUPABASE_LABEL, blockPorts, envKeys, recordedClaim, resolveOffset, resolveProjectId } from './supabase.mjs';
 import { planUrls } from './addressing.mjs';
 import { resolvePort } from './ports.mjs';
 
@@ -40,12 +40,12 @@ import { join } from 'node:path';
 export const PREFIX = 'AX_';
 
 /**
- * Block labels, declared once because three places must agree on them: the
- * plan that emits a block, the apply step that writes it, and the apply step
- * that ERASES it when a checkout stops being isolated.
+ * Block labels are declared once because the plan that emits a block and the
+ * apply steps that write or ERASE it must agree. The Supabase label lives in
+ * supabase.mjs beside the key set it labels (`envKeys`); the runtime label has
+ * no writer outside this plan, so it stays here.
  */
 export const RUNTIME_LABEL = 'Worktree runtime';
-export const SUPABASE_LABEL = 'Supabase endpoints';
 
 /**
  * Tooling-private env keys carry one prefix, `AX_`, in every project.

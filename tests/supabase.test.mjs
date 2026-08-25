@@ -333,17 +333,15 @@ test('promote rewrites config and env BEFORE starting the stack', () => {
 
   const result = promote({
     cwd: dir,
-    identity: identity({ issue: 412 }),
-    base: BASE, step: STEP, maxSlot: MAX_SLOT,
-    recorded: '1200',
+    projectId: 'testapp-x',
+    offset: 1200,
+    base: BASE,
     relativePath: 'config.toml',
     envFiles: ['.env.local', 'apps/web/.env.local'],
     envLabel: 'ax-supabase',
     envPrefix: 'MYAPP_',
     apiUrl: 'http://localhost:3412',
-    prefix: 'testapp-',
     start: { command: 'pnpm', args: ['run', 'supabase:start'] },
-    isBound: () => assert.fail('a recorded offset must not probe the machine'),
     run,
     write,
   });
@@ -360,7 +358,6 @@ test('promote rewrites config and env BEFORE starting the stack', () => {
 
   assert.equal(result.projectId, 'testapp-x');
   assert.equal(result.offset, 1200);
-  assert.equal(result.offsetSource, 'recorded');
   assert.equal(result.ports.api, 55521);
   assert.equal(result.started, true);
   // The file on disk really moved, before any container was asked for.

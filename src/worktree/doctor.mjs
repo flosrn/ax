@@ -34,10 +34,10 @@ import { readConfigured, readKey } from '../dotenv.mjs';
 import { isMainCheckout, listWorktrees } from '../git.mjs';
 import { GUARDED_INVOCATION, invokesSupabaseCli, reachesGuard } from '../supabase-guard.mjs';
 import { identify } from './identity.mjs';
-import { KEYS, SUPABASE_LABEL, planWorktree } from './plan.mjs';
+import { KEYS, planWorktree } from './plan.mjs';
 import { isReserved } from './ports.mjs';
 import { envFiles, probeAll, readWorktreeRecord } from './probes.mjs';
-import { commandNeedsIsolation, configProjectId, isIsolatedConfig } from './supabase.mjs';
+import { SUPABASE_LABEL, commandNeedsIsolation, configProjectId, isIsolatedConfig } from './supabase.mjs';
 
 /** The one command that reconciles a recorded value with the plan. */
 const SETUP = 'ax worktree setup';

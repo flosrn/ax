@@ -18,7 +18,8 @@ import test from 'node:test';
 import { subcommandNames } from '../src/commands.mjs';
 import { SUBCOMMANDS } from '../src/worktree/index.mjs';
 import { portProbe } from '../src/worktree/probes.mjs';
-import { KEYS, LEGACY_KEYS, SUPABASE_LABEL, planWorktree, readRecorded } from '../src/worktree/plan.mjs';
+import { KEYS, LEGACY_KEYS, planWorktree, readRecorded } from '../src/worktree/plan.mjs';
+import { SUPABASE_LABEL } from '../src/worktree/supabase.mjs';
 
 const config = {
   project: { name: 'demo', display: 'Demo' },
