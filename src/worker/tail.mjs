@@ -88,6 +88,22 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     // parseable worker-start receipt named a dispatch, so a stranded record maps
     // nothing at all (F-028).
     if (handles.size === 0) {
+      // AND A RECORD THIS SCAN COULD NOT READ MAY BE THE ONE ASKED FOR. Saying
+      // "no record names a pane for X" after failing to read X's own file is an
+      // absence claimed out of a failed look — the exact shape F-028 is about.
+      // The unreadable list is named, and the one whose stem IS the target
+      // first, because that is the file to go and look at.
+      const unreadable = index.unreadable ?? [];
+      const mine = unreadable.filter(entry => entry.file === `${target}.json`);
+      if (unreadable.length > 0) {
+        const named = (mine.length > 0 ? mine : unreadable).slice(0, 3).map(entry => `${entry.file} (${entry.error})`).join('; ');
+        return refuse(
+          mine.length > 0
+            ? `the record for '${target}' cannot be read, so nothing here knows which pane it opened: ${named}`
+            : `no record names a pane for '${target}', and ${unreadable.length} record(s) in this store could not be read at all: ${named}`,
+          `ax worker start --show --request ${target}   # read the record itself before concluding anything about its pane`,
+        );
+      }
       return refuse(
         `no dispatch record on this host names a pane for '${target}'${index.missing ? ' (there is no dispatch store here)' : ''}`,
         `ax worker transcript ${target}   # the session history needs no pane; ax worker ls names what this store holds`,
