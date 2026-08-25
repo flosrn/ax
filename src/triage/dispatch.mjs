@@ -37,10 +37,22 @@ import { launchProof } from '../worker/transcript.mjs';
 import { DRAFT_DIR, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
 
 const USAGE =
-  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
+  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom|refine] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
+/**
+ * The session role and playbook each job's child must prove. One map feeds both
+ * the spec marker and the verification below — two hardcoded strings is how a
+ * marker and its proof drift apart (the same one-source rule the marker parser
+ * itself follows, `omp/shared/alias.ts`).
+ */
+const ROLE_BY_JOB = {
+  triage: { role: 'triage-worker', skill: 'triage' },
+  brief: { role: 'triage-worker', skill: 'triage' },
+  custom: { role: 'triage-worker', skill: 'triage' },
+  refine: { role: 'refine-worker', skill: 'refine' },
+};
 /**
  * How many live child panes this machine tolerates. Counted, never remembered
  * (F-028), and counted by PANE rather than by `worker-list` (F-048: that counter
@@ -74,7 +86,8 @@ const roleWaitOf = env => {
  * every tool call before the first provider turn — but the parent still needs
  * the exact refusal rather than a green "dispatch recorded" line.
  */
-function verifyTriageRole({ request, root, env, sessionsRoot, proofFn, now, sleep }) {
+function verifyTriageRole({ request, job = 'triage', root, env, sessionsRoot, proofFn, now, sleep }) {
+  const expected = ROLE_BY_JOB[job];
   const wait = roleWaitOf(env);
   const deadline = now() + wait * 1000;
   let proof = null;
@@ -108,10 +121,10 @@ function verifyTriageRole({ request, root, env, sessionsRoot, proofFn, now, slee
   if (
     model?.role === 'default' &&
     role?.status === 'applied' &&
-    role.role === 'triage-worker' &&
-    skills.includes('triage')
+    role.role === expected.role &&
+    skills.includes(expected.skill)
   ) {
-    ok(`${request}: triage-worker + triage reached the first turn`);
+    ok(`${request}: ${expected.role} + ${expected.skill} reached the first turn`);
     return 'VERIFIED';
   }
 
@@ -120,8 +133,8 @@ function verifyTriageRole({ request, root, env, sessionsRoot, proofFn, now, slee
   else if (role.status === 'refused') {
     const missing = role.missingSkills.length === 0 ? '' : `; missing ${role.missingSkills.join(', ')}`;
     bad(`${request}: role ${role.role} refused — ${role.reason}${missing}`);
-  } else if (role.role !== 'triage-worker') bad(`${request}: expected triage-worker, got ${role.role}`);
-  else if (!skills.includes('triage')) bad(`${request}: triage playbook was not applied`);
+  } else if (role.role !== expected.role) bad(`${request}: expected ${expected.role}, got ${role.role}`);
+  else if (!skills.includes(expected.skill)) bad(`${request}: the ${expected.skill} playbook was not applied`);
   fix('ax worker ls   # inspect the recorded pane and role receipt; do not relaunch');
   return 'CANNOT-ESTABLISH';
 }
@@ -188,7 +201,7 @@ export function dispatch(
     if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
   }
   if (job === '') job = 'triage';
-  if (!['triage', 'brief', 'custom'].includes(job)) return usageError(`--job expects triage|brief|custom, got "${job}"`);
+  if (!['triage', 'brief', 'custom', 'refine'].includes(job)) return usageError(`--job expects triage|brief|custom|refine, got "${job}"`);
   if (job === 'custom' && instruction === '') return usageError('--job custom needs --instruction <file> holding the one-line task');
   if (job === 'custom' && !existsSync(instruction)) return refuse(`--instruction file unreadable: ${instruction}`);
   // A fresh pass with no stated reason is a child redoing the work the last one
@@ -375,7 +388,7 @@ export function dispatch(
   let blocked = false;
   const state = new Map();
   for (const issue of issues) {
-    const meta = readIssue(gh, slug, issue);
+    const meta = readIssue(gh, slug, issue, job);
     if (!meta.ok) {
       bad(`#${issue} UNREADABLE — ${meta.reason}`);
       blocked = true;
@@ -422,6 +435,19 @@ export function dispatch(
       if (meta.comments === 0) note(`  distilling the unpublished draft at ${draft.path}`);
     }
     if (job === 'custom' && meta.comments > 0) note('  ^ already triaged — the spec opens by saying so, and forbids a re-triage');
+    if (job === 'refine') {
+      // Inbound gates do not apply here: comments on a spec-born issue are the
+      // ordinary state (rulings folded into bodies), so F-030 stays triage-only.
+      if (meta.labels.includes('ready-for-agent') && !force) {
+        bad('^ already ready-for-agent — a second refine pass on a published verdict needs to be deliberate');
+        fix(`ax triage dispatch --issue ${issue} --job refine --force # or --fresh --because <what moved> for a new pass`);
+        blocked = true;
+        continue;
+      }
+      if (meta.parent === undefined) note('  parent unknown — this gh cannot read the sub-issue parent; the child will identify the PRD itself');
+      else if (meta.parent === null) note('  ^ no parent issue — refine expects a PRD sub-issue; a bug or inbound request belongs to --job triage');
+      else note(`  parent #${meta.parent}`);
+    }
   }
   if (blocked) return refuse('precheck refused — nothing was dispatched');
 
@@ -457,6 +483,7 @@ export function dispatch(
       draft,
       labels: labels.path,
       triaged: (state.get(issue)?.comments ?? 0) > 0,
+      parent: state.get(issue)?.parent,
       instruction: job === 'custom' ? readFileSync(instruction, 'utf8') : '',
       pass,
       previous,
@@ -497,6 +524,7 @@ export function dispatch(
       if (result.verdict !== 'DISPATCHED') continue;
       result.verdict = verifyTriageRole({
         request: result.request,
+        job,
         root: paths.root,
         env,
         sessionsRoot,
@@ -530,9 +558,25 @@ function resolveRepo(gh) {
   return String(out.stdout ?? '').trim().split('\n')[0] ?? '';
 }
 
-/** State, comment count and title in one read. Anything else is not our business. */
-function readIssue(gh, repo, issue) {
-  const out = gh(['issue', 'view', issue, '--repo', repo, '--json', 'state,title,comments']);
+/**
+ * State, comment count and title in one read — plus, for refine only, the labels
+ * and the sub-issue parent.
+ *
+ * The parent read is best-effort and advisory: a gh older than the sub-issues
+ * API fails the WHOLE view when asked for the field (it does not answer with the
+ * field missing), so the naive read would turn a capability gap into a refusal.
+ * On that exact failure the read retries with the base fields and the parent
+ * stays `undefined` — unknown, which is not `null`, confirmed absent (F-028).
+ */
+function readIssue(gh, repo, issue, job = 'triage') {
+  const refine = job === 'refine';
+  const fields = refine ? 'state,title,comments,labels,parent' : 'state,title,comments';
+  let out = gh(['issue', 'view', issue, '--repo', repo, '--json', fields]);
+  let parentReadable = refine;
+  if (refine && !out.error && out.status !== 0 && /unknown json field.*parent/i.test(String(out.stderr ?? ''))) {
+    parentReadable = false;
+    out = gh(['issue', 'view', issue, '--repo', repo, '--json', 'state,title,comments,labels']);
+  }
   if (out.error) return { ok: false, reason: `gh could not run: ${String(out.error.message ?? out.error)}` };
   if (out.status !== 0) return { ok: false, reason: `not found in ${repo}` };
   let body;
@@ -542,7 +586,13 @@ function readIssue(gh, repo, issue) {
     return { ok: false, reason: 'gh answered something that is not JSON' };
   }
   if (!Array.isArray(body.comments)) return { ok: false, reason: 'gh answered no comments array — an absent container is not an empty one' };
-  return { ok: true, state: String(body.state ?? ''), title: String(body.title ?? ''), comments: body.comments.length };
+  const meta = { ok: true, state: String(body.state ?? ''), title: String(body.title ?? ''), comments: body.comments.length };
+  if (refine) {
+    if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
+    meta.labels = body.labels.map(label => String(label?.name ?? ''));
+    meta.parent = !parentReadable ? undefined : body.parent === null || body.parent === undefined ? null : Number(body.parent.number);
+  }
+  return meta;
 }
 
 /**
@@ -577,8 +627,8 @@ function readLabels(declared, root) {
  * close, never the bare size labels — is the publisher's contract now, and
  * belongs to `ax triage publish`. What the child owes is one file.
  */
-function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, instruction, pass = 1, previous = null, because = '' }) {
-  const marker = `[omp role=triage-worker model=${model}]`;
+function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, parent, instruction, pass = 1, previous = null, because = '' }) {
+  const marker = `[omp role=${ROLE_BY_JOB[job].role} model=${model}]`;
   // The write-failure ladder exists because #60 (2026-08-23) could not write
   // its draft at all, put the verdict in its terminal, and its report was the
   // day's sixth lost peer message: the wave stalled on finished work nobody
@@ -649,6 +699,26 @@ function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, inst
       `Write your verdict to ${draft}. It opens with directive lines, then the comment body a human will read on the issue months from now, with your justification at one line per group.`,
       `A directive carries label NAMES ONLY — never a group name, never a parenthetical: \`Labels: <name>[, <name>…]\`, repeatable so one line per group stays cheap to correct; \`Remove labels: <name>[, <name>…]\` for the labels your transition supersedes; \`Close: yes\` if you conclude wontfix, and say why — you are recommending it, not doing it.`,
       `Leaving a group empty means you have not finished. Every name is checked against this repository's own label list before anything is applied, so \`Labels: state → needs-info\` and \`Remove labels: needs-triage (superseded)\` are both refused: they name no label that exists.`,
+      nothing,
+      asking,
+      'Report when the draft is FINAL — which means it carries no open question.',
+    ].filter(Boolean).join(' ');
+  }
+
+  if (job === 'refine') {
+    // The parent PRD is named when the precheck could read it; a child told to
+    // find it itself is the degraded path, not the ordinary one.
+    const lineage = typeof parent === 'number'
+      ? `Then run the Definition-of-Ready pass on issue #${issue} (issue://${issue}), a sub-issue of issue://${parent} — read both before scoring.`
+      : `Then run the Definition-of-Ready pass on issue #${issue} (issue://${issue}); identify its parent PRD from the issue itself before scoring.`;
+    return [
+      marker,
+      redo,
+      'Use the preloaded refine playbook: score its five Definition-of-Ready gates against this checkout and the parent ticket.',
+      lineage,
+      `Write your verdict to ${draft}: exactly one \`Ready: yes\` or \`Ready: no\` line, then one \`## Agent Brief\` section — published verbatim on the issue, so it carries no line numbers and no file-placement instructions — then one \`## Verification\` section, which is never published: your per-gate evidence, where file:line reads belong.`,
+      'Never write `Labels:`, `Remove labels:` or `Close:` — a refine draft that names labels is refused whole; publication applies only ready-for-agent, and the PRD already decided the categorization.',
+      'On a failed gate the verdict is `Ready: no` and the draft carries the diagnosis plus a concrete repair proposal — corrected acceptance criteria, or a split. You recommend; the coordinator arbitrates.',
       nothing,
       asking,
       'Report when the draft is FINAL — which means it carries no open question.',

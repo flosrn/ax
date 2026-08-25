@@ -76,7 +76,7 @@ function fakeOrca({ panes = [], truncated = false, omitted = [], terminals = nul
 }
 
 /** A `gh` that answers per issue from a table, and records what it was asked. */
-function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }) {
+function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }, { parentField = true } = {}) {
   const asked = [];
   return {
     asked,
@@ -85,10 +85,17 @@ function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }) {
       if (bin !== 'gh') return { status: 0, stdout: '', stderr: '' };
       if (args[0] === 'repo') return { status: 0, stdout: `${REPO}\n`, stderr: '' };
       if (args[0] === 'issue' && args[1] === 'view') {
+        const wantsParent = args.includes('--json') && String(args[args.indexOf('--json') + 1] ?? '').includes('parent');
+        // A gh older than the sub-issues API fails the WHOLE view when asked for
+        // the field — it does not answer with the field missing.
+        if (wantsParent && !parentField) return { status: 1, stdout: '', stderr: 'Unknown JSON field: "parent"' };
         const row = issues[args[2]];
         if (row === undefined) return { status: 1, stdout: '', stderr: 'not found' };
-        const [state, count, title] = row.split('|');
-        return { status: 0, stdout: JSON.stringify({ state, title, comments: Array.from({ length: Number(count) }, () => ({})) }), stderr: '' };
+        const [state, count, title, labelNames = '', parent = ''] = row.split('|');
+        const body = { state, title, comments: Array.from({ length: Number(count) }, () => ({})) };
+        body.labels = labelNames === '' ? [] : labelNames.split(';').map(name => ({ name }));
+        if (wantsParent) body.parent = parent === '' || parent === 'null' ? null : { number: Number(parent) };
+        return { status: 0, stdout: JSON.stringify(body), stderr: '' };
       }
       return { status: 0, stdout: '', stderr: '' };
     },
@@ -901,4 +908,70 @@ test('the child keeps its own context: the spec says why the answer comes back t
   const r = run(['--issue', '7', '--dry-run']);
   assert.match(r.out, /You hold the issue and the code you have already read/);
   assert.match(r.out, /revise the draft into a final verdict/);
+});
+
+// ── the refine job ───────────────────────────────────────────────────────────
+// A Definition-of-Ready pass on a spec-born ticket: same machinery, its own
+// role pair, its own draft grammar, and none of the inbound-shaped gates.
+
+test('the refine spec carries the refine-worker marker, the gates, and the directive prohibition', () => {
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues: { 7: 'OPEN|0|Widget import|.|10' } });
+  assert.match(r.out, /\[omp role=refine-worker model=@default\]/);
+  assert.match(r.out, /preloaded refine playbook/);
+  assert.match(r.out, /Definition-of-Ready/);
+  assert.match(r.out, /issue:\/\/10/, 'the known parent PRD is named to the child');
+  assert.match(r.out, /Ready: yes/);
+  assert.match(r.out, /## Agent Brief/);
+  assert.match(r.out, /## Verification/);
+  assert.match(r.out, /refused whole/, 'label directives are forbidden, the inverse of the triage instruction');
+  assert.match(r.out, /draft is FINAL/);
+});
+
+test('refine needs no label contract — it applies only ready-for-agent, at publish time', () => {
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { root: repo({ labels: '' }), issues: { 7: 'OPEN|0|a' } });
+  assert.equal(r.code, 0);
+});
+
+test('refine on an issue already ready-for-agent is refused, and --force overrides', () => {
+  const issues = { 7: 'OPEN|0|a|enhancement;ready-for-agent' };
+  const refused = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues });
+  assert.equal(refused.code, 1);
+  assert.match(refused.out, /ready-for-agent/);
+  const forced = run(['--issue', '7', '--job', 'refine', '--dry-run', '--force'], { issues });
+  assert.equal(forced.code, 0);
+});
+
+test('comments do not gate a refine dispatch — F-030 is an inbound rule', () => {
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues: { 7: 'OPEN|4|a' } });
+  assert.equal(r.code, 0);
+});
+
+test('a gh without the parent field degrades to a note, never a refusal', () => {
+  const gh = fakeGh({ 7: 'OPEN|0|a' }, { parentField: false });
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { gh });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /parent unknown/i);
+  assert.match(r.out, /identify its parent/, 'the child is told to find the PRD itself');
+});
+
+test('a parentless spec-born issue is noted as a possible mis-routing, not refused', () => {
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues: { 7: 'OPEN|0|a|.|null' } });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /no parent/i);
+});
+
+test('a refine dispatch verifies the refine role pair, not the triage one', () => {
+  const good = run(['--issue', '7', '--job', 'refine'], {
+    issues: { 7: 'OPEN|0|a' },
+    proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'refine-worker', skills: ['refine'] } }),
+  });
+  assert.equal(good.code, 0);
+  assert.match(good.out, /refine-worker \+ refine reached the first turn/);
+  const wrong = run(['--issue', '7', '--job', 'refine'], {
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
+    issues: { 7: 'OPEN|0|a' },
+    proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] } }),
+  });
+  assert.equal(wrong.code, 1);
+  assert.match(wrong.out, /expected refine-worker/);
 });
