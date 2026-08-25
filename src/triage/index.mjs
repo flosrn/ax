@@ -20,7 +20,7 @@ import { defaultStore, heldRepaired, report, workerPane } from '../worker/record
 import { answer } from './answer.mjs';
 import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
-import { DRAFT_DIR, passesIn, passesOf, questionsIn, readDraft, requestFor } from './draft.mjs';
+import { draftDirFor, passesIn, passesOf, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
 import { triageRelease } from './release.mjs';
 import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
@@ -181,7 +181,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     const rows = [];
     for (const issue of expanded) {
       const base = { job, repo: slug, issue };
-      const all = passesOf(store, join(root, DRAFT_DIR), base);
+      const all = passesOf(store, draftDirFor(root, base), base);
       if (all.length === 0) {
         rows.push({ line: `#${issue} — no pass`, handle: '' });
         continue;
@@ -214,7 +214,11 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
           ? `ASKING ${questionSpan(draft.questions.map(question => question.n))} · ${draft.sha.slice(0, 12)}`
           : draft.ok
             ? `FINAL ${draft.sha.slice(0, 12)} · ${draft.lines} ln`
-            : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
+            : draft.ready === 'no'
+              // Only the refine grammar sets `ready`: a repair-carrying verdict
+              // is the coordinator's row to arbitrate, not a malformed draft.
+              ? `NOT-READY ${draft.sha.slice(0, 12)} · repair proposed`
+              : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
       const pending = mailbox.ok && handle !== '' ? (mailbox.pending.get(handle) ?? []) : [];
       const waiting = pending.length > 0 ? ` · WAITING on ${pending[0].id}` : '';
       rows.push({ line: `#${issue} p${pass} · ${shape} · ${recordState}${waiting}`, handle: final ? '' : handle, paneEnv });
@@ -258,7 +262,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     // a record and no draft; one written by hand could be the reverse. Reporting
     // only the newest would hide the row an operator is deciding against, and
     // reporting only one silently is what cost draft #54.
-    const all = [...new Set([...passesIn(store, base, '.json'), ...passesIn(join(root, DRAFT_DIR), base, '.md')])].sort((a, b) => a - b);
+    const all = [...new Set([...passesIn(store, base, '.json'), ...passesIn(draftDirFor(root, base), base, '.md')])].sort((a, b) => a - b);
     const passes = all.length === 0 ? [1] : all;
     section(`issue #${issue} — ${passes.length} pass(es)`);
 

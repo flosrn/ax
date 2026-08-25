@@ -34,7 +34,7 @@ import { terminalInventory } from '../worker/pane.mjs';
 import { paneVerdict } from '../worker/ls.mjs';
 import { start as startVerb } from '../worker/start.mjs';
 import { launchProof } from '../worker/transcript.mjs';
-import { DRAFT_DIR, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
+import { draftDirFor, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
 
 const USAGE =
   'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom|refine] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
@@ -417,7 +417,7 @@ export function dispatch(
       // alone would distil pass 1 while pass 2's child is still writing — a brief
       // built on a verdict its own author is in the middle of replacing.
       const triageBase = { job: 'triage', repo: slug, issue };
-      const triagePasses = passesOf(store, join(paths.root, DRAFT_DIR), triageBase);
+      const triagePasses = passesOf(store, draftDirFor(paths.root, triageBase), triageBase);
       const from = triagePasses.length === 0 ? 1 : triagePasses[triagePasses.length - 1];
       const draft = readDraft(paths.root, { ...triageBase, pass: from });
       if (triagePasses.length > 0 && !existsSync(draft.path)) {
@@ -504,8 +504,9 @@ export function dispatch(
     } else {
       // Free text never touches argv: the spec goes to a file, always. A pasted
       // multi-line prompt is what left two briefs unsent in a composer.
-      const path = join(paths.root, '.scratch', 'triage', `${request}.spec.txt`);
-      mkdirSync(join(paths.root, '.scratch', 'triage'), { recursive: true });
+      const specDir = draftDirFor(paths.root, identity);
+      const path = join(specDir, `${request}.spec.txt`);
+      mkdirSync(specDir, { recursive: true });
       writeFileSync(path, `${spec}\n`);
       code = startFn(
         ['--request', request, '--run', runId, '--spec-file', path, ...(bin ? ['--orca', bin] : []), '--', '--worktree', 'current', '--agent', 'omp'],

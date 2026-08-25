@@ -28,7 +28,7 @@ import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
 import { paneVerdict } from '../worker/ls.mjs';
-import { DRAFT_DIR, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
+import { draftDirFor, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
 
 const USAGE = 'ax triage publish --issue N [--issue M …] [--job triage|brief|refine] [--pass N] [--repo <owner/repo>] [--dry-run]';
 
@@ -122,9 +122,9 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   let probe = null;
   for (const issue of issues) {
     const base = { job, repo: slug, issue };
-    const written = passesIn(join(paths.root, DRAFT_DIR), base, '.md');
+    const written = passesIn(draftDirFor(paths.root, base), base, '.md');
     const recorded = passesIn(store, base, '.json');
-    const all = passesOf(store, join(paths.root, DRAFT_DIR), base);
+    const all = passesOf(store, draftDirFor(paths.root, base), base);
     // Only a written pass can be published, so the default target is the newest
     // DRAFT; an unwritten newer pass shows up in `later` and forces the probe.
     const target = written.length === 0 ? 1 : written[written.length - 1];

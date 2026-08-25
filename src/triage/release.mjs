@@ -17,7 +17,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
 import { defaultStore, report } from '../worker/record.mjs';
 import { defaultExec, release } from '../worker/release.mjs';
-import { DRAFT_DIR, passesOf, requestFor } from './draft.mjs';
+import { draftDirFor, passesOf, requestFor } from './draft.mjs';
 
 const USAGE = 'ax triage release --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--no-proof]';
 
@@ -65,7 +65,7 @@ export function triageRelease(argv = [], { exec = defaultExec, env = process.env
 
   const base = { job, repo: slug, issue };
   const store = defaultStore(env);
-  const passes = passesOf(store, join(paths.root, DRAFT_DIR), base);
+  const passes = passesOf(store, draftDirFor(paths.root, base), base);
   if (passes.length === 0) return refuse(`no pass of #${issue} exists here — nothing was dispatched, so there is no pane to free`);
   const pass = passArg === '' ? passes[passes.length - 1] : Number(passArg);
   if (!passes.includes(pass)) return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax triage status --issue ${issue} --job ${job}`);

@@ -26,8 +26,27 @@ import { join } from 'node:path';
 
 import { gitBlobSha } from '../hash.mjs';
 
-/** Where drafts live, relative to the repository root. Gitignored, by design. */
+/** Where triage/brief/custom drafts live, relative to the repository root. Gitignored, by design. */
 export const DRAFT_DIR = join('.scratch', 'triage');
+/** Where refine drafts live. Its own directory, because one flat dir for every job was measured as noise. */
+const REFINE_DIR = join('.scratch', 'refine');
+
+/**
+ * Where one identity's drafts live. Job-keyed and derived from the identity
+ * alone — no record read, no network — which is the invariant the whole verb
+ * set rests on: the child, `publish`, `status`, `ask`, `answer` and `release`
+ * all reach the same directory without being told where it is.
+ *
+ * Grouping refine drafts by PARENT PRD was considered and deliberately
+ * deferred: the parent is not in the identity, so a parent-keyed path would
+ * need the dispatch record (or a `gh` call) at every read site — and the
+ * record writer lives in `src/worker/start.mjs`, whose write-ahead schema
+ * (F-001) has no seam for a triage parent. The wave record, which owns the
+ * tickets→PRD mapping, is where per-PRD grouping belongs when it exists.
+ * Triage/brief/custom paths stay byte-identical: transient per-machine drafts
+ * are never migrated mid-flight.
+ */
+export const draftDirFor = (root, identity) => join(root, identity.job === 'refine' ? REFINE_DIR : DRAFT_DIR);
 
 /**
  * The dispatch identity, which is also the record's key and the draft's name.
@@ -57,7 +76,7 @@ export const requestFor = ({ job, repo, issue, pass = 1 }) =>
   `${job}-${String(repo).replace(/\//g, '-')}-${issue}${pass > 1 ? `-p${pass}` : ''}`;
 
 /** The one path three parties derive independently. */
-export const draftPath = (root, identity) => join(root, DRAFT_DIR, `${requestFor(identity)}.md`);
+export const draftPath = (root, identity) => join(draftDirFor(root, identity), `${requestFor(identity)}.md`);
 
 /**
  * Which passes of one issue already exist in a directory, oldest first.

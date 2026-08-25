@@ -925,6 +925,7 @@ test('the refine spec carries the refine-worker marker, the gates, and the direc
   assert.match(r.out, /## Verification/);
   assert.match(r.out, /refused whole/, 'label directives are forbidden, the inverse of the triage instruction');
   assert.match(r.out, /draft is FINAL/);
+  assert.match(r.out, /\.scratch\/refine\/refine-acme-widgets-7\.md/, 'the child is told the refine-dir path, never left to derive it');
 });
 
 test('refine needs no label contract — it applies only ready-for-agent, at publish time', () => {
@@ -967,6 +968,7 @@ test('a refine dispatch verifies the refine role pair, not the triage one', () =
   });
   assert.equal(good.code, 0);
   assert.match(good.out, /refine-worker \+ refine reached the first turn/);
+  assert.match(good.started[0], /\.scratch\/refine\/refine-acme-widgets-7\.spec\.txt/, 'the spec file lands beside the draft');
   const wrong = run(['--issue', '7', '--job', 'refine'], {
     env: { AX_TRIAGE_ROLE_WAIT: '0' },
     issues: { 7: 'OPEN|0|a' },

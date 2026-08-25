@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { draftPath, parseDraft, passesIn, readDraft, requestFor } from '../src/triage/draft.mjs';
+import { draftDirFor, draftPath, parseDraft, passesIn, readDraft, requestFor } from '../src/triage/draft.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-draft-'));
 
@@ -319,10 +319,18 @@ test('refine questions are collected, kept in the Brief, and numbered like every
 test('readDraft parses with the identity’s own job, so a refine draft reads under the refine grammar', () => {
   const root = scratch();
   const identity = { job: 'refine', repo: 'acme/widgets', issue: '7' };
-  mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
+  mkdirSync(draftDirFor(root, identity), { recursive: true });
   writeFileSync(draftPath(root, identity), READY_DRAFT);
   const found = readDraft(root, identity);
   assert.equal(found.ok, true);
   assert.equal(found.ready, 'yes');
   assert.ok(!found.body.includes('G3 pass'));
+});
+
+test('refine drafts live under their own directory, derived from the identity alone', () => {
+  const refine = { job: 'refine', repo: 'acme/widgets', issue: '7' };
+  const triage = { job: 'triage', repo: 'acme/widgets', issue: '7' };
+  assert.equal(draftDirFor('/repo', refine), join('/repo', '.scratch', 'refine'));
+  assert.equal(draftPath('/repo', refine), join('/repo', '.scratch', 'refine', 'refine-acme-widgets-7.md'));
+  assert.equal(draftPath('/repo', triage), join('/repo', '.scratch', 'triage', 'triage-acme-widgets-7.md'), 'other jobs stay byte-identical');
 });
