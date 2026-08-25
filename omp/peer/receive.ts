@@ -159,6 +159,34 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
   );
 }
 
+/**
+ * The other thing a reader must not discover by failing: this message cannot be
+ * answered with `peer_reply`.
+ *
+ * Measured 2026-08-25 on ofmchat #55. Its Dispatch had settled `failed`, so Orca
+ * revoked the capability and rejected the child's escalation outright — and then
+ * delivered its body here anyway. The route derivation refused (correctly: a
+ * join it cannot make unique is not a destination), noted that on the log, and
+ * injected the words with nothing said about answerability. The coordinator
+ * answered a load-bearing question, was refused with `No reply route for
+ * msg_…`, and had to resolve the child's pane out of `orca terminal list --json`
+ * by hand. The refusal is right; discovering it by failing is not.
+ *
+ * NO ADDRESS IS OFFERED HERE, deliberately. The recorded pane of a dispatch that
+ * never settled is a suspicion, not an association (`ls.mjs`), and typing into
+ * it is a mutation that can steer a stranger or interrupt a mid-turn child. The
+ * operator establishes the destination; this banner only says that they must.
+ */
+export function unanswerableBanner(sender: string): string {
+  return (
+    `[NO REPLY ROUTE] ${sender} sent this over a channel with no verified way back — ` +
+    `typically a worker whose Dispatch settled \`failed\`, whose capability Orca has ` +
+    `revoked. \`peer_reply\` will refuse it, and no address may be guessed from here. ` +
+    `Establish the destination yourself before answering, and treat the question as ` +
+    `unanswered until you have.\n\n`
+  );
+}
+
 export function createReceiver(deps: ReceiveDeps): Receiver {
   let child: { stdout: unknown; stderr: unknown; exited: unknown; exitCode?: number; kill?: () => void } | null = null;
   let stopped = false;
@@ -414,6 +442,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // is named from our own record, but the payload it carries came over
             // the relay, and a reply ADDRESS is exactly the field a hostile
             // payload would want us to keep. An absent kind is the pane path.
+            let answerable = true;
             if (msgId && who.attributed && who.kind !== 'dispatch' && RUN_ADDRESS.test(replyTo))
               deps.recordRoute(msgId, { run: replyTo, peer: who.name });
             // A dispatch sender's address is DERIVED, from our own dispatch record joined
@@ -422,10 +451,11 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // resolver returns null rather than a guess whenever the join is not unique.
             else if (msgId && who.kind === 'dispatch' && deps.deriveRoute !== undefined) {
               const derived = deps.deriveRoute(msg);
-              if (derived === null)
+              if (derived === null) {
+                answerable = false;
                 deps.note(`no reply route derived for ${who.name} — refusing rather than guessing`);
-              else deps.recordRoute(msgId, derived);
-            }
+              } else deps.recordRoute(msgId, derived);
+            } else if (msgId && who.kind === 'dispatch') answerable = false;
 
             if (msgId && deps.wasInjected(msgId)) continue; // replayed, already seen
 
@@ -459,6 +489,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 customType: 'peer-message',
                 content:
                   (verdict.lost > 0 ? gapBanner(who.name, verdict) : '') +
+                  (answerable ? '' : unanswerableBanner(who.name)) +
                   deps.peerContent(msg, who),
                 display: true,
                 details: {
