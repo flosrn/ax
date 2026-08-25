@@ -61,7 +61,7 @@ them.
 | `src/orca-bin.mjs` | Orca binary resolution and JSON receipt parsing for CLI verbs |
 | `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
 | `omp/model/index.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
-| `omp/roles/`, `omp/playbooks/` | coordinator, orchestrator, worker and triage-worker contracts |
+| `omp/roles/`, `omp/playbooks/` | coordinator, orchestrator, worker, triage-worker and refine-worker contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/ax-run.mjs` | package-local ax invocation; never PATH or a global version |
@@ -97,9 +97,9 @@ extension. Do not expose them under an OMP `agents/` directory and then rely on 
 hide them. Both `[omp role=worker …]` and `/role orchestrator` must resolve without OMP agent or
 skill discovery.
 
-**Playbooks are package-internal.** `omp/playbooks/implementation.md` and `triage.md` are generic AX
-procedures. They do not vendor Compound Engineering, Matt Pocock skills, provider IDs or private
-repo paths. Their proof names describe the work: `implementation` and `triage`.
+**Playbooks are package-internal.** `omp/playbooks/implementation.md`, `triage.md` and `refine.md`
+are generic AX procedures. They do not vendor Compound Engineering, Matt Pocock skills, provider IDs
+or private repo paths. Their proof names describe the work: `implementation`, `triage` and `refine`.
 
 **Every finding names its repair.** Output goes through `src/log.mjs`. A `bad` without a `fix` is a
 finding neither an agent nor a human can act on.
