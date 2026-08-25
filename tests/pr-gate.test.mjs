@@ -25,7 +25,7 @@ import { after, before, test } from 'node:test';
 import { subcommandNames } from '../src/commands.mjs';
 import { gate, readDeclaration } from '../src/pr-gate.mjs';
 import { SUBCOMMANDS, pr as prNoun } from '../src/pr/index.mjs';
-import { defaultExec } from '../src/worker/release.mjs';
+import { defaultExec } from '../src/exec.mjs';
 
 const SLUG = 'gapilabs/gapila';
 const HEAD_SHA = '3f9a1c27b4d6e8f0a2c4e6081a3c5e7092b4d6f8';

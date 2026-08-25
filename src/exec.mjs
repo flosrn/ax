@@ -49,3 +49,13 @@ export function capture(bin, args, { cwd } = {}) {
   const value = out.stdout.trim();
   return value === '' ? undefined : value;
 }
+
+/**
+ * `gh` and `git`, run for real, on the 30 s deadline every short gesture in
+ * this package budgets. Exported from here — never from a verb — because every
+ * test injects a stub in its place, which once left a hand-rolled copy
+ * entirely unexercised: the module lost its `spawnSync` import in a refactor
+ * and a full green suite said nothing — the first real invocation was a
+ * ReferenceError.
+ */
+export const defaultExec = (bin, args, at) => run(bin, args, { cwd: at, timeout: 30000 });

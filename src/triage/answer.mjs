@@ -24,7 +24,7 @@ import { bad, fix, note, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore } from '../worker/record.mjs';
-import { defaultExec } from '../worker/release.mjs';
+import { defaultExec } from '../exec.mjs';
 import { draftDirFor, passesOf, questionProblem, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { INBOX_WINDOW, askHeader, composeReply, pairRulings, parseRulings, questionSpan } from './rulings.mjs';
 

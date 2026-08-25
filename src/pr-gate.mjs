@@ -51,7 +51,7 @@ import { join } from 'node:path';
 
 import { CONFIG_FILE, repoPaths } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
-import { defaultExec } from './worker/release.mjs';
+import { defaultExec } from './exec.mjs';
 
 const USAGE = 'ax pr gate --pr <n> [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
 

@@ -15,8 +15,9 @@ import { join } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
+import { defaultExec } from '../exec.mjs';
 import { defaultStore, report } from '../worker/record.mjs';
-import { defaultExec, release } from '../worker/release.mjs';
+import { release } from '../worker/release.mjs';
 import { draftDirFor, passesOf, requestFor } from './draft.mjs';
 
 const USAGE = 'ax triage release --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--no-proof]';

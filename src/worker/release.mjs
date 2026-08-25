@@ -89,7 +89,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { run as execRun } from '../exec.mjs';
+import { defaultExec } from '../exec.mjs';
 import { createRunner, parseReceipt, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
@@ -155,16 +155,6 @@ const SETTLED = new Set(['succeeded', 'failed']);
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
-
-/**
- * `gh` and `git`, run for real — the shared default (src/exec.mjs) bound to
- * this module's 30 s deadline. Exported because every test injects a stub in
- * its place, which once left a hand-rolled copy of this default entirely
- * unexercised: the module lost its `spawnSync` import in a refactor and a full
- * green suite said nothing — the first real invocation was a ReferenceError.
- * The mechanics are now witnessed once, by tests/exec.test.mjs.
- */
-export const defaultExec = (bin, args, at) => execRun(bin, args, { cwd: at, timeout: 30000 });
 
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
 const landed = detail => ({ landed: true, detail });

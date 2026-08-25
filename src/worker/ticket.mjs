@@ -14,7 +14,7 @@
 // the Orca CLI, `exec(bin, args, cwd)` is `gh` and `git`. That is what lets the
 // suite decide these propositions with no tracker credential and no network.
 
-import { defaultExec } from './release.mjs';
+import { defaultExec } from '../exec.mjs';
 
 /**
  * `GAP-353` is a Linear ref, `1234` a GitHub issue. Both are anchored: the ref

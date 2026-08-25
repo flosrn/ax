@@ -15,7 +15,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { readPane } from '../worker/pane.mjs';
-import { defaultExec } from '../worker/release.mjs';
+import { defaultExec } from '../exec.mjs';
 import { defaultStore, heldRepaired, report, workerPane } from '../worker/record.mjs';
 import { answer } from './answer.mjs';
 import { ask } from './ask.mjs';

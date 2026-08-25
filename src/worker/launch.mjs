@@ -72,8 +72,8 @@ import { MECHANICS, renderBrief } from './brief.mjs';
 import { pinIdentity, writeMandate } from './child.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
-// injects `exec` — so there is ONE of them, and it has its own test.
-import { defaultExec } from './release.mjs';
+// injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
+import { defaultExec } from '../exec.mjs';
 
 const USAGE =
   'ax worker launch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--brief <file>] ' +

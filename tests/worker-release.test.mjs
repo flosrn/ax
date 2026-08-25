@@ -20,7 +20,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { defaultExec, release } from '../src/worker/release.mjs';
+import { defaultExec } from '../src/exec.mjs';
+import { release } from '../src/worker/release.mjs';
 
 /**
  * A REAL directory, canonicalised: the verb compares physical paths (a raw

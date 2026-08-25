@@ -27,7 +27,7 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { defaultExec } from '../worker/release.mjs';
+import { defaultExec } from '../exec.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, heldRepaired, report } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
 import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
