@@ -182,8 +182,9 @@ an unrelated pane.
 **Observed**
 
 After #56 opened PR #72, its agent pane exited while the PR remained open. `peer_reply` had no
-route, the worker was absent from `peer_list`, direct input returned `terminal_not_writable`, and
-release correctly refused an open PR as landing proof.
+route, the worker was absent from `peer_list`, and direct input returned
+`terminal_not_writable`. AX's landing contract separately requires a merged PR before release may
+close an implementation pane; this run exercised release only after #72 merged.
 
 The supported continuation is:
 
