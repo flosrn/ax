@@ -323,3 +323,91 @@ test('a run that ended without reporting is still a cycle that ended', async () 
     else process.env.ORCA_TERMINAL_HANDLE = saved;
   }
 });
+
+/**
+ * A COMPLETION THAT COULD NOT BE DELIVERED IS NOT A COMPLETION THAT WAS.
+ *
+ * `report()` answers `{sent, reason}` and this extension threw the reason away,
+ * so every undeliverable finish was indistinguishable from a delivered one — from
+ * inside the child, from the coordinator's side, and from the transcript.
+ *
+ * The reason is rarely exotic. Measured 2026-08-25 while probing this very fix: a
+ * child whose parent worktree ran two registered panes got
+ * `parent worktree 'ax' runs several panes and none can be identified as the
+ * dispatcher` — the deliberate fail-closed refusal in `parentPeer()`, since Orca's
+ * lineage is worktree-level and no pane-level discriminator exists there. It is
+ * the right refusal and it was completely silent, which is the defect: open a
+ * second session in a coordinator's worktree and every child of it goes mute.
+ *
+ * Said once per distinct reason, in the child's own session, because that is the
+ * one place an operator can act on it.
+ */
+function announcing(sendReport: Send) {
+  const handlers = new Map<string, Handler[]>();
+  const said: string[] = [];
+  const pi = {
+    on(name: string, handler: Handler) {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+    },
+    sendMessage(message: { content?: unknown }) {
+      said.push(String(message.content ?? ''));
+    },
+  };
+  const reportDir = mkdtempSync(join(tmpdir(), 'ax-report-'));
+  roots.add(reportDir);
+  reportExtension(pi, { sendReport, warmLineage: () => {}, reportDir });
+  return {
+    said,
+    fire: async (name: string, event: Event, context: Context) => {
+      for (const handler of handlers.get(name) ?? []) await handler(event, context);
+    },
+  };
+}
+
+test('a refused delivery is said in the session that could not deliver it', async () => {
+  const lead = ctx('mute-child');
+  const h = announcing(() => ({
+    sent: false,
+    reason: "parent worktree 'ax' runs several panes and none can be identified as the dispatcher",
+  }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  await h.fire('agent_end', {}, lead);
+
+  expect(h.said).toHaveLength(1);
+  expect(h.said[0]).toContain('runs several panes');
+  // What it is, and what it costs: the coordinator is not going to learn this.
+  expect(h.said[0]).toMatch(/not delivered|undelivered/i);
+});
+
+test('the same refusal is not repeated every cycle', async () => {
+  const lead = ctx('mute-child-2');
+  const h = announcing(() => ({ sent: false, reason: 'parent worktree has no live session to report to' }));
+
+  await h.fire('session_start', {}, lead);
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    await h.fire('agent_start', {}, lead);
+    await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+    await h.fire('agent_end', {}, lead);
+  }
+
+  expect(h.said).toHaveLength(1);
+});
+
+test('a delivered report says nothing, and a parentless session says nothing', async () => {
+  // Most worktrees are not dispatched: `no parent worktree recorded` is the
+  // normal case and announcing it would be noise in every interactive session.
+  const delivered = announcing(() => ({ sent: true }));
+  const root = announcing(() => ({ sent: false, reason: 'no parent worktree recorded — this session was not dispatched' }));
+
+  for (const h of [delivered, root]) {
+    const lead = ctx(`quiet-${h === root ? 'root' : 'ok'}`);
+    await h.fire('session_start', {}, lead);
+    await h.fire('agent_start', {}, lead);
+    await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+    await h.fire('agent_end', {}, lead);
+    expect(h.said).toEqual([]);
+  }
+});

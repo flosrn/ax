@@ -130,6 +130,43 @@ export default function (pi, seams: ReportSeams = {}): void {
     const handle = String(process.env.ORCA_TERMINAL_HANDLE ?? 'unknown').replace(/[^A-Za-z0-9_-]/g, '_');
     return `${reportDir}/${handle}-${session}.done`;
   };
+
+  // WHAT A REFUSED DELIVERY COSTS, SAID WHERE SOMEBODY CAN ACT ON IT.
+  //
+  // `report()` answers `{sent, reason}` and this extension used to drop the
+  // reason on the floor, which made an undeliverable finish indistinguishable
+  // from a delivered one — from inside this session, from the coordinator's side,
+  // and from the transcript afterwards.
+  //
+  // The reason is rarely exotic. Measured 2026-08-25: a child whose parent
+  // worktree ran two registered panes got `parent worktree 'ax' runs several
+  // panes and none can be identified as the dispatcher`. That refusal is right —
+  // Orca's lineage is worktree-level, so no pane-level discriminator exists and
+  // guessing would send a completion to a stranger — but it is invisible, so
+  // opening a second session in a coordinator's worktree makes every child of it
+  // go mute with nothing said anywhere.
+  //
+  // ONE ANNOUNCEMENT PER DISTINCT REASON. A per-cycle repetition of a condition
+  // the session cannot change is noise, and noise is how the signal that matters
+  // gets skimmed past. `customType`, never a user message: this is the harness
+  // talking about its own plumbing.
+  const announced = new Set<string>();
+  const announce = (reason: string): void => {
+    if (!reason || announced.has(reason)) return;
+    announced.add(reason);
+    try {
+      pi.sendMessage?.({
+        customType: 'report-undelivered',
+        content:
+          `[REPORT NOT DELIVERED] This session finished a unit of work and its completion ` +
+          `could not be delivered: ${reason}. Nobody upstream will learn it from here — ` +
+          `say it on a channel that works, or fix the condition, before treating the work as handed over.`,
+        display: true,
+      });
+    } catch {
+      // Observability must never break the session that produced the work.
+    }
+  };
   // Latch only - no I/O. Owner must be bound before any tool_result can race
   // in from an in-process subagent.
   pi.on('session_start', (_event, ctx) => {
@@ -213,8 +250,14 @@ export default function (pi, seams: ReportSeams = {}): void {
       if (latch !== null && existsSync(latch)) return;
 
       const outcome = deliver(current === 'none' ? 'turn-ended' : effective, send);
+      // `no parent worktree recorded` is the NORMAL case — most worktrees are not
+      // dispatched — so it is the one refusal that stays quiet. Every other one is
+      // a session that was supposed to be heard from and was not.
       const parentless = outcome.reason?.startsWith('no parent worktree recorded') === true;
-      if (!outcome.sent && !parentless) return;
+      if (!outcome.sent && !parentless) {
+        announce(outcome.reason ?? 'the reason was not reported');
+        return;
+      }
 
       if (latch !== null) {
         try {
