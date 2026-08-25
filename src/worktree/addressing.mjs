@@ -39,14 +39,23 @@ import { baseUrlForPort } from './ports.mjs';
  * missing binary, a daemon that is logged out and a non-zero exit are all just
  * "no answer", because none of them may interrupt the caller.
  *
+ * `cwd` matters to any probe that answers PER DIRECTORY. The proxy is one: it
+ * infers the branch from the caller's directory, so a probe run in the ax
+ * process's own cwd answers for whatever tree that process happens to sit in.
+ * Measured 2026-08-25: `ax worker launch` provisions a worktree it does not
+ * chdir into, so every worktree placed by one launch would be told the primary
+ * checkout's route — the same class of incident this module's header records,
+ * "one worktree announcing a dev host nothing served".
+ *
  * @param {string} bin
  * @param {string[]} args
+ * @param {{ cwd?: string }} [options]
  * @returns {string | undefined}
  */
-export function runProbe(bin, args) {
+export function runProbe(bin, args, { cwd } = {}) {
   let result;
   try {
-    result = spawnSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    result = spawnSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...(cwd ? { cwd } : {}) });
   } catch {
     return undefined;
   }
@@ -167,12 +176,17 @@ export function proxyName({ recorded, fallback } = {}) {
  * `undefined` when the proxy is absent, when it cannot name a route, or when it
  * answers something that is not an absolute HTTP URL.
  *
- * @param {{ name?: string, bin?: string, run?: typeof runProbe }} [options]
+ * `cwd` is the worktree being planned, and it is REQUIRED for a correct answer:
+ * the name alone does not identify a route, because the proxy resolves the
+ * branch from the directory it is asked in. Omitting it answers for the caller's
+ * own tree.
+ *
+ * @param {{ name?: string, bin?: string, cwd?: string, run?: typeof runProbe }} [options]
  * @returns {string | undefined}
  */
-export function proxyServedUrl({ name, bin = 'portless', run = runProbe } = {}) {
+export function proxyServedUrl({ name, bin = 'portless', cwd, run = runProbe } = {}) {
   if (!name) return undefined;
-  const answer = run(bin, ['get', name]);
+  const answer = run(bin, ['get', name], { cwd });
   if (!answer) return undefined;
   // All whitespace stripped, not just the ends: the answer is a single URL, so
   // interior whitespace is corruption, and a URL is never repaired by keeping it.

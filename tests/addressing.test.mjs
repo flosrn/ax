@@ -60,17 +60,21 @@ test('the proxy name is the recorded value, else the configured fallback', () =>
   assert.equal(proxyName({}), undefined);
 });
 
-test('the served URL is asked of the proxy, never composed', () => {
+test('the served URL is asked of the proxy, never composed, and asked IN the worktree', () => {
   const calls = [];
-  const run = (bin, args) => {
-    calls.push([bin, ...args]);
+  const run = (bin, args, options) => {
+    calls.push([bin, ...args, options?.cwd]);
     return 'http://feat-x.demo.localhost:1355\n';
   };
   assert.equal(
-    proxyServedUrl({ name: 'demo', bin: 'proxy-bin', run }),
+    proxyServedUrl({ name: 'demo', bin: 'proxy-bin', cwd: '/repo/.worktrees/feat-x', run }),
     'http://feat-x.demo.localhost:1355',
   );
-  assert.deepEqual(calls, [['proxy-bin', 'get', 'demo']]);
+  // The directory is part of the QUESTION: the proxy resolves the branch from
+  // the caller's cwd, so the same name asked elsewhere answers another route.
+  // `ax worker launch` provisions worktrees it never chdirs into, so an
+  // unthreaded probe hands every one of them the primary checkout's URL.
+  assert.deepEqual(calls, [['proxy-bin', 'get', 'demo', '/repo/.worktrees/feat-x']]);
 });
 
 test('a proxy that answers nothing usable yields no URL rather than a guess', () => {
