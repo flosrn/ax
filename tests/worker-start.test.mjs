@@ -852,7 +852,12 @@ test('a USABLE CLI start arms a detached watcher that settles and cleans its pid
 
   const log = join(watch, 'req-arm.log');
   await waitFor(() => existsSync(log) && readFileSync(log, 'utf8').includes('settled'));
-  assert.equal(existsSync(join(watch, 'req-arm.pid')), false);
+  // The watcher logs `settled` inside its loop and unlinks the pidfile in the
+  // `finally` that follows (`stall.mjs`), so the absence has to be WAITED for.
+  // Asserting it at the first sight of the log line passed on a quiet Mac for
+  // months and failed the release gate on a loaded GitHub runner — run
+  // 32852604478 held v0.12.0 off npm with nothing wrong in the tree.
+  await waitFor(() => !existsSync(join(watch, 'req-arm.pid')));
 });
 
 // ── ax owns four options; the rest is opaque ────────────────────────────────
