@@ -8,6 +8,30 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.12.0](https://github.com/flosrn/ax/compare/v0.11.3...v0.12.0) (2026-08-25)
+
+
+### Features
+
+* **launch:** a ticket that says it touches the database gets its own stack ([4098143](https://github.com/flosrn/ax/commit/4098143dd82bfdd82e8f559bc3a74c39d395c372))
+* **peer:** resolve a peer by the session id Orca shows on its card ([941d91d](https://github.com/flosrn/ax/commit/941d91d5e8a85ff809b0d521f55e56dffd3decf5))
+* **triage:** add refine readiness pass for PRD tickets ([#7](https://github.com/flosrn/ax/issues/7)) ([c5e850d](https://github.com/flosrn/ax/commit/c5e850da6089775572bed7a43ae6a13fca25c32b))
+
+
+### Bug Fixes
+
+* **peer:** a recorded route, not attribution, decides that a message can be answered ([fd73724](https://github.com/flosrn/ax/commit/fd7372477caf293ba883b2da4afb40707eb413ca))
+* **peer:** say when a message cannot be answered, where the model reads it ([2434467](https://github.com/flosrn/ax/commit/2434467680bed67a77e373227768bb3d28eb87fa))
+* **pr-gate:** the next action a PASS prints carries the acks that PASS stood on ([1bbebf6](https://github.com/flosrn/ax/commit/1bbebf6848fc5a7dc57be8f209461fca691e9d3d))
+* **report:** a second finish is still a finish, and an unfinished cycle is not one ([dac362d](https://github.com/flosrn/ax/commit/dac362db10106fd2ddfda3bbd5f2118d6e3b039c))
+* **stall:** read the repair marker every tick, not once before it exists ([c3863cb](https://github.com/flosrn/ax/commit/c3863cb21403358328f2de91689c6251edf0e398))
+* **worker:** a record tail could not READ is not a record that does not exist ([92fd5e6](https://github.com/flosrn/ax/commit/92fd5e67351451f55420f9187ed988cb559139c0))
+* **worker:** an EXITED pane is never called alive ([ba62ab7](https://github.com/flosrn/ax/commit/ba62ab711b6a5f8d2cf0f395a9a4ab3343b930d3))
+* **worker:** name the unsettled pane, and let tail take the request that owns it ([19bffd2](https://github.com/flosrn/ax/commit/19bffd2305dd262950534139d222384b64182db1))
+* **worker:** never point transcript at a term_ handle, and name EXITED in help ([deadfbf](https://github.com/flosrn/ax/commit/deadfbffedfabd523b6e2efdeb0f37ceb146fd18))
+* **worker:** omission is PER HOST, so a covered runtime's absent pane is a corpse ([4ab5a2b](https://github.com/flosrn/ax/commit/4ab5a2bcbe332aabf06f0dface1609f333a383bf))
+* **worktree:** ask the proxy for its route from inside the worktree ([b9f96d9](https://github.com/flosrn/ax/commit/b9f96d9176c618b2bbf11b3da20a17e7fbc58206))
+
 ## [0.11.3](https://github.com/flosrn/ax/compare/v0.11.2...v0.11.3) (2026-08-25)
 
 
