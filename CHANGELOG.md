@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.12.1](https://github.com/flosrn/ax/compare/v0.12.0...v0.12.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **tests:** the release gate no longer races the watcher's pidfile removal ([0eee2b8](https://github.com/flosrn/ax/commit/0eee2b8d3c9840ee1d811d0230f9d54369376c4f))
+
 ## [0.12.0](https://github.com/flosrn/ax/compare/v0.11.3...v0.12.0) (2026-08-25)
 
 
