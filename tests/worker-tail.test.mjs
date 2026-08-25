@@ -179,6 +179,23 @@ test('a request whose panes disagree is refused, never guessed', () => {
   assert.equal(calls.filter(line => line.startsWith('terminal read')).length, 0, 'nothing was read');
 });
 
+test('a record this scan could not READ is never reported as a record that does not exist', () => {
+  // F-028: an absence claimed out of a failed look. The store holds a file for
+  // this exact request and it does not parse, so nothing here knows which pane
+  // it opened — which is not the same sentence as "no record names a pane".
+  const env = storeWith({ 'other-1': [{ dispatchId: 'ctx_o', pane: 'term_other' }] });
+  writeFileSync(join(env.ORCA_DISPATCH_STORE, '55-work.json'), '{ truncated');
+  const { runner, calls } = fakeRunner({ receipt: alive([]) });
+  const r = capture(() => tail(['55-work'], { runner, env }));
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /the record for '55-work' cannot be read/);
+  assert.match(r.out, /55-work\.json/);
+  assert.match(r.out, /ax worker start --show --request 55-work/);
+  assert.doesNotMatch(r.out, /no dispatch record on this host/, 'a failed read is not an absence');
+  assert.equal(calls.filter(line => line.startsWith('terminal read')).length, 0, 'nothing was read');
+});
+
 test('a terminal with output is alive and its tail is printed', () => {
   const r = probe(alive(['⠋ Reading full e2e harness report']));
 
