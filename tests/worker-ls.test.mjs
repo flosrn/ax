@@ -195,6 +195,33 @@ test('a live terminal left by an unsettled worker-start is shown and inspected, 
   assert.match(out, /0 live pane\(s\)/, 'unproven is never counted as capacity in use either');
 });
 
+test('an unsettled pane that is GONE is still named, with the two routes that do not need it', () => {
+  const dir = store();
+  // The 2026-08-25 shape: `worker-start` settled `failed` at `dispatch_input`
+  // (Orca's 5 s readiness window against a cold session), the pane it recorded
+  // has since closed, and this verb printed `pane INCONNU · worker-list ABSENT ·
+  // no usable receipt yet` — naming neither the handle that is in the receipt
+  // nor anything an operator could type. The child's own session had the work in
+  // it the whole time.
+  writeRecord(dir, '55-work', [
+    { name: 'task-create', receipt: taskCreated('task_55') },
+    {
+      name: 'worker-start',
+      receipt: { ok: true, result: { taskId: 'task_55', dispatchId: 'ctx_047889f5daa4', state: 'failed', stage: 'dispatch_input', lastError: 'agent_prompt_stalled', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_8c22e160' }] } },
+    },
+  ]);
+  const run = fakeRunner({ terminals: [], workers: [] });
+
+  const { code, out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  assert.equal(code, 0);
+  const line = lineWith('55-work');
+  assert.match(line, /pane INCONNU .*no usable receipt yet/, 'nothing is established, and that is still the verdict');
+  assert.match(line, /term_8c22e160, MORT/, 'the recorded handle is named whatever became of it');
+  assert.match(out, /ax worker tail 55-work/);
+  assert.match(out, /ax worker transcript 55-work/, 'a session outlives its pane, and one verb reads it');
+  assert.match(out, /0 live pane\(s\)/, 'naming a dead pane is not counting it');
+});
+
 test('a truncated terminal list is cannot-establish: a partial list cannot prove a pane is dead', () => {
   const dir = store();
   writeRecord(dir, 'req-1', [{ name: 'worker-start', receipt: started({ handle: 'term_x' }) }]);

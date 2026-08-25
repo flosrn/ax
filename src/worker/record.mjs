@@ -613,11 +613,17 @@ export function dispatchIndex(store) {
         const began = Date.parse(ph.beganAt ?? '');
         // Newest phase wins: a `--replace` records a second worker-start for the
         // same request, and the pane that matters is the one it opened.
+        //
+        // `env` is PHASE-PAIRED with the handle, from this call's own `--on`. A
+        // caller that took the handle from one dispatch and the runtime from the
+        // record's newest worker-start would read a remote pane against the local
+        // runtime the moment a `--replace` moved a child between hosts.
         byDispatch.set(result.dispatchId, {
           request: stem,
           issuedAt: Number.isFinite(began) ? began : Number.isFinite(created) ? created : null,
           file,
           handle: agentTerminal(result),
+          env: Array.isArray(ph.argv) ? argvValue(ph.argv, '--on') ?? '' : '',
           ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',
         });
       }

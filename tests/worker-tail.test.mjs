@@ -10,6 +10,9 @@
 // against a live handle — the interesting ones (moved key, null status) cannot
 // be produced on demand against a real runtime.
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
@@ -66,6 +69,115 @@ const probe = (receiptText, handle = HANDLE, options = {}) => {
   const { code, out } = capture(() => tail([handle], { runner }));
   return { code, out, calls };
 };
+
+/**
+ * A store on disk holding one record, whose newest `worker-start` recorded
+ * `panes` and ran with `--on host` when `on` is given. Real files: the resolver
+ * this exercises reads the store the way the verb does.
+ */
+function storeWith(records) {
+  const store = mkdtempSync(join(tmpdir(), 'ax-tail-store-'));
+  for (const [request, phases] of Object.entries(records)) {
+    writeFileSync(
+      join(store, `${request}.json`),
+      JSON.stringify({
+        request,
+        attempts: [{
+          n: 1,
+          settled: false,
+          phases: phases.map(({ dispatchId, pane, on = '', state = 'failed', beganAt }) => ({
+            name: 'worker-start',
+            exit: 0,
+            beganAt,
+            argv: ['orca', 'orchestration', 'worker-start', ...(on ? ['--on', on] : []), '--json'],
+            receipt: {
+              ok: true,
+              result: {
+                dispatchId,
+                state,
+                effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: pane }],
+              },
+            },
+          })),
+        }],
+      }),
+    );
+  }
+  return { HOME: store, ORCA_DISPATCH_STORE: store };
+}
+
+test('a request id resolves to the pane its dispatch recorded, settled or not', () => {
+  // Measured 2026-08-25 on 55-work: `ax worker ls` named no handle because the
+  // worker-start settled `failed`, `ax worker transcript 55-work` read the same
+  // record happily, and this verb refused the slug on its argument shape — so
+  // the one verb that says whether the pane still emits was unreachable for
+  // exactly the record that needed it.
+  const env = storeWith({ '55-work': [{ dispatchId: 'ctx_047889f5daa4', pane: HANDLE }] });
+  const { runner, calls } = fakeRunner({ receipt: alive(['⠋ Reading contracts/memory.ts']) });
+  const r = capture(() => tail(['55-work'], { runner, env }));
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, new RegExp(`55-work → ${HANDLE}`));
+  assert.match(r.out, /ALIVE —/);
+  assert.ok(calls.some(line => line.includes(`terminal read --terminal ${HANDLE}`)), 'the resolved pane is the one read');
+});
+
+test('a dispatch id resolves through the same store, and never through another dispatch of that record', () => {
+  // A `--replace` records a second worker-start, so the record's NEWEST pane is
+  // not the pane the named dispatch opened. Taking the newest would tail the
+  // wrong child of the right request.
+  const env = storeWith({
+    'comm-1': [
+      { dispatchId: 'ctx_old', pane: 'term_old-pane', beganAt: '2026-08-25T03:00:00.000Z' },
+      { dispatchId: 'ctx_new', pane: HANDLE, beganAt: '2026-08-25T04:00:00.000Z' },
+    ],
+  });
+  const { runner, calls } = fakeRunner({ receipt: alive([]) });
+  const r = capture(() => tail(['ctx_old'], { runner, env }));
+
+  assert.equal(r.code, 1, 'ALIVE, SILENT — the pane was read');
+  assert.match(r.out, /ctx_old → term_old-pane/);
+  assert.ok(calls.some(line => line.includes('terminal read --terminal term_old-pane')));
+});
+
+test("a remote request's pane is read on the runtime its own worker-start named", () => {
+  // The handle alone addresses the wrong machine: a remote pane read without
+  // `--environment` interrogates the local runtime, which either answers about
+  // nothing or about a stranger.
+  const env = storeWith({ 'rem-1': [{ dispatchId: 'ctx_rem', pane: HANDLE, on: 'envx' }] });
+  const { runner, calls } = fakeRunner({ receipt: alive(['working']) });
+  const r = capture(() => tail(['rem-1'], { runner, env }));
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /on 'envx'/);
+  assert.ok(calls.some(line => line.includes('--environment envx')), 'the pane is read on its own host');
+});
+
+test('a request the store maps to no pane cannot establish, and names the route that needs none', () => {
+  const env = storeWith({});
+  const { runner, calls } = fakeRunner({ receipt: alive([]) });
+  const r = capture(() => tail(['55-work'], { runner, env }));
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /no dispatch record on this host names a pane/);
+  assert.match(r.out, /ax worker transcript 55-work/);
+  assert.equal(calls.filter(line => line.startsWith('terminal read')).length, 0, 'nothing was read');
+});
+
+test('a request whose panes disagree is refused, never guessed', () => {
+  const env = storeWith({
+    'two-1': [
+      { dispatchId: 'ctx_a', pane: 'term_first' },
+      { dispatchId: 'ctx_b', pane: 'term_second' },
+    ],
+  });
+  const { runner, calls } = fakeRunner({ receipt: alive([]) });
+  const r = capture(() => tail(['two-1'], { runner, env }));
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /names 2 panes/);
+  assert.equal(calls.filter(line => line.startsWith('terminal read')).length, 0, 'nothing was read');
+});
 
 test('a terminal with output is alive and its tail is printed', () => {
   const r = probe(alive(['⠋ Reading full e2e harness report']));
