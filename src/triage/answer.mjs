@@ -25,11 +25,11 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore } from '../worker/record.mjs';
 import { defaultExec } from '../worker/release.mjs';
-import { DRAFT_DIR, passesOf, questionProblem, questionsIn, readDraft, requestFor } from './draft.mjs';
+import { draftDirFor, passesOf, questionProblem, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { INBOX_WINDOW, askHeader, composeReply, pairRulings, parseRulings, questionSpan } from './rulings.mjs';
 
 const USAGE =
-  'ax triage answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dry-run]';
+  'ax triage answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--dry-run]';
 
 export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   const usageError = message => {
@@ -90,7 +90,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
 
   const base = { job, repo: slug, issue };
   const store = defaultStore(env);
-  const passes = passesOf(store, join(root, DRAFT_DIR), base);
+  const passes = passesOf(store, draftDirFor(root, base), base);
   if (passes.length === 0) {
     return refuse(`no pass of #${issue} exists here — there is no draft whose questions this could answer`, `ax triage status --issue ${issue} --job ${job}`);
   }

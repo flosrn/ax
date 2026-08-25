@@ -11,11 +11,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
+import { draftPath } from '../src/triage/draft.mjs';
 import { publish } from '../src/triage/publish.mjs';
 import { status } from '../src/triage/index.mjs';
 
@@ -358,6 +359,77 @@ test('a label list that came back AT the cap refuses, because absence is what it
   assert.equal(r.code, 1);
   assert.match(r.out, /exactly the cap/);
   assert.deepEqual(mutations(r.calls), [], 'no issue was touched on an unprovable absence');
+});
+
+test('--repo reads the TARGET repository\'s labels, not the checkout it is run from', () => {
+  // The preflight and the mutation have to be asked of the same repository. A
+  // bare `gh label list` is answered by whatever checkout the process sits in,
+  // and `--repo` exists precisely to publish somewhere else — so a vocabulary
+  // read from here is not merely useless against there, it is wrong in both
+  // directions: it refuses names the target HAS, and passes names it does NOT.
+  //
+  // The two label sets below are disjoint on purpose, and the draft names a
+  // label only the TARGET carries. Read the checkout and this refuses.
+  const CHECKOUT_ONLY = ['category/bug'];
+  const TARGET_ONLY = ['area/foreign'];
+  const calls = [];
+  const exec = (bin, args) => {
+    calls.push(`${bin} ${args.join(' ')}`);
+    // `repo view` would answer acme/widgets, as everywhere else in this file.
+    if (args[0] === 'repo') return { status: 0, stdout: `${REPO}\n`, stderr: '' };
+    if (args[0] === 'label' && args[1] === 'list') {
+      const asked = args[args.indexOf('--repo') + 1];
+      const names = asked === 'foreign/widgets' ? TARGET_ONLY : CHECKOUT_ONLY;
+      return { status: 0, stdout: JSON.stringify(names.map(name => ({ name }))), stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const root = repo();
+  draft(root, 'triage-foreign-widgets-7', 'Labels: area/foreign\n\nIt reproduces on main.\n');
+  const r = capture(() =>
+    publish(['--issue', '7', '--repo', 'foreign/widgets'], { exec, env: {}, cwd: root, resolve: () => null }),
+  );
+
+  assert.equal(r.code, 0, r.out);
+  const list = calls.find(line => line.includes('label list'));
+  assert.match(list, /label list --repo foreign\/widgets /, 'the preflight named the target repository');
+
+  // Read and mutations agree — one repository for the whole gesture.
+  const targetOf = line => /--repo (\S+)/.exec(line)?.[1];
+  const mutated = mutations(calls);
+  assert.equal(mutated.length, 2, 'one edit and one comment');
+  for (const line of mutated) assert.equal(targetOf(line), targetOf(list), line);
+  assert.match(mutated[0], /issue edit 7 --repo foreign\/widgets --add-label area\/foreign/);
+});
+
+test('--repo does not let a name the TARGET lacks through, even when the checkout has it', () => {
+  // The other direction of the same mistake, and the dangerous one: reading the
+  // checkout would ACCEPT `category/bug` here and hand it to a repository that
+  // has no such label — an unchecked name reaching the tracker is exactly what
+  // the preflight is paid to prevent.
+  const calls = [];
+  const exec = (bin, args) => {
+    calls.push(`${bin} ${args.join(' ')}`);
+    if (args[0] === 'repo') return { status: 0, stdout: `${REPO}\n`, stderr: '' };
+    if (args[0] === 'label' && args[1] === 'list') {
+      const asked = args[args.indexOf('--repo') + 1];
+      const names = asked === 'foreign/widgets' ? ['area/foreign'] : REPO_LABELS;
+      return { status: 0, stdout: JSON.stringify(names.map(name => ({ name }))), stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const root = repo();
+  draft(root, 'triage-foreign-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = capture(() =>
+    publish(['--issue', '7', '--repo', 'foreign/widgets'], { exec, env: {}, cwd: root, resolve: () => null }),
+  );
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /does not have/);
+  assert.match(r.out, /category\/bug/);
+  assert.deepEqual(mutations(calls), [], 'nothing reached the target repository');
 });
 
 test('a non-numeric --issue is refused before any draft is read', () => {
@@ -905,4 +977,94 @@ test('--pass expects a number', () => {
   const r = run(['--issue', '7', '--pass', 'latest']);
   assert.equal(r.code, 2);
   assert.match(r.out, /--pass expects a number/);
+});
+
+/** A refine draft, in the refine job's own directory. */
+const refineDraftAt = (root, issue, text) => {
+  const path = draftPath(root, { job: 'refine', repo: REPO, issue: String(issue) });
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+};
+
+test('status renders the three refine draft states apart: ready, repair-carrying, malformed', () => {
+  const root = repo();
+  refineDraftAt(root, 7, ['Ready: yes', '', '## Agent Brief', '', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
+  refineDraftAt(root, 8, ['Ready: no', '', '## Agent Brief', '', 'Repair: split the ticket.', '', '## Verification', '', 'G2 fail.'].join('\n'));
+  refineDraftAt(root, 9, 'Ready: yes\nno sections at all\n');
+  const r = runStatus(['--issue', '7-9', '--brief', '--job', 'refine'], { root });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /#7 p1 · FINAL/);
+  assert.match(r.out, /#8 p1 · NOT-READY/);
+  assert.match(r.out, /#9 p1 · NOT-PUBLISHABLE/);
+});
+
+// ── publish: the refine job ──────────────────────────────────────────────────
+// One label, one Brief-only comment — and the comment goes FIRST: the label is
+// the automation trigger, and a label-then-failed-comment would leave a
+// ready-for-agent issue with no Brief for an AFK launcher to act on.
+
+const READY_LABELS = { status: 0, stdout: JSON.stringify([...REPO_LABELS, 'ready-for-agent'].map(name => ({ name }))), stderr: '' };
+
+const refineReady = ['Ready: yes', '', '## Agent Brief', '', 'Summary: wire the widget.', '', '## Verification', '', 'G3 pass — src/socket.mjs.'].join('\n');
+
+test('a ready refine draft posts its Brief FIRST, then applies only ready-for-agent', () => {
+  const root = repo();
+  refineDraftAt(root, 7, refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  assert.equal(r.code, 0);
+  const [comment, edit] = mutations(r.calls);
+  assert.match(comment, /issue comment 7/);
+  assert.match(edit, /issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.ok(!edit.includes('--remove-label'), 'refine removes nothing');
+  const posted = /--body-file (\S+)/.exec(comment)[1];
+  const body = readFileSync(posted, 'utf8');
+  assert.match(body, /wire the widget/);
+  assert.ok(!body.includes('G3 pass'), 'the Verification section never reaches the tracker');
+  assert.match(body, /during refinement/);
+});
+
+test('a refused refine comment applies NO label, and never promises a blind re-post', () => {
+  const root = repo();
+  refineDraftAt(root, 7, refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, comment: { status: 1, stderr: 'boom' } } });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 1, 'the label edit never ran');
+  assert.match(r.out, /label was NOT applied/);
+  assert.match(r.out, /did the Brief land\?/, 'the repair reads the state before any retry');
+});
+test('a refused refine label names the label-only repair, never a publish re-run', () => {
+  const root = repo();
+  refineDraftAt(root, 7, refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, labels: { status: 1, stderr: 'nope' } } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.match(r.out, /already posted/i);
+});
+
+test('a repository without the ready-for-agent label refuses the refine batch before any mutation', () => {
+  const root = repo();
+  refineDraftAt(root, 7, refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 0);
+  assert.match(r.out, /ready-for-agent/);
+});
+
+test('Ready: no blocks with the repair path, never as a malformed draft', () => {
+  const root = repo();
+  refineDraftAt(root, 7, ['Ready: no', '', '## Agent Brief', '', 'Gate 2 fails; split proposal below.', '', '## Verification', '', 'G2 fail.'].join('\n'));
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 0);
+  assert.match(r.out, /not ready/);
+  assert.match(r.out, /--fresh/);
+});
+
+test('open questions block a refine publish exactly as they block a triage one', () => {
+  const root = repo();
+  refineDraftAt(root, 7, ['Ready: yes', '', '## Agent Brief', '', 'Q1: [product] cap the import where?', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 0);
+  assert.match(r.out, /open question/);
 });

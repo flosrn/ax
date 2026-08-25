@@ -27,3 +27,21 @@ test('an unknown or missing verb is a usage error, never a default action', () =
   assert.match(written.join(''), /unknown verb "deploy"/);
   assert.match(written.join(''), /which one\?/);
 });
+
+test('every triage surface that carries --job names refine in its help', () => {
+  const written = [];
+  const stdout = process.stdout.write;
+  process.stdout.write = chunk => (written.push(String(chunk)), true);
+  try {
+    for (const verb of ['dispatch', 'ask', 'status', 'answer', 'release']) {
+      written.length = 0;
+      assert.equal(SUBCOMMANDS[verb](['--help']), 0, verb);
+      assert.match(written.join(''), /triage\|brief\|custom\|refine/, verb);
+    }
+    written.length = 0;
+    assert.equal(SUBCOMMANDS.publish(['--help']), 0);
+    assert.match(written.join(''), /triage\|brief\|refine/, 'custom is deliberately not publishable');
+  } finally {
+    process.stdout.write = stdout;
+  }
+});

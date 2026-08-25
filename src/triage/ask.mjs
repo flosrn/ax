@@ -32,11 +32,11 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore, heldRepaired } from '../worker/record.mjs';
 import { defaultExec } from '../worker/release.mjs';
-import { DRAFT_DIR, passesOf, questionProblem, readDraft, requestFor } from './draft.mjs';
+import { draftDirFor, passesOf, questionProblem, readDraft, requestFor } from './draft.mjs';
 import { composeAsk } from './rulings.mjs';
 
 const USAGE =
-  'ax triage ask --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--timeout-ms <n>] [--dry-run]\n'
+  'ax triage ask --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--timeout-ms <n>] [--dry-run]\n'
   + '       ax triage ask --resume <message_id> [--timeout-ms <n>]';
 
 /**
@@ -121,7 +121,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
 
     const base = { job, repo: slug, issue };
     const store = defaultStore(env);
-    const passes = passesOf(store, join(root, DRAFT_DIR), base);
+    const passes = passesOf(store, draftDirFor(root, base), base);
     if (passes.length === 0) {
       return refuse(`no pass of #${issue} exists here — nothing was dispatched and no draft was written`, `ax triage dispatch --issue ${issue} --job ${job}`);
     }

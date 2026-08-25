@@ -12,24 +12,44 @@ Children own branches and pull requests; you hold ordering and merge authority.
 
 - Run from the product repository. Orca lineage cannot cross repository, host, or
   project boundaries.
-- Dispatch only a ticket whose triage is finished: `ready-for-agent` and an Agent
-  Brief must both be present.
+- Dispatch only a ticket whose readiness pass is finished: `ready-for-agent` and
+  an Agent Brief must both be present — a refine publication for a spec-born
+  ticket, a triage-then-brief pair for an inbound one.
 - Decide dependencies before fan-out. Parallel slices need disjoint files, no
   dependency between them, and isolated database resources when they touch data.
+  The Briefs' probable-surfaces estimates are a signal to arbitrate overlap —
+  never a proof; the declared blocking edges are the hard constraint.
 - Before adding a worker, read `ax worker ls`; live panes are the capacity
   signal. Follow the operator's concurrency limit, never a count from memory or task rows.
+
+## The wave record
+
+Open one wave file per fan-out — a convention today, a verb when friction earns
+it: `{prd, ordinal, kind, members, startedAt, endedAt}` with
+`kind: refine | implementation | triage`. Closure is proof-by-kind, the same law
+release already applies to panes: a refine wave closes when every member is
+published or arbitrated out; an implementation wave when every member's PR
+merged through the gate or was explicitly abandoned; a triage wave when every
+member carries a published verdict. Workers never learn the wave — a worker
+stamps only `Origin: #<its ticket>` on anything it creates, and membership
+derives from this record.
 
 ## Run the implementation pair
 
 Launch one worker per slice:
 
 ```bash
-ax worker launch --issue <ref> [--slug <slug>] [--on <host>]
+ax worker launch --issue <ref> [--slug <slug>] [--on <host>] [--brief <file>]
 ```
 
 The command owns placement, setup, the recorded dispatch, role/model proof, and
 recovery. Never hand-roll `worker-start`, and never relaunch after an uncertain
 result. Follow the repair command the recorded result names.
+
+Keep one wave-memory file per wave and pass it through `--brief` at each launch:
+a worker's report carries its findings; the next worker's brief carries the
+wave's. The file dies with the wave — promote what earned permanence into the
+repo's own stores at wave end, and never store session state as doctrine.
 
 End your turn after dispatch. Completion and questions arrive on their own; never
 poll or start a second consuming wait loop. Read the child's evidence, not merely
@@ -49,6 +69,19 @@ Release a pane only after its artifact has provably landed:
 ```bash
 ax worker release
 ```
+
+## Wave end
+
+- Sweep the follow-ups born during the wave: open `needs-triage` issues whose
+  `Origin:` names a member ticket. The time window is a net for orphans, never
+  the decider — an origin-less follow-up is itself a finding to fix at the
+  birth convention. PRD-debt joins a remaining wave through `refine`; the rest
+  stays parked.
+- Before the next PRD is planned, run one triage wave over the parked pile so
+  the backlog arrives triaged, not raw.
+- The birth convention itself — `needs-triage`, a `source:` label, one
+  `Origin: #<ticket>` line — is the consuming repository's `launch.contract`
+  to declare; this package only reads it.
 
 ## Authority
 

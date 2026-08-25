@@ -43,11 +43,11 @@ function role(name: string, body: string): void {
 
 // ── the roles this package actually ships ────────────────────────────────────
 
-test('the four session roles load from the package, with no host discovery at all', async () => {
+test('the five session roles load from the package, with no host discovery at all', async () => {
   // The whole point of the migration: these resolve from files inside the
   // package, so an installed copy under node_modules and a fresh checkout answer
   // identically, and a role on a branch is visible to the session on that branch.
-  for (const name of ['coordinator', 'orchestrator', 'worker', 'triage-worker']) {
+  for (const name of ['coordinator', 'orchestrator', 'worker', 'triage-worker', 'refine-worker']) {
     const found = await loadRole(name);
     expect(found.reason).toBe('ok');
     expect(found.role?.name).toBe(name);
@@ -55,15 +55,21 @@ test('the four session roles load from the package, with no host discovery at al
   }
 });
 
-test('the shipped roles are exactly the four, so a stray file cannot become a session identity', async () => {
-  expect(await listRoles()).toEqual(['coordinator', 'orchestrator', 'triage-worker', 'worker']);
+test('the shipped roles are exactly the five, so a stray file cannot become a session identity', async () => {
+  expect(await listRoles()).toEqual([
+    'coordinator',
+    'orchestrator',
+    'refine-worker',
+    'triage-worker',
+    'worker',
+  ]);
 });
 
 test('each declared playbook is one this package ships - there is no host fallback to cover a miss', async () => {
   // A role whose playbook is absent REFUSES, by design. So an autoloadSkills name
   // that no longer matches a file is not a degraded session, it is a dead one —
   // and nothing else in the suite notices, because refusing is correct.
-  for (const name of ['worker', 'triage-worker']) {
+  for (const name of ['worker', 'triage-worker', 'refine-worker']) {
     const found = await loadRole(name);
     for (const wanted of found.role?.autoloadSkills ?? []) {
       const playbook = await loadPlaybook(wanted);

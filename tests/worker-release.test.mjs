@@ -441,6 +441,26 @@ test('a triage is proven by a comment newer than its dispatch, and only that', (
   assert.match(before.out, /KEEP.*predates dispatch/);
 });
 
+test('a refine is proven by a comment newer than its dispatch, like triage', () => {
+  const dir = store();
+  record(dir, 'refine-7', 'ctx_refine', { createdAt: '2026-08-20T10:00:00.000Z' });
+
+  const after = run(['--all'], {
+    dir,
+    orca: { workers: [worker('ctx_refine')], terminals: [terminal('term_ctx_refine')] },
+    execOptions: { answers: { 'gh issue view': { status: 0, stdout: JSON.stringify({ comments: [{ createdAt: '2026-08-20T11:00:00.000Z' }] }), stderr: '' } } },
+  });
+  assert.match(after.out, /CLOSE.*comment on #7 after dispatch/);
+
+  const before = run(['--all'], {
+    dir,
+    orca: { workers: [worker('ctx_refine')], terminals: [terminal('term_ctx_refine')] },
+    execOptions: { answers: { 'gh issue view': { status: 0, stdout: JSON.stringify({ comments: [{ createdAt: '2026-08-19T09:00:00.000Z' }] }), stderr: '' } } },
+  });
+  assert.match(before.out, /KEEP.*predates dispatch/);
+});
+
+
 test('a dispatch this host never recorded has unknown provenance, and unknown is KEEP', () => {
   const r = run(['--all'], {
     orca: { workers: [worker('ctx_orphan')], terminals: [terminal('term_ctx_orphan')] },

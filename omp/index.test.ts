@@ -249,6 +249,13 @@ test('a dispatched triage worker gets its own bundled role and playbook', async 
   expect(out?.message?.details).toMatchObject({ skills: ['triage'] });
 });
 
+test('a dispatched refine worker gets its own bundled role and playbook', async () => {
+  const out = await turn(install('[omp role=refine-worker model=@task]'), BASE);
+  expect(out?.systemPrompt?.[2]).toContain('# Refine worker');
+  expect(out?.message?.content).toContain('<playbook name="refine">');
+  expect(out?.message?.details).toMatchObject({ skills: ['refine'] });
+});
+
 // ── the operator path: `/role orchestrator` ──────────────────────────────────
 
 test('/role orchestrator activates the BUNDLED operator role without touching the model', async () => {
@@ -279,6 +286,27 @@ test('/role coordinator resolves too, so both operator roles ship live', async (
   const out = await turn(installed, BASE);
   expect(out?.systemPrompt?.[2]).toContain('<!-- omp:role -->');
   expect(installed.notices.at(-1)).toContain('role coordinator applied');
+});
+
+// `ax triage status` defaults its lane to `triage` (src/triage/index.mjs), so a
+// coordinator running a refine pass who copies an unqualified example polls the
+// wrong lane and is offered a recovery for a dispatch that never happened. The
+// bundled role must therefore carry the job on every refine status/recovery
+// example — this is a contract on the shipped prose, not on the CLI.
+test('the bundled coordinator role names the refine lane on every status read', async () => {
+  const installed = install('[omp model=@task]');
+  await installed.commands.get('role')?.handler('coordinator', installed.ctx);
+  const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
+
+  expect(role).toContain('ax triage status --issue <N>-<M> --brief --job refine');
+  expect(role).toContain('ax triage status --issue <N> --job refine');
+  // A copyable example is one that names an issue; every one of those must say
+  // which lane it inspects. A bare mention of the verb carries no lane to get
+  // wrong.
+  const unqualified = [...role.matchAll(/ax triage status +--issue[^`\n]*/g)]
+    .map(match => match[0])
+    .filter(example => !example.includes('--job'));
+  expect(unqualified).toEqual([]);
 });
 
 // ── unknown names refuse, visibly ────────────────────────────────────────────
