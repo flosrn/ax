@@ -76,7 +76,7 @@ function fakeOrca({ panes = [], truncated = false, omitted = [], terminals = nul
 }
 
 /** A `gh` that answers per issue from a table, and records what it was asked. */
-function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }, { parentField = true } = {}) {
+function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }, { parentField = true, omitParent = false, malformedParent = false } = {}) {
   const asked = [];
   return {
     asked,
@@ -94,7 +94,13 @@ function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }, { parentField = true
         const [state, count, title, labelNames = '', parent = ''] = row.split('|');
         const body = { state, title, comments: Array.from({ length: Number(count) }, () => ({})) };
         body.labels = labelNames === '' ? [] : labelNames.split(';').map(name => ({ name }));
-        if (wantsParent) body.parent = parent === '' || parent === 'null' ? null : { number: Number(parent) };
+        if (wantsParent && !omitParent) {
+          body.parent = malformedParent
+            ? { number: 'not-a-number' }
+            : parent === '' || parent === 'null'
+              ? null
+              : { number: Number(parent) };
+        }
         return { status: 0, stdout: JSON.stringify(body), stderr: '' };
       }
       return { status: 0, stdout: '', stderr: '' };
@@ -961,6 +967,23 @@ test('a gh without the parent field degrades to a note, never a refusal', () => 
   assert.equal(r.code, 0);
   assert.match(r.out, /parent unknown/i);
   assert.match(r.out, /identify its parent/, 'the child is told to find the PRD itself');
+});
+
+test('a successful issue read with no parent key stays unknown — absence is not confirmed parentless (F-028)', () => {
+  const gh = fakeGh({ 7: 'OPEN|0|a' }, { omitParent: true });
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { gh });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /parent unknown/i);
+  assert.doesNotMatch(r.out, /no parent issue/i);
+  assert.match(r.out, /identify its parent/, 'the child must recover the unknown parent itself');
+});
+
+test('malformed parent metadata is unknown, never coerced into a fake parent number', () => {
+  const gh = fakeGh({ 7: 'OPEN|0|a' }, { malformedParent: true });
+  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { gh });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /parent unknown/i);
+  assert.doesNotMatch(r.out, /parent #NaN|no parent issue/i);
 });
 
 test('a parentless spec-born issue is noted as a possible mis-routing, not refused', () => {

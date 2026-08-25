@@ -597,7 +597,12 @@ function readIssue(gh, repo, issue, job = 'triage') {
   if (refine) {
     if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
     meta.labels = body.labels.map(label => String(label?.name ?? ''));
-    meta.parent = !parentReadable ? undefined : body.parent === null || body.parent === undefined ? null : Number(body.parent.number);
+    if (!parentReadable || !Object.hasOwn(body, 'parent')) meta.parent = undefined;
+    else if (body.parent === null) meta.parent = null;
+    else {
+      const parent = Number(body.parent?.number);
+      meta.parent = Number.isSafeInteger(parent) && parent > 0 ? parent : undefined;
+    }
   }
   return meta;
 }
