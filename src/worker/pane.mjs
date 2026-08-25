@@ -149,5 +149,14 @@ export function terminalInventory(run, { environment = '' } = {}) {
   }
   const scope = result.hostScope ?? {};
   const omittedHosts = Array.isArray(scope.omittedHostIds) ? scope.omittedHostIds : [];
-  return { ok: true, byHandle, omitted: omittedHosts.length > 0, omittedHosts };
+  // The hosts this call DID cover, which is the other half of the same fact and
+  // was thrown away. Measured on this Mac 2026-08-25:
+  // `{"hostIds":["local"],"omittedHostIds":["runtime:7930a317-…"]}` — the local
+  // runtime in scope, one paired remote runtime out of it. Without `hostIds` a
+  // caller can only ask "was anything omitted", so a single unreachable remote
+  // made every LOCAL pane unknowable too: `ax worker release` then refused to
+  // close a locally-dispatched corpse whose PR was already merged. An absent
+  // container is an absence of information (F-028), never an empty scope.
+  const hosts = Array.isArray(scope.hostIds) ? scope.hostIds : null;
+  return { ok: true, byHandle, omitted: omittedHosts.length > 0, omittedHosts, hosts };
 }

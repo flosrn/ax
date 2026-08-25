@@ -41,7 +41,7 @@ import { join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { terminalInventory } from './pane.mjs';
-import { defaultStore } from './record.mjs';
+import { argvValue, defaultStore } from './record.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
 
@@ -118,6 +118,13 @@ function describeRecord(dir, file) {
   let latest = null;
   let unsettled = null;
   let labelTask = null;
+  // The runtime the pane's OWN phase dispatched onto (`worker-start --on`, empty
+  // for a local dispatch). It decides whether an omitted REMOTE host can explain
+  // that pane's absence, so it is PAIRED with the phase that named the handle,
+  // never carried forward: a `--replace` may move a child between hosts, and a
+  // host taken from one phase beside a handle from another is a wrong verdict in
+  // both directions.
+  let latestHost;
   for (const ph of phases) {
     const result = ph !== null && typeof ph === 'object' && ph.receipt !== null && typeof ph.receipt === 'object' ? ph.receipt.result : undefined;
     if (result === null || typeof result !== 'object') continue;
@@ -128,15 +135,22 @@ function describeRecord(dir, file) {
       const seen = (result.task ?? {}).id ?? result.taskId;
       if (typeof seen === 'string') labelTask = seen;
     }
-    if (usablePhase(ph)) latest = result;
-    else {
+    // `undefined` where this phase cannot say: not a worker-start, or no argv
+    // recorded. Only a phase that names its own placement may claim `local`.
+    const on = ph.name !== 'worker-start' || !Array.isArray(ph.argv) ? undefined : argvValue(ph.argv, '--on') ?? '';
+    if (usablePhase(ph)) {
+      latest = result;
+      latestHost = on;
+    } else {
       const leaked = agentPane(result.effects);
-      if (leaked !== null) unsettled = { handle: leaked, dispatchId: typeof result.dispatchId === 'string' ? result.dispatchId : null };
+      if (leaked !== null) {
+        unsettled = { handle: leaked, dispatchId: typeof result.dispatchId === 'string' ? result.dispatchId : null, host: on };
+      }
     }
   }
 
   if (latest === null) {
-    return { request, taskId: labelTask, dispatchId: null, handle: null, unsettled, why: 'no usable receipt yet' };
+    return { request, taskId: labelTask, dispatchId: null, handle: null, host: undefined, unsettled, why: 'no usable receipt yet' };
   }
 
   const tid = (latest.task ?? {}).id ?? latest.taskId;
@@ -146,6 +160,7 @@ function describeRecord(dir, file) {
     taskId: typeof tid === 'string' ? tid : labelTask,
     dispatchId: typeof latest.dispatchId === 'string' ? latest.dispatchId : null,
     handle,
+    host: latestHost,
     unsettled: handle === null ? unsettled : null,
     why: handle === null ? 'no agent pane in the last usable receipt' : '',
   };
@@ -181,14 +196,44 @@ function workerIndex(run) {
  * dead" is how one of the two ends up wrong. The third value is the whole point:
  * a handle missing from a terminal list that omits hosts is UNKNOWN, never dead
  * (F-028), and a caller about to create a rival child must not round that down.
+ *
+ * BUT OMISSION IS PER HOST, and reading it as global cost a real cleanup.
+ * Measured 2026-08-25: one paired remote runtime was out of scope
+ * (`{"hostIds":["local"],"omittedHostIds":["runtime:7930a317-…"]}`), and that
+ * alone made a LOCALLY dispatched pane unknowable — so `ax worker release`
+ * refused to close a corpse whose PR was already merged, and the record stayed
+ * unclosable for as long as that unrelated remote slept.
+ *
+ * So ONE narrow exception, and deliberately no more: `host === ''` is a dispatch
+ * this machine issued with no `--on`, and a receipt that explicitly names
+ * `local` among the hosts it read has therefore covered that pane's runtime.
+ * An absent handle is then a corpse (F-003), whatever else was omitted.
+ *
+ * REMOTE ROWS ARE UNTOUCHED. A record names its host by ENVIRONMENT NAME
+ * (`--on gapicore`) while the receipt namespaces runtimes (`runtime:<uuid>`);
+ * those are two vocabularies and no mapping between them is established here.
+ * Matching them loosely would prove a remote pane dead on a coincidence of
+ * substrings, and this verdict authorises closing panes.
+ *
+ * AND `host` HAS NO DEFAULT, on purpose. `''` is a caller ASSERTING "this record
+ * dispatched locally"; an absent `host` is a caller that has not established the
+ * owner, and that must keep the conservative answer rather than inherit the
+ * exception through a default nobody chose.
  */
-export function paneVerdict(handle, why, terminals) {
+export function paneVerdict(handle, why, terminals, { host } = {}) {
   if (handle === null) return { pane: 'INCONNU', detail: why };
   const terminal = terminals.byHandle.get(handle);
   if (terminal === undefined) {
-    return terminals.omitted
-      ? { pane: 'INCONNU', detail: `${handle} is not in this host's terminal list, and hosts are omitted from its scope` }
-      : { pane: 'MORT', detail: `${handle} is unknown to the runtime` };
+    const localProven = host === '' && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
+    if (terminals.omitted && !localProven) {
+      return { pane: 'INCONNU', detail: `${handle} is not in this host's terminal list, and hosts are omitted from its scope` };
+    }
+    return {
+      pane: 'MORT',
+      detail: localProven && terminals.omitted
+        ? `${handle} is unknown to the local runtime, which this list did read (only remote hosts were omitted)`
+        : `${handle} is unknown to the runtime`,
+    };
   }
   if (terminal.orphaned === true) return { pane: 'MORT', detail: `${handle} orphaned` };
   return { pane: 'VIVANT', detail: handle };
@@ -275,7 +320,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   const matched = new Set();
 
   for (const row of rows) {
-    const { pane, detail } = paneVerdict(row.handle, row.why, terminals);
+    const { pane, detail } = paneVerdict(row.handle, row.why, terminals, { host: row.host });
     if (pane === 'VIVANT') alive += 1;
 
     let state;
@@ -283,7 +328,14 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     if (!workers.ok) {
       state = 'ILLISIBLE';
     } else {
-      entry = (row.dispatchId !== null ? workers.byDispatch.get(row.dispatchId) : undefined) ?? (row.handle !== null ? workers.byHandle.get(row.handle) : undefined);
+      entry = (row.dispatchId !== null ? workers.byDispatch.get(row.dispatchId) : undefined)
+        // The comparison column, and only that: a record with no usable receipt
+        // still names its dispatch in the failed one, so looking it up here is
+        // what turns a permanent `ABSENT` into Orca's real accounting for it.
+        // Never used for the pane or for a release — those stay on the usable
+        // receipt, because a mispaired dispatch releases the wrong child.
+        ?? (row.unsettled?.dispatchId ? workers.byDispatch.get(row.unsettled.dispatchId) : undefined)
+        ?? (row.handle !== null ? workers.byHandle.get(row.handle) : undefined);
       if (entry === undefined) state = 'ABSENT';
       else {
         if (typeof entry.dispatchId === 'string') matched.add(entry.dispatchId);
@@ -302,7 +354,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     // 2026-08-25 on 55-work and 56-work, whose recorded panes were in the
     // receipt all along.
     const leaked = row.unsettled ?? null;
-    const leakedVerdict = leaked === null ? null : paneVerdict(leaked.handle, '', terminals);
+    const leakedVerdict = leaked === null ? null : paneVerdict(leaked.handle, '', terminals, { host: leaked.host });
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 

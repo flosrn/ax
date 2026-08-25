@@ -674,9 +674,22 @@ export function release(
     }
 
     if (terminal === undefined) {
-      // Absence proves nothing while hosts are omitted from the scope: those two
-      // readings are the difference between a corpse and a remote child.
-      if (terminals.omitted) tally.unprovable += 1;
+      // Absence proves nothing while the pane's OWN runtime is out of scope:
+      // those two readings are the difference between a corpse and a remote
+      // child. But omission is PER HOST, and reading it globally made a record
+      // unclosable for as long as an unrelated remote slept — measured
+      // 2026-08-25: `ax worker release --dispatch ctx_febc0a00702f --close`
+      // answered `1 pane not establishable` on a LOCAL dispatch whose PR was
+      // already merged, because one paired remote runtime was omitted.
+      //
+      // The record's own `--on` settles it, and `''` (a local dispatch) is the
+      // only claim made here: the receipt names `local` among the hosts it read,
+      // so that pane's runtime WAS covered. A remote row stays unprovable —
+      // this store names hosts by environment name and the receipt namespaces
+      // runtimes, and no mapping between the two is established.
+      const owner = index.byDispatch.get(row.dispatchId)?.env;
+      const localProven = owner === '' && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
+      if (terminals.omitted && !localProven) tally.unprovable += 1;
       else tally.gone += 1;
       continue;
     }
