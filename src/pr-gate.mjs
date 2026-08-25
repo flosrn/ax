@@ -57,6 +57,7 @@ import { join } from 'node:path';
 import { CONFIG_FILE, repoPaths } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
 import { defaultExec } from './exec.mjs';
+import { repoSlug } from './gh.mjs';
 import { ciGround, clean, commitsGround, firstLine, gitGrounds, keywordGround, must, payload, succeeded, threadsGround } from './pr-grounds.mjs';
 
 const USAGE = 'ax pr gate --pr <n> [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
@@ -237,7 +238,7 @@ export function gate(
   }
 
   const run = args => gh(args, paths.root);
-  const own = resolveRepo(run);
+  const own = repoSlug(run);
   if (own === '') {
     return cannot("could not resolve this checkout's repository", 'gh auth status   # then re-run from a checkout with a GitHub remote');
   }
@@ -364,11 +365,4 @@ export function gate(
   }
   note(`MERGED — ${slug}#${pr} at ${sha} (${method})`);
   return 0;
-}
-
-/** The checkout's own repository, the way `ax triage publish` resolves it. */
-function resolveRepo(run) {
-  const out = run(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']);
-  if (!succeeded(out)) return '';
-  return firstLine(out.stdout);
 }

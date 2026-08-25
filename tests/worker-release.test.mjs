@@ -125,7 +125,7 @@ function fakeExec({ repo = 'owner/repo', answers = {} } = {}) {
     const sub = bin === 'git' ? args[args.indexOf('-C') + 2] ?? args[0] : `${args[0]} ${args[1]}`;
     const key = `${bin} ${sub}`;
     if (bin === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: `${SCOPE}\n`, stderr: '' };
-    if (bin === 'gh' && args[0] === 'repo') return { status: 0, stdout: JSON.stringify({ nameWithOwner: repo }), stderr: '' };
+    if (bin === 'gh' && args[0] === 'repo') return { status: 0, stdout: `${repo}\n`, stderr: '' };
     return answers[key] ?? { status: 1, stdout: '', stderr: `stub has no answer for ${key}\n` };
   };
   return { exec, calls };

@@ -25,6 +25,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
 import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
 import { draftDirFor, passesIn, readDraft, requestFor } from './draft.mjs';
@@ -82,7 +83,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   const paths = repoPaths(cwd);
   if (!paths.root) return refuse('not inside a git repository — the drafts live in this checkout');
   const gh = args => exec('gh', args, paths.root);
-  const slug = repo || resolveRepo(gh);
+  const slug = repo || repoSlug(gh);
   if (slug === '') return refuse('could not resolve the current repository', 'ax triage publish --repo <owner>/<repo>');
 
   // The repository's own vocabulary, read ONCE for the batch and before any
@@ -361,12 +362,6 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
 }
 
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
-
-function resolveRepo(gh) {
-  const out = gh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']);
-  if (out.error || out.status !== 0) return '';
-  return String(out.stdout ?? '').trim().split('\n')[0] ?? '';
-}
 
 /**
  * How many labels one `gh label list` is asked for. `gh` paginates up to this

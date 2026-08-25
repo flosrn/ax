@@ -90,6 +90,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { defaultExec } from '../exec.mjs';
+import { repoView } from '../gh.mjs';
 import { createRunner, parseReceipt, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
@@ -590,14 +591,13 @@ export function release(
   }
   const scope = all || only !== '' ? '' : home;
 
-  const repoOut = gh(['repo', 'view', '--json', 'nameWithOwner']);
-  const repo = repoOut.error === undefined && repoOut.status === 0 ? String(parseReceipt(repoOut.stdout).nameWithOwner ?? '') : '';
+  const viewed = repoView(gh);
+  const repo = viewed.slug;
   // Without a repository there is no artifact to ask about, so every row would
   // be an unprovable KEEP and the report would read like a clean sweep. That is
   // an inability, and it is named as one.
   if (repo === '' && !noProof) {
-    const detail = repoOut.error ? String(repoOut.error.message ?? repoOut.error) : firstLine(repoOut.stderr) || `exit ${repoOut.status}`;
-    return cannot(`gh cannot name this repository, so no landing can be proven: ${detail}`, 'gh auth login   # then re-run; or --close --dispatch <id> --no-proof for one pane you have looked at');
+    return cannot(`gh cannot name this repository, so no landing can be proven: ${viewed.detail}`, 'gh auth login   # then re-run; or --close --dispatch <id> --no-proof for one pane you have looked at');
   }
 
   const workers = workerInventory(run);

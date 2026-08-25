@@ -25,6 +25,7 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore } from '../worker/record.mjs';
 import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 import { draftDirFor, passesOf, questionProblem, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { INBOX_WINDOW, askHeader, composeReply, pairRulings, parseRulings, questionSpan } from './rulings.mjs';
 
@@ -81,11 +82,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   if (!paths.root) return refuse('not inside a git repository — the draft this answers lives in one');
   const root = paths.root;
 
-  let slug = repo;
-  if (slug === '') {
-    const out = exec('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], root);
-    slug = out.error || out.status !== 0 ? '' : String(out.stdout ?? '').trim().split('\n')[0];
-  }
+  const slug = repo === '' ? repoSlug(args => exec('gh', args, root)) : repo;
   if (slug === '') return refuse('could not resolve the current repository', `ax triage answer --issue ${issue} --repo <owner>/<repo> …`);
 
   const base = { job, repo: slug, issue };
