@@ -152,6 +152,11 @@
           "type": "string",
           "description": "The repo's own worktree creator, when it has one. It must BLOCK until the tree is usable and print the path on its last stdout line. Absent means Orca places the worktree and `ax worktree setup` provisions it."
         },
+        "databaseLabels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tracker labels that mean 'this ticket touches the database'. A launch carrying one of them provisions its worktree with its own Supabase stack (`ax worktree setup --database`) instead of letting the plan decide from a diff — and the diff of a tree that was created seconds ago is empty, so an issue whose whole subject is the database was provisioned to SHARE the primary checkout's stack. Measured 2026-08-25 on ofmchat #71 (domain:database, domain:security): the brief required an isolated reset and a full pgTAP run, and the worktree was announced as not touching the database. Absent means no ticket label forces isolation and the plan decides alone; the guard in front of `ax supabase` still promotes on the first write, but only for commands that go through it."
+        },
         "hosts": {
           "type": "object",
           "description": "Execution hosts this project may dispatch to, keyed by the Orca environment name passed to --on. A host absent from here cannot be dispatched to, and a ground it does not declare is not measured — the floors are what keep a newcomer from being OOM-killed for an incumbent's appetite, and they are per host and per project footprint.",

@@ -85,10 +85,10 @@ test('a --slug repeating the ticket ref is corrected, and the correction is anno
   assert.deepEqual(normalizeSlug('GAP-356', 'cache-components'), { slug: 'cache-components', note: '' });
 });
 
-test('a Linear ticket reduces to the five fields a brief needs, and never to its body', () => {
+test('a Linear ticket reduces to the fields a brief needs, and never to its body', () => {
   const t = readTicket('GAP-353', {
     kind: 'linear',
-    run: runnerOf({ status: 0, stdout: linearReceipt(ISSUE), stderr: '' }),
+    run: runnerOf({ status: 0, stdout: linearReceipt({ ...ISSUE, labels: { nodes: [{ name: 'domain:database' }, { name: 'area:web' }] } }), stderr: '' }),
   });
   assert.deepEqual(t, {
     ok: true,
@@ -97,9 +97,15 @@ test('a Linear ticket reduces to the five fields a brief needs, and never to its
     url: 'https://linear.app/g/issue/GAP-353',
     state: 'In Progress',
     bodyLength: ISSUE.description.length,
+    // A connection, which is the shape a GraphQL tracker answers.
+    labels: ['domain:database', 'area:web'],
   });
   // The body TEXT is the child's to read on its own host. Only its size crosses.
   assert.equal(Object.hasOwn(t, 'body'), false);
+
+  // No label container at all is NO labels, never a throw: the consumer decides
+  // what an empty list means and says so.
+  assert.deepEqual(readTicket('GAP-353', { kind: 'linear', run: runnerOf({ status: 0, stdout: linearReceipt(ISSUE), stderr: '' }) }).labels, []);
 });
 
 test('a GitHub issue answers the same shape, from the top level of its own JSON', () => {
@@ -107,10 +113,19 @@ test('a GitHub issue answers the same shape, from the top level of its own JSON'
   // parser the day a third tracker appears (record.py v_ticket).
   const gh = (bin, args) => {
     assert.equal(bin, 'gh');
-    assert.deepEqual(args, ['issue', 'view', '1234', '--json', 'title,url,state,body']);
+    // `labels` is ASKED FOR. It was not, and the one consumer that needs it —
+    // the worktree's database decision — therefore never saw `domain:database`
+    // on ofmchat #71 (2026-08-25).
+    assert.deepEqual(args, ['issue', 'view', '1234', '--json', 'title,url,state,body,labels']);
     return {
       status: 0,
-      stdout: JSON.stringify({ title: 'Wheel hangs', url: 'https://github.com/o/r/issues/1234', state: 'OPEN', body: 'steps' }),
+      stdout: JSON.stringify({
+        title: 'Wheel hangs',
+        url: 'https://github.com/o/r/issues/1234',
+        state: 'OPEN',
+        body: 'steps',
+        labels: [{ name: 'domain:database' }, { name: 'domain:security' }],
+      }),
       stderr: '',
     };
   };
@@ -121,6 +136,7 @@ test('a GitHub issue answers the same shape, from the top level of its own JSON'
     url: 'https://github.com/o/r/issues/1234',
     state: 'OPEN',
     bodyLength: 5,
+    labels: ['domain:database', 'domain:security'],
   });
 });
 

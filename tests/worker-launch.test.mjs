@@ -43,13 +43,13 @@ function capture(fn) {
  * A real repository with a real `.worktrees` base, because placement compares
  * paths the filesystem answers for and the reuse branch reads a directory.
  */
-function repo() {
+function repo({ launch = {} } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-launch-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   mkdirSync(join(dir, '.worktrees'), { recursive: true });
   writeFileSync(
     join(dir, 'ax.config.json'),
-    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry' } }),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry', ...launch } }),
   );
   return dir;
 }
@@ -67,7 +67,7 @@ function provisioned(root, name) {
  * dispatch will use; `cursors` is the liveness series; every argv is recorded so
  * "nothing was dispatched" is asserted rather than assumed.
  */
-function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false } = {}) {
+function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false, labels = [] } = {}) {
   const calls = [];
   let reads = 0;
   const runner = createRunner({
@@ -78,7 +78,7 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/paren
       const receipt = result => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' });
       if (args[0] === 'status') return receipt({ runtime: { reachable: true } });
       if (line.startsWith('linear issue')) {
-        return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state: { name: 'In Progress' }, description: emptyBody ? '   ' : 'a decision, written down' } });
+        return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state: { name: 'In Progress' }, description: emptyBody ? '   ' : 'a decision, written down', labels: { nodes: labels.map(name => ({ name })) } } });
       }
       if (line.startsWith('worktree create')) return created ?? receipt({ worktree: { path: '/nonexistent' } });
       if (line.startsWith('worktree show')) {
@@ -328,6 +328,54 @@ test('a worktree that already exists for the ticket is reused, and still proven 
   assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'no second placement');
   assert.deepEqual(setups, [existing], 'the reused tree is proven habitable, not assumed');
   assert.match(r.started[0], new RegExp(`--worktree path:${existing}`));
+});
+
+test("a ticket labelled as touching the database is provisioned with its own stack", () => {
+  // Measured 2026-08-25 on ofmchat #71 (`domain:database`, `domain:security`):
+  // the plan decides shared-vs-isolated from the DIFF of the tree it is
+  // provisioning, and that tree is seconds old and empty — so the one ticket
+  // whose whole subject was the database was told "this worktree does not touch
+  // the database", and its child then reset a stack the primary checkout and
+  // every other sharing worktree depend on.
+  const root = repo({ launch: { databaseLabels: ['domain:database'] } });
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const setups = [];
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    root,
+    orca: { labels: ['domain:security', 'domain:database'] },
+    setupFn: (argv, context) => (setups.push({ argv, cwd: context.cwd }), 0),
+  });
+
+  assert.equal(r.code, 0);
+  assert.deepEqual(setups[0].argv, ['--database'], 'the label forces isolation instead of leaving it to an empty diff');
+  assert.match(r.out, /this ticket says it touches the database/);
+});
+
+test('a ticket with no declared database label leaves the plan to decide alone', () => {
+  // The scope this must not widen into: a project that declares no vocabulary
+  // gets no forced isolation, and a label vocabulary measured for one fleet is
+  // never inherited by a repo that never declared it.
+  const undeclared = repo();
+  const setups = [];
+  provisioned(undeclared, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    root: undeclared,
+    orca: { labels: ['domain:database'] },
+    setupFn: (argv, context) => (setups.push({ argv, cwd: context.cwd }), 0),
+  });
+  assert.equal(r.code, 0);
+  assert.deepEqual(setups[0].argv, []);
+
+  // Declared, and this ticket carries none of them: same answer.
+  const declared = repo({ launch: { databaseLabels: ['domain:database'] } });
+  provisioned(declared, `${ISSUE}-${SLUG}`);
+  const other = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    root: declared,
+    orca: { labels: ['area:web'] },
+    setupFn: (argv, context) => (setups.push({ argv, cwd: context.cwd }), 0),
+  });
+  assert.equal(other.code, 0);
+  assert.deepEqual(setups[1].argv, []);
 });
 
 test('a tree for another ticket is never reused for this one', () => {
