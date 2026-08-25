@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyDefaults, validate } from './schema.mjs';
+import { mainCheckout, repoRoot } from './git.mjs';
 
 export const CONFIG_FILE = 'ax.config.json';
 export const PACKAGE_NAME = '@flosrn/ax';
@@ -29,26 +30,21 @@ export const assetPath = (...parts) => join(HERE, '..', 'assets', ...parts);
 /**
  * The checkout the command applies to, and the primary checkout behind it.
  *
- * A worktree is the normal case here, not the exception: `--show-toplevel` is
- * the worktree, `--git-common-dir` points into the primary checkout, and the
- * difference is exactly what worktree tooling has to reason about. Both are
- * resolved once, here, so no subcommand re-derives it a sixth way.
+ * A worktree is the normal case here, not the exception: `root` is the working
+ * tree, `main` the primary checkout, and the difference is exactly what
+ * worktree tooling has to reason about. Both come from git.mjs — the ONE
+ * derivation, symlink-resolved and subdirectory-safe. A second derivation here
+ * once re-anchored the relative `--git-common-dir` at the repo root, which
+ * pointed `main` two levels above the repository when asked from `apps/web`
+ * and read the primary checkout as a worktree; tests/git.test.mjs pins the
+ * delegation.
+ *
+ * `{ root: null, main: null }` outside a repository: callers report, never guess.
  */
 export function repoPaths(from = process.cwd()) {
-  const git = args => execFileSync('git', args, { cwd: from, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  let root;
-  try {
-    root = git(['rev-parse', '--show-toplevel']);
-  } catch {
-    return { root: null, main: null };
-  }
-  let main = root;
-  try {
-    const commonDir = resolve(root, git(['rev-parse', '--git-common-dir']));
-    main = dirname(commonDir);
-  } catch {
-    // A repository without a resolvable common dir is its own primary checkout.
-  }
+  const root = repoRoot(from);
+  if (root === undefined) return { root: null, main: null };
+  const main = mainCheckout(from);
   return { root, main, isWorktree: main !== root };
 }
 

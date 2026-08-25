@@ -20,6 +20,7 @@ import {
   removeWorktree,
   repoRoot,
 } from '../src/git.mjs';
+import { repoPaths } from '../src/config.mjs';
 
 const IDENTITY = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
 
@@ -72,6 +73,22 @@ test('called from a SUBDIRECTORY of a linked worktree, the relative common dir i
   mkdirSync(deep, { recursive: true });
   assert.equal(mainCheckout(deep), main);
   assert.equal(mainCheckout(join(main, 'apps', 'web')), main);
+});
+
+test('repoPaths agrees with git.mjs from subdirectories, instead of deriving twice', () => {
+  // The regression class this file already pins twice: `--git-common-dir`
+  // answers relative to the CALLER, so re-anchoring it at the repo root points
+  // above the repository — and made the primary checkout read as a worktree.
+  // config.mjs::repoPaths carried its own second derivation of root/main; this
+  // pins the delegation so the two can never disagree again.
+  assert.deepEqual(repoPaths(join(main, 'apps', 'web')), { root: main, main, isWorktree: false });
+
+  const deep = join(spaced, 'apps', 'web');
+  mkdirSync(deep, { recursive: true });
+  assert.deepEqual(repoPaths(deep), { root: spaced, main, isWorktree: true });
+
+  // Outside any repository: callers report, never guess.
+  assert.deepEqual(repoPaths(fixture), { root: null, main: null });
 });
 
 test('isMainCheckout separates the primary checkout from its worktrees', () => {
