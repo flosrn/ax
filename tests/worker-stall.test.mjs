@@ -562,6 +562,46 @@ test('a REPAIRED held composer is never announced as gone', () => {
   assert.doesNotMatch(r.log, /GONE alert/);
 });
 
+test('a marker written AFTER this watcher armed is still read, and still spares the child', () => {
+  // The marker normally arrives LATE. `repairHeld` arms this watcher while the
+  // composer is still held, the operator runs `ax worker repair` minutes later,
+  // and `claimPid` refuses that second watcher as a double — so the only
+  // watcher alive is the one armed BEFORE the marker existed. Read once at
+  // startup, the marker was therefore observed by nobody, and the repaired
+  // child's ordinary pane close was reported as a death. Measured on
+  // 55-turn-analyzer-r2, 56-scores-r2 and 71-rls-refute (2026-08-25): 49 s,
+  // 88 s and 88 s between the arming and the marker.
+  const base = fakeRunner({
+    status: { dispatch: 'failed', worker: 'failed' },
+    cursors: [0],
+    paneStatus: 'exited',
+    worktrees: ['/tmp/work', ''],
+  });
+  let record = '';
+  const runner = args => {
+    // Written during the dispatch-state probe: after the loop began, and before
+    // the death check of that same tick evaluates the marker.
+    if (args[0] === 'orchestration' && args[1] === 'worker-show' && record !== '') {
+      const rec = JSON.parse(readFileSync(record, 'utf8'));
+      if (rec.heldRepairAt === undefined) {
+        writeFileSync(record, JSON.stringify({ ...rec, heldRepairAt: '2026-08-25T03:16:53.081Z' }));
+      }
+    }
+    return base(args);
+  };
+  runner.calls = base.calls;
+  const r = invoke({
+    runner,
+    before: ({ path }) => {
+      record = path;
+    },
+    env: { ORCA_STALL_AFTER: '600', ORCA_STALL_LIFETIME: '8' },
+  });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 0, 'the repair recorded mid-watch is what spares this child');
+  assert.doesNotMatch(r.log, /GONE alert/);
+});
+
 test('an ORDINARY failure whose pane is gone is still announced as a death', () => {
   // The scope the exclusion above must NOT swallow. Orca files every failure
   // under `failed`, so keying the exclusion on that word would silence exactly
