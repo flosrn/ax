@@ -69,7 +69,7 @@ export const COMMANDS = [
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['launch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
-      ['tail <handle>', 'alive-with-content / alive-and-silent / cannot-establish'],
+      ['tail <handle|request>', 'alive-with-content / alive-and-silent / cannot-establish'],
       ['gate <task>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
       ['transcript <cible>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
