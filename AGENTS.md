@@ -144,6 +144,12 @@ exist, retired git pins and a help tagline that differs from package metadata.
 `ADR NNNN` lives under `~/.omp/docs/adr/`. Neither is required reading before a patch unless the
 header's explanation is insufficient.
 
+**Orca is readable source, not a black box.** This machine runs a patched fork of Orca (ADR 0026);
+the source lives at `~/Code/flosrn/orca` (`origin` = flosrn/orca, `upstream` = stablyai/orca). An
+Orca behavior question is answered by reading that checkout — never by unpacking the installed
+app's `.asar`. A fix or feature that belongs in Orca goes to the fork branch, not to a workaround
+in ax.
+
 ## Try this checkout in another project
 
 ```json
