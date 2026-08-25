@@ -249,6 +249,13 @@ test('a dispatched triage worker gets its own bundled role and playbook', async 
   expect(out?.message?.details).toMatchObject({ skills: ['triage'] });
 });
 
+test('a dispatched refine worker gets its own bundled role and playbook', async () => {
+  const out = await turn(install('[omp role=refine-worker model=@task]'), BASE);
+  expect(out?.systemPrompt?.[2]).toContain('# Refine worker');
+  expect(out?.message?.content).toContain('<playbook name="refine">');
+  expect(out?.message?.details).toMatchObject({ skills: ['refine'] });
+});
+
 // ── the operator path: `/role orchestrator` ──────────────────────────────────
 
 test('/role orchestrator activates the BUNDLED operator role without touching the model', async () => {
