@@ -291,16 +291,26 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
       }
     }
 
-    // A pane recorded by a receipt that never settled, which the runtime is
-    // nonetheless still holding. It is NOT counted — nothing proves that
-    // terminal belongs to this dispatch — and it is NOT released, because a
-    // release on an unproven association is a mutation on a guess. It is shown,
-    // because a live terminal nobody accounts for is the F-048 lie in embryo.
-    const leaked = row.unsettled;
-    const leakedLive = leaked !== null && leaked !== undefined && terminals.byHandle.get(leaked.handle) !== undefined && terminals.byHandle.get(leaked.handle).orphaned !== true;
+    // A pane recorded by a receipt that never settled. It is NOT counted —
+    // nothing proves that terminal belongs to this dispatch — and it is NOT
+    // released, because a release on an unproven association is a mutation on a
+    // guess. It is NAMED whatever its state, which is the part this verb used to
+    // get wrong: a handle was printed only while it was still alive, so the
+    // records most in need of a route (a dispatch that failed at
+    // `dispatch_input`, its pane long closed) rendered as `pane INCONNU · no
+    // usable receipt yet` and named nothing an operator could type. Measured
+    // 2026-08-25 on 55-work and 56-work, whose recorded panes were in the
+    // receipt all along.
+    const leaked = row.unsettled ?? null;
+    const leakedVerdict = leaked === null ? null : paneVerdict(leaked.handle, '', terminals);
+    const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 
-    const suffix = leakedLive ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now` : '';
+    const suffix = leaked === null
+      ? ''
+      : leakedLive
+        ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now`
+        : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
     const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${suffix}`;
 
     // THE F-048 line: a pane the runtime still owns, while Orca's accounting
@@ -324,7 +334,17 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
           : `orca terminal list --json   # establish who owns ${leaked.handle} before assuming free capacity`,
       );
     } else if (pane === 'VIVANT') ok(line);
-    else note(line);
+    else {
+      note(line);
+      // A dispatch DID happen here and established nothing, so this verb can
+      // name no pane — but the child's own session outlives its pane, and one
+      // verb reads it without needing either. Naming the route is not claiming
+      // the fact: `transcript` is fail-closed and answers for itself.
+      if (row.handle === null && leaked !== null) {
+        fix(`ax worker tail ${row.request}   # the recorded pane, resolved from this store`);
+        fix(`ax worker transcript ${row.request}   # what that child actually did — a session outlives its pane`);
+      }
+    }
   }
 
   note(`${alive} live pane(s) — this is the cap count`);

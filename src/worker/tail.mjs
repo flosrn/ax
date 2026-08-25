@@ -1,4 +1,4 @@
-// `ax worker tail <handle>` — is that pane ALIVE, and what has it printed?
+// `ax worker tail <handle|request>` — is that pane ALIVE, and what has it printed?
 //
 // `orca terminal read` answers zero in three unrelated situations, and a
 // coordinator acts on that number. Measured 2026-08-09 on one live handle, back
@@ -35,6 +35,7 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { readPane } from './pane.mjs';
+import { defaultStore, dispatchIndex, requestIdOk } from './record.mjs';
 
 /**
  * The terminal-handle grammar, closed. It lands on argv, and the bash era's
@@ -54,12 +55,55 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   };
 
   // Argument shape FIRST, before the resolution and before any runtime call: a
-  // handle that is not a handle is refused without the runtime ever being
-  // asked, so a typo can never be reported as a terminal's state.
-  const handle = argv[0] ?? '';
-  if (argv.length === 0) return refuse('no terminal handle given (usage: ax worker tail <term_…>)', 'ax worker ls   # the live handles of this machine');
-  if (argv.length > 1) return refuse(`unexpected extra argument: ${argv[1]}`, 'ax worker tail <term_…>   # one handle, no flags');
-  if (!TERMINAL_HANDLE.test(handle)) return refuse(`'${handle}' is not a terminal handle (expected term_…)`, 'ax worker ls   # the live handles of this machine');
+  // target that is neither a handle nor a request id is refused without the
+  // runtime ever being asked, so a typo can never be reported as a terminal's
+  // state.
+  const target = argv[0] ?? '';
+  if (argv.length === 0) return refuse('no terminal handle or request id given (usage: ax worker tail <term_…|request>)', 'ax worker ls   # the live handles of this machine');
+  if (argv.length > 1) return refuse(`unexpected extra argument: ${argv[1]}`, 'ax worker tail <term_…|request>   # one target, no flags');
+
+  // A REQUEST ID IS A TARGET TOO. Measured 2026-08-25: `ax worker ls` names no
+  // handle for a record whose worker-start never settled, `ax worker transcript
+  // 55-work` reads that same record happily, and `ax worker tail 55-work` was
+  // refused on its argument shape — so the one verb that says whether the pane
+  // is still emitting was unreachable for exactly the records that needed it.
+  // The store is what ties a request to its pane, and `dispatchIndex` records
+  // the handle of every worker-start receipt, settled or not.
+  //
+  // THE RUNTIME COMES WITH THE HANDLE, from the SAME row. A remote dispatch's
+  // pane lives on the host its `worker-start --on` named, so a handle read
+  // against the local runtime interrogates the wrong machine — and taking the
+  // runtime from the record's newest worker-start instead would mispair them the
+  // moment a `--replace` moved a child between hosts.
+  let handle = target;
+  let environment;
+  if (!TERMINAL_HANDLE.test(target)) {
+    if (!requestIdOk(target)) return refuse(`'${target}' is neither a terminal handle (term_…) nor a request id`, 'ax worker ls   # the requests and live handles of this machine');
+    const index = dispatchIndex(defaultStore(env));
+    const rows = [...index.byDispatch.entries()]
+      .filter(([dispatchId, row]) => row.handle !== null && (dispatchId === target || row.request === target))
+      .map(([, row]) => row);
+    const handles = new Set(rows.map(row => row.handle));
+    // Zero is an inability, never a death: rows exist here only where a
+    // parseable worker-start receipt named a dispatch, so a stranded record maps
+    // nothing at all (F-028).
+    if (handles.size === 0) {
+      return refuse(
+        `no dispatch record on this host names a pane for '${target}'${index.missing ? ' (there is no dispatch store here)' : ''}`,
+        `ax worker transcript ${target}   # the session history needs no pane; ax worker ls names what this store holds`,
+      );
+    }
+    if (handles.size > 1) {
+      return refuse(
+        `'${target}' names ${handles.size} panes (${[...handles].join(', ')}) — a replaced dispatch keeps both, and tailing a guess reads the wrong child`,
+        `ax worker tail ${[...handles][0]}   # name the pane you mean`,
+      );
+    }
+    const row = rows.reduce((newest, next) => ((next.issuedAt ?? 0) >= (newest.issuedAt ?? 0) ? next : newest), rows[0]);
+    handle = row.handle;
+    environment = row.env || undefined;
+    note(`${target} → ${handle}${environment ? ` on '${environment}'` : ''} (from this host's dispatch store)`);
+  }
 
   const bin = runner ? 'injected' : resolve({ env });
   if (!bin) return refuse('no Orca CLI on this machine — the pane state cannot be read here', 'ORCA_CLI_COMMAND=<binary> ax worker tail ' + handle);
@@ -76,7 +120,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   // ./pane.mjs — one reader for the four verbs that need this receipt. This one
   // maps every named inability to its own repair, because "I could not look"
   // must never resemble "nothing is there".
-  const pane = readPane(run, handle);
+  const pane = readPane(run, handle, { environment });
   const refusal = pane.refusal;
 
   if (refusal !== null) {
