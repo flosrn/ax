@@ -19,13 +19,13 @@
 // REFUSE rather than run when promotion did not take, and hand the caller the
 // child's own exit status.
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
 import { loadCheckoutConfig, repoPaths } from './config.mjs';
 import { removeBlock, writeBlock } from './dotenv.mjs';
-import { isMainCheckout } from './git.mjs';
+import { currentBranch, isMainCheckout } from './git.mjs';
 import { fatal, warn } from './log.mjs';
 import { identify } from './worktree/identity.mjs';
 import { PREFIX, planWorktree } from './worktree/plan.mjs';
@@ -308,16 +308,6 @@ function promoteCurrent({ root, config, branch = currentBranch(root) }) {
   return result.started
     ? { promoted: true, projectId: result.projectId, offset: result.offset, warnings }
     : { promoted: false, reason: `the stack for ${result.projectId} did not start`, warnings };
-}
-
-/** A detached HEAD has no branch name; the plan falls back to the directory. */
-function currentBranch(cwd) {
-  try {
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return branch === 'HEAD' ? undefined : branch;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Run the real CLI and report its own exit status. */

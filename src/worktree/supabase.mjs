@@ -18,10 +18,10 @@
  * `ports.maxSlot`); the project prefix arrives from `project.name`.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { run as execRun } from '../exec.mjs';
 import { gitBlobSha } from '../hash.mjs';
 import { isPortBound } from './ports.mjs';
 
@@ -730,8 +730,5 @@ export function teardown({ cwd, projectId: id, cli = 'supabase', run = defaultRu
   return { stopped: result.status === 0, projectId: target };
 }
 
-/** Default command runner. Never throws: a missing binary is a status, not a crash. */
-function defaultRun(command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options });
-  return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
-}
+/** Default command runner — the shared adapter (src/exec.mjs). Never throws: a missing binary is a status, not a crash. */
+const defaultRun = (command, args, options = {}) => execRun(command, args, options);

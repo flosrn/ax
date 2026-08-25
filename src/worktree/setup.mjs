@@ -13,12 +13,11 @@
 // Only the third step is allowed to change anything, so a plan can be printed,
 // diffed or re-derived without provisioning a thing.
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { removeBlock, writeBlock } from '../dotenv.mjs';
-import { excludePaths, installHooks, isMainCheckout } from '../git.mjs';
+import { currentBranch, excludePaths, installHooks, isMainCheckout } from '../git.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { CONTEXT_PATH, renderContext } from './context.mjs';
@@ -170,16 +169,3 @@ function forcedDatabase(argv) {
   return undefined;
 }
 
-/** A detached HEAD has no branch name; the plan falls back to the directory. */
-function currentBranch(cwd) {
-  try {
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return branch === 'HEAD' ? undefined : branch;
-  } catch {
-    return undefined;
-  }
-}

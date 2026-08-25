@@ -20,11 +20,11 @@
 // a human-or-coordinator decision, with its message already written.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 import { setJsonPath } from './blocks.mjs';
 import { PACKAGE_NAME, repoPaths } from './config.mjs';
+import { run as execRun } from './exec.mjs';
 import { bad, fix, note, ok, raw } from './log.mjs';
 
 const USAGE = 'ax pin <X.Y.Z|vX.Y.Z> [--dry-run]';
@@ -38,10 +38,7 @@ const RELEASE = /^v?([0-9]+\.[0-9]+\.[0-9]+)$/;
  * minute on the machine this was written for, cold caches worse.
  */
 const INSTALL_TIMEOUT_MS = 600_000;
-export const pinExec = (bin, args, at) => {
-  const out = spawnSync(bin, args, { cwd: at, encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-  return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
-};
+export const pinExec = (bin, args, at) => execRun(bin, args, { cwd: at, timeout: INSTALL_TIMEOUT_MS });
 
 export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   const usageError = message => {
