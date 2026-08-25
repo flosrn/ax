@@ -322,9 +322,16 @@ export function stall(
     }
   };
 
-  // Read ONCE: `start` has already returned by the time this watcher runs, so the
-  // marker cannot appear or vanish mid-watch.
-  const repaired = heldRepaired(recordPath);
+  // RE-READ EVERY TICK, because the marker normally appears AFTER this watcher
+  // is armed. `repairHeld` (start.mjs) arms it and exits 3 while the composer is
+  // still held; the operator then runs `ax worker repair`, which writes the
+  // marker minutes later and arms a watcher that `claimPid` refuses as a double.
+  // So the only watcher alive is this one, and a marker read once at startup is
+  // a marker no watcher ever observes: the repaired child's ordinary pane close
+  // is then reported as a death. Measured on 55/56/71 (2026-08-25), all three
+  // repaired between 49 s and 88 s after their watcher was armed. One record
+  // read per tick, against a 60 s default tick.
+  const repaired = () => heldRepaired(recordPath);
 
   let claim;
   try {
@@ -402,7 +409,7 @@ export function stall(
       // then died is exactly the death worth reporting — the Run is told nothing
       // about it either. The marker is written only for a CONFIRMED submission,
       // so a brief that may still be unsent keeps this check armed.
-      if ((cursor === null || cursorRead.exited) && state.known && !state.settled && !(state.failed && repaired) && paneGone(run, fields.handle, fields.env)) {
+      if ((cursor === null || cursorRead.exited) && state.known && !state.settled && !(state.failed && repaired()) && paneGone(run, fields.handle, fields.env)) {
         const sent = alertGone(run, fields, parsed.request, state.label);
         if (sendOk(sent)) {
           log(`GONE alert sent to run:${fields.run}; exiting.`);
