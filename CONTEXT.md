@@ -27,3 +27,19 @@ when the receipt provably covered its host.
 **Disposition**:
 What a verb decides on top of a shared measurement — fail-open or fail-closed, per verb,
 never inherited from the measurement itself.
+
+## Database isolation
+
+**Stack**:
+The set of containers one worktree's database runs in, addressed only by its project id —
+the id is the single handle the container runtime gives on it.
+
+**Claim**:
+A worktree's recorded ownership of a stack: the port block it took and the project id its
+containers run under. A claim is resolved, never re-derived — re-deriving is how a rename
+mints a second stack.
+
+**Promotion**:
+Moving a checkout from the shared database to its own stack, config and env first, start
+strictly last, so an interrupted promotion leaves the app and the config naming the same
+project.
