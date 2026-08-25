@@ -52,6 +52,24 @@ export const TERMINAL_HANDLE = /^term_[A-Za-z0-9_-]+$/;
 /** Cannot establish. The one verdict this verb may never confuse with silence. */
 const CANNOT = 3;
 
+/**
+ * The id `ax worker transcript` can actually take for this pane.
+ *
+ * A request or dispatch id is already that id. A `term_…` handle is not:
+ * transcript resolves through the record store, and a handle is a pane. The
+ * store may still name a unique request (or dispatch) that opened this pane;
+ * zero or two owners is an inability, never a guess (F-028).
+ */
+function transcriptOwner(target, handle, env) {
+  if (!TERMINAL_HANDLE.test(target)) return target;
+  const index = dispatchIndex(defaultStore(env));
+  const hits = [...index.byDispatch.entries()].filter(([, row]) => row.handle === handle);
+  const requests = new Set(hits.map(([, row]) => row.request));
+  if (requests.size === 1) return [...requests][0];
+  if (hits.length === 1) return hits[0][0];
+  return '';
+}
+
 export function tail(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
   const refuse = (message, repair) => {
     bad(`CANNOT ESTABLISH — ${message}`);
@@ -192,7 +210,14 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   if (exited) {
     ok(`EXITED, SILENT — ${handle}  status=${status}  cursor=${cursor}  no line to show.`);
     note('The pane is gone and printed nothing this read can show. Its session outlives it:');
-    fix(redactSecrets(`ax worker transcript ${target}   # what that child did, from its own history`));
+    // `transcript` resolves a request or a dispatch id through the store, never
+    // a `term_…` handle. Suggesting `transcript <handle>` is an inexecutable
+    // next action — measured 2026-08-25, the EXITED path printed exactly that
+    // after resolving 56-scores-r2. Reverse-map when the store has a unique
+    // owner; otherwise name a verb that does not need one.
+    const owner = transcriptOwner(target, handle, env);
+    if (owner) fix(redactSecrets(`ax worker transcript ${owner}   # what that child did, from its own history`));
+    else fix('ax worker ls   # this handle has no unique request in the store, so transcript cannot take it');
     return 4;
   }
 
