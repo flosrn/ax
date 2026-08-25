@@ -906,3 +906,74 @@ test('--pass expects a number', () => {
   assert.equal(r.code, 2);
   assert.match(r.out, /--pass expects a number/);
 });
+
+// ── publish: the refine job ──────────────────────────────────────────────────
+// One label, one Brief-only comment — and the comment goes FIRST: the label is
+// the automation trigger, and a label-then-failed-comment would leave a
+// ready-for-agent issue with no Brief for an AFK launcher to act on.
+
+const READY_LABELS = { status: 0, stdout: JSON.stringify([...REPO_LABELS, 'ready-for-agent'].map(name => ({ name }))), stderr: '' };
+
+const refineReady = ['Ready: yes', '', '## Agent Brief', '', 'Summary: wire the widget.', '', '## Verification', '', 'G3 pass — src/socket.mjs.'].join('\n');
+
+test('a ready refine draft posts its Brief FIRST, then applies only ready-for-agent', () => {
+  const root = repo();
+  draft(root, 'refine-acme-widgets-7', refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  assert.equal(r.code, 0);
+  const [comment, edit] = mutations(r.calls);
+  assert.match(comment, /issue comment 7/);
+  assert.match(edit, /issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.ok(!edit.includes('--remove-label'), 'refine removes nothing');
+  const posted = /--body-file (\S+)/.exec(comment)[1];
+  const body = readFileSync(posted, 'utf8');
+  assert.match(body, /wire the widget/);
+  assert.ok(!body.includes('G3 pass'), 'the Verification section never reaches the tracker');
+  assert.match(body, /during refinement/);
+});
+
+test('a refused refine comment applies NO label, and never promises a blind re-post', () => {
+  const root = repo();
+  draft(root, 'refine-acme-widgets-7', refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, comment: { status: 1, stderr: 'boom' } } });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 1, 'the label edit never ran');
+  assert.match(r.out, /label was NOT applied/);
+  assert.match(r.out, /did the Brief land\?/, 'the repair reads the state before any retry');
+});
+test('a refused refine label names the label-only repair, never a publish re-run', () => {
+  const root = repo();
+  draft(root, 'refine-acme-widgets-7', refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, labels: { status: 1, stderr: 'nope' } } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.match(r.out, /already posted/i);
+});
+
+test('a repository without the ready-for-agent label refuses the refine batch before any mutation', () => {
+  const root = repo();
+  draft(root, 'refine-acme-widgets-7', refineReady);
+  const r = run(['--issue', '7', '--job', 'refine'], { root });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 0);
+  assert.match(r.out, /ready-for-agent/);
+});
+
+test('Ready: no blocks with the repair path, never as a malformed draft', () => {
+  const root = repo();
+  draft(root, 'refine-acme-widgets-7', ['Ready: no', '', '## Agent Brief', '', 'Gate 2 fails; split proposal below.', '', '## Verification', '', 'G2 fail.'].join('\n'));
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 0);
+  assert.match(r.out, /not ready/);
+  assert.match(r.out, /--fresh/);
+});
+
+test('open questions block a refine publish exactly as they block a triage one', () => {
+  const root = repo();
+  draft(root, 'refine-acme-widgets-7', ['Ready: yes', '', '## Agent Brief', '', 'Q1: [product] cap the import where?', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
+  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  assert.equal(r.code, 1);
+  assert.equal(mutations(r.calls).length, 0);
+  assert.match(r.out, /open question/);
+});
