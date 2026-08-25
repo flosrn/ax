@@ -193,7 +193,8 @@ export function questionProblem(questions) {
  * and every fold was a bespoke ~200-line string edit against anchors that went
  * stale when a child rewrote its draft.
  */
-export function parseDraft(text) {
+export function parseDraft(text, job = 'triage') {
+  if (job === 'refine') return parseRefineDraft(text);
   const labels = [];
   const remove = [];
   const body = [];
@@ -251,6 +252,71 @@ export function parseDraft(text) {
 }
 
 /**
+ * The refine ruleset: a Definition-of-Ready verdict, not a categorization.
+ *
+ * Everything the triage grammar treats as the point — label directives — is a
+ * refusal here. A refine child that writes `Labels:` has misread its job
+ * (categorization was decided by the PRD), and silently ignoring the line would
+ * publish a draft whose author believed something the publisher discarded.
+ *
+ * Readiness is said out loud, `Ready: yes|no`, because with directives gone the
+ * draft has no structured channel left and structural inference is wrong twice
+ * over: a gate-failed draft carrying a repair proposal has no `Q<n>:` lines
+ * either, and an absent line must be a MALFORMED refusal, never a quiet verdict
+ * — a hand edit that drops the line, or leaves two of them, must not publish by
+ * parser accident. That is also why the cardinality rules below are fail-closed:
+ * exactly one `Ready:`, exactly one `## Agent Brief`, then exactly one
+ * `## Verification`.
+ *
+ * The split between the two sections is the noise fix measured on
+ * goodluckagency/ofmchat#52-#54: the published comment triple-stated rulings and
+ * justified labels the PRD had already decided, while the evidence a reviewer
+ * needs (file:line reads) rots on the tracker. So `body` is the Agent Brief
+ * slice ONLY — what `publish` posts — and the Verification section never leaves
+ * `.scratch`; it is the coordinator's review material.
+ *
+ * The return distinguishes three states `status` must render apart (R8):
+ * publishable (`ok: true`), not-ready-by-verdict (`ok: false, ready: 'no'`,
+ * structure valid — the repair path), and malformed (`ok: false, ready: null`
+ * or a structural reason). `ready` is set only once the structure held, so a
+ * caller may branch on it without re-deriving the grammar.
+ */
+function parseRefineDraft(text) {
+  const lines = String(text ?? '').split('\n');
+  const questions = questionsIn(text);
+  const refuse = (reason, ready = null) => ({ ok: false, reason, labels: [], remove: [], body: '', close: false, questions, ready });
+
+  for (const line of lines) {
+    if (/^(Labels|Remove labels|Close):/.test(line)) {
+      return refuse(`a refine draft carries no label directives, but this one says \`${line.trim()}\` — categorization was decided by the PRD; refine publishes only ready-for-agent`);
+    }
+  }
+
+  const verdicts = lines.filter(line => /^Ready:/.test(line));
+  if (verdicts.length === 0) return refuse('this draft says no `Ready: yes|no` — an absent verdict is a malformed draft, never a quiet not-ready');
+  if (verdicts.length > 1) return refuse(`this draft says \`Ready:\` ${verdicts.length} times — two verdicts cannot both stand, and a hand edit that left both must not publish by accident`);
+  const verdict = verdicts[0].slice('Ready:'.length).trim().toLowerCase();
+  if (verdict !== 'yes' && verdict !== 'no') return refuse(`\`${verdicts[0].trim()}\` is neither \`Ready: yes\` nor \`Ready: no\` — the verdict has two values, said exactly`);
+
+  const briefAt = lines.flatMap((line, i) => (/^## Agent Brief\s*$/.test(line) ? [i] : []));
+  const verifAt = lines.flatMap((line, i) => (/^## Verification\s*$/.test(line) ? [i] : []));
+  if (briefAt.length === 0) return refuse('this draft has no `## Agent Brief` section — there is nothing to publish');
+  if (briefAt.length > 1) return refuse('this draft has two `## Agent Brief` sections — the publishable slice must be unambiguous');
+  if (verifAt.length === 0) return refuse('this draft has no `## Verification` section — the coordinator reviews the gate evidence, not the verdict alone');
+  if (verifAt.length > 1) return refuse('this draft has two `## Verification` sections — the boundary of what never reaches the tracker must be unambiguous');
+  if (verifAt[0] < briefAt[0]) return refuse('the `## Verification` section precedes `## Agent Brief` — the published slice is the bytes between the two, in that order');
+
+  const body = lines.slice(briefAt[0] + 1, verifAt[0]).join('\n').trim();
+  if (body === '') return refuse('the Agent Brief is empty — a verdict with nothing to publish is not ready');
+
+  const out = { labels: [], remove: [], body, close: false, questions, ready: verdict };
+  const asked = questionProblem(questions);
+  if (asked !== null) return { ok: false, reason: asked, ...out };
+  if (verdict === 'no') return { ok: false, reason: 'not ready — this draft carries a repair proposal; correct the ticket (or the draft) and redispatch with --fresh', ...out };
+  return { ok: true, ...out };
+}
+
+/**
  * The draft for one dispatch, off disk.
  *
  * An absent file is the ordinary case, not an error: it means the session has
@@ -273,5 +339,5 @@ export function readDraft(root, identity) {
   // has to be able to check the version they hold with a command they already
   // trust. Measured 2026-08-22: #54 went from 106 lines to 117 after its child
   // had already reported, with no signal, and every anchor against it was stale.
-  return { ...parseDraft(text), path, sha: gitBlobSha(text), lines: text.split('\n').length };
+  return { ...parseDraft(text, identity.job), path, sha: gitBlobSha(text), lines: text.split('\n').length };
 }

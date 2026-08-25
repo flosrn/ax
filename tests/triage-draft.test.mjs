@@ -219,3 +219,110 @@ test('a draft that does not exist has no fingerprint, rather than a fingerprint 
   assert.equal(found.sha, '');
   assert.equal(found.lines, 0);
 });
+
+// ── the refine grammar ───────────────────────────────────────────────────────
+// A refine draft is a Definition-of-Ready verdict, not a categorization: it
+// carries no label directives, says its readiness out loud, and splits what the
+// tracker gets (the Agent Brief) from what only the coordinator reads (the
+// Verification evidence). Every ambiguity is a named refusal, because a draft
+// that publishes by parser accident is the false-ready an AFK launcher acts on.
+
+const refineDraft = (lines) => lines.join('\n');
+
+const READY_DRAFT = refineDraft([
+  'Ready: yes',
+  '',
+  '## Agent Brief',
+  '',
+  'Summary: wire the widget to the socket.',
+  '',
+  '## Verification',
+  '',
+  'G3 pass — the socket exists as the ticket assumes (src/socket.mjs).',
+]);
+
+test('a ready refine draft publishes its Brief and only its Brief', () => {
+  const found = parseDraft(READY_DRAFT, 'refine');
+  assert.equal(found.ok, true);
+  assert.equal(found.ready, 'yes');
+  assert.ok(found.body.includes('wire the widget'));
+  assert.ok(!found.body.includes('G3 pass'));
+  assert.ok(!found.body.includes('Ready:'));
+  assert.deepEqual(found.labels, []);
+  assert.deepEqual(found.remove, []);
+  assert.equal(found.close, false);
+});
+
+test('a refine draft that names labels is refused whole — categorizing means it misread its job', () => {
+  const found = parseDraft(refineDraft(['Ready: yes', 'Labels: enhancement', '## Agent Brief', 'x', '## Verification', 'y']), 'refine');
+  assert.equal(found.ok, false);
+  assert.match(found.reason, /Labels:/);
+  for (const line of ['Remove labels: needs-triage', 'Close: yes']) {
+    const refused = parseDraft(refineDraft(['Ready: yes', line, '## Agent Brief', 'x', '## Verification', 'y']), 'refine');
+    assert.equal(refused.ok, false, line);
+  }
+});
+
+test('Ready: no is a verdict, distinguishable from a malformed draft', () => {
+  const found = parseDraft(refineDraft(['Ready: no', '', '## Agent Brief', '', 'Gate 2 fails: the ticket spans three slices. Split proposal: …', '', '## Verification', '', 'G2 fail — three disjoint surfaces.']), 'refine');
+  assert.equal(found.ok, false);
+  assert.equal(found.ready, 'no');
+  assert.match(found.reason, /not ready/i);
+});
+
+test('an absent Ready directive is malformed, not a quiet not-ready', () => {
+  const found = parseDraft(refineDraft(['## Agent Brief', 'x', '## Verification', 'y']), 'refine');
+  assert.equal(found.ok, false);
+  assert.equal(found.ready, null);
+  assert.match(found.reason, /Ready/);
+});
+
+test('two Ready directives are refused — a hand edit that leaves both verdicts must not publish by accident', () => {
+  const found = parseDraft(refineDraft(['Ready: yes', 'Ready: no', '## Agent Brief', 'x', '## Verification', 'y']), 'refine');
+  assert.equal(found.ok, false);
+  assert.equal(found.ready, null);
+});
+
+test('a Ready value that is neither yes nor no is refused', () => {
+  const found = parseDraft(refineDraft(['Ready: maybe', '## Agent Brief', 'x', '## Verification', 'y']), 'refine');
+  assert.equal(found.ok, false);
+  assert.equal(found.ready, null);
+});
+
+test('the two sections are required, once each, Brief first', () => {
+  const missingBrief = parseDraft(refineDraft(['Ready: yes', '## Verification', 'y']), 'refine');
+  assert.equal(missingBrief.ok, false);
+  assert.match(missingBrief.reason, /Agent Brief/);
+  const missingVerif = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'x']), 'refine');
+  assert.equal(missingVerif.ok, false);
+  assert.match(missingVerif.reason, /Verification/);
+  const reversed = parseDraft(refineDraft(['Ready: yes', '## Verification', 'y', '## Agent Brief', 'x']), 'refine');
+  assert.equal(reversed.ok, false);
+  const doubled = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'x', '## Agent Brief', 'z', '## Verification', 'y']), 'refine');
+  assert.equal(doubled.ok, false);
+});
+
+test('an empty Brief is refused — a verdict with nothing to publish is not ready', () => {
+  const found = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', '', '## Verification', 'y']), 'refine');
+  assert.equal(found.ok, false);
+});
+
+test('refine questions are collected, kept in the Brief, and numbered like everywhere else', () => {
+  const found = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'Q1: [product] cap the import at how many rows?', 'prose', '## Verification', 'y']), 'refine');
+  assert.equal(found.ok, true);
+  assert.equal(found.questions.length, 1);
+  assert.ok(found.body.includes('Q1:'));
+  const gapped = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'Q2: where?', '## Verification', 'y']), 'refine');
+  assert.equal(gapped.ok, false);
+});
+
+test('readDraft parses with the identity’s own job, so a refine draft reads under the refine grammar', () => {
+  const root = scratch();
+  const identity = { job: 'refine', repo: 'acme/widgets', issue: '7' };
+  mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
+  writeFileSync(draftPath(root, identity), READY_DRAFT);
+  const found = readDraft(root, identity);
+  assert.equal(found.ok, true);
+  assert.equal(found.ready, 'yes');
+  assert.ok(!found.body.includes('G3 pass'));
+});
