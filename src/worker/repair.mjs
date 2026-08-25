@@ -109,7 +109,9 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
 
   const inventory = terminalInventory(run, { environment: pane.env });
   if (!inventory.ok) return cannot(inventory.reason, 'orca open   # a pane that cannot be read is never repaired into');
-  const verdict = paneVerdict(pane.handle, 'this record names a pane the inventory cannot see', inventory);
+  // `pane.env` is the runtime THIS record dispatched onto, so an omitted remote
+  // host no longer makes a local corpse unknowable (see ls.mjs paneVerdict).
+  const verdict = paneVerdict(pane.handle, 'this record names a pane the inventory cannot see', inventory, { host: pane.env });
   if (verdict.pane === 'MORT') {
     return refuse(
       `the recorded pane is gone (${verdict.detail}) — there is no session to deliver a brief into`,

@@ -323,6 +323,27 @@ test('a handle absent from a scope that omits hosts is UNKNOWN, never a corpse',
   assert.match(r.out, /runtime:7930a317/);
 });
 
+test('a LOCAL pane absent while only a REMOTE host is omitted is a corpse, not an unknown', () => {
+  // Measured 2026-08-25 on ofmchat 56-scores-r2: PR merged, the child's pane
+  // long closed, and `ax worker release --dispatch … --close` still answered
+  // `1 pane not establishable · nothing to close` — because one paired remote
+  // runtime was asleep and its omission was read as global. The record made the
+  // dispatch locally, so the list that read `local` had already answered for it.
+  const dir = store();
+  record(dir, '56-scores-r2', 'ctx_local_gone');
+  const r = run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_local_gone')],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: ['runtime:7930a317'] },
+    },
+  });
+
+  assert.match(r.out, /1 terminal gone/);
+  assert.match(r.out, /0 pane not establishable/);
+});
+
 // ── proof of landing ────────────────────────────────────────────────────────
 
 test('a merged PR closes the pane; an open one keeps it', () => {

@@ -15,12 +15,21 @@ import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/rec
 
 const store = () => mkdtempSync(join(tmpdir(), 'ax-worker-ls-'));
 
-/** A record written exactly the way a dispatch writes one: write-ahead, then the receipt. */
-function writeRecord(dir, request, phases) {
+/**
+ * A record written exactly the way a dispatch writes one: write-ahead, then the
+ * receipt. `on` is the placement the phase recorded — `''` is a local dispatch,
+ * which is what decides whether an omitted REMOTE host can explain its pane's
+ * absence.
+ */
+function writeRecord(dir, request, phases, { on = '' } = {}) {
   const { path } = claimRecord(dir, request);
   initRecord(path, { request, orca: 'orca' });
   for (const phase of phases) {
-    phaseBegin(path, { name: phase.name, identity: `id-${phase.name}`, argv: ['orca', 'orchestration', phase.name, '--json'] });
+    phaseBegin(path, {
+      name: phase.name,
+      identity: `id-${phase.name}`,
+      argv: ['orca', 'orchestration', phase.name, ...(on === '' ? [] : ['--on', on]), '--json'],
+    });
     if ('receipt' in phase) phaseEnd(path, 'last', { exit: phase.exit ?? 0, receiptText: JSON.stringify(phase.receipt) });
   }
   return path;
@@ -267,14 +276,34 @@ test('a dead pane is MORT — orphaned, or a handle the runtime no longer knows 
   assert.doesNotMatch(out, /worker-release/, 'a dead pane is not the F-048 drift, and must not be reported as one');
 });
 
-test('a handle absent while hosts are omitted is INCONNU, never MORT (measured hostScope, 2026-08-22)', () => {
+test('a REMOTE handle absent while its host is omitted is INCONNU, never MORT (measured hostScope, 2026-08-22)', () => {
   const dir = store();
-  writeRecord(dir, 'remote-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_r', handle: 'term_elsewhere' }) }]);
+  // The record says where it dispatched, which is what makes this a statement
+  // about a pane on the omitted host rather than about any absent handle.
+  writeRecord(dir, 'remote-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_r', handle: 'term_elsewhere' }) }], { on: 'gapicore' });
   const run = fakeRunner({ terminals: [], omittedHostIds: ['runtime:7930a317'] });
 
   const { lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
   assert.match(lineWith('remote-1'), /pane INCONNU/);
-  assert.match(lineWith('remote-1'), /hosts are omitted/, 'not reading a host is not seeing its pane dead');
+  assert.match(lineWith('remote-1'), /is not one this call proved it read|hosts are omitted/, 'not reading a host is not seeing its pane dead');
+});
+
+test('a LOCAL handle is not made unknowable by an omitted REMOTE host', () => {
+  // Measured 2026-08-25: one paired remote runtime was out of scope
+  // (`{"hostIds":["local"],"omittedHostIds":["runtime:7930a317-…"]}`) and that
+  // alone made a locally dispatched pane unprovable — so `ax worker release`
+  // answered `pane not establishable` on a corpse whose PR was already merged,
+  // and the record stayed unclosable for as long as that unrelated remote slept.
+  // Omission is PER HOST: this list read `local`, so it can answer for a local
+  // pane whatever else it skipped.
+  const dir = store();
+  writeRecord(dir, 'local-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_l', handle: 'term_local_gone' }) }]);
+  const run = fakeRunner({ terminals: [], omittedHostIds: ['runtime:7930a317'] });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  assert.match(lineWith('local-1'), /pane MORT/);
+  assert.match(lineWith('local-1'), /which this list did read/);
+  assert.match(out, /0 live pane\(s\)/);
 });
 
 test('a record with no usable receipt is rendered INCONNU, never skipped (F-028)', () => {
