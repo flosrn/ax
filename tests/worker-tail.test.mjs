@@ -210,7 +210,8 @@ test('an EXITED pane is never called alive, whether it has a last frame or not',
   assert.match(silent.out, /EXITED, SILENT/);
   assert.doesNotMatch(silent.out, /ALIVE/);
   assert.doesNotMatch(silent.out, /not a dead terminal/, 'the reassurance argued against the only correct action');
-  assert.match(silent.out, new RegExp(`ax worker transcript ${HANDLE}`), 'the session outlives the pane');
+  assert.doesNotMatch(silent.out, new RegExp(`ax worker transcript ${HANDLE}`), 'transcript does not take a term_ handle');
+  assert.match(silent.out, /ax worker ls/, 'no unique owner in the store: name a verb that does not need one');
 
   // With a last frame, the frame is still worth printing — it is just not proof
   // of a living session.
@@ -222,6 +223,20 @@ test('an EXITED pane is never called alive, whether it has a last frame or not',
   assert.match(framed.out, /EXITED — /);
   assert.match(framed.out, /709 passed/);
   assert.match(framed.out, /last frame/);
+});
+
+test('an EXITED pane reverse-maps to the request transcript can actually take', () => {
+  const env = storeWith({ '56-scores-r2': [{ dispatchId: 'ctx_febc0a00702f', pane: HANDLE }] });
+  const { runner } = fakeRunner({
+    receipt: JSON.stringify({
+      ok: true,
+      result: { terminal: { handle: HANDLE, status: 'exited', latestCursor: 0, tail: [] } },
+    }),
+  });
+  const r = capture(() => tail([HANDLE], { runner, env }));
+  assert.equal(r.code, 4);
+  assert.match(r.out, /ax worker transcript 56-scores-r2/);
+  assert.doesNotMatch(r.out, new RegExp(`ax worker transcript ${HANDLE}`));
 });
 
 test('a terminal with output is alive and its tail is printed', () => {
