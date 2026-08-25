@@ -644,6 +644,11 @@ test('a resolver that cannot establish the address records nothing, and says so'
   expect(h.notes.some((n) => n.includes('no reply route derived for child:x'))).toBe(true);
   // Still delivered: refusing an address must not silence the worker.
   expect(h.sent).toHaveLength(1);
+  // And the delivery SAYS it cannot be answered. Measured 2026-08-25 on ofmchat
+  // #55: a coordinator answered a load-bearing escalation from a worker whose
+  // capability Orca had revoked, was refused by `peer_reply`, and only then went
+  // looking for a route by hand. A note on the log is not the reader's channel.
+  expect(String(h.sent[0]?.content ?? '')).toContain('[NO REPLY ROUTE]');
 });
 
 test('a message this session sent itself is dropped, a peer\'s is not', async () => {
