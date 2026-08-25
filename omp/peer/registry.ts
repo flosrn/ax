@@ -430,6 +430,15 @@ export interface Resolved {
   ambiguous?: string[];
 }
 
+/** The session-id prefix Orca shows in its UI, and the only id a human reads off a card. */
+export const shortId = (sessionId: string): string => sessionId.slice(0, 8);
+
+// Hex, with the hyphens a full UUID carries: the same grammar `ax worker
+// transcript` accepts for a session card, so an id read off a card and one read
+// off a session filename are the same target. Six characters minimum keeps a
+// short worktree name from being read as an id.
+const SHORT_ID = /^[0-9a-f][0-9a-f-]{5,}$/i;
+
 /**
  * Resolve a user-typed target to an Orca address.
  *
@@ -437,6 +446,15 @@ export interface Resolved {
  * `1657-spike` and `1657-styles` both up, resolving `1657` by sort order sends
  * worktree-specific detail to the wrong session. Ambiguity is an error, not a
  * guess.
+ *
+ * A SESSION ID IS A TARGET TOO, because it is the id the UI shows: an operator
+ * relaying "answer terminal 01a036ee" is reading a session-id prefix, and this
+ * resolver used to match only derived names and worktree basenames. Measured
+ * 2026-08-25: `peer_send 01a036ee` answered `unknown peer` while the session was
+ * in `peer_list` under another name, and the coordinator had to cross-reference
+ * `orca terminal list --json` by hand to find it. The id is matched by prefix
+ * over `sessionId`, which the registry already carries, and it is hex so it can
+ * never collide with the worktree-derived names above.
  *
  * Group and raw addresses pass through untouched — a caller that already knows
  * the address is not asking for a lookup.
@@ -454,12 +472,14 @@ export function resolveTarget(want: string): Resolved {
     };
 
   const lower = want.toLowerCase();
+  const byId = SHORT_ID.test(want);
   const seen = new Set<string>();
   const hits: Peer[] = [];
   for (const p of list) {
     const matches =
       p.peer.toLowerCase().startsWith(lower) ||
-      (p.worktree.split('/').pop() || '') === want;
+      (p.worktree.split('/').pop() || '') === want ||
+      (byId && p.sessionId !== '' && p.sessionId.toLowerCase().startsWith(lower));
     if (!matches || seen.has(p.handle)) continue;
     seen.add(p.handle);
     hits.push(p);
