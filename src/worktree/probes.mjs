@@ -88,7 +88,13 @@ export function probeProxy({ worktreePath, config, recorded }) {
   if (!available) return { enabled: true, available: false, installHint: 'no local proxy on PATH' };
 
   const name = proxyName({ recorded: recorded.PORTLESS_NAME, fallback: config.project.name });
-  const servedUrl = proxyServedUrl({ name });
+  // ASKED FROM INSIDE THE WORKTREE. The proxy resolves the branch from the
+  // directory it is asked in, so the name alone does not identify a route: a
+  // probe run in the ax process's cwd answers for whatever tree that process
+  // sits in. `ax worker launch` provisions a worktree it never chdirs into,
+  // which is exactly how every tree placed by one launch would inherit the
+  // primary checkout's URL.
+  const servedUrl = proxyServedUrl({ name, cwd: worktreePath });
 
   // The port comes from the URL the proxy just reported, then from a value this
   // worktree already recorded, and only then from the config default. Taking
