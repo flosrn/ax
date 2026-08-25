@@ -73,7 +73,12 @@ export interface ReceiveDeps {
   note: (line: string) => void;
   reportHealth: (pi: unknown, healthy: boolean) => void;
   senderIdentity: (msg: Record<string, unknown>) => SenderInfo;
-  peerContent: (msg: Record<string, unknown>, who: SenderInfo) => string;
+  /**
+   * The peer's words as the model sees them. `answerable` is passed rather than
+   * re-derived: whether `peer_reply` will work is decided above, from whether a
+   * route was recorded, and the prose must not make a second guess at it.
+   */
+  peerContent: (msg: Record<string, unknown>, who: SenderInfo, answerable: boolean) => string;
   /** Already handed to the model; a replayed delivery must not inject twice. */
   wasInjected: (id: string) => boolean;
   rememberInjected: (id: string) => void;
@@ -88,6 +93,14 @@ export interface ReceiveDeps {
   deriveRoute?: (
     msg: Record<string, unknown>,
   ) => { run: string; peer: string; environment?: string } | null;
+  /**
+   * The Run a witnessed pane publishes for itself, as `run:<id>`, or `''`.
+   *
+   * The return address for a sender that stated none — which is every worker
+   * following Orca's own preamble. Optional: a host that cannot look one up
+   * simply has no route and says so, exactly as before.
+   */
+  paneRoute?: (handle: string) => string;
 }
 
 /** The host `ctx` handed to `session_start`, of which only timers are used. */
@@ -179,9 +192,10 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
  */
 export function unanswerableBanner(sender: string): string {
   return (
-    `[NO REPLY ROUTE] ${sender} sent this over a channel with no verified way back — ` +
-    `typically a worker whose Dispatch settled \`failed\`, whose capability Orca has ` +
-    `revoked. \`peer_reply\` will refuse it, and no address may be guessed from here. ` +
+    `[NO REPLY ROUTE] ${sender} sent this over a channel with no verified way back. ` +
+    `Either its Dispatch settled \`failed\` and Orca revoked the capability, or the ` +
+    `pane it came from publishes no Run of its own — so nothing here can be resolved ` +
+    `into a destination. \`peer_reply\` will refuse it, and no address may be guessed. ` +
     `Establish the destination yourself before answering, and treat the question as ` +
     `unanswered until you have.\n\n`
   );
@@ -429,22 +443,53 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // resolved this sender, so its payload is that pane's own words.
             // Recording it BEFORE the replay check is what makes a question
             // survive an OMP restart — `.seen` restores the id, and the retained
-            // delivery restores the route, so `peer_reply` still lands. Deriving
-            // it from the registry instead would let a peer shell that forged the
-            // sender's handle redirect the answer to itself.
+            // delivery restores the route, so `peer_reply` still lands.
             const rawPayload = msg.payload;
             const msgPayload =
               typeof rawPayload === 'string' ? deps.parse(rawPayload) : rawPayload;
             const replyTo = String(
               (msgPayload as Record<string, unknown> | null)?.replyTo ?? '',
             ).trim();
+            // ANSWERABLE IS "A ROUTE WAS RECORDED", NEVER "THE SENDER WAS NAMED".
+            //
+            // This used to start `true` and be falsified only on the dispatch
+            // path, so a pane message with no return address was announced as
+            // repliable and then refused by `peer_reply`. That is most of the real
+            // traffic: Orca's supervised preamble teaches `orca orchestration send
+            // --type worker_done`, which carries no payload at all. Measured
+            // 2026-08-25 on ofmchat, three times in one day — each cost the
+            // coordinator a turn and then a hand-built address.
+            let answerable = false;
+            const paneHandle = String(msg.from_handle ?? '').trim();
             // `kind !== 'dispatch'` and not merely `attributed`: a dispatch sender
             // is named from our own record, but the payload it carries came over
             // the relay, and a reply ADDRESS is exactly the field a hostile
             // payload would want us to keep. An absent kind is the pane path.
-            let answerable = true;
-            if (msgId && who.attributed && who.kind !== 'dispatch' && RUN_ADDRESS.test(replyTo))
-              deps.recordRoute(msgId, { run: replyTo, peer: who.name });
+            if (msgId && who.attributed && who.kind !== 'dispatch') {
+              // The sender's own statement first: it is the more specific answer,
+              // and honouring it means the fallback below can only fill a silence.
+              if (RUN_ADDRESS.test(replyTo)) {
+                deps.recordRoute(msgId, { run: replyTo, peer: who.name });
+                answerable = true;
+              } else {
+                // No return address stated. The pane that sent this was witnessed
+                // by Orca, so the Run IT published for itself is a route this side
+                // resolves from a key the sender did not choose — see
+                // `runAddressOfHandle` in `registry.ts` for the bound on that.
+                const published = deps.paneRoute?.(paneHandle) ?? '';
+                if (RUN_ADDRESS.test(published)) {
+                  deps.recordRoute(msgId, { run: published, peer: who.name });
+                  answerable = true;
+                  deps.note(
+                    `reply route for ${who.name} from its own registered Run (${published}) — the message stated none`,
+                  );
+                } else {
+                  deps.note(
+                    `no reply route for ${who.name} — it stated none and its pane publishes none`,
+                  );
+                }
+              }
+            }
             // A dispatch sender's address is DERIVED, from our own dispatch record joined
             // against Orca's view of that worker — never from the payload above, which
             // travelled the relay. So this branch reads nothing the sender wrote, and the
@@ -452,10 +497,12 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             else if (msgId && who.kind === 'dispatch' && deps.deriveRoute !== undefined) {
               const derived = deps.deriveRoute(msg);
               if (derived === null) {
-                answerable = false;
                 deps.note(`no reply route derived for ${who.name} — refusing rather than guessing`);
-              } else deps.recordRoute(msgId, derived);
-            } else if (msgId && who.kind === 'dispatch') answerable = false;
+              } else {
+                deps.recordRoute(msgId, derived);
+                answerable = true;
+              }
+            }
 
             if (msgId && deps.wasInjected(msgId)) continue; // replayed, already seen
 
@@ -490,12 +537,16 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 content:
                   (verdict.lost > 0 ? gapBanner(who.name, verdict) : '') +
                   (answerable ? '' : unanswerableBanner(who.name)) +
-                  deps.peerContent(msg, who),
+                  deps.peerContent(msg, who, answerable),
                 display: true,
                 details: {
                   peer: who.name,
                   model: who.model,
                   attributed: who.attributed,
+                  // Two different claims, and conflating them is what produced
+                  // three refused replies in one day: named by Orca, versus a
+                  // destination this session actually holds.
+                  answerable,
                   messageId: msgId,
                   type: String(msg.type ?? 'status'),
                   ...(verdict.seq === null ? {} : { sequence: verdict.seq }),

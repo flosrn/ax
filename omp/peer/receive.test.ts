@@ -782,3 +782,107 @@ test('a repeated sequence is reported, not injected twice', async () => {
   // Consumed, so a retained delivery does not re-litigate it.
   expect(h.injected).toEqual(['m1', 'm1-again']);
 });
+
+/**
+ * ANSWERABILITY IS THE RECORDED ROUTE, NEVER THE ATTRIBUTION.
+ *
+ * Measured 2026-08-25 on ofmchat. `57-policy-offer-engine` reported with the
+ * hand-rolled `orca orchestration send --type worker_done` its Orca preamble
+ * teaches ("REQUIRED exactly once"), so the message carried no
+ * `payload.replyTo`. It arrived witnessed by its pane key, was labelled with the
+ * peer's real name and model, and the delivery invited `Reply with the peer_reply
+ * tool (message_id: msg_0c83c5b494db)`. The coordinator answered a load-bearing
+ * decision, `peer_reply` refused with `No reply route`, and the answer went into
+ * the child's pane by hand instead. The child then stopped using the channel at
+ * all: "your decision arrived on this pane and I acted on it from here."
+ *
+ * Two things were wrong and both are pinned here: the sender's own published Run
+ * was a perfectly good address nobody read, and the invitation was printed for a
+ * message this session could not answer.
+ */
+async function deliverPane(
+  msg: Record<string, unknown>,
+  overrides: Partial<ReceiveDeps> = {},
+) {
+  const routes: Array<{ id: string; route: Record<string, unknown> }> = [];
+  const answerable: boolean[] = [];
+  let attempt = 0;
+  const h = harness({
+    senderIdentity: () => ({ name: 'worker', model: 'claude-opus-5', attributed: true, kind: 'pane' }),
+    recordRoute: (id, route) => routes.push({ id, route }),
+    peerContent: (_msg, _who, canAnswer) => {
+      answerable.push(canAnswer === true);
+      return 'body';
+    },
+    spawn: () => {
+      attempt += 1;
+      if (attempt > 1) return fakeChild(WAIT_FAILED);
+      return fakeChild(JSON.stringify({ ok: true, result: { deliveryId: 'd1', messages: [msg] } }));
+    },
+    ...overrides,
+  });
+  const r = createReceiver(h.deps);
+  r.useTimers(h.timers);
+  r.start(h.pi);
+  await settle();
+  r.stop();
+  return { ...h, routes, answerable };
+}
+
+const CHILD_RUN = `run:${'c'.repeat(12)}`;
+const PAYLOAD_RUN = `run:${'p'.repeat(12)}`;
+
+test('a witnessed pane that sent no return address is routed by its published Run', async () => {
+  const h = await deliverPane(
+    { id: 'm1', type: 'worker_done', body: 'opened PR #75', from_handle: 'term_child' },
+    { paneRoute: (handle) => (handle === 'term_child' ? CHILD_RUN : '') },
+  );
+
+  expect(h.routes).toEqual([{ id: 'm1', route: { run: CHILD_RUN, peer: 'worker' } }]);
+  expect(h.answerable).toEqual([true]);
+  expect(String(h.sent[0]?.content ?? '')).not.toContain('[NO REPLY ROUTE]');
+  expect(h.notes.join('\n')).toContain("reply route for worker from its own registered Run");
+});
+
+test('a return address in the payload still wins over the registry', async () => {
+  // The sender's own words are the more specific statement, and the registry is
+  // the same-uid file tree this module refuses to resolve names from. Precedence
+  // is the whole reason the fallback is safe to have.
+  const h = await deliverPane(
+    {
+      id: 'm1',
+      type: 'status',
+      body: 'a question',
+      from_handle: 'term_child',
+      payload: JSON.stringify({ peer: 'worker', replyTo: PAYLOAD_RUN }),
+    },
+    { paneRoute: () => CHILD_RUN },
+  );
+
+  expect(h.routes).toEqual([{ id: 'm1', route: { run: PAYLOAD_RUN, peer: 'worker' } }]);
+  expect(h.answerable).toEqual([true]);
+});
+
+test('an unroutable pane message says so instead of inviting a reply', async () => {
+  const h = await deliverPane(
+    { id: 'm1', type: 'status', body: 'anybody there', from_handle: 'term_child' },
+    { paneRoute: () => '' },
+  );
+
+  expect(h.routes).toEqual([]);
+  expect(h.answerable).toEqual([false]);
+  // Delivered all the same: refusing an address must never silence a peer.
+  expect(h.sent).toHaveLength(1);
+  expect(String(h.sent[0]?.content ?? '')).toContain('[NO REPLY ROUTE]');
+  expect(h.notes.join('\n')).toContain('no reply route for worker');
+});
+
+test('a forged-looking handle is not resolved, and a host with no fallback still works', async () => {
+  // `paneRoute` is optional: a host that cannot look one up must degrade to the
+  // refusal, never throw inside the loop that owns the whole channel.
+  const h = await deliverPane({ id: 'm1', type: 'status', body: 'x', from_handle: 'nonsense' });
+
+  expect(h.routes).toEqual([]);
+  expect(h.answerable).toEqual([false]);
+  expect(h.sent).toHaveLength(1);
+});

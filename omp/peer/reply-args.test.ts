@@ -23,7 +23,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import peerExtension from "./index.ts";
+import peerExtension, { peerContent } from "./index.ts";
 
 type Registered = {
 	name: string;
@@ -88,5 +88,52 @@ describe.each([
 		const result = await tool?.execute("call-2", throughSchema({ ...base, [field]: "hi" }));
 		expect(result?.isError).toBe(true);
 		expect(result?.content[0]?.text).not.toMatch(/nothing to send/i);
+	});
+});
+
+/**
+ * WHAT THE MODEL IS TOLD ABOUT REPLYING, which must match what `peer_reply` will
+ * actually do.
+ *
+ * This line used to be chosen by attribution: Orca named the sender, so the
+ * delivery said "Reply with the peer_reply tool". Naming and addressing are
+ * different propositions, and the gap between them is the majority of real
+ * traffic — a worker following Orca's own preamble sends `--type worker_done`
+ * with no payload, so it is named perfectly and states no return address.
+ * Measured 2026-08-25 on ofmchat: three invitations, three refusals
+ * (`msg_a1064a6fcec8`, `msg_c8b9136b5e77`, `msg_0c83c5b494db`), each costing the
+ * coordinator a turn before it built an address by hand — and teaching the child
+ * that the channel does not work.
+ */
+describe("the reply instruction", () => {
+	const pane = { name: "worker", model: "claude-opus-5", attributed: true, kind: "pane" as const };
+	const msg = { id: "msg_1", type: "status", body: "opened PR #75" };
+
+	test("invites peer_reply when a route was established", () => {
+		const out = peerContent(msg, pane, true);
+		expect(out).toContain("Reply with the peer_reply tool (message_id: msg_1)");
+		expect(out).toContain("opened PR #75");
+	});
+
+	test("forbids it, by name, when none was", () => {
+		const out = peerContent(msg, pane, false);
+		expect(out).toContain("Do NOT try peer_reply");
+		expect(out).not.toContain("Reply with the peer_reply tool");
+		// The words still arrive: an address this side cannot resolve is not a
+		// reason to withhold what a peer said.
+		expect(out).toContain("opened PR #75");
+	});
+
+	test("an unidentified sender with a route keeps its own weaker wording", () => {
+		// Two independent axes: who sent it, and whether it can be answered. The
+		// unattributed line must not be replaced by the routing one.
+		const out = peerContent(msg, { name: "unattributed", model: "", attributed: false }, true);
+		expect(out).toContain("UNIDENTIFIED local sender");
+		expect(out).toContain("If you reply at all, use the peer_reply tool");
+	});
+
+	test("no id outranks both: there is nothing to reply to", () => {
+		const out = peerContent({ type: "status", body: "x" }, pane, true);
+		expect(out).toContain("carries no id");
 	});
 });

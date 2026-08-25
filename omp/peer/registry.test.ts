@@ -20,7 +20,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { artifactNote, register, REPORT_SHAPE, setModel } from './registry.ts';
+import { artifactNote, register, REPORT_SHAPE, runAddressOfHandle, setModel } from './registry.ts';
 
 const HANDLE = 'term_victim';
 /** Unassignable on every supported host, so `kill -0` always reports it dead. */
@@ -379,5 +379,41 @@ describe('artifact note', () => {
     expect(note).toContain('no base ref on origin');
     expect(note).toContain('1 file uncommitted');
     expect(note).not.toContain('commits ahead');
+  });
+});
+
+/**
+ * THE RETURN ADDRESS OF A SENDER THAT STATED NONE.
+ *
+ * Every other address here is resolved from a NAME, which a peer shell can claim
+ * by overwriting an entry — hence the module's refusal to look one up. This one
+ * is keyed by a handle Orca witnessed, so these tests pin the two properties that
+ * make it sound: it reads only under a well-formed handle, and an absence is an
+ * empty answer rather than a fabricated one.
+ */
+describe('run address of a witnessed handle', () => {
+  test('returns the Run that handle published, as an addressable run:<id>', async () => {
+    register({ run: 'run_child', sessionId: 's1', model: 'claude-opus-5' });
+    expect(runAddressOfHandle(HANDLE)).toBe('run:run_child');
+  });
+
+  test('a handle with no entry answers empty, never a guess', () => {
+    expect(runAddressOfHandle('term_never_registered')).toBe('');
+  });
+
+  test('an entry carrying no run answers empty rather than `run:`', async () => {
+    // A malformed or half-written file is normal to read here: entries are
+    // written by independent processes. `run:` alone would pass a shape check at
+    // the call site and then address nothing.
+    await mkdir(registry, { recursive: true });
+    await writeFile(join(registry, `${HANDLE}.json`), JSON.stringify({ handle: HANDLE }));
+    expect(runAddressOfHandle(HANDLE)).toBe('');
+  });
+
+  test('anything that is not a handle is refused before it reaches the disk', () => {
+    // The argument arrives off the wire as `from_handle`. A path fragment in it
+    // must never become a file read outside the registry directory.
+    for (const bad of ['', 'term', '../../etc/passwd', 'term_../x', 'run_abc'])
+      expect(runAddressOfHandle(bad)).toBe('');
   });
 });

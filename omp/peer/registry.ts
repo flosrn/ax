@@ -223,6 +223,37 @@ function allEntries(): Partial<Entry>[] {
   return out;
 }
 
+/**
+ * The Run a WITNESSED pane publishes for itself, as a `run:<id>` address, or `''`.
+ *
+ * WHY THIS IS NOT THE FORGEABLE LOOKUP THIS MODULE REFUSES ELSEWHERE. Every
+ * other "resolve an address" path here starts from a NAME, and a name is exactly
+ * what a peer shell can claim by overwriting an entry. This one starts from a
+ * handle ORCA witnessed — `sender_pane_key` present, gated in `attribution.ts` —
+ * so the sender does not choose the key this reads under.
+ *
+ * WHAT IT BUYS. A message sent with a hand-rolled `orca orchestration send`,
+ * which is what Orca's supervised preamble teaches every worker to do for
+ * `worker_done` and therefore the majority of real traffic, carries no
+ * `payload.replyTo`. It arrives attributed and unanswerable: measured 2026-08-25
+ * on ofmchat, `msg_0c83c5b494db` from `57-policy-offer-engine` invited a reply
+ * and then refused it, and the coordinator answered by typing into the child's
+ * pane instead. The pane's own published Run is the return address that child
+ * would have written itself, so reading it is a repair, not a guess.
+ *
+ * THE BOUND, STATED. The registry is a same-uid directory, so a hostile local
+ * process could point this at another Run. That process can already
+ * `orca terminal send` into any pane — the THREAT MODEL paragraph in
+ * `attribution.ts` — so this adds no exposure it does not already have. And a
+ * payload `replyTo` still wins wherever the sender supplied one, so this can
+ * only ever fill a silence, never redirect an address a peer stated.
+ */
+export function runAddressOfHandle(handle: string): string {
+  if (!HANDLE.test(handle)) return '';
+  const run = str(readEntry(handle)?.run);
+  return run ? `run:${run}` : '';
+}
+
 /** Atomic: a model id containing a quote must never publish unparseable JSON. */
 function publish(handle: string, entry: Entry): boolean {
   const dir = registryDir();
