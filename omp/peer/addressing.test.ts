@@ -57,10 +57,10 @@ function orcaSaysNothing(): void {
 }
 
 /** A published registry entry: the Run is what makes a pane reachable. */
-function publishEntry(handle: string, run: string, model = ''): void {
+function publishEntry(handle: string, run: string, model = '', sessionId = 's'): void {
   writeFileSync(
     join(peersDir, `${handle}.json`),
-    JSON.stringify({ handle, run, model, sessionId: 's', ownerPid: process.pid }),
+    JSON.stringify({ handle, run, model, sessionId, ownerPid: process.pid }),
   );
 }
 
@@ -221,6 +221,41 @@ test('an ambiguous prefix is an error, never a pick', async () => {
   const r = resolveTarget('1657');
   expect(r.address).toBeUndefined();
   expect(r.ambiguous?.sort()).toEqual(['1657-spike', '1657-styles']);
+});
+
+test('the id Orca shows on a card resolves, because that is what an operator relays', async () => {
+  // Measured 2026-08-25: a coordinator was told to answer "terminal 01a036ee",
+  // which is a session-id prefix. `peer_send 01a036ee` answered `unknown peer`
+  // while that session sat in `peer_list` under its worktree name, so the
+  // operator had to cross-reference `orca terminal list --json` by hand.
+  setTerminals([
+    { handle: 'term_aaaa1111', worktreePath: WT_A },
+    { handle: 'term_bbbb2222', worktreePath: WT_B },
+  ]);
+  publishEntry('term_aaaa1111', 'run_a', '', '01a036ee-0719-7023-9ad5-f9336c8b96e6');
+  publishEntry('term_bbbb2222', 'run_b', '', '01a036eb-12c5-7237-8161-98431d69972c');
+  const { resolveTarget, shortId } = await load();
+
+  expect(shortId('01a036eb-12c5-7237-8161-98431d69972c')).toBe('01a036eb');
+  // The two ids share seven characters, which is exactly the case a prefix
+  // resolver has to get right rather than round to the first hit.
+  expect(resolveTarget('01a036eb').address).toBe('run:run_b');
+  expect(resolveTarget('01a036ee').address).toBe('run:run_a');
+  // The full id works too — a caller reading it off a session file, not a card.
+  expect(resolveTarget('01a036eb-12c5-7237-8161-98431d69972c').address).toBe('run:run_b');
+});
+
+test('an ambiguous id is an error, and an id nobody has resolves to nothing', async () => {
+  setTerminals([
+    { handle: 'term_aaaa1111', worktreePath: WT_A },
+    { handle: 'term_bbbb2222', worktreePath: WT_B },
+  ]);
+  publishEntry('term_aaaa1111', 'run_a', '', '01a036eeaaaa');
+  publishEntry('term_bbbb2222', 'run_b', '', '01a036eebbbb');
+  const { resolveTarget } = await load();
+
+  expect(resolveTarget('01a036ee').ambiguous?.sort()).toEqual(['t6-les-lots', 't7-canal-de-scene']);
+  expect(resolveTarget('deadbeef')).toEqual({});
 });
 
 test('an unreachable pane is not a resolution target', async () => {

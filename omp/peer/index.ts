@@ -66,6 +66,7 @@ import {
   sendToPeer,
   depthOf,
   lineageRows,
+  shortId,
   setModel,
   transcriptFor,
   worktreeOf,
@@ -648,7 +649,11 @@ export default function (pi): void {
     parameters: pi.zod.object({
       peer: pi.zod
         .string()
-        .describe('Peer name, as peer_list reports it. A unique prefix is accepted.'),
+        .describe(
+          'Peer name, as peer_list reports it. A unique prefix is accepted, and so ' +
+            'is the ID column — the session id Orca shows on its cards, which is what ' +
+            'an operator relays when they say "answer terminal 01a036ee".',
+        ),
       // Same alias as peer_reply, for the same reason and to the same extent:
       // `hub` names this field `message`, the Orca CLI underneath names it
       // `body`, and a pair of twin tools where only one accepts the common
@@ -715,13 +720,17 @@ export default function (pi): void {
       // `-1` is Orca declining to answer, which is not depth 0. Printing `?`
       // keeps a broken lineage from reading as "this is a root session".
       const depth = (d: number): string => (d < 0 ? '?' : `d${d}`);
+      // ID is the session-id prefix Orca shows on its cards, and it is here
+      // because an operator relaying "answer terminal 01a036ee" is reading
+      // exactly that. Without the column, resolving it meant cross-referencing
+      // `orca terminal list --json` by hand (measured 2026-08-25).
       const lines = live.map(
         (p) =>
-          `${p.peer}${p.self ? '  (you)' : ''}  ${p.model || '?'}${p.level ? `:${p.level}` : ''}  ${depth(depthOf(p.worktree, tree))}  ${p.worktree}`,
+          `${p.peer}${p.self ? '  (you)' : ''}  ${p.model || '?'}${p.level ? `:${p.level}` : ''}  ${depth(depthOf(p.worktree, tree))}  ${p.sessionId ? shortId(p.sessionId) : '?'}  ${p.worktree}`,
       );
       return {
         content: [
-          { type: 'text', text: ['PEER  MODEL  DEPTH  WORKTREE', ...lines].join('\n') },
+          { type: 'text', text: ['PEER  MODEL  DEPTH  ID  WORKTREE', ...lines].join('\n') },
         ],
       };
     },
