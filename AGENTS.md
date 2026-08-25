@@ -10,9 +10,7 @@ pnpm test                # both — the release gate
 node bin/ax.mjs          # the command surface this machine can answer
 ```
 
-## The architecture
-
-Three jobs, two invariants.
+## The architecture — three jobs, two invariants
 
 1. **Prepare the worktree** — `src/worktree/`. Probe the checkout, derive one plan, then write it.
 2. **Equip the session** — `omp/model/`, `omp/roles/`, `omp/playbooks/`. Apply the pinned role,
@@ -28,12 +26,6 @@ plan value” means the plan is missing a field.
 **The record** — `src/worker/record.mjs`. Every live orchestration mutation is written before it is
 issued. Recovery replays that recorded call byte for byte. Missing, unreadable or ambiguous state is
 an inability to establish, never permission to mint another identity.
-
-```text
-probes ──► plan ──► apply                 record ──► mutate ──► receipt
-             ▲                               ▲
-             └── doctor derives, compares    └── recovery replays
-```
 
 ## Read the owning header before changing the rule
 
@@ -92,10 +84,9 @@ a project from a version it chose to the version the machine happened to have.
 loops consume each other's messages and duplicate reports. The ax repo registers `"."`; consuming
 repos register `"./node_modules/@flosrn/ax"`.
 
-**Session roles are not task agents.** They live under `omp/roles/` and are loaded by the AX role
-extension. Do not expose them under an OMP `agents/` directory and then rely on `disabledAgents` to
-hide them. Both `[omp role=worker …]` and `/role orchestrator` must resolve without OMP agent or
-skill discovery.
+**Session roles are not task agents.** They live under `omp/roles/`, loaded by the AX role
+extension; both `[omp role=worker …]` and `/role orchestrator` resolve without OMP agent or skill
+discovery — never through an OMP `agents/` directory hidden by `disabledAgents`.
 
 **Playbooks are package-internal.** `omp/playbooks/implementation.md`, `triage.md` and `refine.md`
 are generic AX procedures. They do not vendor Compound Engineering, Matt Pocock skills, provider IDs
@@ -131,12 +122,11 @@ activate through `/role`; child roles activate from the marker ax writes into th
 A new **project setting** belongs in `ax.schema.json`; the validator refuses schema keywords it does
 not implement. Add it to the pure plan when it changes target state.
 
-A new **release** is never a hand-edited number. Conventional commits update the Release Please PR;
-merging that PR owns `package.json.version`, `CHANGELOG.md`, the `vX.Y.Z` tag and GitHub Release. npm
-publishes only when that release was created and trusted publishing is enabled.
-
-`tests/docs.test.mjs` rejects copyable commands absent from the registry, module pointers that do not
-exist, retired git pins and a help tagline that differs from package metadata.
+A new **release** is never a hand-edited number: conventional commits feed the Release Please PR,
+and merging it owns `package.json.version`, `CHANGELOG.md`, the `vX.Y.Z` tag and the GitHub
+Release; npm publishes only when that release was created and trusted publishing is enabled.
+`tests/docs.test.mjs` grades this file and README.md: copyable commands, module pointers and
+version pins must match the code.
 
 ## Vocabulary
 
@@ -144,17 +134,13 @@ exist, retired git pins and a help tagline that differs from package metadata.
 `ADR NNNN` lives under `~/.omp/docs/adr/`. Neither is required reading before a patch unless the
 header's explanation is insufficient.
 
-**Orca is readable source, not a black box.** This machine runs a patched fork of Orca (ADR 0026);
-the source lives at `~/Code/flosrn/orca` (`origin` = flosrn/orca, `upstream` = stablyai/orca). An
-Orca behavior question is answered by reading that checkout — never by unpacking the installed
-app's `.asar`. A fix or feature that belongs in Orca goes to the fork branch, not to a workaround
-in ax.
+**Orca is readable source, not a black box.** This machine runs a patched Orca fork (ADR 0026);
+the source lives at `~/Code/flosrn/orca` (`upstream` = stablyai/orca). Answer an Orca behavior
+question by reading that checkout — never by unpacking the installed app's `.asar`. A fix that
+belongs in Orca goes to the fork branch, not to a workaround in ax.
 
 ## Try this checkout in another project
 
-```json
-"@flosrn/ax": "link:../../flosrn/ax"
-```
-
-Run `pnpm install`, `ax init`, then `ax doctor`. A link is an explicit development exception;
-released projects carry an exact npm version and move with `ax pin <version>`.
+Released projects carry an exact npm version and move with `ax pin <version>`. To test this
+checkout, declare `"@flosrn/ax": "link:../../flosrn/ax"` in the consumer, then `pnpm install`,
+`ax init`, `ax doctor`. A link is a development exception.
