@@ -18,9 +18,9 @@ the current repair. Absence is unknown unless the covered runtime proves otherwi
 **Commands**
 
 ```bash
-ax worker launch --issue 55 --slug 55-turn-analyzer-r2
-ax worker launch --issue 56 --slug 56-scores-r2
-ax worker launch --issue 71 --slug 71-rls-refute
+ax worker launch --issue 55 --slug turn-analyzer-r2
+ax worker launch --issue 56 --slug scores-r2
+ax worker launch --issue 71 --slug rls-refute
 ```
 
 **Observed**
@@ -53,7 +53,7 @@ Orca's verdict in the same five-second window before adding another launch path.
 **Command**
 
 ```bash
-ax worker launch --issue 57 --slug 57-policy-offer-engine
+ax worker launch --issue 57 --slug policy-offer-engine
 ```
 
 **Observed**
@@ -159,13 +159,15 @@ result or echoed input.
 
 ```text
 peer_reply(message_id from 57-policy-offer-engine)
+peer_reply(message_id from 59-process-turn)
 ```
 
 **Observed**
 
 The healthy #57 Dispatch `ctx_82955b491a90` reported completion and PR #75, but `peer_reply`
-returned `No reply route`. The coordinator had to send its decisions directly to the Dispatch's
-verified terminal handle.
+returned `No reply route`. The same refusal recurred on active #59 Dispatch
+`ctx_c41934de6519` for a load-bearing architecture question. In both cases the coordinator had to
+send its decision directly to the Dispatch's verified terminal handle.
 
 **Impact**
 
