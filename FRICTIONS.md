@@ -1,0 +1,281 @@
+# Orchestration Frictions
+
+Each finding below names a reproducible command, the observed result, its operational impact, and
+the current repair. Absence is unknown unless the covered runtime proves otherwise.
+
+## Test environment
+
+- Consumer: `goodluckagency/ofmchat`
+- Consumer pin during the incidents: `@flosrn/ax@0.11.3`
+- Orca: `1.4.188`
+- OMP observed in the #57 worktree: `18.0.4`
+- AX source baseline for this file: `deadfbffedfabd523b6e2efdeb0f37ceb146fd18`
+
+## Open findings
+
+### F1 — Cold OMP launch can revoke capability before submission
+
+**Commands**
+
+```bash
+ax worker launch --issue 55 --slug 55-turn-analyzer-r2
+ax worker launch --issue 56 --slug 56-scores-r2
+ax worker launch --issue 71 --slug 71-rls-refute
+```
+
+**Observed**
+
+| Request | Dispatch | Result |
+|---|---|---|
+| `55-turn-analyzer-r2` | `ctx_047889f5daa4` | `agent_prompt_stalled`, capability revoked |
+| `56-scores-r2` | `ctx_febc0a00702f` | `agent_prompt_stalled`, capability revoked |
+| `71-rls-refute` | `ctx_a8c1c8b9d585` | `agent_prompt_stalled`, capability revoked |
+
+Orca waits five seconds for `workingSequence` to increase after one carriage return. Repair found
+all three composers holding the brief and submitted it 49–88 seconds after launch, after capability
+revocation. Each child later delivered a real PR, but `escalation` and `worker_done` were rejected.
+
+A warm-pane probe also returned `agent_prompt_stalled`: `tui-idle` proves idle, not the OSC braille
+`working` transition Orca's verifier requires.
+
+**Impact**
+
+The child can edit and open a PR without a usable question/completion channel. The coordinator gets
+an unattributed copy with no reply route and cannot describe the Dispatch as healthy.
+
+**Repair status**
+
+Open. Capture paste, carriage return, OSC title, `input`, `before_agent_start`, `agent_start`, and
+Orca's verdict in the same five-second window before adding another launch path.
+
+### F2 — Start-immediately can boot before the project AX bundle exists
+
+**Command**
+
+```bash
+ax worker launch --issue 57 --slug 57-policy-offer-engine
+```
+
+**Observed**
+
+Launch reported `node_modules missing` and started setup and OMP concurrently. The worktree's
+`.omp/settings.json` pointed to `./node_modules/@flosrn/ax`, which did not exist when OMP booted.
+Orca still returned `state=ready`, `stage=input_accepted`; child JSONL showed:
+
+```text
+model_change anthropic/claude-opus-5 role=boot (session boot)
+message user <ticket and pilot contract>
+```
+
+The child began reading the ticket under `role=boot`. It was stopped before editing; the worktree
+remained clean.
+
+After setup installed the bundle, a correctly placed replacement (`ctx_82955b491a90`) produced,
+before its first tool call:
+
+```text
+model_change anthropic/claude-opus-5 role=default resolvedModelIsFallback=false
+skill-prompt playbook=implementation
+message user <ticket and pilot contract>
+```
+
+`role=default` is the requested model selector `@default`; `playbook=implementation` is the
+child-side session-role witness.
+
+**Impact**
+
+`input_accepted` proves delivery, not the invariant that the pinned role/model applies before the
+first task turn. A valid Task can otherwise run under boot behavior.
+
+**Repair status**
+
+Open. Do not start OMP until the extension named by `.omp/settings.json` exists. General setup may
+run concurrently only after the role/model bundle needed by the first turn is available.
+
+### F3 — Replacement does not inherit recorded agent or worktree
+
+**Commands**
+
+```bash
+ax worker start --replace --request 57-policy-offer-engine
+ax worker start --replace --request 57-policy-offer-engine --agent omp
+```
+
+**Observed**
+
+The first command returned `agent_unconfigured` although the record named `agent=omp`. Adding only
+`--agent omp` created `ctx_dc69d19edb5b` in `worktree=current`: the primary ofmchat checkout on
+`main`, not `.worktrees/57-policy-offer-engine`. The coordinator stopped it immediately; Orca
+recorded `operator_close`, and the primary checkout remained clean.
+
+The safe invocation required repeating both fields:
+
+```bash
+ax worker start --replace \
+  --request 57-policy-offer-engine \
+  --worktree path:/Users/flo/Code/ofm/ofmchat/.worktrees/57-policy-offer-engine \
+  --agent omp
+```
+
+**Impact**
+
+A continuation intended to preserve PR ownership can silently target the coordinator checkout and
+put unrelated user work at risk.
+
+**Repair status**
+
+Open. Inherit recorded placement exactly, or refuse replacement when required passthrough fields
+are absent. Never default a replacement to `current`.
+
+### F4 — `tui-idle` and accepted input do not prove an OMP command ran
+
+**Commands**
+
+```bash
+orca terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json
+orca terminal send --terminal <handle> --text '/role worker' --enter --json
+```
+
+**Observed**
+
+The first wait completed before the OMP welcome screen finished. Two sends reported
+`accepted=true`; neither produced a user message, JSONL session, role receipt, or command output.
+The final terminal preview contained `/role worker` at the prompt, then the pane exited. The
+worktree remained clean.
+
+**Impact**
+
+`tui-idle` can be a startup false positive, and `send.accepted` proves bytes reached the PTY rather
+than that OMP processed the command.
+
+**Repair status**
+
+Open. A role preflight needs a role receipt or session event. Do not attach a Task based on the wait
+result or echoed input.
+
+### F5 — A ready Dispatch completion can still arrive without a reply route
+
+**Command**
+
+```text
+peer_reply(message_id from 57-policy-offer-engine)
+```
+
+**Observed**
+
+The healthy #57 Dispatch `ctx_82955b491a90` reported completion and PR #75, but `peer_reply`
+returned `No reply route`. The coordinator had to send its decisions directly to the Dispatch's
+verified terminal handle.
+
+**Impact**
+
+A coordinator cannot answer load-bearing worker questions through the structured route even when
+capability, role, model, and Dispatch are valid.
+
+**Repair status**
+
+Open in the consuming version. Preserve/derive the reply route from the active Dispatch; never guess
+an unrelated pane.
+
+### F6 — A finished PR can outlive its owner without surfacing continuation
+
+**Observed**
+
+After #56 opened PR #72, its agent pane exited while the PR remained open. `peer_reply` had no
+route, the worker was absent from `peer_list`, direct input returned `terminal_not_writable`, and
+release correctly refused an open PR as landing proof.
+
+The supported continuation is:
+
+```bash
+ax worker start --replace --request <request> --worktree <recorded> --agent <recorded>
+```
+
+**Impact**
+
+Without a printed continuation route, a recoverable durable request appears abandoned.
+
+**Repair status**
+
+Open UX gap. Print the exact replacement command, including recorded placement fields, when an open
+PR has lost its pane.
+
+### F7 — Dispatch records accumulate indefinitely
+
+**Observed**
+
+`ax worker ls` read 126 historical records while the live capacity was zero. Released, failed, and
+current requests remained together under `~/.omp/run/dispatch`.
+
+**Impact**
+
+Relevant records are buried among old records and cross-host unknowns.
+
+**Repair status**
+
+Open design decision. Add a conservative history filter or ownership-proving sweep. Never infer
+that a record is disposable from age alone.
+
+### F8 — Database isolation still has fail-open paths
+
+**Observed**
+
+The #71 launch initially declared a shared database because ticket labels were not fetched. AX main
+now reads configured database labels, but review found two remaining paths:
+
+- an absent or unknown label container is coerced to `[]`, authorizing a non-database plan;
+- `worker launch --worktree <path>` bypasses the new database-provisioning branch.
+
+**Impact**
+
+A database-labelled ticket can still inherit the primary stack, and a reset through a path that
+bypasses `ax supabase` can target shared containers.
+
+**Repair status**
+
+Open. Unknown labels must refuse provisioning when database labels affect the plan, and explicit
+worktrees must receive the same isolation proof or be refused.
+
+### F9 — `tail <handle>` reverse mapping is ambiguous around unreadable records
+
+**Observed**
+
+AX main stopped suggesting `transcript term_…`, which transcript cannot resolve. Review of the
+replacement reverse-map found that a non-empty `dispatchIndex().unreadable` set can still allow a
+unique-looking match and suggest the transcript of the wrong child.
+
+**Impact**
+
+The recovery command can cross assignment boundaries precisely when the record store says it could
+not read every candidate.
+
+**Repair status**
+
+Open. Any unreadable candidate that could alias the handle must make reverse mapping
+`cannot-establish`; never choose a unique readable row from an incomplete index.
+
+## Fixed on AX main and verified, pending exact-version consumer adoption
+
+A source fix does not alter a consuming session pinned to an older package.
+
+| Friction observed | Repair on AX main |
+|---|---|
+| Repaired watcher retained `repaired=false` and called normal closure death | Re-read repair marker on every tick |
+| Failed starts hid their recorded pane and readable transcript | Preserve failed receipts and print usable routes |
+| `worker tail` accepted only handles while transcript accepted requests | Resolve request/dispatch through the record store |
+| `tail` called `status=exited` alive | Give `EXITED` exit code 4 and document it |
+| One omitted remote runtime made covered local panes unknowable | Decide omission per runtime named by the record |
+| Proxy lookup ran from AX's cwd | Resolve route from inside the target worktree |
+| `peer_send` rejected Orca's displayed short session ID | Resolve verified session-ID prefixes |
+| Missing reply route was discovered only after reply failure | Inject `[NO REPLY ROUTE]` before the reader responds |
+| `pr gate --ack-body` printed a next command without the acknowledgement | Preserve invocation-local acknowledgement flags |
+
+## Artifact outcomes from the degraded run
+
+- PR #72 merged only after CI and `ax pr gate` passed on its rebased head.
+- PR #73 merged only after integrated unit tests, body review, and `ax pr gate` passed.
+- PR #74 merged only after 50 pgTAP files / 2088 assertions passed and the required proof was
+  cross-posted before issue #71 closed.
+
+A merged PR proves landing. It does not retroactively make a revoked Dispatch healthy.
+`worker release` closes an owned terminal; it does not rewrite a Dispatch already settled failed.
