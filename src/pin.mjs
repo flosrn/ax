@@ -121,7 +121,15 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     setJsonPath(manifest, `devDependencies.${PACKAGE_NAME}`, target);
     writeFileSync(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    const installed = exec('pnpm', ['install'], root);
+    // `--no-frozen-lockfile`, because moving the pin IS a lockfile change.
+    // Measured 2026-08-24 on ofmchat (pnpm 11, MakerKit workspace): a bare
+    // `pnpm install` there is frozen by default, so it refused with
+    // ERR_PNPM_OUTDATED_LOCKFILE — the manifest already rewritten above, the old
+    // package still on disk, which is precisely the half-state the proof below
+    // then refuses. This verb could never succeed on that repo. The flag is not
+    // a loosening: rewriting `pnpm-lock.yaml` is the job, which is why the commit
+    // gesture printed at the end stages it.
+    const installed = exec('pnpm', ['install', '--no-frozen-lockfile'], root);
     if (installed.error || installed.status !== 0) {
       const detail = String(installed.error ?? '').trim() || String(installed.stderr ?? '').split('\n').filter(Boolean).slice(-3).join(' | ') || `exit ${installed.status}`;
       return refuse(`pnpm install refused the new pin: ${detail}`, `git checkout -- package.json && pnpm install   # back to ${current}`);

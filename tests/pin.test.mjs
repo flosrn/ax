@@ -54,7 +54,7 @@ const capture = fn => {
 };
 
 /** Real git answers for real; pnpm is scripted per-verb. */
-function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, onInstall = null } = {}) {
+function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, onInstall = null, frozen = false } = {}) {
   const calls = [];
   return {
     calls,
@@ -68,6 +68,11 @@ function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, onInstall =
         }
       }
       if (bin === 'pnpm' && args[0] === 'install') {
+        // A workspace whose install is frozen by default: exactly what ofmchat
+        // answered, and the only thing that distinguishes it is the flag.
+        if (frozen && !args.includes('--no-frozen-lockfile')) {
+          return { status: 1, stdout: '', stderr: 'ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile"' };
+        }
         if (onInstall) onInstall(at);
         return { stdout: '', stderr: '', ...install };
       }
@@ -93,6 +98,29 @@ test('a full bump: exact version written, install proven from node_modules, doct
   assert.match(r.out, /doctor coherent/);
   assert.match(r.out, /git add package\.json pnpm-lock\.yaml && git commit -m "chore\(deps\): bump @flosrn\/ax to 0\.6\.6" && git push/);
   assert.ok(r.calls.every(line => !line.startsWith('git commit') && !line.startsWith('git push')), 'the git gesture stays the caller\'s');
+});
+
+test('a frozen lockfile does not defeat the bump: the install is told the lockfile is changing', () => {
+  // Measured 2026-08-24 on ofmchat (pnpm 11, a MakerKit workspace): `ax pin
+  // 0.11.2` refused with "pnpm install refused the new pin: exit 1", because a
+  // bare `pnpm install` there is frozen-lockfile and a version change
+  // desynchronises the lockfile BY CONSTRUCTION. So the verb could never
+  // succeed on that repo, and it left the manifest bumped with the old package
+  // still installed — the exact half-state its own guard then refuses.
+  //
+  // `--no-frozen-lockfile` is not a loosening: the whole purpose of this verb is
+  // to move that pin and rewrite that lockfile, which is why the printed commit
+  // gesture stages `pnpm-lock.yaml`.
+  const exec = fakeExec({
+    frozen: true,
+    onInstall: at => installAs(at, '0.6.6'),
+  });
+  const r = run(['0.6.6'], { exec });
+
+  assert.equal(r.code, 0, r.out);
+  const install = r.calls.find(line => line.startsWith('pnpm install'));
+  assert.match(install, /--no-frozen-lockfile/, 'the flag is passed, so a workspace defaulting to frozen still installs the new pin');
+  assert.match(r.out, /installed @flosrn\/ax 0\.6\.6, proven from node_modules/);
 });
 
 test('X.Y.Z and vX.Y.Z are the same pin, and a github: pin is migrated to it', () => {
