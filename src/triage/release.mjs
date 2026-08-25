@@ -19,7 +19,7 @@ import { defaultStore, report } from '../worker/record.mjs';
 import { defaultExec, release } from '../worker/release.mjs';
 import { draftDirFor, passesOf, requestFor } from './draft.mjs';
 
-const USAGE = 'ax triage release --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--no-proof]';
+const USAGE = 'ax triage release --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--no-proof]';
 
 export function triageRelease(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), releaseFn = release, ...rest } = {}) {
   const usageError = message => {

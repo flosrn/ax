@@ -25,7 +25,7 @@ import { publish } from './publish.mjs';
 import { triageRelease } from './release.mjs';
 import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
 
-const USAGE = 'ax triage status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom] [--repo <owner/repo>]';
+const USAGE = 'ax triage status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom|refine] [--repo <owner/repo>]';
 
 /** The widest --issue range status will expand — see the refusal for why. */
 const RANGE_MAX = 100;

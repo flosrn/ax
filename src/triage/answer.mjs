@@ -29,7 +29,7 @@ import { draftDirFor, passesOf, questionProblem, questionsIn, readDraft, request
 import { INBOX_WINDOW, askHeader, composeReply, pairRulings, parseRulings, questionSpan } from './rulings.mjs';
 
 const USAGE =
-  'ax triage answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dry-run]';
+  'ax triage answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--dry-run]';
 
 export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   const usageError = message => {

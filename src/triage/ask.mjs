@@ -36,7 +36,7 @@ import { draftDirFor, passesOf, questionProblem, readDraft, requestFor } from '.
 import { composeAsk } from './rulings.mjs';
 
 const USAGE =
-  'ax triage ask --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--timeout-ms <n>] [--dry-run]\n'
+  'ax triage ask --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--timeout-ms <n>] [--dry-run]\n'
   + '       ax triage ask --resume <message_id> [--timeout-ms <n>]';
 
 /**
