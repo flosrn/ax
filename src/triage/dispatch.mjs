@@ -441,9 +441,9 @@ export function dispatch(
       // ordinary state (rulings folded into bodies), so F-030 stays triage-only.
       if (meta.labels.includes(READY_LABEL) && !force) {
         bad('^ already ready-for-agent — a second refine pass on a published verdict needs to be deliberate');
-        // `--force` is what lifts this guard; `--fresh` alone never does. So both
-        // repairs carry it, and the new-pass one adds --fresh --because on top.
-        fix(`ax triage dispatch --issue ${issue} --job refine --force # amend the published verdict under the same pass`);
+        // `--force` lifts the guard; `--fresh` is what actually starts a new
+        // analysis. Same-pass `--force` alone resumes the recorded request
+        // (F-001) and does not amend the published draft.
         fix(
           `ax triage dispatch --issue ${issue} --job refine --force --fresh --because <what moved> # redo it as a new pass, telling the child what changed`,
         );

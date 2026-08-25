@@ -332,7 +332,11 @@ function parseRefineDraft(text) {
   if (verifAt[0] < briefAt[0]) return refuse('the `## Verification` section precedes `## Agent Brief` — the published slice is the bytes between the two, in that order');
 
   const body = lines.slice(briefAt[0] + 1, verifAt[0]).join('\n').trim();
+  const verification = lines.slice(verifAt[0] + 1).join('\n').trim();
   if (body === '') return refuse('the Agent Brief is empty — a verdict with nothing to publish is not ready');
+  if (verdict === 'yes' && verification === '') {
+    return refuse('the Verification section is empty — Ready: yes needs the per-gate evidence the coordinator reviews');
+  }
 
   const out = { labels: [], remove: [], body, close: false, questions, ready: verdict };
   const asked = questionProblem(questions);

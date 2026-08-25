@@ -325,6 +325,16 @@ test('an empty Brief is refused — a verdict with nothing to publish is not rea
   assert.equal(found.ok, false);
 });
 
+test('an empty Verification is refused when Ready: yes — a heading is not the evidence', () => {
+  const found = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'x', '## Verification', '']), 'refine');
+  assert.equal(found.ok, false);
+  assert.match(found.reason, /Verification/);
+  const headingOnly = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'x', '## Verification']), 'refine');
+  assert.equal(headingOnly.ok, false);
+  assert.match(headingOnly.reason, /Verification/);
+});
+
+
 test('refine questions are collected, kept in the Brief, and numbered like everywhere else', () => {
   const found = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', 'Q1: [product] cap the import at how many rows?', 'prose', '## Verification', 'y']), 'refine');
   assert.equal(found.ok, true);

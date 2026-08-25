@@ -938,14 +938,11 @@ test('refine on an issue already ready-for-agent is refused, and the repair neve
   const refused = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues });
   assert.equal(refused.code, 1);
   assert.match(refused.out, /ready-for-agent/);
-  // The guard is lifted by --force only, so every repair line must carry it.
+  // The only advertised repair is a new pass: same-pass --force resumes the
+  // recorded request and cannot amend a published draft.
   const repairs = refused.out.split('\n').filter(line => line.includes('ax triage dispatch --issue 7 --job refine'));
-  assert.equal(repairs.length, 2);
-  for (const line of repairs) assert.match(line, /--force/);
-  assert.ok(
-    repairs.some(line => /--force --fresh --because <what moved>/.test(line)),
-    `expected a new-pass repair combining --force with --fresh --because, got:\n${refused.out}`,
-  );
+  assert.equal(repairs.length, 1);
+  assert.match(repairs[0], /--force --fresh --because <what moved>/);
   // A --fresh-only invocation is still refused, which is why it is never offered.
   const freshOnly = run(['--issue', '7', '--job', 'refine', '--dry-run', '--fresh', '--because', 'the PRD moved'], { issues });
   assert.equal(freshOnly.code, 1);
