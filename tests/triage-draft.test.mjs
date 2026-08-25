@@ -302,6 +302,24 @@ test('the two sections are required, once each, Brief first', () => {
   assert.equal(doubled.ok, false);
 });
 
+test('a Ready line below the headings is prose, not a verdict — the sole directive must precede the Brief', () => {
+  const inBrief = parseDraft(
+    refineDraft(['## Agent Brief', '', 'Ready: yes', '', 'Summary: wire the widget to the socket.', '', '## Verification', 'G1 pass.']),
+    'refine',
+  );
+  assert.equal(inBrief.ok, false);
+  assert.equal(inBrief.ready, null);
+  assert.equal(inBrief.body, '');
+
+  const afterVerification = parseDraft(
+    refineDraft(['## Agent Brief', '', 'Summary: wire the widget.', '', '## Verification', 'G1 pass.', 'Ready: yes']),
+    'refine',
+  );
+  assert.equal(afterVerification.ok, false);
+  assert.equal(afterVerification.ready, null);
+  assert.equal(afterVerification.body, '');
+});
+
 test('an empty Brief is refused — a verdict with nothing to publish is not ready', () => {
   const found = parseDraft(refineDraft(['Ready: yes', '## Agent Brief', '', '## Verification', 'y']), 'refine');
   assert.equal(found.ok, false);

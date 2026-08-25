@@ -283,9 +283,12 @@ export function parseDraft(text, job = 'triage') {
  * over: a gate-failed draft carrying a repair proposal has no `Q<n>:` lines
  * either, and an absent line must be a MALFORMED refusal, never a quiet verdict
  * — a hand edit that drops the line, or leaves two of them, must not publish by
- * parser accident. That is also why the cardinality rules below are fail-closed:
- * exactly one `Ready:`, exactly one `## Agent Brief`, then exactly one
- * `## Verification`.
+ * parser accident. That is also why the cardinality rules below are fail-closed,
+ * and ordered: exactly one `Ready:`, above exactly one `## Agent Brief`, then
+ * exactly one `## Verification`. Ordered because a `Ready:` line is only the
+ * draft's ruling in the preamble — the same bytes inside the Brief or the
+ * Verification evidence are prose the child quoted, and reading them as the
+ * verdict publishes a ruling nobody made.
  *
  * The split between the two sections is the noise fix measured on
  * goodluckagency/ofmchat#52-#54: the published comment triple-stated rulings and
@@ -311,17 +314,19 @@ function parseRefineDraft(text) {
     }
   }
 
-  const verdicts = lines.filter(line => /^Ready:/.test(line));
-  if (verdicts.length === 0) return refuse('this draft says no `Ready: yes|no` — an absent verdict is a malformed draft, never a quiet not-ready');
-  if (verdicts.length > 1) return refuse(`this draft says \`Ready:\` ${verdicts.length} times — two verdicts cannot both stand, and a hand edit that left both must not publish by accident`);
-  const verdict = verdicts[0].slice('Ready:'.length).trim().toLowerCase();
-  if (verdict !== 'yes' && verdict !== 'no') return refuse(`\`${verdicts[0].trim()}\` is neither \`Ready: yes\` nor \`Ready: no\` — the verdict has two values, said exactly`);
+  const verdictAt = lines.flatMap((line, i) => (/^Ready:/.test(line) ? [i] : []));
+  if (verdictAt.length === 0) return refuse('this draft says no `Ready: yes|no` — an absent verdict is a malformed draft, never a quiet not-ready');
+  if (verdictAt.length > 1) return refuse(`this draft says \`Ready:\` ${verdictAt.length} times — two verdicts cannot both stand, and a hand edit that left both must not publish by accident`);
+  const verdictLine = lines[verdictAt[0]];
+  const verdict = verdictLine.slice('Ready:'.length).trim().toLowerCase();
+  if (verdict !== 'yes' && verdict !== 'no') return refuse(`\`${verdictLine.trim()}\` is neither \`Ready: yes\` nor \`Ready: no\` — the verdict has two values, said exactly`);
 
   const locations = pattern => lines.flatMap((line, i) => (pattern.test(line) ? [i] : []));
   const briefAt = locations(/^## Agent Brief\s*$/);
   const verifAt = locations(/^## Verification\s*$/);
   if (briefAt.length === 0) return refuse('this draft has no `## Agent Brief` section — there is nothing to publish');
   if (briefAt.length > 1) return refuse('this draft has two `## Agent Brief` sections — the publishable slice must be unambiguous');
+  if (verdictAt[0] > briefAt[0]) return refuse('the `Ready:` verdict is written inside the sections, not above `## Agent Brief` — a verdict quoted in the published slice or the evidence is prose, not the draft\'s ruling');
   if (verifAt.length === 0) return refuse('this draft has no `## Verification` section — the coordinator reviews the gate evidence, not the verdict alone');
   if (verifAt.length > 1) return refuse('this draft has two `## Verification` sections — the boundary of what never reaches the tracker must be unambiguous');
   if (verifAt[0] < briefAt[0]) return refuse('the `## Verification` section precedes `## Agent Brief` — the published slice is the bytes between the two, in that order');

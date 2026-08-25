@@ -23,8 +23,14 @@ The child recommends; you hold the tracker mutation.
    ```
 
 3. End your turn. A completion or question arrives on its own; never poll and
-   never run a second consuming wait loop. Between reports, `ax triage status
-   --issue <N>-<M> --brief` is the pull that survives every transport.
+   never run a second consuming wait loop. Between reports, `ax triage status`
+   is the pull that survives every transport — but it reads ONE lane and
+   defaults to `triage`, so name the job you dispatched on every status read:
+
+   ```bash
+   ax triage status --issue <N>-<M> --brief --job refine
+   ```
+
 4. Read the exact `.scratch/…` draft the child names. Correct that file in
    place; two competing verdicts for one issue are worse than a delayed one.
 5. A refine draft says `Ready: yes` or `Ready: no`. A `Ready: no` carries a
@@ -41,7 +47,10 @@ The child recommends; you hold the tracker mutation.
    publication posts the Agent Brief alone, then `ready-for-agent` — the
    Verification section never reaches the tracker.
 
-Use `ax triage status --issue <N>` for the recorded dispatch and its recovery.
+Use `ax triage status --issue <N> --job refine` for the recorded dispatch of a
+refine pass and its recovery; drop `--job` only when the active job really is
+`triage`, because an unqualified read reports the triage lane and would offer a
+recovery for a pass you never dispatched.
 Never hand-roll `worker-start`, reuse one session for several issues, or create a
 worktree for a comment.
 

@@ -361,6 +361,77 @@ test('a label list that came back AT the cap refuses, because absence is what it
   assert.deepEqual(mutations(r.calls), [], 'no issue was touched on an unprovable absence');
 });
 
+test('--repo reads the TARGET repository\'s labels, not the checkout it is run from', () => {
+  // The preflight and the mutation have to be asked of the same repository. A
+  // bare `gh label list` is answered by whatever checkout the process sits in,
+  // and `--repo` exists precisely to publish somewhere else — so a vocabulary
+  // read from here is not merely useless against there, it is wrong in both
+  // directions: it refuses names the target HAS, and passes names it does NOT.
+  //
+  // The two label sets below are disjoint on purpose, and the draft names a
+  // label only the TARGET carries. Read the checkout and this refuses.
+  const CHECKOUT_ONLY = ['category/bug'];
+  const TARGET_ONLY = ['area/foreign'];
+  const calls = [];
+  const exec = (bin, args) => {
+    calls.push(`${bin} ${args.join(' ')}`);
+    // `repo view` would answer acme/widgets, as everywhere else in this file.
+    if (args[0] === 'repo') return { status: 0, stdout: `${REPO}\n`, stderr: '' };
+    if (args[0] === 'label' && args[1] === 'list') {
+      const asked = args[args.indexOf('--repo') + 1];
+      const names = asked === 'foreign/widgets' ? TARGET_ONLY : CHECKOUT_ONLY;
+      return { status: 0, stdout: JSON.stringify(names.map(name => ({ name }))), stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const root = repo();
+  draft(root, 'triage-foreign-widgets-7', 'Labels: area/foreign\n\nIt reproduces on main.\n');
+  const r = capture(() =>
+    publish(['--issue', '7', '--repo', 'foreign/widgets'], { exec, env: {}, cwd: root, resolve: () => null }),
+  );
+
+  assert.equal(r.code, 0, r.out);
+  const list = calls.find(line => line.includes('label list'));
+  assert.match(list, /label list --repo foreign\/widgets /, 'the preflight named the target repository');
+
+  // Read and mutations agree — one repository for the whole gesture.
+  const targetOf = line => /--repo (\S+)/.exec(line)?.[1];
+  const mutated = mutations(calls);
+  assert.equal(mutated.length, 2, 'one edit and one comment');
+  for (const line of mutated) assert.equal(targetOf(line), targetOf(list), line);
+  assert.match(mutated[0], /issue edit 7 --repo foreign\/widgets --add-label area\/foreign/);
+});
+
+test('--repo does not let a name the TARGET lacks through, even when the checkout has it', () => {
+  // The other direction of the same mistake, and the dangerous one: reading the
+  // checkout would ACCEPT `category/bug` here and hand it to a repository that
+  // has no such label — an unchecked name reaching the tracker is exactly what
+  // the preflight is paid to prevent.
+  const calls = [];
+  const exec = (bin, args) => {
+    calls.push(`${bin} ${args.join(' ')}`);
+    if (args[0] === 'repo') return { status: 0, stdout: `${REPO}\n`, stderr: '' };
+    if (args[0] === 'label' && args[1] === 'list') {
+      const asked = args[args.indexOf('--repo') + 1];
+      const names = asked === 'foreign/widgets' ? ['area/foreign'] : REPO_LABELS;
+      return { status: 0, stdout: JSON.stringify(names.map(name => ({ name }))), stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const root = repo();
+  draft(root, 'triage-foreign-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = capture(() =>
+    publish(['--issue', '7', '--repo', 'foreign/widgets'], { exec, env: {}, cwd: root, resolve: () => null }),
+  );
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /does not have/);
+  assert.match(r.out, /category\/bug/);
+  assert.deepEqual(mutations(calls), [], 'nothing reached the target repository');
+});
+
 test('a non-numeric --issue is refused before any draft is read', () => {
   const r = run(['--issue', 'GAP-353']);
   assert.equal(r.code, 2);

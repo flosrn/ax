@@ -89,7 +89,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   // The repository's own vocabulary, read ONCE for the batch and before any
   // mutation — a name this list does not carry is refused here rather than
   // discovered by `gh` halfway through a batch.
-  const known = repoLabels(gh);
+  const known = repoLabels(gh, slug);
   if (known === null) {
     return refuse(
       'gh could not list this repository\'s labels, so no name in any draft can be checked — and an unchecked remove is the one mistake that does not undo',
@@ -394,9 +394,14 @@ const LABEL_CAP = 500;
  * missing name and the never-existing name read identically. Measured on the
  * repository that prompted this: 34 labels against a cap of 500, so the branch
  * is unreachable today and is written for the repo where it is not.
+ *
+ * The list is asked of `slug` EXPLICITLY, never of the checkout `gh` happens to
+ * sit in. `--repo <owner/repo>` makes every mutation below target a repository
+ * that is not this one, and a preflight read against the wrong vocabulary is
+ * worse than none: it refuses names the target has, and passes names it does not.
  */
-function repoLabels(gh) {
-  const out = gh(['label', 'list', '--limit', String(LABEL_CAP), '--json', 'name']);
+function repoLabels(gh, slug) {
+  const out = gh(['label', 'list', '--repo', slug, '--limit', String(LABEL_CAP), '--json', 'name']);
   if (out.error || out.status !== 0) return null;
   try {
     const parsed = JSON.parse(String(out.stdout ?? ''));
