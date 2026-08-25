@@ -26,8 +26,7 @@ import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../worker/release.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
-import { terminalInventory } from '../worker/pane.mjs';
-import { paneVerdict } from '../worker/ls.mjs';
+import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
 import { draftDirFor, passesIn, readDraft, requestFor } from './draft.mjs';
 
 const USAGE = 'ax triage publish --issue N [--issue M …] [--job triage|brief|refine] [--pass N] [--repo <owner/repo>] [--dry-run]';

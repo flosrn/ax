@@ -29,9 +29,8 @@ import { join } from 'node:path';
 import { bad, fix, note, ok, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { paneVerdict } from './ls.mjs';
 import { briefDelivered } from './delivered.mjs';
-import { readPane, terminalInventory } from './pane.mjs';
+import { paneVerdict, readPane, terminalInventory } from './pane.mjs';
 import { defaultStore, heldRepaired, markHeldRepair, report, requestIdOk, workerPane, workerSpec } from './record.mjs';
 import { armStallWatcher } from './start.mjs';
 
@@ -110,7 +109,7 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   const inventory = terminalInventory(run, { environment: pane.env });
   if (!inventory.ok) return cannot(inventory.reason, 'orca open   # a pane that cannot be read is never repaired into');
   // `pane.env` is the runtime THIS record dispatched onto, so an omitted remote
-  // host no longer makes a local corpse unknowable (see ls.mjs paneVerdict).
+  // host no longer makes a local corpse unknowable (see pane.mjs paneVerdict).
   const verdict = paneVerdict(pane.handle, 'this record names a pane the inventory cannot see', inventory, { host: pane.env });
   if (verdict.pane === 'MORT') {
     return refuse(

@@ -40,7 +40,7 @@ import { join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { terminalInventory } from './pane.mjs';
+import { paneVerdict, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore } from './record.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
@@ -186,57 +186,6 @@ function workerIndex(run) {
     if (typeof worker.agentTerminalHandle === 'string') byHandle.set(worker.agentTerminalHandle, worker);
   }
   return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length };
-}
-
-/**
- * VIVANT / MORT / INCONNU for one recorded handle.
- *
- * Exported because `ax triage dispatch --fresh` has to answer the same question
- * before it opens a competing pass, and a second definition of "is that pane
- * dead" is how one of the two ends up wrong. The third value is the whole point:
- * a handle missing from a terminal list that omits hosts is UNKNOWN, never dead
- * (F-028), and a caller about to create a rival child must not round that down.
- *
- * BUT OMISSION IS PER HOST, and reading it as global cost a real cleanup.
- * Measured 2026-08-25: one paired remote runtime was out of scope
- * (`{"hostIds":["local"],"omittedHostIds":["runtime:7930a317-…"]}`), and that
- * alone made a LOCALLY dispatched pane unknowable — so `ax worker release`
- * refused to close a corpse whose PR was already merged, and the record stayed
- * unclosable for as long as that unrelated remote slept.
- *
- * So ONE narrow exception, and deliberately no more: `host === ''` is a dispatch
- * this machine issued with no `--on`, and a receipt that explicitly names
- * `local` among the hosts it read has therefore covered that pane's runtime.
- * An absent handle is then a corpse (F-003), whatever else was omitted.
- *
- * REMOTE ROWS ARE UNTOUCHED. A record names its host by ENVIRONMENT NAME
- * (`--on gapicore`) while the receipt namespaces runtimes (`runtime:<uuid>`);
- * those are two vocabularies and no mapping between them is established here.
- * Matching them loosely would prove a remote pane dead on a coincidence of
- * substrings, and this verdict authorises closing panes.
- *
- * AND `host` HAS NO DEFAULT, on purpose. `''` is a caller ASSERTING "this record
- * dispatched locally"; an absent `host` is a caller that has not established the
- * owner, and that must keep the conservative answer rather than inherit the
- * exception through a default nobody chose.
- */
-export function paneVerdict(handle, why, terminals, { host } = {}) {
-  if (handle === null) return { pane: 'INCONNU', detail: why };
-  const terminal = terminals.byHandle.get(handle);
-  if (terminal === undefined) {
-    const localProven = host === '' && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
-    if (terminals.omitted && !localProven) {
-      return { pane: 'INCONNU', detail: `${handle} is not in this host's terminal list, and hosts are omitted from its scope` };
-    }
-    return {
-      pane: 'MORT',
-      detail: localProven && terminals.omitted
-        ? `${handle} is unknown to the local runtime, which this list did read (only remote hosts were omitted)`
-        : `${handle} is unknown to the runtime`,
-    };
-  }
-  if (terminal.orphaned === true) return { pane: 'MORT', detail: `${handle} orphaned` };
-  return { pane: 'VIVANT', detail: handle };
 }
 
 export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
