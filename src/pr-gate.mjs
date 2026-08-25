@@ -91,6 +91,20 @@ const THREAD_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$cursor:String
 /** Defensive bound, not a measurement: stop rather than loop forever. */
 const MAX_THREAD_PAGES = 50;
 
+/**
+ * The flags that acknowledge a detector's list, declared once so the parser and
+ * every command this verb prints read the same set.
+ *
+ * An acknowledgement is INVOCATION-LOCAL on purpose: it answers for the list
+ * ONE run printed, and a body that changed since is a different list — the
+ * stale-proof species this file exists to refuse. So it is never persisted, and
+ * the cost of that is carried here. Measured 2026-08-25 on ofmchat #72: a PASS
+ * under `--ack-body` printed `ax pr gate --pr 72 --merge`, the caller ran
+ * exactly that, and the same two post-open commits refused it again. The
+ * locality was right; the printed command was the defect.
+ */
+const ACK_FLAGS = ['--ack-body'];
+
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
 
 const succeeded = out => !out.error && out.status === 0;
@@ -221,7 +235,8 @@ export function gate(
   let pr = '';
   let repoArg = '';
   let doMerge = false;
-  let ackBody = false;
+  /** Insertion-ordered, so a reprinted command reads the way it was typed. */
+  const acks = new Set();
   let method = 'squash';
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -230,12 +245,31 @@ export function gate(
     if (arg === '--pr') pr = value();
     else if (arg === '--repo') repoArg = value();
     else if (arg === '--merge') doMerge = true;
-    else if (arg === '--ack-body') ackBody = true;
+    else if (ACK_FLAGS.includes(arg)) acks.add(arg);
     else if (arg === '--method') method = value();
     // Identifiers and flags only — an extra bare word is not a sentence this
     // command reads, it is an argument it does not have.
     else return usageError(`unknown argument "${arg}"`);
   }
+
+  const ackBody = acks.has('--ack-body');
+
+  /**
+   * This run's own command line, plus whatever the caller must add next. Every
+   * next action this verb prints is a command a caller runs VERBATIM, so it
+   * carries what this run consumed — the repository, the acknowledgements the
+   * verdict stood on, and a method that is not the default.
+   */
+  const invocation = (...extra) =>
+    [
+      'ax pr gate',
+      '--pr',
+      pr,
+      ...(repoArg === '' ? [] : ['--repo', repoArg]),
+      ...acks,
+      ...(method === 'squash' ? [] : ['--method', method]),
+      ...extra,
+    ].join(' ');
 
   if (!/^[1-9][0-9]{0,9}$/.test(pr)) return usageError(pr === '' ? 'no --pr given' : `--pr expects a PR number, got "${pr}"`);
   if (repoArg !== '' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repoArg)) return usageError(`--repo expects owner/repo, got "${repoArg}"`);
@@ -405,7 +439,7 @@ export function gate(
   // issued at all here: a read whose answer cannot be trusted must not look like
   // one that can.
   if (!ciDecided) {
-    unknown(`threads: CI is not decided on ${sha} — a thread read now is no observation at all`, `ax pr gate --pr ${pr}   # once CI has finished`);
+    unknown(`threads: CI is not decided on ${sha} — a thread read now is no observation at all`, `${invocation()}   # once CI has finished`);
   } else {
     let cursor = null;
     for (let page = 1; page <= MAX_THREAD_PAGES; page += 1) {
@@ -617,7 +651,7 @@ export function gate(
       else {
         refuse(
           `commits since open [DETECTOR]: ${late.length} commit(s) landed after the PR was opened (${late.join(' ')})`,
-          `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ax pr gate --pr ${pr} --ack-body`,
+          `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`,
         );
       }
     } catch (error) {
@@ -725,7 +759,7 @@ export function gate(
     // `--match-head-commit` only closes the push race when the exact validated
     // command is the one that runs. So the merge lives here, behind a flag.
     note('DETECTOR RUN — no --merge, so this run decided nothing and mutated nothing');
-    fix(`ax pr gate --pr ${pr}${repoArg === '' ? '' : ` --repo ${repoArg}`} --merge   # have this gate perform the merge it validated`);
+    fix(`${invocation('--merge')}   # have this gate perform the merge it validated`);
     return code;
   }
   if (code !== 0) {
@@ -737,7 +771,7 @@ export function gate(
   const merged = run(['pr', 'merge', pr, '--repo', slug, `--${method}`, '--match-head-commit', sha]);
   if (!succeeded(merged)) {
     bad(`MERGE FAILED — ${firstLine(merged.stderr) || `exit ${merged.status}`}; the head may have moved past ${sha}`);
-    fix(`ax pr gate --pr ${pr} --merge   # re-run the gate against the new head`);
+    fix(`${invocation('--merge')}   # re-run the gate against the new head`);
     return 1;
   }
   note(`MERGED — ${slug}#${pr} at ${sha} (${method})`);

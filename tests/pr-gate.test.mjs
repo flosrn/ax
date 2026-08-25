@@ -760,6 +760,16 @@ test('without --merge nothing mutates and the run names itself a detector', () =
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a merge was issued without --merge');
 });
 
+test('the next action a PASS prints carries the acknowledgements that PASS stood on', () => {
+  // Measured 2026-08-25 on ofmchat #72: a PASS under `--ack-body` printed
+  // `ax pr gate --pr 72 --merge`, and running exactly that refused again on the
+  // same two commits. An acknowledgement answers for the list ONE run printed,
+  // so it is never persisted — the command therefore has to carry it.
+  const { code, out } = run(['--pr', '1845', '--repo', SLUG, '--ack-body'], { ...CLEAN, commits: prCommits(2) });
+  assert.equal(code, 0);
+  assert.match(out, /→ ax pr gate --pr 1845 --repo gapilabs\/gapila --ack-body --merge /);
+});
+
 test('--merge carries the SHA this run validated, and squash is the default', () => {
   const { code, calls } = run(['--pr', '1845', '--merge'], CLEAN);
   assert.equal(code, 0);
