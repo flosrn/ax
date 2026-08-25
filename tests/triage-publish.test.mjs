@@ -11,11 +11,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
+import { draftPath } from '../src/triage/draft.mjs';
 import { publish } from '../src/triage/publish.mjs';
 import { status } from '../src/triage/index.mjs';
 
@@ -908,16 +909,17 @@ test('--pass expects a number', () => {
 });
 
 /** A refine draft, in the refine job's own directory. */
-const refineDraftAt = (root, name, text) => {
-  mkdirSync(join(root, '.scratch', 'refine'), { recursive: true });
-  writeFileSync(join(root, '.scratch', 'refine', `${name}.md`), text);
+const refineDraftAt = (root, issue, text) => {
+  const path = draftPath(root, { job: 'refine', repo: REPO, issue: String(issue) });
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
 };
 
-test('--brief renders the three refine states apart: ready, repair-carrying, malformed', () => {
+test('status renders the three refine draft states apart: ready, repair-carrying, malformed', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', ['Ready: yes', '', '## Agent Brief', '', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
-  refineDraftAt(root, 'refine-acme-widgets-8', ['Ready: no', '', '## Agent Brief', '', 'Repair: split the ticket.', '', '## Verification', '', 'G2 fail.'].join('\n'));
-  refineDraftAt(root, 'refine-acme-widgets-9', 'Ready: yes\nno sections at all\n');
+  refineDraftAt(root, 7, ['Ready: yes', '', '## Agent Brief', '', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
+  refineDraftAt(root, 8, ['Ready: no', '', '## Agent Brief', '', 'Repair: split the ticket.', '', '## Verification', '', 'G2 fail.'].join('\n'));
+  refineDraftAt(root, 9, 'Ready: yes\nno sections at all\n');
   const r = runStatus(['--issue', '7-9', '--brief', '--job', 'refine'], { root });
   assert.equal(r.code, 0);
   assert.match(r.out, /#7 p1 · FINAL/);
@@ -936,7 +938,7 @@ const refineReady = ['Ready: yes', '', '## Agent Brief', '', 'Summary: wire the 
 
 test('a ready refine draft posts its Brief FIRST, then applies only ready-for-agent', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', refineReady);
+  refineDraftAt(root, 7, refineReady);
   const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
   assert.equal(r.code, 0);
   const [comment, edit] = mutations(r.calls);
@@ -952,7 +954,7 @@ test('a ready refine draft posts its Brief FIRST, then applies only ready-for-ag
 
 test('a refused refine comment applies NO label, and never promises a blind re-post', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', refineReady);
+  refineDraftAt(root, 7, refineReady);
   const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, comment: { status: 1, stderr: 'boom' } } });
   assert.equal(r.code, 1);
   assert.equal(mutations(r.calls).length, 1, 'the label edit never ran');
@@ -961,7 +963,7 @@ test('a refused refine comment applies NO label, and never promises a blind re-p
 });
 test('a refused refine label names the label-only repair, never a publish re-run', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', refineReady);
+  refineDraftAt(root, 7, refineReady);
   const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, labels: { status: 1, stderr: 'nope' } } });
   assert.equal(r.code, 1);
   assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
@@ -970,7 +972,7 @@ test('a refused refine label names the label-only repair, never a publish re-run
 
 test('a repository without the ready-for-agent label refuses the refine batch before any mutation', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', refineReady);
+  refineDraftAt(root, 7, refineReady);
   const r = run(['--issue', '7', '--job', 'refine'], { root });
   assert.equal(r.code, 1);
   assert.equal(mutations(r.calls).length, 0);
@@ -979,7 +981,7 @@ test('a repository without the ready-for-agent label refuses the refine batch be
 
 test('Ready: no blocks with the repair path, never as a malformed draft', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', ['Ready: no', '', '## Agent Brief', '', 'Gate 2 fails; split proposal below.', '', '## Verification', '', 'G2 fail.'].join('\n'));
+  refineDraftAt(root, 7, ['Ready: no', '', '## Agent Brief', '', 'Gate 2 fails; split proposal below.', '', '## Verification', '', 'G2 fail.'].join('\n'));
   const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
   assert.equal(r.code, 1);
   assert.equal(mutations(r.calls).length, 0);
@@ -989,7 +991,7 @@ test('Ready: no blocks with the repair path, never as a malformed draft', () => 
 
 test('open questions block a refine publish exactly as they block a triage one', () => {
   const root = repo();
-  refineDraftAt(root, 'refine-acme-widgets-7', ['Ready: yes', '', '## Agent Brief', '', 'Q1: [product] cap the import where?', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
+  refineDraftAt(root, 7, ['Ready: yes', '', '## Agent Brief', '', 'Q1: [product] cap the import where?', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
   const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
   assert.equal(r.code, 1);
   assert.equal(mutations(r.calls).length, 0);

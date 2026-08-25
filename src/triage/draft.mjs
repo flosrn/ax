@@ -317,8 +317,9 @@ function parseRefineDraft(text) {
   const verdict = verdicts[0].slice('Ready:'.length).trim().toLowerCase();
   if (verdict !== 'yes' && verdict !== 'no') return refuse(`\`${verdicts[0].trim()}\` is neither \`Ready: yes\` nor \`Ready: no\` — the verdict has two values, said exactly`);
 
-  const briefAt = lines.flatMap((line, i) => (/^## Agent Brief\s*$/.test(line) ? [i] : []));
-  const verifAt = lines.flatMap((line, i) => (/^## Verification\s*$/.test(line) ? [i] : []));
+  const locations = pattern => lines.flatMap((line, i) => (pattern.test(line) ? [i] : []));
+  const briefAt = locations(/^## Agent Brief\s*$/);
+  const verifAt = locations(/^## Verification\s*$/);
   if (briefAt.length === 0) return refuse('this draft has no `## Agent Brief` section — there is nothing to publish');
   if (briefAt.length > 1) return refuse('this draft has two `## Agent Brief` sections — the publishable slice must be unambiguous');
   if (verifAt.length === 0) return refuse('this draft has no `## Verification` section — the coordinator reviews the gate evidence, not the verdict alone');

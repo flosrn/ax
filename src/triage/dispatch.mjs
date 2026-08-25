@@ -35,6 +35,7 @@ import { paneVerdict } from '../worker/ls.mjs';
 import { start as startVerb } from '../worker/start.mjs';
 import { launchProof } from '../worker/transcript.mjs';
 import { draftDirFor, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
+import { READY_LABEL } from './publish.mjs';
 
 const USAGE =
   'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom|refine] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
@@ -201,7 +202,7 @@ export function dispatch(
     if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
   }
   if (job === '') job = 'triage';
-  if (!['triage', 'brief', 'custom', 'refine'].includes(job)) return usageError(`--job expects triage|brief|custom|refine, got "${job}"`);
+  if (!Object.hasOwn(ROLE_BY_JOB, job)) return usageError(`--job expects ${Object.keys(ROLE_BY_JOB).join('|')}, got "${job}"`);
   if (job === 'custom' && instruction === '') return usageError('--job custom needs --instruction <file> holding the one-line task');
   if (job === 'custom' && !existsSync(instruction)) return refuse(`--instruction file unreadable: ${instruction}`);
   // A fresh pass with no stated reason is a child redoing the work the last one
@@ -438,7 +439,7 @@ export function dispatch(
     if (job === 'refine') {
       // Inbound gates do not apply here: comments on a spec-born issue are the
       // ordinary state (rulings folded into bodies), so F-030 stays triage-only.
-      if (meta.labels.includes('ready-for-agent') && !force) {
+      if (meta.labels.includes(READY_LABEL) && !force) {
         bad('^ already ready-for-agent — a second refine pass on a published verdict needs to be deliberate');
         fix(`ax triage dispatch --issue ${issue} --job refine --force # or --fresh --because <what moved> for a new pass`);
         blocked = true;
