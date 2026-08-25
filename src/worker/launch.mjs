@@ -397,7 +397,7 @@ export function launch(
     if (paths.root === null) {
       return cannot('not inside a git checkout, so there is no repository to place a worktree in', 'cd <repo> && ax worker launch …');
     }
-    const placed = placeLocal({ request, issue: flags.issue, slug, named, paths, launchConfig, exec, run, cwd, dry, probe, setupFn, env });
+    const placed = placeLocal({ request, issue: flags.issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn, env });
     for (const line of placed.notes) note(line);
     if (placed.refused) return refuse(placed.refused, placed.repair);
     if (placed.cannot) return cannot(placed.cannot, placed.repair);
@@ -444,6 +444,13 @@ export function launch(
     for (const line of identity.notes) note(line);
   } else if (on !== '' && !dry) {
     note(`no advisor mandate and no pinned git identity for a child on '${on}': its worktree is created inside the dispatch, after the roster is read — expect to tell it by hand, or move both into that repo's setup hook on that host`);
+    // Same shape, and worth its own line because the consequence is a shared
+    // database rather than a missing courtesy: nothing here provisions that
+    // remote tree, so a ticket that says it touches the database cannot be
+    // honoured from this side.
+    if (databaseArgs(launchConfig, ticket).argv.length > 0) {
+      note(`this ticket's labels ask for an isolated database, and a child on '${on}' is provisioned by that host's own setup hook — verify its stack there before it writes`);
+    }
   }
 
   // ── 6. the brief, as a FILE ────────────────────────────────────────────────
@@ -515,8 +522,40 @@ export function launch(
 
 const tickOf = env => Math.max(1, Number(env.AX_LAUNCH_TICK ?? 2000));
 
+/**
+ * Which setup argv this ticket's labels earn.
+ *
+ * The worktree's database is decided by `planWorktree` from the DIFF of the tree
+ * setup is provisioning, and that tree is empty: nothing has been written yet,
+ * so `touchesDatabase` is false and the plan shares the primary checkout's
+ * stack. That is right for most work and wrong for exactly the tickets that say
+ * so in their labels — measured 2026-08-25 on ofmchat #71 (`domain:database`,
+ * `domain:security`), whose brief required an isolated reset and a full pgTAP
+ * run, and whose worktree was announced as "does not touch the database". The
+ * guard in front of `ax supabase` promotes on the first write, so the child was
+ * not going to destroy the shared stack THROUGH ax — but every path around it
+ * (a raw `supabase` on PATH, a package script) resets the containers the primary
+ * checkout and every other sharing worktree depend on, because a shared
+ * worktree's `config.toml` is byte-identical to the primary's.
+ *
+ * The labels that mean "database" are the project's to declare
+ * (`launch.databaseLabels`): a label vocabulary measured for one fleet and
+ * inherited by a repo that never declared it is this file's own named mistake.
+ */
+function databaseArgs(launchConfig, ticket) {
+  const declared = Array.isArray(launchConfig.databaseLabels) ? launchConfig.databaseLabels : [];
+  if (declared.length === 0 || ticket === null) return { argv: [], notes: [] };
+  const carried = Array.isArray(ticket.labels) ? ticket.labels : [];
+  const matched = declared.filter(label => carried.includes(label));
+  if (matched.length === 0) return { argv: [], notes: [] };
+  return {
+    argv: ['--database'],
+    notes: [`${matched.join(', ')} — this ticket says it touches the database, so its worktree gets its own stack instead of sharing the primary checkout's`],
+  };
+}
+
 /** Place the worktree on THIS host: reuse, the repo's own tool, or Orca. */
-function placeLocal({ request, issue, slug, named, paths, launchConfig, exec, run, cwd, dry, probe, setupFn, env }) {
+function placeLocal({ request, issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn, env }) {
   const notes = [];
   const base = join(paths.root, '.worktrees');
   // What this placement is FOR, in one word, for every line below. `issue` is ''
@@ -588,7 +627,15 @@ function placeLocal({ request, issue, slug, named, paths, launchConfig, exec, ru
   // Once a tree EXISTS, a provisioning failure is no longer "nothing was
   // created": exit 1 promises that, so these answer cannot-establish and name
   // the tree, which is also what a second launch will reuse.
-  const setupCode = setupFn([], { cwd: worktree, env: { ...env, PWD: worktree } });
+  //
+  // `cwd` is the whole contract with setup: it never chdirs, and it passes that
+  // path down to every probe that answers per directory (the proxy route in
+  // particular). This call used to add `env: { …env, PWD: worktree }`, which
+  // `setup` does not read and which `child_process` ignores anyway — a
+  // directory override that overrode nothing.
+  const database = databaseArgs(launchConfig, ticket);
+  notes.push(...database.notes);
+  const setupCode = setupFn(database.argv, { cwd: worktree });
   if (setupCode !== 0) {
     return {
       notes,

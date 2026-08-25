@@ -81,8 +81,24 @@ const unreadable = (ref, where, detail) => ({
 });
 
 /**
- * A ticket reduced to what a brief needs: identifier, title, url, state, and the
- * SIZE of its body.
+ * Label NAMES out of whatever a tracker calls its label container.
+ *
+ * Three shapes are accepted because three exist: `gh --json labels` answers
+ * `[{name}]`, a GraphQL connection answers `{nodes:[{name}]}`, and a plain
+ * string list is what a hand-written fixture or a simpler tracker gives. Nothing
+ * here throws and nothing here guesses: an unrecognised shape is NO labels, and
+ * the caller that consumes them says what it did with an empty list.
+ */
+function labelNames(container) {
+  const list = Array.isArray(container) ? container : Array.isArray(container?.nodes) ? container.nodes : [];
+  return list
+    .map(label => (typeof label === 'string' ? label : typeof label?.name === 'string' ? label.name : ''))
+    .filter(Boolean);
+}
+
+/**
+ * A ticket reduced to what a brief needs: identifier, title, url, state, the
+ * SIZE of its body — and its LABELS.
  *
  * Two trackers, one shape. Linear answers under `result.issue`, GitHub at the
  * top level, and no caller should have to know which — a launcher that parses
@@ -91,6 +107,15 @@ const unreadable = (ref, where, detail) => ({
  * The body TEXT never comes back. It is the child's to read, on its own host,
  * with the command `readCommand` teaches; only its emptiness is decidable from
  * here (see `emptyBodyRefusal`). Length, not judgement.
+ *
+ * LABELS ARE NOT DISPLAY. They are the only machine-readable statement a tracker
+ * makes about what a ticket TOUCHES, and one consumer needs it before the child
+ * exists: a worktree's database is decided by `planWorktree` from the diff of a
+ * tree that is still empty, so an issue whose whole subject is the database was
+ * provisioned to share the primary checkout's stack. Measured 2026-08-25 on
+ * ofmchat #71 (`domain:database`, `domain:security`): the brief demanded an
+ * isolated reset and a full pgTAP run, and setup had announced "this worktree
+ * does not touch the database".
  */
 export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExec } = {}) {
   let ident;
@@ -99,6 +124,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
   let state = '';
   let body = '';
   let detail = '';
+  let labels = [];
 
   if (kind === 'linear') {
     if (typeof run !== 'function') {
@@ -114,10 +140,11 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     url = issue.url;
     state = issue.state?.name ?? '';
     body = issue.description ?? '';
+    labels = labelNames(issue.labels);
     detail = detailOf(answer?.stderr, answer?.receipt?.error, answer?.receipt?.unparseable);
     if (!ident || !title || !url) return unreadable(ref, 'Linear', detail);
   } else if (kind === 'github') {
-    const answer = exec('gh', ['issue', 'view', String(ref), '--json', 'title,url,state,body']);
+    const answer = exec('gh', ['issue', 'view', String(ref), '--json', 'title,url,state,body,labels']);
     // `gh` that cannot RUN is its own refusal: the credential, the network and a
     // missing binary need three different repairs, and one message for all three
     // sends the operator looking in the wrong place.
@@ -138,6 +165,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     url = parsed.url;
     state = parsed.state ?? '';
     body = parsed.body ?? '';
+    labels = labelNames(parsed.labels);
     detail = detailOf(answer?.stderr);
     if (!title || !url) return unreadable(`#${ref}`, 'GitHub', detail);
   } else {
@@ -147,7 +175,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     };
   }
 
-  return { ok: true, id: ident, title, url, state, bodyLength: String(body).trim().length };
+  return { ok: true, id: ident, title, url, state, bodyLength: String(body).trim().length, labels };
 }
 
 /**
