@@ -16,13 +16,18 @@
 // near-miss: a finish signal nobody sent, followed by the prescribed release,
 // on a child that was still working (F-043).
 //
-// Hence the three answers never share a value (ADR 0003 — exit codes are
+// Hence the answers never share a value (ADR 0003 — exit codes are
 // per-verb):
 //
 //   0  ALIVE, with content — the tail is printed
 //   1  ALIVE, SILENT — nothing printed yet; NEVER the answer given for absent
 //   3  cannot establish — bad handle, unreachable runtime, error or non-JSON
 //      receipt, a moved key, the `--lines` shape
+//   4  EXITED — the pane is gone. Its last frame is printed when it has one,
+//      and it is never called ALIVE: measured 2026-08-25 on 56-scores-r2, a
+//      closed pane read `status=exited` and this verb answered `ALIVE, SILENT`
+//      plus "This is not a dead terminal". A caller waiting for that pane to
+//      speak waits for ever.
 //
 // Unlike `ax board` this verb is FAIL-CLOSED: it is read to decide whether a
 // pane may be closed, so "I could not look" must never resemble "nothing is
@@ -165,13 +170,30 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     return refuse(`${handle}: result.terminal.tail is ${refusal.got}, not a list.`, 'ax worker ls   # the receipt shape changed; re-establish before acting on it');
   }
 
-  // Both remaining answers are ESTABLISHED facts about a living pane — the ✓ is
-  // about having established it, and the exit code carries which one it is.
+  // ESTABLISHED facts — the ✓ is about having established them, and the exit
+  // code carries which one it is.
+  //
+  // AND `exited` IS NOT ONE OF THE LIVING. Measured 2026-08-25 on
+  // 56-scores-r2: the child's pane had closed, `terminal read` answered
+  // `status=exited cursor=0` with no line, and this verb printed `ALIVE,
+  // SILENT` followed by "This is not a dead terminal" — about a terminal that
+  // was exactly that. The status was in the receipt and printed on the same
+  // line; nothing read it. A coordinator waiting for that pane to speak waits
+  // forever, and the reassurance argues against the only correct action.
   const { lines, cursor, paneStatus: status } = pane;
+  const exited = status === 'exited';
   if (lines.length > 0) {
-    ok(`ALIVE — ${handle}  status=${status}  cursor=${cursor}  ${lines.length} line(s)`);
+    ok(`${exited ? 'EXITED' : 'ALIVE'} — ${handle}  status=${status}  cursor=${cursor}  ${lines.length} line(s)`);
     for (const line of lines) note(redactSecrets(line));
-    return 0;
+    if (exited) note('The pane has EXITED: this tail is its last frame, not a session between turns.');
+    return exited ? 4 : 0;
+  }
+
+  if (exited) {
+    ok(`EXITED, SILENT — ${handle}  status=${status}  cursor=${cursor}  no line to show.`);
+    note('The pane is gone and printed nothing this read can show. Its session outlives it:');
+    fix(redactSecrets(`ax worker transcript ${target}   # what that child did, from its own history`));
+    return 4;
   }
 
   ok(`ALIVE, SILENT — ${handle}  status=${status}  cursor=${cursor}  no line yet.`);

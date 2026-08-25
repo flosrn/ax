@@ -196,6 +196,34 @@ test('a record this scan could not READ is never reported as a record that does 
   assert.equal(calls.filter(line => line.startsWith('terminal read')).length, 0, 'nothing was read');
 });
 
+test('an EXITED pane is never called alive, whether it has a last frame or not', () => {
+  // Measured 2026-08-25 on 56-scores-r2: the child's pane had closed,
+  // `terminal read` answered `status=exited cursor=0` with no line, and this
+  // verb printed `ALIVE, SILENT` followed by "This is not a dead terminal" —
+  // about a terminal that was exactly that. The status sat in the receipt and on
+  // the printed line; nothing read it.
+  const silent = probe(JSON.stringify({
+    ok: true,
+    result: { terminal: { handle: HANDLE, status: 'exited', latestCursor: 0, tail: [] } },
+  }));
+  assert.equal(silent.code, 4, 'its own verdict, never 1 — a caller must not wait for a corpse to speak');
+  assert.match(silent.out, /EXITED, SILENT/);
+  assert.doesNotMatch(silent.out, /ALIVE/);
+  assert.doesNotMatch(silent.out, /not a dead terminal/, 'the reassurance argued against the only correct action');
+  assert.match(silent.out, new RegExp(`ax worker transcript ${HANDLE}`), 'the session outlives the pane');
+
+  // With a last frame, the frame is still worth printing — it is just not proof
+  // of a living session.
+  const framed = probe(JSON.stringify({
+    ok: true,
+    result: { terminal: { handle: HANDLE, status: 'exited', latestCursor: 98216, tail: ['Tests  709 passed'] } },
+  }));
+  assert.equal(framed.code, 4);
+  assert.match(framed.out, /EXITED — /);
+  assert.match(framed.out, /709 passed/);
+  assert.match(framed.out, /last frame/);
+});
+
 test('a terminal with output is alive and its tail is printed', () => {
   const r = probe(alive(['⠋ Reading full e2e harness report']));
 
