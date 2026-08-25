@@ -137,3 +137,189 @@ test('session shutdown retries a completion whose turn-end delivery failed', asy
 
   expect(sent).toEqual(['turn-ended', 'turn-ended']);
 });
+
+/**
+ * A SECOND FINISH IS STILL A FINISH.
+ *
+ * Measured 2026-08-25 on ofmchat. Child `57-policy-offer-engine` (session
+ * 01a0387b) marked its 19 todo tasks complete at 11:30, and its completion
+ * reached the coordinator at 11:32:41 — `handoff`, sequence 1, in Orca's own
+ * ledger. At 11:40:59 the operator relayed a second assignment onto its pane; it
+ * ran 19 tool calls, edited two files, committed `b8870ef2` and opened PR #76,
+ * and its run ended at 11:47:40. Nothing was sent: `current` was still `done` and
+ * `lastReported` was `done`, so `agent_end` returned before the send. Orca's
+ * ledger holds no message from that pane after 11:32:28, and the coordinator sat
+ * idle from 11:42 onwards waiting for one.
+ *
+ * THE RE-ARM IS THE WORK CYCLE, NOT THE TODO LIST AND NOT THE ARTIFACT. The todo
+ * tool is untouched by most follow-up work, which is how the silence happened.
+ * A git measurement fails the same way for a whole class of real follow-ups — an
+ * analysis, a decision, a review comment, a merge done remotely, work already
+ * committed before the first report — so `agent_start` is the signal: the session
+ * was handed something and started on it. One report per cycle, which is what the
+ * `lastReported` latch still enforces inside a cycle.
+ */
+const phases = (status: string) => [{ tasks: [{ status }] }];
+
+test('a finished worker handed more work reports again when that run ends', async () => {
+  const sent: string[] = [];
+  const lead = ctx('01a0387b');
+  const h = harness((state) => (sent.push(state), { sent: true }));
+
+  await h.fire('session_start', {}, lead);
+  // 10:35 → 11:30: the assignment, then every task complete.
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  // 11:32:41 — the report that did arrive.
+  await h.fire('agent_end', {}, lead);
+  expect(sent).toEqual(['done']);
+
+  // 11:40:59 — a second assignment relayed onto the pane. 11:47:40 — it ends,
+  // having committed and opened a PR, without ever calling the todo tool.
+  await h.fire('agent_start', {}, lead);
+  await h.fire('agent_end', {}, lead);
+  expect(sent).toEqual(['done', 'done']);
+
+  // A third cycle that reaches the same state says so again: each is a finish the
+  // mother did not know about.
+  await h.fire('agent_start', {}, lead);
+  await h.fire('agent_end', {}, lead);
+  expect(sent).toEqual(['done', 'done', 'done']);
+});
+
+test('one report per work cycle, however many times the run ends inside it', async () => {
+  // Pi ends an agent run and may still auto-retry, auto-compact and retry, or
+  // pick up a queued follow-up message — several `agent_end` events for one thing
+  // the operator asked. The mirror error costs as much as the silence: a
+  // coordinator that gets "finished its work" three times for one finish learns to
+  // ignore the signal.
+  const sent: string[] = [];
+  const lead = ctx('retry-session');
+  const h = harness((state) => (sent.push(state), { sent: true }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  await h.fire('agent_end', {}, lead);
+  await h.fire('agent_end', {}, lead);
+  await h.fire('agent_end', {}, lead);
+  await h.fire('session_shutdown', {}, lead);
+
+  expect(sent).toEqual(['done']);
+});
+
+test('a subagent run neither reports nor re-arms the lead', async () => {
+  // A `task` subagent runs its own agent loop inside this process. Its
+  // `agent_start` must not hand the lead a fresh licence to announce a finish
+  // that has not happened.
+  const sent: string[] = [];
+  const lead = ctx('lead-session');
+  const child = ctx('child-session', childFile('lead-session'));
+  const h = harness((state) => (sent.push(state), { sent: true }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  await h.fire('agent_end', {}, lead);
+  expect(sent).toEqual(['done']);
+
+  await h.fire('agent_start', {}, child);
+  await h.fire('agent_end', {}, child);
+  expect(sent).toEqual(['done']);
+});
+
+test('a no-todo session still reports its turn once per session, not once per cycle', async () => {
+  // The `turn-ended` state exists because a session that never makes a todo list
+  // would otherwise never be heard from. It is also the noisiest signal in the
+  // set, and its cap is the on-disk latch — the work-cycle re-arm must not lift
+  // it: a fresh child reaches this boundary while it is still reading its ticket.
+  const saved = process.env.ORCA_TERMINAL_HANDLE;
+  process.env.ORCA_TERMINAL_HANDLE = 'term_cycles';
+  try {
+    const sent: string[] = [];
+    const lead = ctx('no-todo-session');
+    const h = harness((state) => (sent.push(state), { sent: true }));
+
+    await h.fire('session_start', {}, lead);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await h.fire('agent_start', {}, lead);
+      await h.fire('agent_end', {}, lead);
+    }
+
+    expect(sent).toEqual(['turn-ended']);
+  } finally {
+    if (saved === undefined) delete process.env.ORCA_TERMINAL_HANDLE;
+    else process.env.ORCA_TERMINAL_HANDLE = saved;
+  }
+});
+
+/**
+ * AN UNFINISHED CYCLE IS AN INTERRUPTION, WHATEVER THE PREVIOUS ONE ACHIEVED.
+ *
+ * The re-arm above creates this case, and it is the more expensive of the two
+ * errors it sits between. `current` still reads `done` from the cycle that
+ * finished, so a session killed inside the NEXT one would announce "finished its
+ * work" for work that stopped halfway — a false completion a coordinator acts on,
+ * where the pre-re-arm behaviour was merely silent. The todo list describes the
+ * cycle that wrote it; only the cycle boundary knows whether this one ended.
+ */
+test('a session killed inside a second cycle says it stopped, not that it finished', async () => {
+  const sent: string[] = [];
+  const lead = ctx('killed-session');
+  const h = harness((state) => (sent.push(state), { sent: true }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  await h.fire('agent_end', {}, lead);
+  expect(sent).toEqual(['done']);
+
+  // A second assignment, then SIGTERM before the run ends. No todo call: the
+  // list still reads complete from the first cycle.
+  await h.fire('agent_start', {}, lead);
+  await h.fire('session_shutdown', {}, lead);
+
+  expect(sent).toEqual(['done', 'interrupted']);
+});
+
+test('a cycle that ended cleanly is not re-announced as interrupted at shutdown', async () => {
+  // The mirror of the above: a worker that finished and is then torn down must
+  // not retract its own completion.
+  const sent: string[] = [];
+  const lead = ctx('clean-session');
+  const h = harness((state) => (sent.push(state), { sent: true }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  await h.fire('agent_end', {}, lead);
+  await h.fire('session_shutdown', {}, lead);
+
+  expect(sent).toEqual(['done']);
+});
+
+test('a run that ended without reporting is still a cycle that ended', async () => {
+  // `agent_end` returns early on the on-disk latch and on an unchanged state.
+  // Clearing the cycle only on the paths that SEND would leave those runs looking
+  // unfinished, and a later shutdown would call a finished session interrupted.
+  const saved = process.env.ORCA_TERMINAL_HANDLE;
+  process.env.ORCA_TERMINAL_HANDLE = 'term_latched';
+  try {
+    const sent: string[] = [];
+    const lead = ctx('latched-session');
+    const h = harness((state) => (sent.push(state), { sent: true }));
+
+    await h.fire('session_start', {}, lead);
+    // Two no-todo cycles: the first reports, the second is capped by the latch.
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      await h.fire('agent_start', {}, lead);
+      await h.fire('agent_end', {}, lead);
+    }
+    await h.fire('session_shutdown', {}, lead);
+
+    expect(sent).toEqual(['turn-ended']);
+  } finally {
+    if (saved === undefined) delete process.env.ORCA_TERMINAL_HANDLE;
+    else process.env.ORCA_TERMINAL_HANDLE = saved;
+  }
+});

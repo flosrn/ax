@@ -117,6 +117,14 @@ export default function (pi, seams: ReportSeams = {}): void {
   const reportDir = seams.reportDir ?? DEFAULT_REPORT_DIR;
   let lastReported: WorkState | null = null;
   let current: WorkState = 'none';
+  /**
+   * A run has begun and has not ended.
+   *
+   * The one fact the todo list cannot supply: it describes the cycle that wrote
+   * it, so it cannot say whether THIS one finished. `session_shutdown` needs
+   * exactly that to tell a completion from an interruption.
+   */
+  let cycleActive = false;
   const latchFor = (ctx: unknown): string => {
     const session = sessionIdOf(ctx).replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown';
     const handle = String(process.env.ORCA_TERMINAL_HANDLE ?? 'unknown').replace(/[^A-Za-z0-9_-]/g, '_');
@@ -133,6 +141,32 @@ export default function (pi, seams: ReportSeams = {}): void {
     // already being made — not on a turn boundary where the operator is
     // waiting on the answer.
     warm();
+  });
+
+  // A NEW WORK CYCLE RE-ARMS THE REPORT. Without this, a worker speaks once and
+  // is then mute for the rest of its life.
+  //
+  // Measured 2026-08-25 on ofmchat: child `57-policy-offer-engine` reported
+  // `done` at 11:32:41, was handed a second assignment on its pane at 11:40:59,
+  // committed and opened PR #76, and ended that run at 11:47:40 in silence —
+  // `current` was still `done`, `lastReported` was `done`, and `agent_end`
+  // returned before the send. Orca's ledger holds nothing from that pane after
+  // 11:32:28. The coordinator, idle since 11:42, was never told. Its `worker_done`
+  // could not cover the gap either: Orca's preamble allows exactly one.
+  //
+  // WHY THIS EVENT AND NOT A MEASUREMENT. The todo tool is untouched by most
+  // follow-up work, which is precisely how the silence arose. Proving new work
+  // from git fails the same way for a whole class of real follow-ups — an
+  // analysis, a decision, a review comment, a merge performed remotely, or work
+  // already committed before the first report — and would reinstate the silence
+  // for exactly those. `agent_start` is the honest signal: this session was handed
+  // something and began working on it. The `lastReported` latch still holds
+  // WITHIN the cycle, so Pi's auto-retry and auto-compact runs, which end an
+  // agent run several times for one thing the operator asked, produce one report.
+  pi.on('agent_start', (_event, ctx) => {
+    if (owner.isForeign(ctx)) return;
+    cycleActive = true;
+    lastReported = null;
   });
 
   pi.on('tool_result', (event, ctx) => {
@@ -165,6 +199,12 @@ export default function (pi, seams: ReportSeams = {}): void {
   pi.on('agent_end', (_event, ctx) => {
     if (owner.isForeign(ctx)) return;
     try {
+      // Cleared FIRST, before any of the early returns below. A run that ended
+      // without reporting — capped by the latch, or reporting a state already
+      // sent — is still a run that ended, and leaving the cycle open would make
+      // a later shutdown call a finished session interrupted.
+      cycleActive = false;
+
       const effective = current === 'none' ? 'done' : current;
       if (effective !== 'done' && effective !== 'blocked') return;
       if (lastReported === effective) return;
@@ -196,8 +236,25 @@ export default function (pi, seams: ReportSeams = {}): void {
   pi.on('session_shutdown', (_event, ctx) => {
     if (owner.isForeign(ctx)) return;
     try {
+      // A CYCLE THAT BEGAN AND NEVER ENDED IS AN INTERRUPTION, whatever the todo
+      // list says. That list describes the cycle that wrote it: after the re-arm
+      // above, a session killed inside its SECOND assignment still reads `done`
+      // from its first, and would announce "finished its work" for work that
+      // stopped halfway. A false completion is acted on; the silence it replaced
+      // was merely a silence, so this is the more expensive of the two errors and
+      // the cycle boundary is the only thing that can tell them apart.
+      // `session_shutdown` fires once per teardown, so no latch is needed here —
+      // and `lastReported` holds a todo state, which `interrupted` is not.
+      if (cycleActive) {
+        deliver('interrupted', send);
+        return;
+      }
       if (current === 'none') {
-        if (lastReported === null) deliver('turn-ended', send);
+        // The latch, not `lastReported`, is the authority for this state: the
+        // re-arm clears `lastReported` at every cycle, and `turn-ended` is capped
+        // once per SESSION on purpose. Retrying a delivery that failed is the one
+        // thing this branch is for.
+        if (lastReported === null && !existsSync(latchFor(ctx))) deliver('turn-ended', send);
         return;
       }
       if (current === 'done') {
