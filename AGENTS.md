@@ -137,6 +137,10 @@ version pins must match the code.
 `ADR NNNN` lives under `~/.omp/docs/adr/`. Neither is required reading before a patch unless the
 header's explanation is insufficient.
 
+Documented solutions live under `docs/solutions/` — problems this repo has already solved
+(bugs, practices), one file each, with YAML frontmatter (`module`, `tags`, `problem_type`);
+relevant when implementing or debugging in an area a past learning covers.
+
 **Orca is readable source, not a black box.** This machine runs a patched Orca fork (ADR 0026);
 the source lives at `~/Code/flosrn/orca` (`upstream` = stablyai/orca). Answer an Orca behavior
 question by reading that checkout — never by unpacking the installed app's `.asar`. A fix that
