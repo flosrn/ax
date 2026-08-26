@@ -133,7 +133,33 @@ COHERENT** — refusals that corroborate one another make a story, and a story d
 checked. The costs are symmetric: one makes you ignore what is broken, the other makes you repair
 what is not.
 
-## The rule behind all four
+## The instance with no tool in it: an author contradicting their own verification
+
+Same session, and the only one where nothing automated had a part. A coordinator wrote the
+`$comment` that documents a repository's merge-gate check set, and put in it: "It is unconditional
+across the job axes — no `if:`, no `paths:` or `paths-ignore:` — so every pull request produces the
+exact check-run name the gate enumerates."
+
+The workflow's trigger is `pull_request: branches: [main, v2]`. A PR based anywhere else — one
+stacked on a feature branch — produces neither enumerated check, and the gate refuses it for both.
+
+The author HAD read that trigger, two turns earlier, and had written the correct narrow claim about
+it: a pre-existing workflow-level filter does not *widen* what enumerating this check costs. That
+reasoning is sound for the decision to enumerate. The sentence then shipped as "so it covers
+everything" — a different proposition, contradicted by a note in the same context. Both halves were
+present; they were never confronted.
+
+It was caught by a reviewer re-reading the sentence against that note, after the merge, and repaired
+in the comment rather than in the trigger: widening a trigger changes every PR's CI spend and is a
+maintainer's decision, not something a comment fix smuggles through.
+
+**The rule generalizes one level up: a report about an operation is not the operation, including
+when the report is your own prose and the operation is a YAML read you have already done.** A
+document whose entire value is that its claims are trustworthy is exactly where an unconfronted
+contradiction is most expensive — and re-reading a claim against the observation that produced it
+costs one turn.
+
+## The rule behind all five
 
 A report about an operation is not the operation. Neither a claimed absence nor a claimed failure is
 checkable from the report that carries it, so both have to be settled against the thing itself — the
