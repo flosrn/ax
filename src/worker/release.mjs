@@ -188,6 +188,11 @@ function workerInventory(run) {
       workerState: worker.workerState ?? '?',
       terminalState: worker.terminalState ?? '?',
       handle: (typeof worker.agentTerminalHandle === 'string' && worker.agentTerminalHandle) || (typeof resource.terminalHandle === 'string' && resource.terminalHandle) || '',
+      // WHO Orca thinks owns the pane, and it decides which command can free it:
+      // `worker-stop` refuses a `user_owned` terminal outright, answering
+      // `processAction: "none"` (measured 2026-08-26). Absent on many rows, so
+      // it stays '' rather than defaulting to a value that authorizes anything.
+      ownership: typeof resource.ownershipState === 'string' ? resource.ownershipState : '',
       worktree: worktreeId.split('::').pop() ?? '',
       known: true,
     });
@@ -213,6 +218,7 @@ function unaccounted(index, seen) {
       workerState: 'absent',
       terminalState: 'absent',
       handle: entry.handle,
+      ownership: '',
       worktree: '',
       known: false,
     });
@@ -710,11 +716,23 @@ export function release(
     }
 
     if (row.known && !SETTLED.has(row.workerState)) {
+      // THREE REPAIRS, ONE BRANCH, and the row says which applies. A `ready`
+      // worker is normally a live session someone may still want, so the offer
+      // is `worker-stop` and the decision stays the operator's. But a pane Orca
+      // classifies `user_owned` — what a triage dispatch running in the current
+      // checkout gets — can never be closed by a stop: it answers
+      // `processAction: "none"`, `lastError: The worker terminal is user_owned`,
+      // the Dispatch never settles, and the pane holds a cap slot for good.
+      // Measured 2026-08-26: three commands, two of them refusals, to free one
+      // pane this tool created. Naming the stop there sends the operator down a
+      // route this row already proves cannot work.
       keep(
-        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · not settled, so not releasable`,
-        row.workerState === 'ready'
-          ? `orca orchestration worker-stop --dispatch ${row.dispatchId} --json   # cancelling a live session is a different decision`
-          : `orca terminal close --terminal ${row.handle}   # a ${row.workerState} worker cannot be released`,
+        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · not settled, so not releasable${row.ownership === 'user_owned' ? ' · and user_owned, so no worker-stop can ever settle it' : ''}`,
+        row.ownership === 'user_owned'
+          ? `orca terminal close --terminal ${row.handle}   # closing a live pane is still your decision — a stop would answer processAction: none`
+          : row.workerState === 'ready'
+            ? `orca orchestration worker-stop --dispatch ${row.dispatchId} --json   # cancelling a live session is a different decision`
+            : `orca terminal close --terminal ${row.handle}   # a ${row.workerState} worker cannot be released`,
       );
       continue;
     }

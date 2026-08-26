@@ -220,6 +220,30 @@ test('a live worker is still kept and reported, not swept into a residual count'
   assert.match(r.out, /worker-stop/, 'cancelling a live session is a different decision, and it is named');
 });
 
+test('a live pane Orca owns as the USER names the one command that can close it', () => {
+  // Measured 2026-08-26 on ofmchat #79, three commands to free one pane this
+  // tool created: release named `worker-stop`, `worker-stop` answered
+  // `processAction: "none"` / "The worker terminal is user_owned; no terminal
+  // was closed", and only the SECOND release — now reading `stop_unknown` —
+  // named `orca terminal close`. The ownership was readable at the first turn,
+  // on the same `worker-list` row this verb already parses.
+  const r = run(['--all'], {
+    orca: {
+      workers: [worker('ctx_owned', {
+        workerState: 'ready',
+        resource: { ownershipState: 'user_owned', terminalHandle: 'term_ctx_owned', worktreeId: `id::${SCOPE}/wt` },
+      })],
+      terminals: [terminal('term_ctx_owned')],
+    },
+  });
+
+  assert.match(r.out, /user_owned/, 'the reason is named, not just the repair');
+  assert.match(r.out, /orca terminal close --terminal term_ctx_owned/);
+  // The prose is free to SAY worker-stop cannot settle this; what must not appear
+  // is worker-stop offered as the repair.
+  assert.doesNotMatch(r.out, /→ orca orchestration worker-stop/);
+});
+
 test('nothing is released on the report path', () => {
   // The fixture MUST contain a row that would otherwise close: a report whose
   // input has nothing closeable cannot prove that a report closes nothing.
