@@ -10,7 +10,7 @@
 // against a live handle — the interesting ones (moved key, null status) cannot
 // be produced on demand against a real runtime.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -105,6 +105,91 @@ function storeWith(records) {
   }
   return { HOME: store, ORCA_DISPATCH_STORE: store };
 }
+
+/**
+ * A record naming ONE worktree plus the child session the witness reads, so the
+ * channel line has something to testify about. `steerings` is how many user
+ * messages landed AFTER the brief.
+ */
+function witnessed(request, { dispatchId = 'ctx_w', pane = HANDLE, steerings = 0 } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'ax-tail-home-'));
+  const worktree = join(home, '.worktrees', request);
+  const beganAt = new Date(Date.now() - 600_000).toISOString();
+  writeFileSync(
+    join(home, `${request}.json`),
+    JSON.stringify({
+      request,
+      attempts: [{
+        n: 1,
+        settled: false,
+        phases: [{
+          name: 'worker-start',
+          exit: 0,
+          beganAt,
+          argv: ['orca', 'orchestration', 'worker-start', '--json'],
+          receipt: {
+            ok: true,
+            result: {
+              dispatchId,
+              state: 'ready',
+              effects: [
+                { kind: 'terminal', role: 'agent', action: 'created', id: pane },
+                { kind: 'worktree', id: `repo::${worktree}` },
+              ],
+            },
+          },
+        }],
+      }],
+    }),
+  );
+  const dir = join(home, '.omp', 'agent', 'sessions', `-h-.worktrees-${request}`);
+  mkdirSync(dir, { recursive: true });
+  const at = new Date().toISOString();
+  const entries = [
+    { type: 'session', version: 3, timestamp: at, cwd: worktree },
+    { type: 'message', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: `dispatch ${dispatchId}` }] } },
+  ];
+  for (let n = 1; n <= steerings; n += 1) {
+    entries.push({
+      type: 'message',
+      timestamp: new Date(Date.parse(at) + n * 60_000).toISOString(),
+      message: { role: 'user', content: [{ type: 'text', text: `steering ${n}` }] },
+    });
+  }
+  writeFileSync(join(dir, `${at.replace(/[:.]/g, '-')}_w.jsonl`), `${entries.map(e => JSON.stringify(e)).join('\n')}\n`);
+  return { HOME: home, ORCA_DISPATCH_STORE: home };
+}
+
+test('ALIVE also says what the child RECORDED, because a live pane is not a delivering channel', () => {
+  // Measured 2026-08-26: pane VIVANT, transcript readable, `worker-list`
+  // succeeded — and two canonical ticket amendments plus three direct steerings
+  // all sat at `delivered_at: null` while the child opened its PR without them.
+  // The loss surfaced at PR review. ALIVE was never a claim about the channel,
+  // so the verdict now carries what the child's own session witnessed.
+  const env = witnessed('61-work');
+  const { runner } = fakeRunner({ receipt: alive(['working…']) });
+  const only = capture(() => tail(['61-work'], { runner, env }));
+  assert.equal(only.code, 0);
+  assert.match(only.out, /ONLY its brief/);
+  assert.match(only.out, /Nothing sent since has been recorded/);
+
+  const env2 = witnessed('60-work', { steerings: 2 });
+  const { runner: runner2 } = fakeRunner({ receipt: alive(['working…']) });
+  const some = capture(() => tail(['60-work'], { runner: runner2, env: env2 }));
+  assert.equal(some.code, 0);
+  assert.match(some.out, /3 message\(s\) recorded by the child/);
+  assert.doesNotMatch(some.out, /ONLY its brief/);
+});
+
+test('a pane whose witness cannot testify gets no channel line at all', () => {
+  // An inability to look is not a finding. The existing store fixture names no
+  // worktree, so the witness refuses — and the verdict must be unchanged.
+  const env = storeWith({ '55-work': [{ dispatchId: 'ctx_a', pane: HANDLE }] });
+  const { runner } = fakeRunner({ receipt: alive(['working…']) });
+  const r = capture(() => tail(['55-work'], { runner, env }));
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /channel/);
+});
 
 test('a request id resolves to the pane its dispatch recorded, settled or not', () => {
   // Measured 2026-08-25 on 55-work: `ax worker ls` named no handle because the

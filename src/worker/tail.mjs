@@ -36,9 +36,12 @@
 // twice before the child has done anything (2026-08-21 probe), so a child's
 // tail carries an authority token BY CONSTRUCTION.
 
+import { join } from 'node:path';
+
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
+import { briefDelivered } from './delivered.mjs';
 import { readPane } from './pane.mjs';
 import { defaultStore, dispatchIndex, requestIdOk } from './record.mjs';
 
@@ -68,6 +71,35 @@ function transcriptOwner(target, handle, env) {
   if (requests.size === 1) return [...requests][0];
   if (hits.length === 1) return hits[0][0];
   return '';
+}
+
+/**
+ * What the child's OWN session says about the messages it received, or ''.
+ *
+ * ALIVE was never a claim about the correction channel, and on 2026-08-26 that
+ * gap cost a coordinator two canonical ticket amendments and three direct
+ * steerings: the pane was VIVANT, the transcript readable, `worker-list`
+ * succeeded — and all five injections sat at `delivered_at: null` while the
+ * child opened its pull request without them. The loss surfaced at review.
+ *
+ * A send receipt cannot separate "queued" from "never", and neither can a
+ * cursor. The child's session can: a delivered injection lands there as another
+ * `role: 'user'` entry. So this verb, which is read to decide whether a pane can
+ * be left alone, says how many arrived and when the last one did — and names the
+ * case where only the brief ever did.
+ *
+ * Silent when the witness cannot testify: a handle with no unique owner, a
+ * record that names no session, an unreadable file. An inability to look is not
+ * a finding, and this line is an addition to a verdict, never the verdict.
+ */
+function channelWitness(target, handle, env) {
+  const owner = transcriptOwner(target, handle, env);
+  if (owner === '') return '';
+  const seen = briefDelivered(join(defaultStore(env), `${owner}.json`), { env });
+  if (!seen.known || !seen.delivered) return '';
+  return seen.count === 1
+    ? `channel   the child's session records ONLY its brief (${seen.at}). Nothing sent since has been recorded — check before assuming a steering landed.`
+    : `channel   ${seen.count} message(s) recorded by the child, last at ${seen.lastAt}. Anything you sent after that has not been recorded.`;
 }
 
 export function tail(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
@@ -204,6 +236,10 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     ok(`${exited ? 'EXITED' : 'ALIVE'} — ${handle}  status=${status}  cursor=${cursor}  ${lines.length} line(s)`);
     for (const line of lines) note(redactSecrets(line));
     if (exited) note('The pane has EXITED: this tail is its last frame, not a session between turns.');
+    else {
+      const channel = channelWitness(target, handle, env);
+      if (channel !== '') note(redactSecrets(channel));
+    }
     return exited ? 4 : 0;
   }
 
@@ -224,5 +260,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   ok(`ALIVE, SILENT — ${handle}  status=${status}  cursor=${cursor}  no line yet.`);
   note('This is not a dead terminal and not a finished one. A session between turns prints');
   note('nothing, and closing a pane on this reading is how a live agent\u2019s work gets destroyed.');
+  const silentChannel = channelWitness(target, handle, env);
+  if (silentChannel !== '') note(redactSecrets(silentChannel));
   return 1;
 }

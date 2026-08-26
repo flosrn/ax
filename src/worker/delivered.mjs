@@ -96,11 +96,24 @@ function newestDispatch(rec) {
 }
 
 /**
- * `{ known: false, reason }` | `{ known: true, delivered: boolean, at, file }`.
+ * `{ known: false, reason }` | `{ known: true, delivered, at, lastAt, count, file }`.
  *
- * `at` is the child's own timestamp for the brief, which is the number that
- * makes an `agent_prompt_stalled` verdict falsifiable: compare it with the
- * moment the dispatch settled.
+ * `at` is the child's own timestamp for the BRIEF — the first user message —
+ * which is the number that makes an `agent_prompt_stalled` verdict falsifiable:
+ * compare it with the moment the dispatch settled.
+ *
+ * `count` and `lastAt` answer a DIFFERENT question, and the incident that asked
+ * it (2026-08-26) is why the scan no longer stops at the first hit: a coordinator
+ * sent three steering messages to a child whose pane was VIVANT and whose
+ * transcript was readable, and all three sat at `delivered_at: null` for an hour.
+ * The child opened its pull request without them, and the loss became visible
+ * only at review. A send receipt cannot distinguish "queued" from "never", and
+ * the pane cannot either — but the child's own session can: a delivered
+ * injection lands there as another `role: 'user'` entry. So `count === 1` means
+ * the brief arrived and NOTHING since, and `lastAt` is what a coordinator
+ * compares against the moment it sent.
+ *
+ * Delivery is still not liveness, and neither is a count.
  */
 export function briefDelivered(recordPath, { env = process.env, sessionsRoot } = {}) {
   let rec;
@@ -163,9 +176,12 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
     return { known: false, reason: `the session at ${file} is unreadable: ${String(error.message ?? error)}` };
   }
 
+  let at = '';
+  let lastAt = '';
+  let count = 0;
   for (const line of lines) {
-    // Cheap pre-filter, then parse: these files reach thousands of lines and
-    // the answer is normally in the first few.
+    // Cheap pre-filter, then parse: these files reach thousands of lines, and
+    // only the `"user"` ones can carry the answer.
     if (line === '' || !line.includes('"user"')) continue;
     let entry;
     try {
@@ -176,8 +192,12 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
       continue;
     }
     if (entry?.type !== 'message' || (entry.message ?? {}).role !== 'user') continue;
-    return { known: true, delivered: true, at: String(entry.timestamp ?? ''), file };
+    const stampedAt = String(entry.timestamp ?? '');
+    if (count === 0) at = stampedAt;
+    lastAt = stampedAt;
+    count += 1;
   }
 
-  return { known: true, delivered: false, file };
+  if (count === 0) return { known: true, delivered: false, count: 0, file };
+  return { known: true, delivered: true, at, lastAt, count, file };
 }

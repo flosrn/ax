@@ -191,7 +191,7 @@ function freshArgs(dir, request = 'req-1', passthru = ['--worktree', 'current', 
  * worktree path for `fakeRunner({ worktree })`, so the record's effects name
  * what this file wrote.
  */
-function witness(home, name, { brief = false, dispatch = 'ctx_abc123', ahead = 60_000 } = {}) {
+function witness(home, name, { brief = false, dispatch = 'ctx_abc123', ahead = 60_000, steerings = 0 } = {}) {
   const dir = join(home, '.omp', 'agent', 'sessions', `-scratch-.worktrees-${name}`);
   mkdirSync(dir, { recursive: true });
   // A child session always postdates the record that dispatched it, and the
@@ -207,6 +207,16 @@ function witness(home, name, { brief = false, dispatch = 'ctx_abc123', ahead = 6
       type: 'message',
       timestamp: at,
       message: { role: 'user', content: [{ type: 'text', text: `You are a dispatched worker. Your dispatch is ${dispatch}` }] },
+    });
+  }
+  // Post-brief steering, as a delivered injection lands: another `role: 'user'`
+  // entry in the child's OWN session, later than the brief. A steering that was
+  // never delivered leaves nothing here, which is the whole point of counting.
+  for (let n = 1; n <= steerings; n += 1) {
+    entries.push({
+      type: 'message',
+      timestamp: new Date(Date.parse(at) + n * 60_000).toISOString(),
+      message: { role: 'user', content: [{ type: 'text', text: `steering ${n}` }] },
     });
   }
   writeFileSync(join(dir, `${at.replace(/[:.]/g, '-')}_w.jsonl`), `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`);
