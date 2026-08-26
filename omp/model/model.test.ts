@@ -1162,11 +1162,13 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
   };
 
   /**
-   * Every file that spawns Orca or ax, with the exact resolver import it must
-   * carry. The specifier is stated per file rather than matched loosely — a
-   * loose match is how a second resolver grows unnoticed. The peer registry
-   * split (2026-08-26) left exactly one Orca spawner in that package,
-   * `orca.ts`; `report.ts` spawns this package's own CLI for the board write.
+   * Every file that spawns Orca with a literal argv, with the exact resolver
+   * import it must carry. The specifier is stated per file rather than matched
+   * loosely — a loose match is how a second resolver grows unnoticed. The peer
+   * registry split (2026-08-26) left exactly one Orca spawner in that package,
+   * `orca.ts`. The board writer (`shared/board.ts`) builds its argv from
+   * `axArgv()` behind an injected spawn, so no literal argv exists here to
+   * audit; its shape is pinned by `shared/board.test.ts` instead.
    */
   const SPAWNERS: { path: string; imports: string }[] = [
     {
@@ -1176,10 +1178,6 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
     {
       path: '../peer/orca.ts',
       imports: "import { resolveOrcaBin } from '../model/self.ts'",
-    },
-    {
-      path: '../peer/report.ts',
-      imports: "import { axArgv } from '../shared/ax.ts'",
     },
   ];
 

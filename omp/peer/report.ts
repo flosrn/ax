@@ -5,7 +5,7 @@
  * carry their own incident history below.
  */
 
-import { axArgv } from '../shared/ax.ts';
+import { boardWrite } from '../shared/board.ts';
 import { type MessageType, sendToPeer } from './send.ts';
 import { parentPeer, selfWorktree } from './lineage.ts';
 
@@ -161,18 +161,11 @@ export function report(
   // the report's wording while leaving this write is fixing the sentence and
   // keeping the lie.
   if (mine && shape.movesBoard) {
-    try {
-      // Detached, like `../checkpoint/index.ts` writes its own: nothing reads
-      // the result, and waiting on it puts Orca round-trips on the turn boundary
-      // of every interactive session for a status nobody is watching right then.
-      //
-      // `axArgv()` is this package's own CLI, not a resolved binary — see
-      // `../shared/ax.ts` for the version skew that cost.
-      Bun.spawn(
-        [...axArgv(), 'board', '--worktree', `path:${mine}`, '--status', 'in-review'],
-        { cwd: process.cwd(), stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
-      ).unref();
-    } catch {}
+    // One-shot and unlatched on purpose: this is the session's last board move,
+    // and a transient checkpoint failure earlier in the session must not
+    // suppress it. No selector either — `../shared/board.ts` carries the
+    // incident behind both rules.
+    boardWrite({ status: 'in-review' });
   }
 
   const parent = parentPeer();

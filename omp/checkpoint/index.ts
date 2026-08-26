@@ -33,16 +33,15 @@
  */
 
 import { createSessionOwner, isSubagentSession } from '../shared/session.ts';
-import { axArgv } from '../shared/ax.ts';
+import { boardWrite } from '../shared/board.ts';
 
 // The writer is `ax board` (flosrn/ax) since PORT step 2, 2026-08-21 — the one
 // place that reads the current board value in the process that writes it, so
 // monotonicity holds across sessions and concurrent writers, behind a
-// per-worktree lock. Since the extensions moved INTO that package, the writer is
-// this package's own CLI rather than an installed binary: `shared/ax.ts` says why
-// a resolved name was a silent version-skew hazard here. Resolved once, and
-// latched on first failure below, because a detached spawn fails quietly.
-const AX = axArgv();
+// per-worktree lock. The spawn mechanics live in `../shared/board.ts`, shared
+// with the report extension; the give-up latch below stays HERE, because it
+// defends this caller's cadence (a doomed spawn retried on every todo flip)
+// and must never suppress report's one-shot write.
 
 // WORKTREE_ROOT is gone, and this is the one place where it was actively
 // dangerous: it was interpolated straight into `--worktree path:<root>`, so a
@@ -107,26 +106,9 @@ let writerMissing = false;
 
 function writeCheckpoint(payload: Checkpoint): void {
   if (writerMissing) return;
-  // No `--worktree`: `ax board` defaults to `current`, which Orca resolves from
-  // the cwd we spawn it in. One less thing to be wrong about.
-  const args = ['board'];
-  if (payload.comment) args.push('--comment', payload.comment);
-  if (payload.status) args.push('--status', payload.status);
-  // Nothing beyond the verb means nothing to write.
-  if (args.length === 1) return;
-
-  try {
-    // Detached + ignored stdio: the checkpoint outlives this turn if it has to,
-    // and nothing it prints can land in the TUI.
-    Bun.spawn([...AX, ...args], {
-      cwd: process.cwd(),
-      stdin: 'ignore',
-      stdout: 'ignore',
-      stderr: 'ignore',
-    }).unref();
-  } catch {
-    // A spawn failure here means this package's own CLI entry could not be run
-    // at all. Stop trying rather than repeat a doomed spawn on every todo flip.
+  if (!boardWrite({ comment: payload.comment, status: payload.status })) {
+    // A spawn failure means this package's own CLI entry could not be run at
+    // all. Stop trying rather than repeat a doomed spawn on every todo flip.
     writerMissing = true;
   }
 }
