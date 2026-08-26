@@ -195,6 +195,18 @@ A report about an operation is not the operation. Neither a claimed absence nor 
 checkable from the report that carries it, so both have to be settled against the thing itself — the
 file's bytes, the entry separator count, the cursor position, the artifact on disk.
 
+And underneath all six, one choice made by accident: **preferring the silent failure to the loud
+one.** In every instance the defect was not a wrong value, it was a direction whose failure nothing
+downstream could see. A latched read printed a verdict about a session it had not waited for. A 0%
+meaning "unmeasured" rendered as "no cost, change nothing". A draft's question count stood in for an
+ask id that was never minted. A comment promised coverage a trigger did not give. A bound explained
+as an optimisation invited the move that would hand over another dispatch's key.
+
+A false pass is agreeable and a false failure is coherent, and what they share is that neither asks
+to be checked. So when two directions are available and the evidence does not separate them, take
+the one whose failure is loud: a refusal that names its repair is cheap to be wrong about, and an
+unnoticed success is not. The three habits below are cases of that one rule.
+
 Three habits follow, and they are cheap:
 
 - **Never build a key, a count, or a verdict out of a rendering.** A rendering is lossy on purpose.
