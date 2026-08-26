@@ -31,14 +31,15 @@ import { bad, fix, note, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore, heldRepaired } from '../worker/record.mjs';
+import { ownCapability } from '../worker/capability.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, passesOf, questionProblem, readDraft, requestFor } from './draft.mjs';
 import { composeAsk } from './rulings.mjs';
 
 const USAGE =
-  'ax triage ask --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--timeout-ms <n>] [--dry-run]\n'
-  + '       ax triage ask --resume <message_id> [--timeout-ms <n>]';
+  'ax triage ask --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--dispatch-capability <token>] [--timeout-ms <n>] [--dry-run]\n'
+  + '       ax triage ask --resume <message_id> [--dispatch-capability <token>] [--timeout-ms <n>]';
 
 /**
  * The server's own clamp, mirrored so the local process outlives the wait it
@@ -52,7 +53,7 @@ export const ASK_DEFAULT_TIMEOUT_MS = 600_000;
 export const ASK_MAX_TIMEOUT_MS = 1_800_000;
 const ASK_EXIT_MARGIN_MS = 20_000;
 
-export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
+export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd(), sessionsRoot } = {}) {
   const usageError = message => {
     process.stderr.write(`ax triage ask: ${message}\n${USAGE}\n`);
     return 2;
@@ -75,6 +76,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   let passArg = '';
   let timeoutArg = '';
   let resume = '';
+  let capabilityArg = '';
   let dry = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -86,6 +88,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     else if (arg === '--pass') passArg = value();
     else if (arg === '--timeout-ms') timeoutArg = value();
     else if (arg === '--resume') resume = value();
+    else if (arg === '--dispatch-capability') capabilityArg = value();
     else if (arg === '--dry-run') dry = true;
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else return usageError(`unknown argument "${arg}"`);
@@ -108,6 +111,9 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   // `heldRepairAt` off this file instead of asserting a disjunction — the same
   // rule as everywhere else, a measure available is consulted at the verdict.
   let recordPath = '';
+  // Hoisted for the same reason: it selects THIS pass's session file when the
+  // capability has to be read off disk, and triage passes share one checkout.
+  let request = '';
   if (issue !== '') {
     const paths = repoPaths(cwd);
     if (!paths.root) return refuse('not inside a git repository — the draft this ask reads lives in one');
@@ -142,7 +148,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     if (problem !== null) {
       return refuse(problem, `renumber the Q<n>: lines in ${draft.path} — 1..n, consecutive, no repeats — then re-run`);
     }
-    const request = requestFor(identity);
+    request = requestFor(identity);
     recordPath = join(store, `${request}.json`);
     body = composeAsk({ request, sha: draft.sha, questions: draft.questions });
   }
@@ -162,10 +168,19 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   const ready = runtimeReady(run);
   if (!ready.ready) return cannot(ready.reason, 'orca open   # nothing was sent — re-run once the runtime answers');
 
+  // THE CAPABILITY IS RE-TYPED, NEVER INHERITED. `--from` self-resolves from the
+  // pane's own environment, but this token has no env fallback anywhere in
+  // Orca's source, so a wrapper that omits it is refused
+  // `dispatch_capability_invalid` — measured on two independent triage
+  // dispatches, 2026-08-26. The flag wins when a caller passes it; otherwise it
+  // comes off the child's own preamble, which is where Orca put it.
+  const capability = capabilityArg !== '' ? { token: capabilityArg, reason: '' } : ownCapability({ cwd, request, env, sessionsRoot });
+  const authorized = capability.token === '' ? [] : ['--dispatch-capability', capability.token];
+
   const out = run(
     issue !== ''
-      ? ['orchestration', 'ask', '--question', body, '--timeout-ms', String(timeout), '--json']
-      : ['orchestration', 'ask', '--resume', resume, '--timeout-ms', String(timeout), '--json'],
+      ? ['orchestration', 'ask', '--question', body, ...authorized, '--timeout-ms', String(timeout), '--json']
+      : ['orchestration', 'ask', '--resume', resume, ...authorized, '--timeout-ms', String(timeout), '--json'],
   );
 
   // ── 4. the receipt, on the measured shapes and no others ──────────────────
@@ -201,6 +216,22 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
       }
       bad(`${detail} — either this session was never a dispatched child, or its Dispatch is no longer active`);
       fix('ax triage status   # what this issue\'s passes recorded, and whether a child is behind them');
+      return 1;
+    }
+    if (code === 'dispatch_capability_invalid') {
+      // The code the generic branch below used to swallow, on both dispatches
+      // that measured it: exit 3 with no repair, and a child that improvised.
+      // Two different failures wear this one code, and only the first is the
+      // caller's to fix — so the reason names which one this is.
+      bad(`${detail} — the ask carried ${capability.token === '' ? 'NO capability' : 'a capability this runtime rejected'}`);
+      if (capability.token === '') {
+        note(`  could not read one: ${capability.reason}`);
+        fix('ax triage ask --issue <n> --dispatch-capability <token>   # the token is in YOUR preamble, on the `orchestration ask` line it teaches');
+      } else {
+        note('  the token was read off this session\'s own preamble, so it is the one this child was dispatched with — a runtime that rejects it has re-minted or settled the Dispatch');
+        fix('ax triage status   # whether this pass\'s Dispatch is still active');
+      }
+      note('either way the questions stay in the draft: quote them in your report and say the supervised channel is unavailable, rather than deciding them yourself');
       return 1;
     }
     if (code === 'question_not_found') {

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
@@ -72,7 +72,7 @@ function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true }
   return { runner, calls };
 }
 
-const run = (argv, { root = repo(), orca = fakeOrca(), env = {} } = {}) => {
+const run = (argv, { root = repo(), orca = fakeOrca(), env = {}, sessionsRoot } = {}) => {
   const store = env.ORCA_DISPATCH_STORE ?? join(root, 'store');
   const result = capture(() =>
     ask([...argv, '--repo', REPO], {
@@ -80,10 +80,32 @@ const run = (argv, { root = repo(), orca = fakeOrca(), env = {} } = {}) => {
       exec: () => ({ status: 1, stdout: '', stderr: 'gh must not be needed with --repo' }),
       env: { ORCA_DISPATCH_STORE: store },
       cwd: root,
+      sessionsRoot,
     }),
   );
   return { ...result, root, store, orcaCalls: orca.calls };
 };
+
+/**
+ * The child's OWN session, as Orca leaves it: the injected preamble is the first
+ * user message, and it embeds `--dispatch-capability <token>` in every command
+ * it teaches. The slug directory ends in the cwd's basename, which is how
+ * ../src/worker/transcript.mjs finds it.
+ */
+function childSession(root, { request = '', token = 'dcap_measured_token', preamble = true } = {}) {
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-sessions-')));
+  const dir = join(sessionsRoot, `-Users-someone-${basename(root)}`);
+  mkdirSync(dir, { recursive: true });
+  const first = preamble
+    ? `orca orchestration ask --from term_child --dispatch-capability ${token} --question <text>`
+    : 'no preamble here, just work';
+  const lines = [
+    { type: 'session', version: 3, cwd: root },
+    { type: 'message', message: { role: 'user', content: [{ type: 'text', text: `${first}\n${request}` }] } },
+  ];
+  writeFileSync(join(dir, 'a.jsonl'), `${lines.map(entry => JSON.stringify(entry)).join('\n')}\n`);
+  return sessionsRoot;
+}
 
 const ANSWERED = { answer: 'Q1: bug or enhancement?\nA1: bug.', messageId: 'msg_q1', threadId: 'msg_q1', timedOut: false, cancelled: false, connectionLost: false, timeoutMs: 600000 };
 
@@ -297,4 +319,81 @@ test('--dry-run prints the exact body and sends nothing', () => {
   assert.match(r.out, /^Q1: bug or enhancement\?$/m);
   assert.match(r.out, /^Q2: which priority\?$/m);
   assert.deepEqual(r.orcaCalls, [], 'a dry run never reaches for Orca');
+});
+
+// ── the dispatch capability: re-typed, never inherited ───────────────────────
+//
+// Measured 2026-08-26 on ofmchat #78 and #79, two independent triage dispatches:
+// this verb composed the ask with no capability and was refused
+// `dispatch_capability_invalid`, through a branch that named no repair. Orca's
+// own handler takes the token from the flag and from nowhere else — there is no
+// `ORCA_*CAPABILITY` variable in its source — while the preamble it injects
+// hands that exact token to the child. So the child's own session is where it
+// comes from.
+
+test('the capability is read off the child own preamble and sent with the ask', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
+  const sessionsRoot = childSession(root, { request: 'triage-acme-widgets-7', token: 'dcap_from_preamble' });
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.match(sent, /--dispatch-capability dcap_from_preamble/);
+});
+
+test('an explicit --dispatch-capability wins over the session read', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
+  const sessionsRoot = childSession(root, { request: 'triage-acme-widgets-7', token: 'dcap_from_preamble' });
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7', '--dispatch-capability', 'dcap_typed'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.match(sent, /--dispatch-capability dcap_typed/);
+  assert.doesNotMatch(sent, /dcap_from_preamble/);
+});
+
+test('no readable capability sends the ask WITHOUT one rather than inventing a token', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot: join(root, 'no-sessions-here') });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.doesNotMatch(sent, /--dispatch-capability/);
+});
+
+test('dispatch_capability_invalid with NO token names the flag and the preamble it lives in', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot: join(root, 'no-sessions-here') });
+
+  assert.equal(r.code, 1, 'the caller can act on this, so it is a refusal and not a cannot-establish');
+  assert.match(r.out, /the ask carried NO capability/);
+  assert.match(r.out, /could not read one:/);
+  assert.match(r.out, /--dispatch-capability <token>/);
+  assert.match(r.out, /questions stay in the draft/);
+});
+
+test('dispatch_capability_invalid WITH a read token blames the Dispatch, not the caller', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
+  const sessionsRoot = childSession(root, { request: 'triage-acme-widgets-7', token: 'dcap_stale' });
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is invalid' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /a capability this runtime rejected/);
+  assert.match(r.out, /re-minted or settled the Dispatch/);
+  assert.doesNotMatch(r.out, /dcap_stale/, 'the token is never displayed');
 });
