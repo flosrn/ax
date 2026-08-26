@@ -146,6 +146,21 @@ function pinConsumer({ dir, pinned }, version) {
     ok(`${dir} already pins ${version}`);
     return 'current';
   }
+  // REFUSED UNLESS CLEAN. The bump commit below has no pathspec fence against a
+  // pre-staged index: on a dirty tree, `git commit` would sweep unrelated staged
+  // work into the bump, and `ax pin`'s install can collide with local edits to
+  // the very files it rewrites. A dirty consumer is the operator's to settle.
+  const state = git(dir, ['status', '--porcelain']);
+  if (!succeeded(state)) {
+    bad(`${dir}: git status failed — ${(state.stderr || '').split('\n')[0] || `exit ${state.status}`}`);
+    fix(`cd ${dir} && git status   # not a healthy checkout; repair it, then re-run`);
+    return 'unreadable';
+  }
+  if (state.stdout.trim() !== '') {
+    bad(`${dir}: working tree is not clean — refusing to mix the bump with local work`);
+    fix(`cd ${dir} && git status   # commit or stash what is there, then re-run this script`);
+    return 'dirty';
+  }
   note(`${dir}: ${pinned} → ${version}`);
   const pin = run('ax', ['pin', version], { cwd: dir, timeout: 600_000 });
   process.stdout.write(pin.stdout ?? '');
@@ -189,6 +204,7 @@ function pinConsumer({ dir, pinned }, version) {
 }
 
 section(`deploy — ${PKG}`);
+note(`roots        ${roots.join(', ')}${rootsArg ? '' : '   (defaults — override with --roots=/a,/b)'}`);
 
 const found = releasePr();
 if (found.error) {
