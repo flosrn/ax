@@ -296,9 +296,28 @@ export function dispatch(
       continue;
     }
     if (job === 'triage' && meta.comments > 0 && !force) {
+      // WHICH refusal this is depends on whether a triage pass ever ran, and the
+      // evidence is the same the `brief` job reads below: a dispatch record, or a
+      // draft. The comment count cannot tell them apart — measured 2026-08-26 on
+      // an issue whose single comment was a stale coordination note, with no
+      // Triage Notes, no Agent Brief and still `needs-triage`. The refusal was
+      // right; its repair was not. `--job brief` would have distilled a brief out
+      // of a pass that never happened.
+      //
+      // It still fails CLOSED in both branches: a HUMAN verdict in those comments
+      // is one this tool cannot see, so what changes is the repair, never the
+      // refusal.
+      const seen = { job: 'triage', repo: slug, issue };
+      const triaged = passesOf(store, draftDirFor(paths.root, seen), seen).length > 0;
       bad('^ F-030: this issue already carries comment(s), and the label cannot tell "never triaged" from "triaged, awaiting a human"');
-      note('  a full pass sent here re-measures finished work and returns a competing verdict');
-      fix(`ax triage dispatch --issue ${issue} --job brief # if the pass is done, you want a brief — not --force`);
+      if (triaged) {
+        note('  a full pass sent here re-measures finished work and returns a competing verdict');
+        fix(`ax triage dispatch --issue ${issue} --job brief # the pass is recorded here, so distil it — not --force`);
+      } else {
+        note('  no triage pass is recorded here and no draft exists, so those comment(s) are not a pass this tool wrote');
+        note('  read them first: a coordination note is not a verdict, and a human verdict is one this tool cannot see');
+        fix(`ax triage dispatch --issue ${issue} --force # once you have read them and they are not a triage pass`);
+      }
       blocked = true;
       continue;
     }

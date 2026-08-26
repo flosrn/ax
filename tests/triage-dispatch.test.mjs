@@ -458,13 +458,41 @@ test('gh answering without a comments array is an absence of information, not an
   assert.match(r.out, /an absent container is not an empty one/);
 });
 
-test('triage on an issue that already carries comments is refused with the F-030 reasoning', () => {
-  const r = run(['--issue', '7'], { issues: { 7: 'OPEN|2|Triaged already' } });
+test('F-030 with a RECORDED pass points at the brief, because the pass really happened', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  record(store, 'triage-acme-widgets-7', { handle: 'term_gone' });
+  const r = run(['--issue', '7'], { home, store, issues: { 7: 'OPEN|2|Triaged already' } });
   assert.equal(r.code, 1);
   assert.match(r.out, /F-030/);
   assert.match(r.out, /competing verdict/);
-  assert.match(r.out, /--job brief/, 'the repair is a brief, never --force');
+  assert.match(r.out, /--job brief/, 'a pass that ran is distilled, never re-run');
   assert.deepEqual(r.started, []);
+});
+
+test('F-030 with NO pass anywhere says so, and its repair is --force', () => {
+  // Measured 2026-08-26 on an issue whose single comment was a stale coordination
+  // note — no Triage Notes, no Agent Brief, still `needs-triage`. The refusal was
+  // right and its repair was wrong: `--job brief` would have distilled a brief
+  // out of a pass that never happened. The comment count cannot tell the two
+  // apart, but the store and the drafts can.
+  const r = run(['--issue', '7'], { issues: { 7: 'OPEN|1|Never triaged, one note' } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /F-030/);
+  assert.match(r.out, /no triage pass is recorded/);
+  assert.match(r.out, /--force/, 'the way out is to read the comments and force, not to brief nothing');
+  assert.doesNotMatch(r.out, /--job brief/, 'briefing a pass that never ran is the wrong repair');
+  assert.deepEqual(r.started, [], 'it still fails closed: a human verdict is one this tool cannot see');
+});
+
+test('F-030 counts an unpublished DRAFT as a pass, like the brief job does', () => {
+  const root = repo();
+  const r = run(['--issue', '7'], { root, issues: { 7: 'OPEN|2|Triaged already' } });
+  draftAt(root, 'triage-acme-widgets-7');
+  const again = run(['--issue', '7'], { root, issues: { 7: 'OPEN|2|Triaged already' } });
+  assert.equal(r.code, 1);
+  assert.equal(again.code, 1);
+  assert.match(again.out, /--job brief/);
 });
 
 test('--force overrides the comment count and lets the triage job through', () => {
