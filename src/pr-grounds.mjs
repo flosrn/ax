@@ -84,7 +84,15 @@ const THREAD_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$cursor:String
   }
 }`;
 
-/** Defensive bound, not a measurement: stop rather than loop forever. */
+/**
+ * WHAT BREAKS IF THIS MOVES, which is the only property of a boundary worth
+ * writing down. Crossing it does NOT truncate silently: the loop registers an
+ * `unknown` (below), and an unknown fails this gate closed, so a PR with more
+ * threads than this becomes unmergeable-until-read rather than passed on a
+ * partial read. Lower it and ordinary PRs stop being decidable; raise it and the
+ * cost is API calls, never a wrong verdict. It was never an optimisation that
+ * happened to be safe.
+ */
 const MAX_THREAD_PAGES = 50;
 
 /** One ground's account: the entries it wants printed, in the order it found them. */

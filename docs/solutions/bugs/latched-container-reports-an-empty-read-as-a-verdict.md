@@ -159,15 +159,48 @@ document whose entire value is that its claims are trustworthy is exactly where 
 contradiction is most expensive — and re-reading a claim against the observation that produced it
 costs one turn.
 
-## The rule behind all five
+## The sixth: a correct value with a false justification
+
+A distinct shape, and the most dangerous to *correct*. The five above are readers, prose or reports
+that got something wrong. Here nothing was wrong. `PREAMBLE_LINES = 40` bounded a scan for the
+dispatch capability a child was handed, and it did exactly the right thing. Its comment said
+"performance".
+
+That is worse than a false claim, because of the gesture it invites. A false sentence gets caught by
+someone re-reading it against the source. A correct constant explained as an optimisation invites the
+next reader to *improve* it — and the improvement here is to raise the bound "so a token is not
+missed", which is precisely the unsafe move. Measured over 859 session files, 227 carrying a raw
+token: first occurrence at min 5, median 7, p90 8, max 1651, with exactly one file between lines 11
+and 40. The cluster is the preamble; the outliers are sessions that were never handed a capability
+and merely *mention* one — a coordinator quoting a child's command, or a session reasoning about this
+code. An unbounded scan would answer "here is your capability" to a caller that has none, handing one
+dispatch's grant to another. The bound was never an optimisation that happened to be safe; it was a
+safety boundary that happened to look like one.
+
+**A constant that carries a boundary must document what breaks when it moves, never why it was
+picked.** "40 for performance" invites raising it. "past line 8 it is no longer a preamble but a
+mention, and taking it hands over another dispatch's key" closes the door. Same distinction as
+`prevents` versus `detects`: name the consequence, not the intention.
+
+Applied as an audit rather than a note, every module-scope boundary in this repo was re-read against
+that rule. Two were already exemplary — `MAX_BUFFER` names the child it kills when lower,
+`LABEL_CAP` names the silent pagination it is read back to detect. One was not: `MAX_THREAD_PAGES`
+said "stop rather than loop forever", which describes the intent and leaves out the only thing a
+reader needs — that crossing it registers an `unknown`, which fails the merge gate closed, so a
+bigger PR becomes unmergeable-until-read and never passed on a partial read.
+
+## The rule behind all six
 
 A report about an operation is not the operation. Neither a claimed absence nor a claimed failure is
 checkable from the report that carries it, so both have to be settled against the thing itself — the
 file's bytes, the entry separator count, the cursor position, the artifact on disk.
 
-Two habits follow, and they are cheap:
+Three habits follow, and they are cheap:
 
 - **Never build a key, a count, or a verdict out of a rendering.** A rendering is lossy on purpose.
 - **When a report and a `cat` disagree, the `cat` wins.** Reach for it first when the report is bad
   news: bad news is when a reader is least inclined to ask for proof, and most inclined to start
   repairing.
+- **A boundary documents its consequence, not its origin.** If moving a constant can change a
+  verdict, the comment beside it says which verdict, so the next reader cannot break it while
+  improving it.
