@@ -7,6 +7,9 @@
 // and a real runtime cannot be made to produce on demand. So the runner is
 // injected in every test: no Orca, no network, no clock.
 import assert from 'node:assert/strict';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { gate } from '../src/worker/gate.mjs';
@@ -73,7 +76,7 @@ function fakeRunner({
 }
 
 /** The verdict plus everything the operator is told — stdout and stderr, colours stripped. */
-function verdict(fixture, argv = [TASK]) {
+function verdict(fixture, argv = [TASK], env = {}) {
   const run = fakeRunner(fixture);
   const chunks = [];
   const outWrite = process.stdout.write.bind(process.stdout);
@@ -82,12 +85,25 @@ function verdict(fixture, argv = [TASK]) {
   process.stderr.write = chunk => (chunks.push(String(chunk)), true);
   let code;
   try {
-    code = gate(argv, { runner: run, env: {} });
+    code = gate(argv, { runner: run, env });
   } finally {
     process.stdout.write = outWrite;
     process.stderr.write = errWrite;
   }
   return { code, out: chunks.join('').replace(/\u001B\[\d+m/g, ''), calls: run.calls };
+}
+
+/** A dispatch record whose receipt names `TASK`, as `ax worker start` leaves it. */
+function stored(request) {
+  const store = realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-store-')));
+  writeFileSync(
+    join(store, `${request}.json`),
+    JSON.stringify({
+      request,
+      attempts: [{ n: 1, phases: [{ name: 'task-create', receipt: { ok: true, result: { task: { id: TASK } } } }] }],
+    }),
+  );
+  return store;
 }
 
 // ── the two absences the gate confused ───────────────────────────────────────
@@ -109,6 +125,29 @@ test('an unreadable task-list is an ignorance, never an absence', () => {
   const r = verdict({ workers: [], terminals: [], tasks: null });
   assert.equal(r.code, 3);
   assert.match(r.out, /'task-list' did not answer/);
+});
+
+test('a REQUEST id is resolved to its task through the dispatch store', () => {
+  // Measured 2026-08-26 (ofmchat, a live wave): the coordinator typed the id
+  // `worker launch` had just printed as `· request 60-work` — the id every
+  // sibling verb accepts — and the one verb whose job is "can this be relaunched
+  // without duplicating an agent?" answered CANNOT ESTABLISH with two causes
+  // that were both false. The dispatch existed, locally, in the Run consulted.
+  const r = verdict(
+    { workers: [dispatch('ctx_live', 'term_live', 'ready')], terminals: ['term_live'] },
+    ['60-work'],
+    { ORCA_DISPATCH_STORE: stored('60-work') },
+  );
+  assert.equal(r.code, 1);
+  assert.match(r.out, /request 60-work/, 'the substitution is stated, never silent');
+  assert.match(r.out, /STOP — one live agent/);
+});
+
+test('an id with no record in the store names the request-id cause too', () => {
+  const r = verdict({ workers: [], terminals: [], tasks: ['task_someone_else'] }, ['60-work']);
+  assert.equal(r.code, 3);
+  assert.match(r.out, /REQUEST id/);
+  assert.match(r.out, /ax worker ls/);
 });
 
 // ── what the gate already got right, now defended ────────────────────────────
@@ -206,7 +245,7 @@ test('no task id concludes nothing and touches no orchestration state', () => {
   const r = verdict({}, []);
   assert.equal(r.code, 3);
   assert.equal(r.calls.length, 0);
-  assert.match(r.out, /ax worker gate <task_id>/);
+  assert.match(r.out, /ax worker gate <task\|request>/);
 });
 
 test('no orca on the machine fails CLOSED — unlike ax board, silence is never permission', () => {

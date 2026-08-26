@@ -1,4 +1,4 @@
-// `ax worker gate <task_id>` — is reissuing a worker-start for this task safe?
+// `ax worker gate <task|request>` — is reissuing a worker-start for this safe?
 //
 // One question, and it has to separate FOUR situations that all look like "no
 // agent" from the outside:
@@ -34,9 +34,43 @@
 // establish). Callers already depend on that, and the safe direction is the one
 // it already points in.
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { resolveOrca, createRunner, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
+import { defaultStore, taskIdScan } from './record.mjs';
+
+/**
+ * The task a REQUEST id names, read from the dispatch record store, or null.
+ *
+ * A REQUEST ID IS NOT A TASK ID, and until 2026-08-26 this verb was the only one
+ * in the family that said so by refusing. Measured that day on a live wave: the
+ * coordinator typed the id `worker launch` had just printed as `· request
+ * 60-work` — the same id `worker tail`, `worker transcript` and `worker start
+ * --show` all accept, and the leading column of `worker ls` — and the one verb
+ * whose entire job is "can this be relaunched without duplicating an agent?"
+ * answered CANNOT ESTABLISH, offering two causes that were both false: the
+ * dispatch existed, on this host, in the Run consulted. An anti-duplication gate
+ * that refuses the most natural identifier for its subject is a gate that gets
+ * read as broken and then bypassed, which is F-001 by another road.
+ *
+ * The store is the same resolver `worker ls` prints its first two columns from,
+ * so this adds no second source of truth. It is tried ONLY when a record bears
+ * the argument as its exact file name: a task id typed correctly never reaches
+ * it, and no id is ever guessed from the shape of a string.
+ */
+function taskFromRequest(id, env) {
+  try {
+    const path = join(defaultStore(env), `${id}.json`);
+    if (!existsSync(path)) return null;
+    const tid = taskIdScan(path);
+    return typeof tid === 'string' && tid !== '' && tid !== id ? tid : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A named list out of a receipt — the F-028 read. An absent `workers` container
@@ -76,11 +110,20 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
 
   if (!task) {
     bad('which task? a gate with no task id cannot conclude anything');
-    fix('ax worker gate <task_id> [--run <run_id>]');
+    fix('ax worker gate <task|request> [--run <run_id>]');
     return 3;
   }
 
-  section(`gate ${task}`);
+  // The substitution is STATED, never silent: the whole value of this gate is
+  // that its answer is about an identifiable subject, and an operator who typed
+  // one id must be able to see which one was actually counted.
+  const resolved = taskFromRequest(task, env);
+  if (resolved !== null) {
+    section(`gate ${resolved} (request ${task})`);
+    task = resolved;
+  } else {
+    section(`gate ${task}`);
+  }
 
   const bin = runner ? 'injected' : resolve({ env });
   if (!bin) {
@@ -145,12 +188,16 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
       ok(`${task} exists and has no Dispatch. First launch, safe to start.`);
       return 0;
     }
-    // Fail CLOSED, and name the ambiguity rather than calling it "wrong id":
+    // Fail CLOSED, and name every cause rather than calling it "wrong id":
     // `task-list` is bounded to the caller's Run, so a task from another Run is
-    // absent from it exactly as an invented task is.
+    // absent from it exactly as an invented task is — and a REQUEST id whose
+    // record this store does not hold is absent for a third reason entirely, the
+    // one measured on 2026-08-26. Two causes presented as exhaustive sent the
+    // operator hunting a Run failure that did not exist.
     bad(`CANNOT ESTABLISH — no Dispatch for ${task}, and ${listed ? 'it is in no task of the Run consulted' : "'task-list' did not answer"}.`);
-    note('Two causes are indistinguishable from here: the id is wrong, or the task lives in another Run or on another host.');
+    note('Three causes are indistinguishable from here: the id is wrong; it is a REQUEST id whose record this store does not hold; or the task lives in another Run or on another host.');
     note('Do not relaunch on this result.');
+    fix('ax worker ls   # the request -> task column, if what you typed was a request id');
     fix(`ax worker gate ${task} --run <run_id>   # name the Run to decide`);
     return 3;
   }

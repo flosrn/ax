@@ -70,7 +70,7 @@ export const COMMANDS = [
       ['launch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
-      ['gate <task>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
+      ['gate <task|request>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
       ['transcript <cible>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
