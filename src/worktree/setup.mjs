@@ -142,7 +142,11 @@ function apply({ plan, config, root, main }) {
     // happily against the SHARED database while every check reports isolation —
     // the most confusing state this tooling can leave behind. Nothing can
     // reload that process from the outside, so the instruction has to be given.
-    if (started.offsetSource !== 'recorded') fix('restart the dev server — the database endpoint just changed');
+    // The plan is the resolver of whether this block is new (`scan`) or already
+    // this worktree's (`recorded` / `config`); `promote` only reports start.
+    if (plan.supabase.source !== 'recorded' && plan.supabase.source !== 'config') {
+      fix('restart the dev server — the database endpoint just changed');
+    }
   } else {
     note('sharing the primary checkout’s database — promoted automatically the first time a command would write');
   }

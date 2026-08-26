@@ -68,6 +68,7 @@ test('a database-touching worktree gets its own block and endpoints', () => {
   assert.equal(result.supabase.mode, 'isolated');
   assert.equal(result.supabase.projectId, 'demo-thing-412');
   assert.ok(result.supabase.offset > 0);
+  assert.equal(result.supabase.source, 'scan', 'a first isolation is a new block — setup must tell the operator to restart');
 
   const block = result.env.find(write => write.label === SUPABASE_LABEL);
   assert.equal(block.keys[KEYS.supabaseOffset], String(result.supabase.offset));
@@ -170,6 +171,7 @@ test('a worktree provisioned by the old tooling keeps its stack instead of orpha
 
   assert.equal(result.supabase.mode, 'isolated');
   assert.equal(result.supabase.offset, 700);
+  assert.equal(result.supabase.source, 'recorded', 'an already-claimed block must not look newly allocated');
   assert.equal(result.env.find(write => write.label === SUPABASE_LABEL).remove, undefined);
 });
 
