@@ -3,6 +3,50 @@
 Each finding below names a reproducible command, the observed result, its operational impact, and
 the current repair. Absence is unknown unless the covered runtime proves otherwise.
 
+## How an entry earns its place
+
+This file is the standing channel for a friction the live runtime found: the direction of reporting
+that has no contract anywhere else. A child reports blockers UP to its coordinator, a coordinator
+assigns work DOWN to its children, and both are written into the roles. A defect in the INSTRUMENT
+has nowhere to go, so it becomes a silent workaround — one consumer had carried "`ax triage ask` is
+unavailable" in durable memory since v0.6.x, and the cause was a missing flag that took one grep of
+the runtime source to find once it was finally reported.
+
+An entry carries four things, and the first is what makes the other three usable:
+
+- **Commands** — the exact argv, runnable, with the cwd when it is not the repository root. A
+  reproduction that mutates state names its `--dry-run` first. Measured across two children refused
+  by the SAME runtime error: the one that reported "the supervised channel is unavailable" produced
+  no repair across two dispatches, and the one that quoted `dispatch_capability_invalid` had the
+  cause found in the runtime source and fixed within the hour. The form is the causal lever.
+- **Observed** — raw output, not a summary of it. A rendering is lossy on purpose.
+- **Impact** — what an operator loses, in the run they were actually doing.
+- **Repair status** — one of the four verdicts below, never a mood.
+
+### The four verdicts
+
+|Verdict|Means|
+|---|---|
+|`open`|reproduced, not yet repaired — the entry stays, with its command|
+|`fixed`|repaired AND released; a source-only change is not this|
+|`refused`|reproduced and left alone on purpose, with the reason — a tool that repairs every report is a tool being designed by whoever complains loudest|
+|`unreproducible`|the command was run and the symptom did not appear|
+
+`refused` and `unreproducible` are first-class results, not failures of the reporter. A file that
+only ever records `fixed` is measuring how agreeable it is, not how the tool behaves.
+
+### Measure before believing, including a reviewer, including yourself
+
+Every claim here is about behaviour, and behaviour is measurable. Two entries in this file's own
+history were plausible and false: an automated review filed a P1 saying these reproductions would
+create a `55-55-…` request and dispatch an unrelated worker (they cannot — `normalizeSlug` in
+`src/worker/ticket.mjs` strips a repeated ticket ref and says so), and the reply refuting it asserted
+the commands had never carried the prefix, having read the file at branch HEAD instead of the commit
+under review. Two correct measurements, wrong subject.
+
+So: run the command before writing the entry, and name the commit or version the reading applies to.
+An "impossible" and a "surely" are claims, and they get measured like the rest.
+
 ## Test environment
 
 - Consumer: `goodluckagency/ofmchat`
