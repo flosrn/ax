@@ -643,6 +643,49 @@ test('a pass whose child is blocked on questions says WAITING, names them, and n
   assert.doesNotMatch(r.out, /waiting state unknown/);
 });
 
+test('a draft that asks with NO answerable ask says why, and names an exit that exists', () => {
+  // Measured 2026-08-26: a child whose own `ax triage ask` failed
+  // `dispatch_capability_invalid` asked through `orca orchestration ask`. This
+  // verb printed `4 open question(s)` off the draft and nothing else; `answer`
+  // refused the resulting id for carrying no ax header, and pointed back here
+  // for "the pending question's real id". Four correct refusals, no exit.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\nQ2: which priority?\n');
+  const orca = fakeInbox([]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /the draft asks 2, and no answerable ask is visible/);
+  assert.match(r.out, /never asked through `ax triage ask`/);
+  assert.match(r.out, /post the rulings on #7 and fold them into/);
+  assert.doesNotMatch(r.out, /WAITING since/);
+});
+
+test('a pass with no pane says THAT, rather than blaming the child for not asking', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeInbox([]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /no answerable ask is visible: this pass records no pane/);
+});
+
+test('an unreadable mailbox is named as the reason, never as the child not asking', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeInbox([], { readable: false });
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /no answerable ask is visible: the mailbox could not be read/);
+});
+
 test('an answered question is not WAITING: the reply that threads back to it closes the row', () => {
   const root = repo();
   const store = join(root, 'store');

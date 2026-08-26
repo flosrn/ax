@@ -296,8 +296,10 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // The pane's PENDING questions, matched by the handle the record holds.
       // Only here — behind a real record — because a draft-only pass has no
       // pane to have asked anything.
+      let pending = null;
       if (mailbox.ok && handle !== '') {
-        for (const question of mailbox.pending.get(handle) ?? []) {
+        pending = mailbox.pending.get(handle) ?? [];
+        for (const question of pending) {
           const numbers = questionsIn(question.body).map(entry => entry.n);
           note(`  WAITING since ${question.created_at ?? 'an unrecorded time'} on ${numbers.length > 0 ? questionSpan(numbers) : 'its question'} — message ${question.id}`);
           fix(`ax triage answer --issue ${issue} --job ${job} --id ${question.id} --file <rulings.md>   # one A<n>: line per question`);
@@ -315,6 +317,30 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       else {
         note(`  draft ${draft.path}`);
         note(dim(`  ${draft.sha.slice(0, 12)} · ${draft.lines} line(s)${draft.questions.length > 0 ? ` · ${draft.questions.length} open question(s)` : ''}${draft.ok ? '' : ` · NOT publishable: ${draft.reason}`}`));
+      }
+
+      // A COUNT IS NOT AN ID, and five refusals in ./answer.mjs send the caller
+      // here for one. Measured 2026-08-26 on a child whose own `ax triage ask`
+      // had failed `dispatch_capability_invalid`, so it asked through
+      // `orca orchestration ask` instead: this verb printed `4 open question(s)`
+      // off the draft and nothing else, `answer` refused the resulting id for
+      // carrying no ax header, and its repair pointed back here. Four correct
+      // refusals closing a loop with no exit.
+      //
+      // So when the draft asks and no answerable ask is visible, the reason is
+      // named and the way out is the one that exists. `ax triage answer` pairs
+      // rulings to an ask THIS tool sent; nothing else can be paired, and no
+      // amount of re-reading status will produce an id that was never minted.
+      if (draft.questions.length > 0 && (pending === null || pending.length === 0)) {
+        bad(`  the draft asks ${draft.questions.length}, and no answerable ask is visible: ${
+          !mailbox.ok
+            ? 'the mailbox could not be read'
+            : handle === ''
+              ? 'this pass records no pane, so no ask can be matched to it'
+              : 'this pane has no pending question — it never asked through `ax triage ask`, or its ask was already answered'
+        }`);
+        note('  `ax triage answer` pairs rulings to an ask THIS tool sent; a child that asked another way cannot be answered by it');
+        fix(`  post the rulings on #${issue} and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — the supervised reply is not available for this pass`);
       }
     }
   }
