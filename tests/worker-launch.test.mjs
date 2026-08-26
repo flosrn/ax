@@ -174,7 +174,7 @@ const run = (argv, options = {}) => {
       exec: options.exec ?? (() => ({ status: 0, stdout: '', stderr: '' })),
       env: { HOME: home, ORCA_TERMINAL_HANDLE: 'term_me', ORCA_DISPATCH_STORE: store, AX_LAUNCH_SPEC_DIR: join(home, 'specs'), AX_LAUNCH_TICK: '1', AX_LAUNCH_SEE_WAIT: '0', ...options.env },
       cwd: root,
-      sleep: () => {},
+      sleep: options.sleep ?? (() => {}),
       now: (() => {
         let t = 0;
         return () => (t += 1000);
@@ -650,6 +650,33 @@ test('the quota chain moving a session is not the marker applying', () => {
 
   assert.equal(r.code, 3);
   assert.match(r.out, /quota chain moved this session/);
+});
+
+test('a proof read before the child finished booting is re-read, never latched', () => {
+  // Measured 2026-08-26 (ofmchat, two launches of a live wave): the receipt said
+  // `model …|` and `session unreadable` with the cursor moving 0 -> 604, and 20s
+  // later the pane was on the marker's model with the role applied. The loop had
+  // latched the FIRST read that found a session file — a file that exists as soon
+  // as the child boots and carries only its boot `model_change`. So the transcript
+  // gains both receipts here between two polls, and the verdict must be green.
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const sessions = join(home, 'sessions');
+  transcript(sessions, `${ISSUE}-${SLUG}`, null, { sessionRole: null });
+  let slept = 0;
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    root,
+    home,
+    sleep: () => {
+      slept += 1;
+      if (slept === 1) transcript(sessions, `${ISSUE}-${SLUG}`, 'default');
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /model .*\|default/);
+  assert.match(r.out, /session .*worker.*implementation/);
 });
 
 test('no transcript yet is UNPROVEN, never a boot-model verdict', () => {

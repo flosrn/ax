@@ -56,12 +56,40 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
 
   const needle = basename(worktree === '' ? request : worktree);
   const deadline = now() + wait * 1000;
-  let proof = null;
+  let model = null;
+  let sessionRole = null;
   let first = null;
   let moved = null;
 
+  // EACH PROPOSITION IS LATCHED SEPARATELY, and that is the whole reason this is
+  // three variables instead of one `proof`. `launchProof` answers non-null the
+  // moment a session FILE exists, with both fields still null inside it — and
+  // that file exists as soon as the child boots, carrying only the boot
+  // `model_change` Orca writes before the spec marker applies and long before
+  // the child-side role receipt is written. Measured 2026-08-26 across two
+  // launches of one live wave: a loop that stopped re-reading once the OBJECT
+  // was non-null printed `model …|` and `session unreadable`, exit 3, on two
+  // children that were on the marker's model with the role applied twenty
+  // seconds later. It reported the absence of a receipt as the absence of the
+  // thing (F-028), and it cost the coordinator a manual `tail` per launch to
+  // disbelieve its own gate.
+  //
+  // So the loop is settled only when the model has a MOVER (`role !== ''`, i.e.
+  // someone selected it) and the role receipt exists in either polarity —
+  // `applied` or `refused`. A refusal is a real verdict and stops the wait; an
+  // empty mover is indistinguishable from "not yet" and therefore keeps it.
+  const settled = () => model !== null && model.role !== '' && sessionRole !== null;
+
   for (;;) {
-    if (proof === null) proof = readProof({ needle, env, sessionsRoot, host, exec, cwd });
+    if (!settled()) {
+      const proof = readProof({ needle, env, sessionsRoot, host, exec, cwd });
+      // The file is cumulative, so a later read supersedes an earlier one: the
+      // quota fallback that follows a marker is the model the child serves.
+      if (proof !== null) {
+        if (proof.model !== null) model = proof.model;
+        if (proof.sessionRole !== null) sessionRole = proof.sessionRole;
+      }
+    }
     if (pane !== '') {
       const sample = readPane(run, pane, { limit: 1, environment: on });
       const cursor = sample.cursor;
@@ -70,19 +98,17 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
         else if (cursor !== first) moved = cursor;
       }
     }
-    if (proof !== null && moved !== null) break;
+    if (settled() && moved !== null) break;
     if (now() >= deadline) break;
     sleep(tickMs);
   }
 
-  const model = proof?.model ?? null;
-  const sessionRole = proof?.sessionRole ?? null;
   const skillNames = sessionRole?.status === 'applied' ? sessionRole.skills : [];
   note(`model     ${model === null ? 'unreadable' : `${model.model}|${model.role}`}`);
   note(
     `session   ${
       sessionRole === null
-        ? 'unreadable'
+        ? 'not written within the window'
         : sessionRole.status === 'refused'
           ? `${sessionRole.role}|REFUSED ${sessionRole.reason}`
           : `${sessionRole.role}|${skillNames.join(',') || 'no skills'}`
@@ -103,14 +129,14 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   if (model === null) {
     bad('UNPROVEN model: no transcript yet. The child may still be booting, or its transcript sits on another host and was unreadable from here.');
   } else if (model.role === '') {
-    bad('UNPROVEN model: the child runs its BOOT model — the spec marker did not apply.');
+    bad(`UNPROVEN model: the child still runs its BOOT model after ${wait}s — the spec marker did not apply.`);
   } else if (model.role === 'fallback') {
     bad('UNPROVEN model: the quota chain moved this session, so the marker is not what decided.');
   } else {
     bad(`UNPROVEN model: ${model.model}|${model.role}`);
   }
   if (sessionRole === null) {
-    bad('UNPROVEN session role: no child-side role receipt was found.');
+    bad(`UNPROVEN session role: no child-side role receipt was written within ${wait}s.`);
   } else if (sessionRole.status === 'refused') {
     const missing = sessionRole.missingSkills.length === 0 ? '' : `; missing ${sessionRole.missingSkills.join(', ')}`;
     bad(`REFUSED session role ${sessionRole.role}: ${sessionRole.reason}${missing}`);
