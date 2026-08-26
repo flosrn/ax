@@ -229,6 +229,14 @@ The repair was to write the three tests, and to prove they fire: a planted modul
 removing it made it green again. The exemption list is guarded too, because an exemption for a
 deleted file is a permission the next file at that path inherits in silence.
 
+The failure was not verification, it was **classification**, and that distinction is what makes this
+one repairable alone. Every claim identified as a claim in this session got measured — that is how
+the other seven were found. "No test can guard this" arrived dressed as a constraint, so it never
+entered the pipeline where measuring happens. Nothing about it was hard to check; it was never
+queued to be checked. Hence the one-line correction, which needs no second reader:
+**an "impossible" is a claim, so it gets measured.** File impossibilities with the things that
+require proof, not with the things that excuse you from it.
+
 **Before accepting that an invariant cannot be enforced, name the half that can.** Most invariants
 are a mechanizable proposition welded to a judgement call, and "it needs judgement" is routinely
 heard as "it needs a human", which quietly surrenders the half a machine would have held forever.
@@ -239,8 +247,10 @@ A report about an operation is not the operation. Neither a claimed absence nor 
 checkable from the report that carries it, so both have to be settled against the thing itself — the
 file's bytes, the entry separator count, the cursor position, the artifact on disk.
 
-And underneath the first six — the seventh is outside it, having no failure to be loud — one choice
-made by accident: **preferring the silent failure to the loud
+And underneath the first six — the seventh and the eighth are both outside it, neither having a
+failure to be loud: one is an unverified figure with no consequence, the other an unverified
+impossibility that produced a decision instead of a failure — one choice made by accident:
+**preferring the silent failure to the loud
 one.** In every instance the defect was not a wrong value, it was a direction whose failure nothing
 downstream could see. A latched read printed a verdict about a session it had not waited for. A 0%
 meaning "unmeasured" rendered as "no cost, change nothing". A draft's question count stood in for an
