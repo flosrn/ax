@@ -65,7 +65,13 @@ function publishEntry(handle: string, run: string, model = '', sessionId = 's'):
 }
 
 async function load() {
-  return import(`./registry.ts?addressing=${++caseId}`);
+  caseId += 1;
+  // The naming rule and the send that consumes it, one fresh pair per case.
+  // Both are stateless; the fresh specifier controls WHEN they first load,
+  // after this case's env is in place.
+  const address = await import(`./address.ts?addressing=${caseId}`);
+  const send = await import(`./send.ts?addressing=${caseId}`);
+  return { ...address, ...send };
 }
 
 beforeEach(() => {

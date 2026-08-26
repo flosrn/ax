@@ -53,29 +53,20 @@ import {
 } from './attribution.ts';
 import { environmentOfDispatch, resolveChildRoute } from './route.ts';
 
-// Addressing, lineage and the registry, all on native Orca. The naming rule
-// that decides an address lives in that module alone; `refreshHandleMap` reads
-// it rather than restating it, so no second copy can disagree about which
-// session a handle belongs to.
-import {
-  children as peerChildren,
-  panes,
-  peers,
-  register as publishSelf,
-  resolvePeerName,
-  sendToPeer,
-  depthOf,
-  lineageRows,
-  runAddressOfHandle,
-  shortId,
-  setModel,
-  transcriptFor,
-  worktreeOf,
-} from './registry.ts';
+// Addressing, lineage and the registry, split by concern under this package.
+// The naming rule that decides an address lives in `./address.ts` alone;
+// `refreshHandleMap` reads it rather than restating it, so no second copy can
+// disagree about which session a handle belongs to.
+import { panes, peers, register as publishSelf, resolvePeerName, setModel, shortId, worktreeOf } from './address.ts';
+import { children as peerChildren, depthOf } from './lineage.ts';
+import { lineageRows } from './orca.ts';
+import { runAddressOfHandle } from './store.ts';
+import { sendToPeer } from './send.ts';
+import { transcriptFor } from './transcript.ts';
 
 // When the receive loop is down, and whether the model has been told. Kept
 // out of this file so the decision can be tested without an Orca, a clock or
-// a `pi` facade — same reason addressing lives in `registry.ts`.
+// a `pi` facade — same reason addressing lives in `address.ts`.
 import {
   type Announcement,
   type ChannelState,
@@ -470,7 +461,7 @@ const receiver = createReceiver({
   },
   // A witnessed pane that stated no return address: the Run it published for
   // itself is read under the handle ORCA vouched for, never under a name the
-  // sender claimed. `registry.ts` carries the bound on that.
+  // sender claimed. `store.ts`'s `runAddressOfHandle` carries the bound on that.
   paneRoute: (handle) => runAddressOfHandle(handle),
   peerContent,
   wasInjected: (id) => injectedIds.has(id),
@@ -499,7 +490,7 @@ const receiver = createReceiver({
 // with an mtime query string, so every subagent load is a fresh module
 // evaluation and the child gets its own unclaimed latch and claims itself.
 // What protects the registry across module instances is the SECOND guard, in
-// `orca-peer/registry.ts`: `register` refuses a differing `sessionId` whose
+// `peer/address.ts`: `register` refuses a differing `sessionId` whose
 // recorded `ownerPid` is still alive, answering `refused: 'foreign'` rather
 // than publishing. Keep both - the latch is correct for a session switch inside
 // one module instance - and do not remove that ownership fence believing it

@@ -16,7 +16,7 @@
  */
 
 import { expect, test } from 'bun:test';
-import { depthOf } from './registry.ts';
+import { depthOf } from './lineage.ts';
 
 const ROOT = '/tmp/fake/root';
 const CHILD = '/tmp/fake/child';

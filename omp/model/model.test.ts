@@ -1151,7 +1151,7 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
    * `import.meta.url` and cannot resolve elsewhere, not because a spread is
    * harder to pattern-match.
    */
-  const RESOLVERS: Record<string, true> = { ORCA: true, '...axArgv()': true, '...AX': true };
+  const RESOLVERS: Record<string, true> = { ORCA: true, 'orcaBin()': true, '...axArgv()': true, '...AX': true };
 
   /** Executables these files legitimately run that are not a resolved binary. */
   const PLAIN_TOOLS: Record<string, true> = {
@@ -1162,12 +1162,11 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
   };
 
   /**
-   * Every file that spawns Orca, with the exact resolver import it must carry.
-   * The specifier is stated per file rather than matched loosely — a loose
-   * match is how a second resolver grows unnoticed. Both peer files sit one
-   * directory below the package root since this bundle moved into
-   * `@flosrn/ax`, so they now share one specifier; the entries stay separate
-   * anyway, because the next spawner will not.
+   * Every file that spawns Orca or ax, with the exact resolver import it must
+   * carry. The specifier is stated per file rather than matched loosely — a
+   * loose match is how a second resolver grows unnoticed. The peer registry
+   * split (2026-08-26) left exactly one Orca spawner in that package,
+   * `orca.ts`; `report.ts` spawns this package's own CLI for the board write.
    */
   const SPAWNERS: { path: string; imports: string }[] = [
     {
@@ -1175,8 +1174,12 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
       imports: "import { resolveOrcaBin } from '../model/self.ts'",
     },
     {
-      path: '../peer/registry.ts',
+      path: '../peer/orca.ts',
       imports: "import { resolveOrcaBin } from '../model/self.ts'",
+    },
+    {
+      path: '../peer/report.ts',
+      imports: "import { axArgv } from '../shared/ax.ts'",
     },
   ];
 

@@ -20,7 +20,9 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { artifactNote, register, REPORT_SHAPE, runAddressOfHandle, setModel } from './registry.ts';
+import { register, setModel } from './address.ts';
+import { artifactNote, REPORT_SHAPE } from './report.ts';
+import { runAddressOfHandle } from './store.ts';
 
 const HANDLE = 'term_victim';
 /** Unassignable on every supported host, so `kill -0` always reports it dead. */

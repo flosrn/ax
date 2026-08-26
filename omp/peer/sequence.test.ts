@@ -19,7 +19,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { nextOutboundSequence } from './registry.ts';
+import { nextOutboundSequence } from './store.ts';
 
 let dir = '';
 let saved: string | undefined;
