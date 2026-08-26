@@ -146,7 +146,7 @@
         },
         "contract": {
           "type": "string",
-          "description": "Path to the pilot contract appended to every brief — repo-relative, or absolute for a contract shared by several repos. Declared and unreadable is a refusal: a brief pointing at nothing sends a child to improvise (2026-08-01, three worktrees that never read theirs). Absent means ax writes the mechanics-only contract it owns."
+          "description": "Path to the pilot contract appended to every brief — repo-relative, or absolute for a contract shared by several repos. Declared and unreadable is a refusal: a brief pointing at nothing sends a child to improvise (2026-08-01, three worktrees that never read theirs). Absent means ax writes the mechanics-only contract it owns. Declared, it REPLACES those mechanics rather than adding to them, so it has to re-carry whatever they said that nothing else in this repo tells a child: the provisioned worktree and its `.agent/worktree-context.local.md`, who the coordinator is, that the child never merges, and the stall watcher. A contract that drops a verification sequence because the repo's AGENTS.md carries it is deduplicating; the same contract copied into a repo whose AGENTS.md does not is losing it."
         },
         "worktreeTool": {
           "type": "string",
