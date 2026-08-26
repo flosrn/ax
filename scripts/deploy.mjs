@@ -2,9 +2,11 @@
 // The release-propagation runbook, executable — first run performed by hand on
 // 2026-08-26 (v0.12.3) and captured here so every later release is one command:
 //
-//   node scripts/deploy.mjs             # merge the release PR, wait for npm, pin every consumer
+//   node scripts/deploy.mjs             # merge, wait for npm, pin consumers, pull this tree + the VPS adapter
+//   node scripts/deploy.mjs --check     # drift report across every surface; needs no release, mutates nothing
 //   node scripts/deploy.mjs --dry-run   # print the plan and the discovered consumers, mutate nothing
 //   node scripts/deploy.mjs --skip-pins # release to npm only; leave consumers where they are
+//   node scripts/deploy.mjs --skip-remote # skip the VPS adapter checkout
 //
 // WHAT IT AUTOMATES, IN ORDER. (1) Find the open release-please PR — the one
 // place a version number is allowed to come from (AGENTS.md: a release is never
@@ -19,7 +21,14 @@
 // inventory is unknown, not empty). (5) `ax pin <version>` in each consumer —
 // the pin verb owns migration, install proof and doctor — then commit and push,
 // with one pull --rebase retry because a busy main rejects the first push
-// routinely. (6) Say out loud what this script does NOT reach: remote hosts.
+// routinely. (6) Fast-forward THIS checkout: release-please bumps the version on
+// origin, so the tree that produced the release still read the previous one until
+// 2026-08-26, when npm served 0.13.0 and the repository said 0.12.3. (7) Converge
+// the VPS adapter checkout, which `consumers()` can never find because it is not
+// a consumer — it is ax itself, and `/home/orca/.omp` loads the bundle from it.
+// Measured the same day: 78 commits stale, silently, equipping every session on
+// that host. The old closing note told the operator to `ax pin` there, which is
+// the wrong gesture for a checkout that IS the package.
 //
 // MAINTAINER TOOLING, NOT A COMMAND. This is deliberately not `ax deploy`:
 // which machine roots hold consumers and which VPS runs the fleet are facts
@@ -41,16 +50,36 @@ const DEFAULT_ROOTS = [join(homedir(), 'Code'), join(homedir(), 'orca', 'workspa
 /** Directories a manifest walk never enters. */
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.worktrees']);
 const WALK_DEPTH = 4;
+/**
+ * The remote surface `consumers()` can NEVER find, because it is not a consumer.
+ * `/home/orca/Code/flosrn/ax` declares this package as its OWN name, not as a
+ * dependency, and yet `/home/orca/.omp/agent/extensions/ax.ts` loads the AX
+ * adapter from it — so every agent session on that host is equipped by whatever
+ * commit this checkout happens to sit on. Measured 2026-08-26, right after the
+ * 0.13.0 release: it was 78 commits behind, silently, and nothing watched it.
+ *
+ * `ax pin` is the WRONG gesture here and the old closing note said to use it:
+ * there is nothing to pin, the checkout IS the package. It converges with a
+ * fast-forward pull, run as `orca` and never as root — a root pull leaves
+ * root:root files and the next pull as orca dies on "unable to unlink old file"
+ * (the ops runbook has paid for this three times).
+ */
+const REMOTE_HOST = 'vps';
+const REMOTE_USER = 'orca';
+const REMOTE_ADAPTER = '/home/orca/Code/flosrn/ax';
 
 const argv = process.argv.slice(2);
 const dry = argv.includes('--dry-run');
+const check = argv.includes('--check');
 const skipPins = argv.includes('--skip-pins');
+const skipRemote = argv.includes('--skip-remote');
 const rootsArg = argv.find((a) => a.startsWith('--roots='));
 const roots = rootsArg ? rootsArg.slice('--roots='.length).split(',') : DEFAULT_ROOTS;
-const unknown = argv.filter((a) => !['--dry-run', '--skip-pins'].includes(a) && !a.startsWith('--roots='));
+const FLAGS = ['--dry-run', '--check', '--skip-pins', '--skip-remote'];
+const unknown = argv.filter((a) => !FLAGS.includes(a) && !a.startsWith('--roots='));
 if (unknown.length > 0) {
   bad(`unknown argument(s): ${unknown.join(' ')}`);
-  fix('node scripts/deploy.mjs [--dry-run] [--skip-pins] [--roots=/a,/b]');
+  fix('node scripts/deploy.mjs [--check] [--dry-run] [--skip-pins] [--skip-remote] [--roots=/a,/b]');
   process.exit(2);
 }
 
@@ -58,6 +87,39 @@ const gh = (args) => run('gh', args, { cwd: ROOT, timeout: 60_000 });
 const git = (cwd, args) => run('git', args, { cwd, timeout: 120_000 });
 const succeeded = (out) => !out.error && out.status === 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One remote shell as the checkout's OWNER. `sudo -u orca -H` is not politeness:
+ * `-H` sets HOME so git finds the right config, and running as the owner is what
+ * keeps the NEXT pull from failing on files this one created.
+ */
+const remote = (script) =>
+  run('ssh', [REMOTE_HOST, `sudo -u ${REMOTE_USER} -H bash -lc ${JSON.stringify(script)}`], { cwd: ROOT, timeout: 180_000 });
+
+/**
+ * The maintainer's OWN checkout, which the release leaves behind. release-please
+ * lands the version bump on origin, so after a merge this tree still reads the
+ * PREVIOUS version — measured 2026-08-26: npm served 0.13.0 while the repository
+ * that produced it said 0.12.3, and the gap was closed by hand. A propagation
+ * runbook that leaves its own origin stale has propagated to everywhere but home.
+ */
+function pullSelf() {
+  const dirty = git(ROOT, ['status', '--porcelain']);
+  if (!succeeded(dirty)) return { ok: false, reason: 'git status failed here' };
+  if (dirty.stdout.trim() !== '') return { ok: false, reason: 'this checkout is not clean, so it is not fast-forwarded' };
+  const pulled = git(ROOT, ['pull', '--ff-only', '-q', 'origin', 'main']);
+  if (!succeeded(pulled)) return { ok: false, reason: (pulled.stderr || '').split('\n')[0] || `exit ${pulled.status}` };
+  return { ok: true };
+}
+
+/** The version a checkout's manifest declares, or '' when it cannot be read. */
+function declaredVersion(dir) {
+  try {
+    return String(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version ?? '');
+  } catch {
+    return '';
+  }
+}
 
 /** Every checkout under `roots` that DECLARES this package, read from manifests
  *  fresh on every run. Named keys only: an absent dependencies block is "not a
@@ -206,6 +268,51 @@ function pinConsumer({ dir, pinned }, version) {
 section(`deploy — ${PKG}`);
 note(`roots        ${roots.join(', ')}${rootsArg ? '' : '   (defaults — override with --roots=/a,/b)'}`);
 
+// ── --check: the drift report, which needs no release to exist ───────────────
+//
+// The gap this closes: between releases nothing looked at these surfaces, and on
+// 2026-08-26 the remote adapter checkout had been 78 commits stale for days. A
+// release-time script cannot catch that, because at release time it is already
+// too late to have known. This mode answers "is everything where the registry
+// says it should be", mutates nothing, and needs no open release PR.
+if (check) {
+  section('check');
+  const head = git(ROOT, ['log', '--oneline', '-1']);
+  const fetched = git(ROOT, ['fetch', '-q', 'origin', 'main']);
+  const behind = succeeded(fetched) ? git(ROOT, ['rev-list', '--count', 'HEAD..origin/main']) : null;
+  const served = run('npm', ['view', PKG, 'version'], { cwd: ROOT, timeout: 60_000 });
+  const registry = succeeded(served) ? served.stdout.trim() : '';
+  note(`here         ${declaredVersion(ROOT) || '?'} · ${(head.stdout || '').trim() || 'unreadable HEAD'}`);
+  note(`             ${behind === null ? 'origin unreachable — behind-count UNKNOWN' : `${behind.stdout.trim()} commit(s) behind origin/main`}`);
+  note(`npm          ${registry || 'unreadable — the registry answered nothing'}`);
+
+  let drifted = 0;
+  for (const consumer of consumers()) {
+    const aligned = registry !== '' && consumer.pinned === registry;
+    note(`${aligned ? 'aligned' : 'DRIFTED'}      ${consumer.dir} pins ${consumer.pinned}${aligned ? '' : ` — npm serves ${registry || '?'}`}`);
+    if (!aligned) drifted += 1;
+  }
+
+  const out = remote(`cd ${REMOTE_ADAPTER} && git fetch -q origin main; git log --oneline -1; git rev-list --count HEAD..origin/main`);
+  if (!succeeded(out)) {
+    bad(`${REMOTE_HOST} unreachable — the adapter checkout's state is UNKNOWN, which is not the same as current`);
+    fix(`ssh ${REMOTE_HOST}   # then: sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} status`);
+    drifted += 1;
+  } else {
+    const lines = out.stdout.trim().split('\n');
+    const count = Number(lines[lines.length - 1]);
+    note(`${count === 0 ? 'aligned' : 'DRIFTED'}      ${REMOTE_HOST}:${REMOTE_ADAPTER} — ${lines[0]?.trim()}`);
+    if (count !== 0) {
+      bad(`that checkout is ${count} commit(s) behind, and it equips EVERY agent session on ${REMOTE_HOST}`);
+      fix(`node scripts/deploy.mjs --check   # then converge it: node scripts/deploy.mjs (or --skip-pins to release only)`);
+      drifted += 1;
+    }
+  }
+
+  if (drifted === 0) ok('every surface matches the registry');
+  process.exit(drifted === 0 ? 0 : 1);
+}
+
 const found = releasePr();
 if (found.error) {
   bad(`CANNOT ESTABLISH — ${found.error}`);
@@ -260,21 +367,44 @@ if (!(await waitForNpm(version))) {
 }
 ok(`npm serves ${PKG}@${version}`);
 
-if (skipPins) {
-  note('--skip-pins: consumers left as they are');
-  process.exit(0);
+const self = pullSelf();
+if (self.ok) ok(`this checkout now reads ${declaredVersion(ROOT) || 'an unreadable version'}`);
+else {
+  bad(`this checkout was NOT fast-forwarded: ${self.reason}`);
+  fix('git pull --ff-only origin main   # the release bumped package.json on origin, not here');
 }
 
-section('consumers');
 const verdicts = [];
-for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
+
+if (skipPins) note('--skip-pins: consumers left as they are');
+else {
+  section('consumers');
+  for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
+}
+
+section('remote adapter');
+if (skipRemote) note(`--skip-remote: ${REMOTE_HOST}:${REMOTE_ADAPTER} left as it is`);
+else {
+  const out = remote(
+    `cd ${REMOTE_ADAPTER} && git pull --ff-only -q origin main && git log --oneline -1 && node bin/ax.mjs help 2>&1 | head -1`,
+  );
+  if (!succeeded(out)) {
+    // A host that cannot be reached is UNKNOWN, not converged and not broken —
+    // and it does not fail the release that already published.
+    bad(`${REMOTE_HOST} did not converge: ${(out.stderr || out.error || '').toString().split('\n').filter((l) => !l.includes('Address already in use'))[0] || `exit ${out.status}`}`);
+    fix(`ssh ${REMOTE_HOST} 'sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} pull --ff-only origin main'   # as ${REMOTE_USER}, never root`);
+    verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'unreached' });
+  } else {
+    for (const line of out.stdout.trim().split('\n')) note(`  ${line.trim()}`);
+    ok(`${REMOTE_HOST} adapter checkout fast-forwarded — every session there is equipped from it`);
+    verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'pulled' });
+  }
+}
 
 section('summary');
 let failed = 0;
 for (const { dir, verdict } of verdicts) {
   note(`${dir}  ${verdict}`);
-  if (verdict !== 'pinned' && verdict !== 'current') failed = 1;
+  if (!['pinned', 'current', 'pulled'].includes(verdict)) failed = 1;
 }
-note('NOT REACHED FROM HERE: remote hosts. The VPS fleet converges through the ops flow —');
-note(`  ssh orca@vps, then \`ax pin ${version}\` in each consuming clone (gapihub owns the layout).`);
 process.exit(failed);
