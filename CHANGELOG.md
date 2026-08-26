@@ -8,6 +8,26 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.13.0](https://github.com/flosrn/ax/compare/v0.12.3...v0.13.0) (2026-08-26)
+
+
+### Features
+
+* **worker:** tail says what the child RECORDED, because ALIVE is not a channel ([3f8b30b](https://github.com/flosrn/ax/commit/3f8b30b70e7c06ff9d52b8e1c396dd3eb31a7ec4))
+* **worker:** the escalation bullet says to quote the error, not summarize it ([3fe9405](https://github.com/flosrn/ax/commit/3fe940538d579c3cf351e2b61e007ca381499ecf))
+
+
+### Bug Fixes
+
+* **triage:** ask carries the dispatch capability it was stripping ([8623894](https://github.com/flosrn/ax/commit/8623894db23db361225085418fa1aebc87fc5a1e))
+* **triage:** F-030 names which refusal it is, so its repair is the right one ([9655e3e](https://github.com/flosrn/ax/commit/9655e3ee82fdc8ede04d6a99b9738a312f25fa51))
+* **triage:** status says WHY no ask is answerable, instead of printing a count ([e512358](https://github.com/flosrn/ax/commit/e51235855af392b5e0a44d3706fe3bdffdf11e3e))
+* **worker:** a child gets the address it can act on, and the file describing its tree ([b7bfe60](https://github.com/flosrn/ax/commit/b7bfe6013b58ecfac2f74b51051fd7dd269a23f3))
+* **worker:** a launch verdict re-reads its proofs instead of latching the first ([0c1c5c1](https://github.com/flosrn/ax/commit/0c1c5c15d56a5bdfedabe24c8446e383ec1beb6d))
+* **worker:** a user_owned pane is offered the command that can close it ([2116df2](https://github.com/flosrn/ax/commit/2116df2038a7ddb4d4d1949ba19971d4e65d3d36))
+* **worker:** the preamble bound is the discriminant, and it is measured ([f647dc8](https://github.com/flosrn/ax/commit/f647dc84f4275b45b74d2652aeb5192d96fe8ef7))
+* **worker:** worker gate resolves a request id, and names the third cause ([0821a21](https://github.com/flosrn/ax/commit/0821a2126afca1659d7f450bfeb83678288bebac))
+
 ## [0.12.3](https://github.com/flosrn/ax/compare/v0.12.2...v0.12.3) (2026-08-26)
 
 
