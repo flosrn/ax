@@ -8,6 +8,14 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.12.3](https://github.com/flosrn/ax/compare/v0.12.2...v0.12.3) (2026-08-26)
+
+
+### Bug Fixes
+
+* **config:** repoPaths reads root and main from git.mjs, the one derivation ([439ce13](https://github.com/flosrn/ax/commit/439ce137ac4341c15b8054b883f2e3849e4486df))
+* **worktree:** a promotion writes the plan's stack, never a fresh mint ([800a817](https://github.com/flosrn/ax/commit/800a8178815b0313ad8910a003fa6f1e48fe70f8))
+
 ## [0.12.2](https://github.com/flosrn/ax/compare/v0.12.1...v0.12.2) (2026-08-25)
 
 
