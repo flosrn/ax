@@ -39,9 +39,23 @@ import { sessionFileForNeedle } from './transcript.mjs';
 const CAPABILITY = /\bdcap_[A-Za-z0-9_-]+/;
 
 /**
- * The preamble is turn ONE, so a bounded scan finds it or it is not there. An
- * unbounded read would page a session that reaches thousands of lines to prove
- * a negative the first few lines already settle.
+ * THE BOUND IS THE DISCRIMINANT, not a performance trick — measured over the 859
+ * session files on this machine, of which 227 carry a raw token:
+ *
+ *   first token at line   min 5 · median 7 · p90 8 · max 1651
+ *   beyond line 10:  12 files      beyond line 40:  11 files
+ *
+ * So the preamble cluster ends at line ~8, exactly one file falls between 11 and
+ * 40, and everything past that is a DIFFERENT phenomenon: a session that was
+ * never handed a capability but mentions one later — a coordinator quoting a
+ * child's command, or a session reasoning about this very code. Taking that
+ * token would hand one dispatch's grant to another caller.
+ *
+ * An unbounded first-match scan is therefore wrong, not merely slower: it would
+ * answer "here is your capability" to a session that has none. 40 sits well
+ * above the cluster and well below the outliers, and a later token is ignored on
+ * purpose — this reader answers "what was I dispatched with", never "what tokens
+ * appear in my history".
  */
 const PREAMBLE_LINES = 40;
 

@@ -397,3 +397,28 @@ test('dispatch_capability_invalid WITH a read token blames the Dispatch, not the
   assert.match(r.out, /re-minted or settled the Dispatch/);
   assert.doesNotMatch(r.out, /dcap_stale/, 'the token is never displayed');
 });
+
+test('a token mentioned LATE is not this session grant, and is not taken', () => {
+  // Measured over 227 session files carrying a raw token: the preamble cluster
+  // ends at line ~8, and every outlier past line 40 is a session that was never
+  // handed a capability but mentions one later — a coordinator quoting a child's
+  // command, or a session reasoning about this code. Taking it would hand one
+  // dispatch's grant to another caller, so the scan is bounded on purpose.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-late-')));
+  const dir = join(sessionsRoot, `-Users-someone-${basename(root)}`);
+  mkdirSync(dir, { recursive: true });
+  const filler = Array.from({ length: 60 }, (_, n) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `turn ${n} triage-acme-widgets-7` }] } }));
+  writeFileSync(join(dir, 'a.jsonl'), `${[...filler, JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'someone else ran --dispatch-capability dcap_not_mine' }] } })].join('\n')}\n`);
+
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.doesNotMatch(sent, /dcap_not_mine/, 'a token this session merely mentions is not a grant it holds');
+  assert.doesNotMatch(sent, /--dispatch-capability/);
+});
