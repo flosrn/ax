@@ -95,6 +95,8 @@ test('a Linear ticket reduces to the fields a brief needs, and never to its body
     id: 'GAP-353',
     title: 'Loading states for the wizard',
     url: 'https://linear.app/g/issue/GAP-353',
+    // Linear answers no handle: its url is the only address a brief can print.
+    handle: '',
     state: 'In Progress',
     bodyLength: ISSUE.description.length,
     // A connection, which is the shape a GraphQL tracker answers.
@@ -134,6 +136,8 @@ test('a GitHub issue answers the same shape, from the top level of its own JSON'
     id: '#1234',
     title: 'Wheel hangs',
     url: 'https://github.com/o/r/issues/1234',
+    // The address a child can act on; the url above is for the coordinator's receipt.
+    handle: 'issue://1234',
     state: 'OPEN',
     bodyLength: 5,
     labels: ['domain:database', 'domain:security'],
@@ -183,7 +187,12 @@ test('the taught read command shows the comment thread, and is never `--full`', 
   assert.match(linear, /list_comments/);
   assert.match(linear, /orca linear issue GAP-353 --json/);
 
-  assert.equal(readCommand({ kind: 'github', ref: '1234' }), '`gh issue view 1234 --comments`');
+  // The handle is the brief's address line (see worker-brief.test.mjs); this text
+  // explains that one read and names the fallback, without repeating the token.
+  const github = readCommand({ kind: 'github', ref: '1234' });
+  assert.match(github, /the address above is ONE read/);
+  assert.match(github, /gh issue view 1234 --comments/);
+  assert.doesNotMatch(github, /issue:\/\//, 'the handle belongs on the address line, once');
 });
 
 test('an empty ticket body refuses on the default entry point, and --task lifts the gate', () => {

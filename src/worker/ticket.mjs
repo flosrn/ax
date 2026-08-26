@@ -175,23 +175,49 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     };
   }
 
-  return { ok: true, id: ident, title, url, state, bodyLength: String(body).trim().length, labels };
+  // `handle` is the address a CHILD can act on, and only GitHub has one: the
+  // harness resolves `issue://<n>` as a read, where `https://…/issues/<n>` is a
+  // link an agent cannot follow. Linear answers none, so its brief keeps the url.
+  // Both surfaces stay honest: `url` remains what the coordinator's receipt
+  // prints for a human.
+  return { ok: true, id: ident, title, url, handle: kind === 'github' ? `issue://${ref}` : '', state, bodyLength: String(body).trim().length, labels };
 }
 
 /**
  * How the child is told to read its own ticket.
+ *
+ * BOTH BRANCHES PUT THE THREAD-CARRYING READ FIRST, for one reason: the comments
+ * are part of the instruction, not something left to the child's judgement. On a
+ * ticket that has been triaged, the rulings, the Agent Brief and every coordinator
+ * amendment live in the thread and nowhere else.
  *
  * `orca linear issue <KEY> --full` was measured broken on this fleet
  * (GAP-372/356/376): it prints a ~350-byte header and reports `Comments: 0` on
  * issues that HAVE comments — so a child obeying it reads a truncated ticket,
  * never sees the thread where half the decisions live, and its own command
  * exits 0. Five dispatches carried that flag before anyone noticed. The MCP read
- * comes first because the comments are part of the instruction rather than left
- * to the child's judgement; the CLI `--json` form is the fallback for a host
+ * comes first for that reason; the CLI `--json` form is the fallback for a host
  * with no MCP, and it is the only Linear command line here a child can paste.
+ *
+ * The GitHub branch said `gh issue view <n> --comments` until 2026-08-26, which
+ * was a shell call where an internal URL does the same job — and it made THIS
+ * package speak two conventions: `src/triage/spec.mjs` has always dispatched on
+ * `issue://<n>`, five times over. `issue://<n>` is one `read` returning the body
+ * and the whole thread (verified that day on a live triaged issue: four comments,
+ * both coordinator amendments, one call), so it is what a child is told first.
+ * The `gh` line stays as the fallback for a session whose harness has no such
+ * scheme — it is not a second convention, it is the same read without the URL.
  */
 export function readCommand({ kind = 'linear', ref } = {}) {
-  if (kind === 'github') return `\`gh issue view ${ref} --comments\``;
+  if (kind === 'github') {
+    // The handle itself is the brief's address line, so this says only what that
+    // one read gets you and what to do without the scheme. Repeating the token
+    // here put the same string on two consecutive lines of every brief.
+    return (
+      `the address above is ONE read — body and the whole comment thread, where the rulings and ` +
+      `any Agent Brief live. No such scheme in your session: \`gh issue view ${ref} --comments\`.`
+    );
+  }
   return (
     `Linear MCP \`get_issue\` on ${ref}, then \`list_comments\` on the same issue — the thread ` +
     `carries decisions the description does not. No MCP: ` +

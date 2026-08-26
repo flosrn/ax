@@ -39,7 +39,14 @@ const OPERATOR_HEADING = 'OPERATOR BRIEF';
  *
  * Each line is a proposition an incident proved (F-027):
  *  - the extra worktree: a child that creates its own leaves the provisioned one
- *    unused and the coordinator watching a tree nothing happens in.
+ *    unused and the coordinator watching a tree nothing happens in. The same
+ *    bullet names `.agent/worktree-context.local.md`, because a tree that is
+ *    already prepared is only useful to a child that knows how it was prepared:
+ *    `ax worker launch` REFUSES to dispatch into a tree without that file — "the
+ *    child would have no URL to test against" (./placement.mjs) — and until
+ *    2026-08-26 never named it, so the one artifact written to answer "which
+ *    port, which database, which branch" was read by the coordinator and not by
+ *    its reader.
  *  - the shipping tail: measured 2026-08-14, a child reported while its e2e was
  *    still queued and the coordinator spent the wait. The wait is the child's.
  *  - never merging: the merge is the one decision a child cannot see the whole
@@ -53,7 +60,13 @@ const OPERATOR_HEADING = 'OPERATOR BRIEF';
  *  - verification: what was exercised, not a project-wide sweep run for show.
  */
 const BULLETS = [
-  '- The worktree you were started in is yours and is already bootstrapped. Do not create another.',
+  [
+    '- The worktree you were started in is yours and is already bootstrapped. Do not create another.',
+    '  It describes itself in `.agent/worktree-context.local.md` — its branch, its OWN dev port and',
+    '  the state of its database. Read that file before you start a server, open a page or touch the',
+    '  database: a hardcoded `localhost:3000` reaches another branch\u2019s app, and the wrong database',
+    '  command rewrites what every other session is reading.',
+  ].join('\n'),
   [
     '- **You own the shipping tail; the coordinator owns only the merge.** Commit, push and open the',
     '  pull request yourself, then take CI to a DECISION before you report. Measured 2026-08-14: a',
@@ -168,6 +181,14 @@ function markerLine(model, instruction) {
  *
  * `ticket: null` says the launch HAS no ticket, which renders differently from a
  * ticket that could not be read.
+ *
+ * THE ADDRESS LINE IS `ticket.handle` WHEN THE TRACKER GIVES ONE, and the url
+ * only when it does not. A child cannot act on `https://…/issues/61` — an https
+ * link is not a read — so printing it beside a handle that IS one puts two
+ * representations of the same ticket in front of the one reader who must pick the
+ * right one. The clickable url is not lost: it stays on the coordinator's own
+ * receipt (`ticket <url> (<state>)` in ./verify.mjs), where a human reads it.
+ * Linear answers no handle, so there the url is the only address there is.
  */
 export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '' } = {}) {
   // `ticket: null` is not "a ticket I could not read" — it is a launch that has
@@ -178,7 +199,7 @@ export function renderBrief({ model, instruction, ticket = {}, readCommand, run,
   // heading falls back to the name the coordinator dispatched.
   const tracked = ticket !== null;
   const head = tracked
-    ? [`# ${ticket.title ?? ''}`, `${ticket.url ?? ''}`, '', `Read the ticket before you plan: ${readCommand ?? ''}`, 'It is canonical; this file carries only the pilot contract.']
+    ? [`# ${ticket.title ?? ''}`, `${ticket.handle || ticket.url || ''}`, '', `Read the ticket before you plan: ${readCommand ?? ''}`, 'It is canonical; this file carries only the pilot contract.']
     : [`# ${name}`, '', 'This launch carries NO ticket: what follows is the whole definition of the work.'];
 
   const lines = [

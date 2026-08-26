@@ -29,6 +29,19 @@ test('the worker role, model marker and instruction are on ONE first line', () =
   assert.equal(first, '[omp role=worker model=@task] /entry T-353');
 });
 
+test('the address line is the handle the child ACTS on, not a link it cannot read', () => {
+  // A `https://…/issues/61` line is a second representation of the ticket, and it
+  // is the one the child must NOT use: an https URL is not a read. When the
+  // tracker answers with a handle the harness resolves, that handle is the line.
+  // The clickable url stays on the coordinator's own receipt, where a human reads it.
+  const text = brief({ ticket: { ...TICKET, handle: 'issue://61' } });
+  assert.match(text, /^issue:\/\/61$/m);
+  assert.doesNotMatch(text, /https:\/\/tracker\.test/);
+
+  // No handle — a Linear ticket — keeps the url, which is then the only address there is.
+  assert.match(brief(), /^https:\/\/tracker\.test\/issue\/T-353$/m);
+});
+
 test('a launch with NO ticket never tells the child to read one', () => {
   // `--name` dispatches work no tracker owns. The tracked shape says "read the
   // ticket, it is canonical" — rendered against nothing, that is the 2026-08-01
@@ -157,6 +170,13 @@ test('MECHANICS names no skill, no repository and no ticket', () => {
   }
   // One bullet per proposition, and no eighth bullet nobody asked for.
   assert.equal(MECHANICS.split('\n').filter(line => line.startsWith('- ')).length, propositions.length);
+  // The worktree describes itself, and until 2026-08-26 nothing told the child so.
+  // `ax worker launch` REFUSES to dispatch into a tree without this file — "the
+  // child would have no URL to test against" — and then never named it, so the
+  // one artifact written to answer "which port, which database, which branch"
+  // was read by the coordinator and not by its reader. It rides bullet 1: same
+  // proposition, the tree you were given is prepared and it says how.
+  assert.match(MECHANICS, /\.agent\/worktree-context\.local\.md/);
 });
 
 test('the remote addendum appears only when the child runs on another host', () => {
