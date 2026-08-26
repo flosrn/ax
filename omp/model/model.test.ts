@@ -1151,7 +1151,7 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
    * `import.meta.url` and cannot resolve elsewhere, not because a spread is
    * harder to pattern-match.
    */
-  const RESOLVERS: Record<string, true> = { ORCA: true, 'orcaBin()': true, '...axArgv()': true, '...AX': true };
+  const RESOLVERS: Record<string, true> = { 'orcaBin()': true, '...axArgv()': true };
 
   /** Executables these files legitimately run that are not a resolved binary. */
   const PLAIN_TOOLS: Record<string, true> = {
@@ -1171,7 +1171,7 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
   const SPAWNERS: { path: string; imports: string }[] = [
     {
       path: '../peer/index.ts',
-      imports: "import { resolveOrcaBin } from '../model/self.ts'",
+      imports: "import { orca, orcaBin, orcaRaw, runOrca } from './orca.ts'",
     },
     {
       path: '../peer/orca.ts',
@@ -1248,7 +1248,7 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
       (argv) => argv[0] === "'which'",
     );
     expect(probes.length).toBeGreaterThan(0);
-    for (const probe of probes) expect(probe[1]).toBe('ORCA');
+    for (const probe of probes) expect(probe[1]).toBe('orcaBin()');
   });
 });
 

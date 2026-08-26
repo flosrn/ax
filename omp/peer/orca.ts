@@ -22,8 +22,15 @@ import { resolveOrcaBin } from '../model/self.ts';
  * and the addressing/lineage suites point it at a fresh fake per case — a bin
  * frozen at load would outlive every one of them. An env-less resolution costs
  * a few stats against a spawn that costs hundreds of ms.
+ *
+ * Exported for the two sites that need the path rather than a call: the
+ * `which` guard in `index.ts`'s session_start (the VPS case — plain `orca` is
+ * the GNOME screen reader there and the CLI is `orca-ide`; a scheduled job
+ * once ran 246 times reading nothing while reporting the exact shape of a
+ * healthy report, most of what D-007 was waiting on) and the receiver's
+ * construction.
  */
-const orcaBin = (): string => resolveOrcaBin().bin;
+export const orcaBin = (): string => resolveOrcaBin().bin;
 
 // ---------------------------------------------------------------- orca I/O --
 
@@ -47,11 +54,16 @@ export function orca(args: string[], timeoutMs = 15_000): unknown {
   }
 }
 
-/** `orca … --json` but the raw text too, because some failures are only in stderr. */
+/**
+ * `orca … --json` but the raw output too, because some failures are only in
+ * stderr. `text` merges the two streams for a human diagnostic; `stdout` is
+ * kept apart because it alone decides what a runner CLASSIFIES — stderr chatter
+ * beside an empty answer must not turn "produced nothing" into "unparseable".
+ */
 export function orcaRaw(
   args: string[],
   timeoutMs = 20_000,
-): { parsed: unknown; text: string } {
+): { parsed: unknown; text: string; stdout: string } {
   try {
     const p = Bun.spawnSync([orcaBin(), ...args], {
       cwd: process.cwd(),
@@ -59,16 +71,27 @@ export function orcaRaw(
       stderr: 'pipe',
       timeout: timeoutMs,
     });
-    const text =
-      new TextDecoder().decode(p.stdout) + new TextDecoder().decode(p.stderr);
+    const stdout = new TextDecoder().decode(p.stdout);
+    const text = stdout + new TextDecoder().decode(p.stderr);
     let parsed: unknown = null;
     try {
-      parsed = JSON.parse(new TextDecoder().decode(p.stdout));
+      parsed = JSON.parse(stdout);
     } catch {}
-    return { parsed, text };
+    return { parsed, text, stdout: stdout.trim() };
   } catch {
-    return { parsed: null, text: '' };
+    return { parsed: null, text: '', stdout: '' };
   }
+}
+
+/**
+ * `orca … --json` in the injected-runner shape `route.ts` asks for: a parsed
+ * value, or a NAMED reason — an empty answer and an unparseable one are
+ * different failures, and the route resolver reports the one it saw.
+ */
+export function runOrca(args: string[]): { value?: unknown; reason?: string } {
+  const { parsed, stdout } = orcaRaw(args, 15_000);
+  if (stdout === '') return { reason: `${args.join(' ')} produced nothing` };
+  return parsed === null ? { reason: `${args.join(' ')} was unparseable` } : { value: parsed };
 }
 
 export function prop(o: unknown, k: string): unknown {
