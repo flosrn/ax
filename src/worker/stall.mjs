@@ -134,6 +134,12 @@ function worktreeFor(run, handle, executionEnv) {
  * the silence alert stays the only net in that configuration. A watcher that
  * reported a death it had not measured would be worse than a late one: it would
  * send a coordinator to bury a worker that is still building.
+ *
+ * The shared verdict (`paneVerdict`, ./pane.mjs) can additionally prove a LOCAL
+ * pane dead when the receipt's `hostIds` names `local` — the exception release
+ * paid for. Adopting it here would change the paragraph above: that is a
+ * contract change needing its own red test, never a by-product of a
+ * consolidation.
  */
 function paneGone(run, handle, executionEnv) {
   const inventory = terminalInventory(run, { environment: executionEnv });

@@ -20,6 +20,11 @@
 // firing on the same merge, and a gate that stops at the first teaches the
 // caller to fix one thing and come back.
 //
+// The grounds themselves live in ./pr-grounds.mjs, one function per ground
+// (the three git-backed ones share one, standing on one shared measurement).
+// This file resolves the head SHA once, runs them in order, and owns the
+// verdict, the printing and the merge.
+//
 // Identifiers and flags only: no free text ever reaches this command line. The
 // PR body and the review threads are read from the API, never interpolated into
 // argv (D-030's carve-out).
@@ -51,45 +56,11 @@ import { join } from 'node:path';
 
 import { CONFIG_FILE, repoPaths } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
-import { defaultExec } from './worker/release.mjs';
+import { defaultExec } from './exec.mjs';
+import { repoSlug } from './gh.mjs';
+import { ciGround, clean, commitsGround, firstLine, gitGrounds, keywordGround, must, payload, succeeded, threadsGround } from './pr-grounds.mjs';
 
 const USAGE = 'ax pr gate --pr <n> [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
-
-/** A closing verb GitHub acts on, in the documented variants. */
-const KEYWORDS = 'clos(?:e|es|ed)|fix(?:|es|ed)|resolv(?:e|es|ed)';
-
-/** What an issue reference is allowed to look like after one of those verbs. */
-const TARGET = '(?:#\\d+|[\\w.-]+/[\\w.-]+#\\d+|https://github\\.com/[\\w.-]+/[\\w.-]+/issues/\\d+)';
-
-/**
- * A closing verb in ANY language, English included. This is what says the author
- * meant to close something; `KEYWORDS` above is what GitHub acts on. The gap
- * between the two sets is the whole of ground 7.
- */
-const INTENT = `${KEYWORDS}|ferme|fermer|clo[tû]|clôt|r[ée]sout|r[ée]soud|corrige`;
-
-/**
- * Review threads, paginated. The query asks for NO `body` field anywhere: a
- * review body is contributor-authored text, and reproducing it into this
- * decision channel would put untrusted prose where a caller reads instructions
- * (R11, KTD7). A thread is named — id, author, path, url — never quoted.
- *
- * Resolution state comes from GraphQL because the REST review-comments payload
- * does not carry it: 26 keys, none of them a resolution (KTD6).
- */
-const THREAD_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$cursor:String){
-  repository(owner:$owner,name:$name){
-    pullRequest(number:$pr){
-      reviewThreads(first:50,after:$cursor){
-        pageInfo{hasNextPage endCursor}
-        nodes{id isResolved isOutdated comments(first:1){nodes{author{login} path url}}}
-      }
-    }
-  }
-}`;
-
-/** Defensive bound, not a measurement: stop rather than loop forever. */
-const MAX_THREAD_PAGES = 50;
 
 /**
  * The flags that acknowledge a detector's list, declared once so the parser and
@@ -104,49 +75,6 @@ const MAX_THREAD_PAGES = 50;
  * locality was right; the printed command was the defect.
  */
 const ACK_FLAGS = ['--ack-body'];
-
-const firstLine = text => String(text ?? '').split('\n')[0].trim();
-
-const succeeded = out => !out.error && out.status === 0;
-
-/**
- * One printable, bounded line out of foreign text — a thread id, a login, a
- * path, a url. Same reason as the missing `body` field one door up: what comes
- * back from the API is printed as a label, never as prose.
- */
-const clean = value => {
-  const text = String(value ?? '').replace(/[\p{C}\p{Zl}\p{Zp}]/gu, '');
-  return text.slice(0, 200) || '-';
-};
-
-/**
- * A named key, never an `or` fallback on a container: an absent container must
- * raise, not quietly become an empty one that satisfies every test (F-028).
- */
-const must = (object, key, where) => {
-  const value = object === null || typeof object !== 'object' ? undefined : object[key];
-  if (value === undefined || value === null) throw new Error(`${where}: '${key}' is absent from the payload`);
-  return value;
-};
-
-/**
- * A `gh` call that answered with parseable JSON, or THE REASON IT DID NOT.
- *
- * The reason is carried out of here rather than collapsed into a boolean, and
- * the two failures are kept apart: a call that did not run, and a call that ran
- * and answered something else. F-004 records the one time a `jq` failure inside
- * a pipe consumed the only diagnostic that mattered — the gate reported that it
- * could not establish something and could not say why, which is an unknown a
- * caller cannot act on.
- */
-function payload(out) {
-  if (!succeeded(out)) return { ok: false, reason: `failed — ${firstLine(out.stderr) || `exit ${out.status}`}` };
-  try {
-    return { ok: true, value: JSON.parse(String(out.stdout ?? '')) };
-  } catch (error) {
-    return { ok: false, reason: `answered something that is not JSON (${error.message})` };
-  }
-}
 
 /**
  * The `prGate` key alone, read from the checkout's own `ax.config.json`.
@@ -310,7 +238,7 @@ export function gate(
   }
 
   const run = args => gh(args, paths.root);
-  const own = resolveRepo(run);
+  const own = repoSlug(run);
   if (own === '') {
     return cannot("could not resolve this checkout's repository", 'gh auth status   # then re-run from a checkout with a GitHub remote');
   }
@@ -361,13 +289,6 @@ export function gate(
   const mergeState = typeof receipt.value.mergeStateStatus === 'string' && receipt.value.mergeStateStatus !== '' ? receipt.value.mergeStateStatus : '-';
   const body = typeof receipt.value.body === 'string' ? receipt.value.body : '';
 
-  const notes = [];
-  const unknowns = [];
-  const refusals = [];
-  const addNote = message => notes.push({ message });
-  const unknown = (message, repair) => unknowns.push({ message, repair });
-  const refuse = (message, repair) => refusals.push({ message, repair });
-
   section(`pr gate — ${slug}#${pr}`);
   note(`head SHA         ${sha}  (resolved once; every ground below uses this value)`);
   note(`branch / base    ${headBranch} -> ${baseBranch}`);
@@ -376,354 +297,22 @@ export function gate(
   note(`mergeStateStatus ${mergeState}  (context only — never a ground here, F-033.2)`);
   note(`expectation      ${declared.mode}: ${declared.expected.join(', ')}`);
 
-  // ── Ground 1. The declared checks, decided and passing on that exact SHA ────
-  // Never a count comparison between two PRs (F-014, above).
-  let ciDecided = true;
-  const checkRuns = payload(run(['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`]));
-  if (!checkRuns.ok) {
-    ciDecided = false;
-    unknown(
-      `checks: 'gh api repos/${slug}/commits/${sha}/check-runs' ${checkRuns.reason}; CI state unread`,
-      `gh api repos/${slug}/commits/${sha}/check-runs`,
-    );
-  } else {
-    let runs = null;
-    try {
-      runs = must(checkRuns.value, 'check_runs', 'the check-runs payload');
-      if (!Array.isArray(runs)) throw new Error('the check-runs payload: check_runs is not a list');
-    } catch (error) {
-      ciDecided = false;
-      unknown(`checks: ${error.message}; CI state unread`, `gh api repos/${slug}/commits/${sha}/check-runs`);
-      runs = null;
-    }
-    if (runs !== null) {
-      addNote(`checks: ${runs.length} check-run(s) reported on ${sha.slice(0, 12)}`);
-      for (const expected of declared.expected) {
-        const rows = runs.filter(row => row?.name === expected);
-        if (rows.length === 0) {
-          // A check that never ran is not a check that passed. This is the trap
-          // the gate exists for: when a guard job fails early, everything
-          // downstream never executes.
-          refuse(
-            `checks: expected ${declared.mode} check '${clean(expected)}' has NO run on ${sha.slice(0, 12)}`,
-            `gh api repos/${slug}/commits/${sha}/check-runs --jq '.check_runs[].name'   # is the name still spelled this way?`,
-          );
-          continue;
-        }
-        const pending = rows.find(row => row?.status !== 'completed');
-        if (pending) {
-          ciDecided = false;
-          unknown(`checks: '${clean(expected)}' is ${clean(pending.status)} on ${sha.slice(0, 12)} — not decided`, 'gh run watch   # then re-run this gate');
-          continue;
-        }
-        for (const row of rows) {
-          // `neutral` is neither a success nor a failure, and the old dashboard
-          // did not see it at all (F-031). Here it is a refusal like any other
-          // non-success.
-          if (row?.conclusion !== 'success') {
-            refuse(
-              `checks: '${clean(expected)}' concluded ${clean(row?.conclusion)} on ${sha.slice(0, 12)}`,
-              `gh pr checks ${pr} --repo ${slug}   # then fix the job, or re-run it`,
-            );
-          }
-        }
-      }
-    }
-  }
-
-  // ── Ground 2. Review threads, and ONLY after CI is decided ─────────────────
-  // The reviewer that posted the P1 arrives asynchronously, unrelated to the end
-  // of CI. On #1847, read while the last E2E batch was still running, the thread
-  // was empty — and that reading was worth nothing. An empty thread observed
-  // before CI is decided is not an observation (F-031). So no GraphQL call is
-  // issued at all here: a read whose answer cannot be trusted must not look like
-  // one that can.
-  if (!ciDecided) {
-    unknown(`threads: CI is not decided on ${sha} — a thread read now is no observation at all`, `${invocation()}   # once CI has finished`);
-  } else {
-    let cursor = null;
-    for (let page = 1; page <= MAX_THREAD_PAGES; page += 1) {
-      const args = ['api', 'graphql', '-f', `query=${THREAD_QUERY}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `pr=${pr}`];
-      if (cursor !== null) args.push('-f', `cursor=${cursor}`);
-      const answered = payload(run(args));
-      if (!answered.ok) {
-        unknown(`threads: the GraphQL reviewThreads query ${answered.reason}; resolution state unread`, 'gh auth status   # then re-run this gate');
-        break;
-      }
-      let threads;
-      try {
-        const data = must(answered.value, 'data', 'the reviewThreads payload');
-        const repository = must(data, 'repository', 'data');
-        const pullRequest = must(repository, 'pullRequest', 'repository');
-        threads = must(pullRequest, 'reviewThreads', 'pullRequest');
-      } catch (error) {
-        unknown(`threads: ${error.message}; resolution state unread`, 'gh auth status   # then re-run this gate');
-        break;
-      }
-      const nodes = Array.isArray(threads.nodes) ? threads.nodes : [];
-      let unresolved = 0;
-      for (const thread of nodes) {
-        if (thread?.isResolved === true) continue;
-        unresolved += 1;
-        const first = thread?.comments?.nodes?.[0] ?? {};
-        refuse(
-          `threads: unresolved thread ${clean(thread?.id)} by ${clean(first.author?.login)} on ${clean(first.path)} — ${clean(first.url)}`,
-          `open ${clean(first.url)}   # resolve it there, then re-run this gate`,
-        );
-      }
-      addNote(`threads: page ${page} — ${nodes.length} thread(s), ${unresolved} unresolved`);
-      const info = threads.pageInfo ?? {};
-      if (info.hasNextPage !== true) break;
-      cursor = info.endCursor ?? null;
-      if (cursor === null) {
-        unknown('threads: a page claims a next one and names no cursor, so the remaining threads are unread', 'gh auth status   # then re-run this gate');
-        break;
-      }
-      if (page === MAX_THREAD_PAGES) unknown(`threads: pagination exceeded ${MAX_THREAD_PAGES} pages; stopped rather than looping`);
-    }
-  }
-
-  // ── Grounds 3, 4 and 5 are git-backed and read this checkout ───────────────
+  // ── The grounds, in execution order. Each returns its account, and nothing
+  // short-circuits (F-033 recorded two grounds firing on the same merge). The
+  // one cross-ground fact, ciDecided, travels by signature: threads are read
+  // ONLY after CI is decided (F-031).
   const residualDir = typeof loaded.prGate?.residualFindings === 'string' ? loaded.prGate.residualFindings : '';
-  // Declared, never assumed: absent means this ground is NOT RUN, and the gate
-  // says so instead of passing it silently.
-  if (residualDir === '') {
-    addNote('residual findings: NOT RUN — this checkout declares no prGate.residualFindings, and an unrun ground is not a passed one');
-  }
-  const residualUnknown = (message, repair) => {
-    if (residualDir !== '') unknown(message, repair);
-  };
-
-  const gitRun = args => git(args, paths.root);
-  if (!succeeded(gitRun(['rev-parse', '--git-dir']))) {
-    unknown('staleness: not inside a git checkout, so ancestry against the base is unreadable', 'cd into the checkout that holds this branch, then re-run');
-    residualUnknown('residual findings: not inside a git checkout', 'cd into the checkout that holds this branch, then re-run');
-    addNote('landed-by-content: not decided — not inside a git checkout');
-  } else {
-    // The refs are REFRESHED before they are compared. Measured 2026-08-14 on
-    // #1939: the branch had just been updated with its base, the API head SHA
-    // proved it, and this ground refused anyway because the local `origin/<head>`
-    // predated the update. The symmetric case is the dangerous one — a stale
-    // local `origin/<base>` makes a branch that HAS fallen behind read as
-    // current, which is this gate passing the very thing it exists to stop. So a
-    // fetch that fails is an inability to establish, never a silent comparison
-    // against whatever the disk happens to hold.
-    //
-    // No `origin` at all is a different situation, not a failure: a repository
-    // built with `git init` has only local branches, and comparing those is all
-    // anyone can mean there. It is said out loud rather than assumed.
-    let fetchState = 'local-only';
-    if (succeeded(gitRun(['remote', 'get-url', 'origin']))) {
-      const fetched = gitRun(['fetch', '--quiet', 'origin', baseBranch, headBranch]);
-      fetchState = succeeded(fetched) ? 'ok' : 'failed';
-      if (fetchState === 'failed') {
-        unknown(
-          `staleness: could not fetch '${baseBranch}' and '${headBranch}' from origin (${clean(firstLine(fetched.stderr))}), so ancestry would be read from refs that may predate this head`,
-          `git fetch origin ${baseBranch} ${headBranch}`,
-        );
-        residualUnknown(
-          "residual findings: the refs could not be refreshed, so this branch's files cannot be read at their current state",
-          `git fetch origin ${baseBranch} ${headBranch}`,
-        );
-        addNote('landed-by-content: not decided — the refs could not be refreshed');
-      }
-    }
-
-    const resolveRef = branch => {
-      for (const candidate of [`origin/${branch}`, branch]) {
-        if (succeeded(gitRun(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]))) return candidate;
-      }
-      return '';
-    };
-    const baseRef = fetchState === 'failed' ? '' : resolveRef(baseBranch);
-    const headRef = fetchState === 'failed' ? '' : resolveRef(headBranch);
-
-    if (fetchState === 'failed') {
-      // Already reported above; the comparison is deliberately not attempted.
-    } else if (baseRef === '' || headRef === '') {
-      unknown(`staleness: '${baseBranch}' or '${headBranch}' is absent from this checkout`, `git fetch origin ${baseBranch} ${headBranch}`);
-      residualUnknown(`residual findings: '${headBranch}' is absent from this checkout`, `git fetch origin ${headBranch}`);
-      addNote('landed-by-content: not decided — a ref is missing from this checkout');
-    } else {
-      if (fetchState === 'local-only') addNote("staleness: no 'origin' remote in this checkout, so ancestry is read from local refs");
-
-      // ── Ground 3. Staleness by ancestry, never by mergeStateStatus ──────────
-      // `BEHIND` only appears where branch protection demands an up-to-date
-      // branch, so on a repository that does not it never appears and `CLEAN`
-      // outlives a base that has advanced (F-033.2).
-      if (succeeded(gitRun(['merge-base', '--is-ancestor', baseRef, headRef]))) {
-        addNote(`staleness: ${headRef} carries ${baseRef} — the branch is current`);
-      } else {
-        refuse(
-          `staleness: ${baseRef} is not an ancestor of ${headRef} — the branch is behind its base (mergeStateStatus reads ${mergeState}, which is not the question)`,
-          `git fetch origin ${baseBranch} && git merge origin/${baseBranch}   # then push`,
-        );
-      }
-
-      // ── Ground 4. Landed by CONTENT, for the post-merge cleanup question ────
-      // A squash creates a new commit, so ancestry answers "not merged" for
-      // every branch on a squashing repository, including the one just merged
-      // (F-033.1). REPORTED, NEVER A REFUSAL: this ground answers the
-      // worktree-may-go question, not the mergeability one.
-      const diff = gitRun(['diff', '--name-only', baseRef, headRef]);
-      if (succeeded(diff)) {
-        const ancestry = succeeded(gitRun(['merge-base', '--is-ancestor', headRef, baseRef])) ? 'yes' : 'no';
-        const differing = String(diff.stdout ?? '')
-          .split('\n')
-          .filter(line => line !== '');
-        if (differing.length > 0) {
-          addNote(`landed-by-content: NO — ${differing.length} file(s) still differ from ${baseRef} (ancestry says ${ancestry})`);
-        } else {
-          addNote(
-            `landed-by-content: YES — content equal to ${baseRef}, so the work landed and the worktree may go (ancestry says ${ancestry}; after a squash it always says no)`,
-          );
-        }
-      } else {
-        addNote("landed-by-content: not decided — 'git diff' failed");
-      }
-
-      // ── Ground 5. A residual-findings file THIS BRANCH wrote, then superseded
-      // with its own later commits (F-009). Measured against the merge base,
-      // never against the branch's whole history: `git log <ref> -- <dir>` walks
-      // the base too, so a branch that filed no residuals inherits the base's
-      // last write to the directory and every one of its own commits then reads
-      // as "landed after it". That false positive was the gate's first real-use
-      // finding, on a PR that had filed nothing and had ticketed everything
-      // (F-039).
-      if (residualDir !== '') {
-        const touched = gitRun(['diff', '--name-only', `${baseRef}...${headRef}`, '--', residualDir]);
-        if (!succeeded(touched)) {
-          unknown(`residual findings: 'git diff' could not answer against ${baseRef}`, `git diff --name-only ${baseRef}...${headRef} -- ${residualDir}`);
-        } else if (String(touched.stdout ?? '').trim() === '') {
-          // F-011: the two readings of an untouched directory are not separable
-          // by any git measurement, so this ground names both instead of picking
-          // one.
-          addNote(
-            `residual findings: [DETECTOR] this branch wrote nothing under ${residualDir}. That is either 'every finding was ticketed' or 'nothing was traced', and no git measurement separates them — read the PR's linked issues (F-011)`,
-          );
-        } else {
-          const last = gitRun(['log', '-1', '--format=%H', `${baseRef}..${headRef}`, '--', residualDir]);
-          const resCommit = succeeded(last) ? String(last.stdout ?? '').trim() : '';
-          if (resCommit === '') {
-            unknown(
-              `residual findings: ${residualDir} differs from ${baseRef} but no commit on this branch touched it`,
-              `git log ${baseRef}..${headRef} -- ${residualDir}`,
-            );
-          } else {
-            const later = gitRun(['rev-list', '--count', `${resCommit}..${headRef}`]);
-            const count = succeeded(later) ? String(later.stdout ?? '').trim() : '';
-            if (!/^[0-9]+$/.test(count)) {
-              unknown("residual findings: 'git rev-list --count' could not answer", `git rev-list --count ${resCommit}..${headRef}`);
-            } else if (Number(count) > 0) {
-              refuse(
-                `residual findings: this branch wrote ${residualDir} at ${resCommit.slice(0, 12)} and ${count} of its own commit(s) landed after it`,
-                `git log ${baseRef}..${headRef}   # re-read the file against these commits, then commit it again`,
-              );
-            } else {
-              addNote(`residual findings: written by this branch at ${resCommit.slice(0, 12)}, the newest commit on ${headRef}`);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // ── Ground 6. The commits made since the PR opened ─────────────────────────
-  // A DETECTOR: a PR body's staleness is not mechanically decidable, so the gate
-  // lists the commits and refuses until the caller acknowledges the list with
-  // `--ack-body` (KTD9).
-  const commits = payload(run(['api', `repos/${slug}/pulls/${pr}/commits?per_page=100`]));
-  if (!commits.ok) {
-    unknown(`commits since open: 'gh api repos/${slug}/pulls/${pr}/commits' ${commits.reason}`, `gh api repos/${slug}/pulls/${pr}/commits`);
-  } else {
-    try {
-      const rows = commits.value;
-      if (!Array.isArray(rows)) throw new Error('the PR commits payload is not a list');
-      const late = [];
-      for (const entry of rows) {
-        // Named keys throughout (F-028).
-        const when = Date.parse(must(must(must(entry, 'commit', 'a PR commit'), 'committer', 'commit'), 'date', 'committer'));
-        if (Number.isNaN(when)) throw new Error('a PR commit carries a committer date that is not a date');
-        if (when > openedAt) late.push(String(must(entry, 'sha', 'a PR commit')).slice(0, 12));
-      }
-      if (late.length === 0) addNote('commits since open: none — the body describes every commit on the branch');
-      else if (ackBody) addNote(`commits since open: ${late.length} acknowledged via --ack-body (${late.join(' ')})`);
-      else {
-        refuse(
-          `commits since open [DETECTOR]: ${late.length} commit(s) landed after the PR was opened (${late.join(' ')})`,
-          `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`,
-        );
-      }
-    } catch (error) {
-      unknown(`commits since open: ${error.message}`, `gh api repos/${slug}/pulls/${pr}/commits`);
-    }
-  }
-
-  // ── Ground 7. A closing keyword GitHub actually recognises ─────────────────
-  // `Ferme #N` and `Clot #N` close nothing, and a view that treats open issues
-  // as its queue then re-dispatches delivered work. F-018 exactly: PR #1831
-  // opened on `Ferme #1786`, merged, and #1786 stayed OPEN and `ready-for-agent`.
-  // Only the matched phrase is echoed, never the surrounding prose.
-  const tracker = loaded.prGate?.tracker;
-  const matched = new RegExp(`\\b(?:${KEYWORDS})\\b\\s*:?\\s+${TARGET}`, 'i').exec(body);
-  const intended = new RegExp(`\\b(?:${INTENT})\\b\\s*:?\\s+${TARGET}`, 'i').exec(body);
-  if (matched) {
-    addNote(`closing keyword: '${clean(matched[0].trim())}' — GitHub will close the issue`);
-  } else if (intended) {
-    refuse(
-      `closing keyword: '${clean(intended[0].trim())}' closes nothing — GitHub acts only on Closes / Fixes / Resolves and their documented variants (F-018)`,
-      `gh pr edit ${pr} --repo ${slug}   # rewrite it as "Closes #N"`,
-    );
-  } else {
-    // No GitHub closing construct. Before calling that "no ticket", ask whether
-    // this repository even tracks on GitHub: measured 2026-08-16, a project with
-    // GitHub issues DISABLED that tracks in Linear had this line printed on
-    // three PRs that each carried `Fixes GAP-3xx`. Saying "expresses no intent
-    // to" there is not a detector being careful, it is a false statement — and
-    // the actionable fact is the opposite one: the ref is real, and GitHub will
-    // still close nothing.
-    const declaredTracker =
-      tracker && typeof tracker.name === 'string' && typeof tracker.pattern === 'string' && tracker.name.trim() !== '' && tracker.pattern.trim() !== ''
-        ? tracker
-        : null;
-    let ref = null;
-    if (declaredTracker) {
-      try {
-        // The ref that FOLLOWS a closing verb, before any other mention. A body
-        // legitimately cites sibling tickets for context — measured on gapila
-        // #1959, whose first tracker match was `GAP-377` (background) while the
-        // body's actual subject, ten paragraphs down, was `Fixes GAP-379`.
-        // Naming the wrong ticket in a merge verdict is the same species this
-        // key was added to remove, one field over.
-        const afterVerb = new RegExp(`\\b(?:${INTENT})\\b\\s*:?\\s+(${declaredTracker.pattern})`, 'i').exec(body);
-        ref = afterVerb ? new RegExp(declaredTracker.pattern).exec(afterVerb[0]) : new RegExp(declaredTracker.pattern).exec(body);
-      } catch {
-        // A `pattern` that does not compile leaves this half unanswered, and
-        // that is all it does: the tracker exists to keep the detector line
-        // below from being FALSE, never to decide a merge, so it falls back to
-        // that line instead of adding a ground of its own. The schema types
-        // `pattern` as a string and cannot know it is a valid regex, so the
-        // place that should name the typo is `ax doctor`, which validates the
-        // config — not the gate, which is answering about a merge.
-        ref = null;
-      }
-    }
-    if (ref) {
-      addNote(
-        `closing keyword: no GitHub keyword, but the body names ${clean(declaredTracker.name)} '${clean(ref[0])}' — GitHub closes nothing there, so that ticket moves by hand`,
-      );
-    } else {
-      // Genuinely nothing. That is a tooling fix, a docs pass, a chore — and
-      // refusing it would block every such PR forever. The distinction between
-      // "absent by mistake" and "absent by design" is not decidable from the
-      // body, so this ground says which of the two it found instead of guessing.
-      // Same family as the residual ground (F-039), one ground over, found the
-      // same day by running this gate on a real PR.
-      addNote(
-        'closing keyword: [DETECTOR] the body closes no issue and expresses no intent to. That is a PR with no ticket behind it, or an author who forgot — no reading of the body separates them',
-      );
-    }
-  }
+  const ci = ciGround({ run, slug, sha, declared, pr });
+  const grounds = [
+    ci,
+    threadsGround({ run, owner, name, pr, sha, ciDecided: ci.ciDecided, invocation }),
+    gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir }),
+    commitsGround({ run, slug, pr, openedAt, ackBody, invocation }),
+    keywordGround({ body, tracker: loaded.prGate?.tracker, pr, slug }),
+  ];
+  const notes = grounds.flatMap(ground => ground.notes);
+  const unknowns = grounds.flatMap(ground => ground.unknowns);
+  const refusals = grounds.flatMap(ground => ground.refusals);
 
   // ── The verdict. Every ground reported, none suppressed by another ─────────
   // A refusal outranks an inability to establish: neither merges, and a named
@@ -776,11 +365,4 @@ export function gate(
   }
   note(`MERGED — ${slug}#${pr} at ${sha} (${method})`);
   return 0;
-}
-
-/** The checkout's own repository, the way `ax triage publish` resolves it. */
-function resolveRepo(run) {
-  const out = run(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']);
-  if (!succeeded(out)) return '';
-  return firstLine(out.stdout);
 }

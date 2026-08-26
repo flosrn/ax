@@ -15,8 +15,10 @@ import { join } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
+import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 import { defaultStore, report } from '../worker/record.mjs';
-import { defaultExec, release } from '../worker/release.mjs';
+import { release } from '../worker/release.mjs';
 import { draftDirFor, passesOf, requestFor } from './draft.mjs';
 
 const USAGE = 'ax triage release --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--no-proof]';
@@ -56,11 +58,7 @@ export function triageRelease(argv = [], { exec = defaultExec, env = process.env
   const paths = repoPaths(cwd);
   if (!paths.root) return refuse('not inside a git repository — the pass this frees was dispatched from one');
 
-  let slug = repo;
-  if (slug === '') {
-    const out = exec('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], paths.root);
-    slug = out.error || out.status !== 0 ? '' : String(out.stdout ?? '').trim().split('\n')[0];
-  }
+  const slug = repo === '' ? repoSlug(args => exec('gh', args, paths.root)) : repo;
   if (slug === '') return refuse('could not resolve the current repository', `ax triage release --issue ${issue} --repo <owner>/<repo>`);
 
   const base = { job, repo: slug, issue };

@@ -27,14 +27,16 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { defaultExec } from '../worker/release.mjs';
-import { defaultStore, dispatchIndex, handlesByRequest, heldRepaired, report } from '../worker/record.mjs';
+import { defaultExec } from '../exec.mjs';
+import { defaultStore, dispatchIndex } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
-import { paneVerdict } from '../worker/ls.mjs';
 import { start as startVerb } from '../worker/start.mjs';
 import { launchProof } from '../worker/transcript.mjs';
-import { draftDirFor, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
+import { repoSlug } from '../gh.mjs';
+import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
+import { capOf, liveCount, passPlan } from './capacity.mjs';
+import { ROLE_BY_JOB, renderSpec } from './spec.mjs';
 import { READY_LABEL } from './publish.mjs';
 
 const USAGE =
@@ -42,35 +44,6 @@ const USAGE =
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
-/**
- * The session role and playbook each job's child must prove. One map feeds both
- * the spec marker and the verification below — two hardcoded strings is how a
- * marker and its proof drift apart (the same one-source rule the marker parser
- * itself follows, `omp/shared/alias.ts`).
- */
-const ROLE_BY_JOB = {
-  triage: { role: 'triage-worker', skill: 'triage' },
-  brief: { role: 'triage-worker', skill: 'triage' },
-  custom: { role: 'triage-worker', skill: 'triage' },
-  refine: { role: 'refine-worker', skill: 'refine' },
-};
-/**
- * How many live child panes this machine tolerates. Counted, never remembered
- * (F-028), and counted by PANE rather than by `worker-list` (F-048: that counter
- * answered zero while children were working).
- *
- * An unreadable value is a refusal, not a default: `Number('bad')` is NaN, and
- * `live + new > NaN` is false for every input — the fence would vanish silently,
- * on the one guard whose whole job is to fail closed. Zero is legal, and means
- * "no new session on this machine right now".
- */
-function capOf(env) {
-  const raw = env.ORCA_TRIAGE_SESSION_CAP;
-  if (raw === undefined || raw === '') return { ok: true, cap: 3 };
-  const cap = Number(raw);
-  if (!Number.isInteger(cap) || cap < 0) return { ok: false, raw: String(raw) };
-  return { ok: true, cap };
-}
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -227,7 +200,7 @@ export function dispatch(
   if (!paths.root) return refuse('not inside a git repository — a triage session reads this checkout, so it needs one');
 
   const gh = args => exec('gh', args, paths.root);
-  const slug = repo || resolveRepo(gh);
+  const slug = repo || repoSlug(gh);
   if (slug === '') return refuse('could not resolve the current repository', 'ax triage dispatch --repo <owner>/<repo>');
 
   // ── 3. the vocabulary the child is answerable to ──────────────────────────
@@ -278,96 +251,15 @@ export function dispatch(
       `ax worker ls --store ${store} # see every record, then repair or remove the unreadable one`,
     );
   }
-  const alive = new Set();
-  for (const row of index.byDispatch.values()) {
-    if (row.handle === null) continue;
-    const terminal = inventory.byHandle.get(row.handle);
-    if (terminal !== undefined && terminal.orphaned !== true) alive.add(row.handle);
-  }
-  const live = alive.size;
+  const live = liveCount({ index, inventory });
   if (inventory.omitted) note('hosts are omitted from this terminal list: a child on one of them is UNKNOWN here, not counted');
 
   // ── 4b. which PASS each issue is about to run ─────────────────────────────
-  // A plain dispatch targets the CURRENT pass — the newest one on disk — so it
-  // replays what is there (F-001) exactly as it did before passes existed. Only
-  // `--fresh` moves the number, and only behind two gates.
-  const handlesOf = handlesByRequest(index);
-
-  const plan = [];
-  for (const issue of issues) {
-    const base = { job, repo: slug, issue };
-    const existing = passesIn(store, base, '.json');
-    const latest = existing.length === 0 ? 0 : existing[existing.length - 1];
-
-    if (!freshPass) {
-      plan.push({ issue, pass: Math.max(latest, 1), previous: null });
-      continue;
-    }
-    if (latest === 0) {
-      return refuse(
-        `#${issue} has no recorded pass, so there is nothing to redo`,
-        `ax triage dispatch --issue ${issue} --job ${job}   # a first pass is an ordinary dispatch`,
-      );
-    }
-
-    // GATE 1 — F-001, and `--fresh` must never be the way around it. An
-    // unsettled record may still be mutating: `worker-start` has answered
-    // `runtime_unavailable` twice while its mutation ran on, which is how two
-    // agents landed in one worktree. A second pass on top of that is the same
-    // duplicate under a new name. Note this cannot be decided from the handle
-    // index: it only holds rows built from a parseable `worker-start` receipt,
-    // so a stranded record maps NO handle at all — the very case where a child
-    // is most likely to exist unseen.
-    const previousRequest = requestFor({ ...base, pass: latest });
-    let previousState;
-    try {
-      previousState = report(join(store, `${previousRequest}.json`));
-    } catch (error) {
-      return cannot(`pass ${latest} of #${issue} has an unreadable record: ${String(error.message ?? error)}`, `cat ${join(store, `${previousRequest}.json`)}`);
-    }
-    if (!previousState.usable) {
-      return refuse(
-        `pass ${latest} of #${issue} never settled, so it may still be mutating — a fresh pass here is a second agent under a new number`,
-        heldRepaired(join(store, `${previousRequest}.json`))
-          ? `ax worker transcript ${previousRequest}   # its child IS running and reports by peer; never --resume, never --fresh`
-          : `ax worker start --resume --request ${previousRequest}   # settle it first (F-001), then redo it`,
-      );
-    }
-
-    // GATE 2 — the pane, on the shared three-valued definition rather than the
-    // cap's. The cap deliberately leaves an omitted host UNCOUNTED, which is
-    // right for "have I room for one more" and wrong here: this call is about to
-    // create a RIVAL child, so an absence that proves nothing must stop it.
-    const handles = [...(handlesOf.get(previousRequest) ?? [])];
-    // Zero handles is not zero panes, and this is REACHABLE — not a theoretical
-    // guard. `report()` treats a Bash-era record as usable on
-    // `terminal !== null || legacyUsable`, where `legacyUsable` is just a
-    // non-empty `receiptPath` (record.mjs:367). So a settled legacy record can
-    // name no agent pane at all, clear gate 1, and map no handle here — which is
-    // "nothing on this machine can tell", exactly what `paneVerdict`'s null case
-    // answers. Probing through it routes the gap to the shared third value
-    // instead of falling through to "go ahead".
-    const probed = handles.length === 0 ? [null] : handles;
-    const why = `pass ${latest} has no pane recorded against it, so nothing on this machine can say whether its child is gone`;
-    const verdicts = probed.map(handle => paneVerdict(handle, why, inventory));
-    const living = probed.find((_, at) => verdicts[at].pane === 'VIVANT');
-    if (living !== undefined) {
-      return refuse(
-        `pass ${latest} of #${issue} still holds a live pane (${living}) — two children on one issue is the duplicate this whole subsystem exists to prevent`,
-        `ax worker release --close --dispatch <id>   # or let it finish; then redo it`,
-      );
-    }
-    const unknown = verdicts.find(verdict => verdict.pane === 'INCONNU');
-    if (unknown !== undefined) {
-      return cannot(
-        `pass ${latest} of #${issue} cannot be proven finished: ${unknown.detail} — an absence from a partial terminal list is not a death (F-028)`,
-        `ax worker ls   # read the pane's real state, close it if it is there, then redo`,
-      );
-    }
-
-    const previous = readDraft(paths.root, { ...base, pass: latest });
-    plan.push({ issue, pass: latest + 1, previous: { pass: latest, path: previous.path, sha: previous.sha } });
-  }
+  // The plan and its two anti-rival gates (F-001, F-028) live in
+  // ./capacity.mjs; an outcome maps to this verb's own exit codes here.
+  const planned = passPlan({ store, root: paths.root, index, inventory, issues, job, slug, freshPass });
+  if (!planned.ok) return planned.kind === 'refuse' ? refuse(planned.message, planned.repair) : cannot(planned.message, planned.repair);
+  const plan = planned.plan;
 
   const newSessions = plan.filter(entry => !existsSync(join(store, `${requestFor({ job, repo: slug, issue: entry.issue, pass: entry.pass })}.json`)));
   const cap = capOf(env);
@@ -558,13 +450,6 @@ export function dispatch(
 
 const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' : code === 3 ? 'CANNOT-ESTABLISH' : 'REFUSED');
 
-/** The repository this checkout pushes to, as `gh` names it. */
-function resolveRepo(gh) {
-  const out = gh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']);
-  if (out.error || out.status !== 0) return '';
-  return String(out.stdout ?? '').trim().split('\n')[0] ?? '';
-}
-
 /**
  * State, comment count and title in one read — plus, for refine only, the labels
  * and the sub-issue parent.
@@ -625,138 +510,4 @@ function readLabels(declared, root) {
   } catch (error) {
     return { missing: true, path, why: `at ${path}, which cannot be read: ${String(error.code ?? error.message ?? error)}` };
   }
-}
-
-/**
- * The one instruction a session gets, on one line.
- *
- * The model marker travels HERE and never as a `worker-start --model` flag: the
- * marker is what the child's own model adapter reads, and a flag would name a
- * model for the dispatch instead of for the session.
- *
- * Under this contract the child mutates NOTHING. Everything the Bash spec spent
- * its length on — apply five groups with `gh issue edit`, never wontfix, never
- * close, never the bare size labels — is the publisher's contract now, and
- * belongs to `ax triage publish`. What the child owes is one file.
- */
-function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, parent, instruction, pass = 1, previous = null, because = '' }) {
-  const marker = `[omp role=${ROLE_BY_JOB[job].role} model=${model}]`;
-  // The write-failure ladder exists because #60 (2026-08-23) could not write
-  // its draft at all, put the verdict in its terminal, and its report was the
-  // day's sixth lost peer message: the wave stalled on finished work nobody
-  // could see. The pane transcript is the one channel on this machine that
-  // never loses — `ax worker transcript` reads it back — so a verdict that
-  // cannot reach its file must land there IN FULL, between markers a recovery
-  // can find, with the exact error that kept it out of the file.
-  const nothing = `Apply no label, post no comment, close nothing, and modify no file in the repository: write ONLY ${draft}. The human reads that file, corrects it, and publishes it — a verdict that lands the moment it is rendered cannot be adjusted. If that write FAILS, retry it once; if it still fails, do not let the verdict live only in prose: print the exact error (errno and path) and then the COMPLETE draft between a line reading BEGIN DRAFT and a line reading END DRAFT in your final message — the pane transcript is the recovery channel, and an unwritten draft reported without its full text is a verdict lost.`;
-
-  // HOW to ask, and — the part that was wrong on the first cut — WHEN to stop.
-  //
-  // The shape is declared because three children escalated in three layouts
-  // ("What we still need from you", a/b/c sub-points, inline forks), and a
-  // numbered ask is one a parent can answer by number without quoting it.
-  //
-  // But the first version of this string ended on "Report when the draft is
-  // written", which told a child with open questions to FINISH. That is what
-  // broke the answer channel, and the coordinator measured both halves of it on
-  // 2026-08-22: children's `ask` refused because the stall had revoked their
-  // capability, and its own replies with no route left "after their report".
-  // Both are consequences of the child ending its turn.
-  //
-  // The command is ax's OWN, fully rendered, for the same reason the label
-  // grammar is named: an unnamed gesture gets improvised, and three children
-  // improvising an escalation is what produced three layouts. One commit of
-  // this string named `orca orchestration ask` raw instead, and that put the
-  // whole middle of the loop outside the tool that knows the rules — a child
-  // typing its own `--question` can ask something other than what its draft
-  // records. `ax triage ask` reads the Q lines off the draft itself, so the
-  // wire and the record cannot diverge; underneath it is the same measured
-  // transport (blocks until answered; from an active Dispatch it defaults to
-  // the owning Run's mailbox; a timeout leaves the question PENDING and a
-  // resume goes back to waiting on the same one, which is what makes an
-  // unbounded human latency survivable without the child dying or deciding).
-  //
-  // The global command is the stable entry point a fresh child receives; its
-  // dispatcher hands this argv to the exact project package.
-  const askCommand = `ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
-  // The routing tag lives INSIDE the question text, never between the number
-  // and the colon: `Q<n> [technical]:` would break the one Q-line grammar
-  // (draft.mjs), while `Q<n>: [technical] …` travels verbatim through ask and
-  // answer with zero code. The categories are the maintainer's own ruling
-  // (2026-08-23, measured on 24/24 answers that merely confirmed the
-  // coordinator's technical recommendation): the coordinator RULES technical
-  // questions itself, reversibly; product and high-stakes ones go up. The tag
-  // is advisory, not validated — an untagged question costs the parent one
-  // extra read, which is not a defect worth a refusal.
-  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and OPEN each question's text with its routing tag — \`[technical]\` for representation, cardinality, file placement, versioning, pure/impure, type unions or SQL mechanics, which the coordinator rules itself and reversibly; \`[product]\` for scope, user-visible behavior, security, money, data, or business taxonomy, which goes up to the maintainer — so the parent routes each question without reading it twice. Keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open — with ONE exception: if the ask refuses saying this Dispatch is not supervised (its capability died at a composer stall, and no ask can ever land from this session), follow that refusal instead of this sentence — keep the \`Q<n>:\` lines in the draft and report immediately, quoting them and saying the supervised channel is unavailable; your report is then the only channel left, and the parent answers by peer. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
-
-  // What a SECOND pass is told, and it is told before anything else it reads.
-  // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.
-  //
-  // The previous draft is named by path AND by fingerprint. The path lets the
-  // child read what its predecessor concluded instead of re-deriving it; the
-  // `git hash-object` value is what lets a human afterwards prove which version
-  // it actually read, which is the same question #54 could not answer. Both are
-  // immutable: no pass is ever renamed to make room for the next one.
-  const redo = previous === null
-    ? ''
-    : `This is PASS ${pass} on this issue. Pass ${previous.pass} already ran and its verdict is at ${previous.path} (git hash-object ${previous.sha || 'unwritten'}) — read it first. You are not starting over and you are not reviewing it: keep everything it established that the following still supports, and change only what follows from it. WHAT CHANGED SINCE: ${because.replace(/\s+/g, ' ').trim()}`;
-
-  if (job === 'triage') {
-    return [
-      marker,
-      redo,
-      `Use the preloaded triage playbook AND ${labels}, which overrides the playbook wherever the two diverge.`,
-      `Then triage issue #${issue} (issue://${issue}).`,
-      `Write your verdict to ${draft}. It opens with directive lines, then the comment body a human will read on the issue months from now, with your justification at one line per group.`,
-      `A directive carries label NAMES ONLY — never a group name, never a parenthetical: \`Labels: <name>[, <name>…]\`, repeatable so one line per group stays cheap to correct; \`Remove labels: <name>[, <name>…]\` for the labels your transition supersedes; \`Close: yes\` if you conclude wontfix, and say why — you are recommending it, not doing it.`,
-      `Leaving a group empty means you have not finished. Every name is checked against this repository's own label list before anything is applied, so \`Labels: state → needs-info\` and \`Remove labels: needs-triage (superseded)\` are both refused: they name no label that exists.`,
-      nothing,
-      asking,
-      'Report when the draft is FINAL — which means it carries no open question.',
-    ].filter(Boolean).join(' ');
-  }
-
-  if (job === 'refine') {
-    // The parent PRD is named when the precheck could read it; a child told to
-    // find it itself is the degraded path, not the ordinary one.
-    const lineage = typeof parent === 'number'
-      ? `Then run the Definition-of-Ready pass on issue #${issue} (issue://${issue}), a sub-issue of issue://${parent} — read both before scoring.`
-      : `Then run the Definition-of-Ready pass on issue #${issue} (issue://${issue}); identify its parent PRD from the issue itself before scoring.`;
-    return [
-      marker,
-      redo,
-      'Use the preloaded refine playbook: score its five Definition-of-Ready gates against this checkout and the parent ticket.',
-      lineage,
-      `Write your verdict to ${draft}: exactly one \`Ready: yes\` or \`Ready: no\` line, then one \`## Agent Brief\` section — published verbatim on the issue, so it carries no line numbers and no file-placement instructions — then one \`## Verification\` section, which is never published: your per-gate evidence, where file:line reads belong.`,
-      'Never write `Labels:`, `Remove labels:` or `Close:` — a refine draft that names labels is refused whole; publication applies only ready-for-agent, and the PRD already decided the categorization.',
-      'On a failed gate the verdict is `Ready: no` and the draft carries the diagnosis plus a concrete repair proposal — corrected acceptance criteria, or a split. You recommend; the coordinator arbitrates.',
-      nothing,
-      asking,
-      'Report when the draft is FINAL — which means it carries no open question.',
-    ].filter(Boolean).join(' ');
-  }
-
-  if (job === 'brief') {
-    return [
-      marker,
-      redo,
-      `Use the preloaded triage playbook, especially its Agent Brief section, and ${labels}.`,
-      `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass: do not redo it, do not re-measure what is established, and do not render a competing verdict.`,
-      `Write the Agent Brief that follows from that pass to ${draft}, absorbing everything its "what is missing" section asks for, with a \`Labels:\` line for any label the pass left unapplied and a \`Remove labels:\` line for any state label your transition supersedes — label names only, no group prefix and no parenthetical, each checked against this repository's label list before it is applied.`,
-      `An underdetermined acceptance criterion is not something to fill in: write no criterion for it and ask instead. If you find the pass itself is wrong, do not correct it silently — ask.`,
-      asking,
-      nothing,
-      'Report when the draft is FINAL — which means it carries no open question.',
-    ].filter(Boolean).join(' ');
-  }
-
-  // The caller's own one-line task, prefixed by the issue's triage state. That
-  // prefix is not decoration: hand-rolling this dispatch outside the script on
-  // 2026-08-10 produced a spec opening on "read skill://triage" for an
-  // already-triaged issue, and the session had to be steered off mid-flight.
-  const prefix = triaged
-    ? `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass; it is in its comments: do not re-triage it, render no verdict, apply no label or state. `
-    : '';
-  return `${marker} ${prefix}${instruction.replace(/\s+/g, ' ').trim()} Write what you find to ${draft}. ${nothing}`;
 }

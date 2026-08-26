@@ -95,7 +95,7 @@ afterEach(() => {
 
 test('a resolved parent is cached: the second lookup makes no Orca call', async () => {
   setMode('parented');
-  const m = await import('./registry.ts?case=cached');
+  const m = await import('./lineage.ts?case=cached');
 
   const first = m.parentPeer();
   // No live pane in the parent worktree, so there is nobody to report TO — but
@@ -111,7 +111,7 @@ test('a resolved parent is cached: the second lookup makes no Orca call', async 
 
 test('an unavailable runtime is NOT cached, and a later healthy one still resolves', async () => {
   setMode('down');
-  const m = await import('./registry.ts?case=retry');
+  const m = await import('./lineage.ts?case=retry');
 
   const down = m.parentPeer();
   expect(down.reason).toContain('lineage is unknown, not absent');
@@ -126,7 +126,7 @@ test('an unavailable runtime is NOT cached, and a later healthy one still resolv
 
 test('a genuinely parentless worktree is cached as parentless', async () => {
   setMode('orphan');
-  const m = await import('./registry.ts?case=orphan');
+  const m = await import('./lineage.ts?case=orphan');
 
   const first = m.parentPeer();
   expect(first.reason).toContain('no parent worktree recorded');
@@ -140,7 +140,7 @@ test('a genuinely parentless worktree is cached as parentless', async () => {
 
 test('warmLineage resolves at startup so the first report pays nothing', async () => {
   setMode('orphan');
-  const m = await import('./registry.ts?case=warm');
+  const m = await import('./lineage.ts?case=warm');
 
   m.warmLineage();
   const afterWarm = calls('worktree ps');

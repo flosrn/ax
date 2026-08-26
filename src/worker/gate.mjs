@@ -36,7 +36,7 @@
 
 import { resolveOrca, createRunner, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { terminalInventory } from './pane.mjs';
+import { paneVerdict, terminalInventory } from './pane.mjs';
 
 /**
  * A named list out of a receipt — the F-028 read. An absent `workers` container
@@ -125,7 +125,6 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     fix('orca open   # bring up the Orca runtime, then re-run this gate');
     return 3;
   }
-  const alive = new Set([...terminals.byHandle].filter(([, terminal]) => terminal.orphaned !== true).map(([handle]) => handle));
 
   // Read 3: does the task exist at all? A failure here is NOT an answer — it is
   // an ignorance, and it is reported as one.
@@ -158,11 +157,19 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
 
   note(`Dispatches for ${task}: ${rows.length}`);
   const live = [];
+  const unproven = [];
   for (const w of rows) {
-    const handle = w.agentTerminalHandle;
-    const on = alive.has(handle);
+    // One verdict definition (pane.mjs), this verb's own disposition on top:
+    // `worker-list` carries no per-dispatch host, so the verdict keeps its
+    // conservative branch (absent + omitted hosts = INCONNU), and the mapping
+    // here — VIVANT is live, MORT and INCONNU are down, INCONNU is disclosed
+    // below — is what keeps this gate's documented fail-open answer.
+    const handle = typeof w.agentTerminalHandle === 'string' ? w.agentTerminalHandle : null;
+    const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, {});
+    const on = verdict.pane === 'VIVANT';
     if (on) live.push(w);
-    note(`${on ? 'LIVE ' : 'down '} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(handle ?? '—').slice(0, 24)}`);
+    if (verdict.pane === 'INCONNU' && handle !== null) unproven.push(w);
+    note(`${on ? 'LIVE ' : 'down '} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(w.agentTerminalHandle ?? '—').slice(0, 24)}`);
   }
 
   if (live.length === 0) {
@@ -174,7 +181,6 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     // "answered 3 for a day" is the bug this verb was written to stop repeating.
     // The gate's scope is this host, as its header says, and a pane on another
     // one is `--on <host>`'s business, not a duplicate this host can create.
-    const unproven = rows.filter(w => typeof w.agentTerminalHandle === 'string' && !terminals.byHandle.has(w.agentTerminalHandle));
     if (terminals.omitted && unproven.length > 0) {
       note(`${unproven.length} of these panes are absent from a terminal list that omits ${terminals.omittedHosts.join(', ')}.`);
       note('On this host they are down. If this task was dispatched with `--on <host>`, establish them there before relaunching.');

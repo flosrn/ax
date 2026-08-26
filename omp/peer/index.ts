@@ -38,14 +38,13 @@
  * degrade silently when the `orca` CLI is missing.
  */
 
-// One resolver for the Orca binary, shared with `orca-model` rather than
-// duplicated. A sibling-directory import inside the package that ships both;
-// the two extensions used to be loose files under `~/.omp/agent/extensions/`,
-// where the same import was a bare sibling path.
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { resolveOrcaBin } from '../model/self.ts';
+// The Orca adapter: every spawn of the Orca CLI in this extension goes through
+// `./orca.ts`, which resolves the binary per call — its header carries the VPS
+// incident (`orca` vs `orca-ide`, D-007) behind that rule.
+import { orca, orcaBin, orcaRaw, runOrca } from './orca.ts';
 
 import {
   dispatchRecord,
@@ -53,29 +52,20 @@ import {
 } from './attribution.ts';
 import { environmentOfDispatch, resolveChildRoute } from './route.ts';
 
-// Addressing, lineage and the registry, all on native Orca. The naming rule
-// that decides an address lives in that module alone; `refreshHandleMap` reads
-// it rather than restating it, so no second copy can disagree about which
-// session a handle belongs to.
-import {
-  children as peerChildren,
-  panes,
-  peers,
-  register as publishSelf,
-  resolvePeerName,
-  sendToPeer,
-  depthOf,
-  lineageRows,
-  runAddressOfHandle,
-  shortId,
-  setModel,
-  transcriptFor,
-  worktreeOf,
-} from './registry.ts';
+// Addressing, lineage and the registry, split by concern under this package.
+// The naming rule that decides an address lives in `./address.ts` alone;
+// `refreshHandleMap` reads it rather than restating it, so no second copy can
+// disagree about which session a handle belongs to.
+import { panes, peers, register as publishSelf, resolvePeerName, setModel, shortId, worktreeOf } from './address.ts';
+import { children as peerChildren, depthOf } from './lineage.ts';
+import { lineageRows } from './orca.ts';
+import { runAddressOfHandle } from './store.ts';
+import { sendToPeer } from './send.ts';
+import { transcriptFor } from './transcript.ts';
 
 // When the receive loop is down, and whether the model has been told. Kept
 // out of this file so the decision can be tested without an Orca, a clock or
-// a `pi` facade — same reason addressing lives in `registry.ts`.
+// a `pi` facade — same reason addressing lives in `address.ts`.
 import {
   type Announcement,
   type ChannelState,
@@ -102,21 +92,6 @@ import { createSessionOwner, isSubagentSession, sessionIdOf } from '../shared/se
 // Anything that needs the AUTHORITATIVE worktree (an address a report is sent
 // to) calls `witnessedWorktree()`, which is Orca-attested and declines rather
 // than guessing.
-
-/**
- * The Orca binary, resolved the same way `orca-model` resolves it.
- *
- * NOT the bare name. On the VPS the binary is `orca-ide` (plain `orca` collides
- * with the GNOME screen reader), and a bare name also fails wherever PATH is
- * minimal — a scheduled job once ran 246 times reading nothing while reporting
- * the exact shape of a healthy report. Every call site below used the literal
- * `'orca'`, including the `which` guard in `session_start`, so on that host
- * this receiver returned silently: no registration, no peer message, and no
- * child report could ever land. That is most of what D-007 was waiting on.
- *
- * Resolved once at load — the binary does not move mid-session.
- */
-const ORCA = resolveOrcaBin().bin;
 
 let runId = '';
 let peerName = '';
@@ -255,20 +230,13 @@ function sh(args: string[], timeoutMs = 15_000): string {
   }
 }
 
+/** JSON or null; injected into the receiver beside `sh`, its transport twin. */
 function parse(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
     return null;
   }
-}
-
-/** `sh` plus a JSON parse, in the shape the route resolver asks for. */
-function runOrca(args: string[]): { value?: unknown; reason?: string } {
-  const raw = sh([ORCA, ...args]);
-  if (raw === '') return { reason: `${args.join(' ')} produced nothing` };
-  const value = parse(raw);
-  return value === null ? { reason: `${args.join(' ')} was unparseable` } : { value };
 }
 
 // Every Run this extension creates is objective-tagged, and only a Run bearing
@@ -287,7 +255,7 @@ const PEER_RUN_TAG = 'peer session: ';
  * other workflow is using".
  */
 function ensureRun(): string {
-  const current = parse(sh([ORCA, 'orchestration', 'run-current', '--json']));
+  const current = orca(['orchestration', 'run-current', '--json']);
   const run = current?.result?.run ?? current?.result;
   const existing = run?.id;
   const objective = String(run?.objective ?? '');
@@ -299,16 +267,13 @@ function ensureRun(): string {
   )
     return existing;
 
-  const created = parse(
-    sh([
-      ORCA,
-      'orchestration',
-      'run-create',
-      '--objective',
-      `${PEER_RUN_TAG}${peerName}`,
-      '--json',
-    ]),
-  );
+  const created = orca([
+    'orchestration',
+    'run-create',
+    '--objective',
+    `${PEER_RUN_TAG}${peerName}`,
+    '--json',
+  ]);
   const id = created?.result?.run?.id ?? created?.result?.id;
   return typeof id === 'string' ? id : '';
 }
@@ -442,7 +407,7 @@ const replyRoutes = new Map<
 // `injectedIds` is read through a closure because `loadInjected` replaces the
 // whole set.
 const receiver = createReceiver({
-  orca: ORCA,
+  orca: orcaBin(),
   runId: () => runId,
   spawn: (argv, opts) => Bun.spawn(argv, opts),
   sh,
@@ -462,7 +427,7 @@ const receiver = createReceiver({
     const record = dispatchRecord(id);
     if (record === null) return null;
     return resolveChildRoute(
-      (args) => runOrca(args),
+      runOrca,
       id,
       environmentOfDispatch(record.json, id),
       `child:${record.request}`,
@@ -470,7 +435,7 @@ const receiver = createReceiver({
   },
   // A witnessed pane that stated no return address: the Run it published for
   // itself is read under the handle ORCA vouched for, never under a name the
-  // sender claimed. `registry.ts` carries the bound on that.
+  // sender claimed. `store.ts`'s `runAddressOfHandle` carries the bound on that.
   paneRoute: (handle) => runAddressOfHandle(handle),
   peerContent,
   wasInjected: (id) => injectedIds.has(id),
@@ -499,7 +464,7 @@ const receiver = createReceiver({
 // with an mtime query string, so every subagent load is a fresh module
 // evaluation and the child gets its own unclaimed latch and claims itself.
 // What protects the registry across module instances is the SECOND guard, in
-// `orca-peer/registry.ts`: `register` refuses a differing `sessionId` whose
+// `peer/address.ts`: `register` refuses a differing `sessionId` whose
 // recorded `ownerPid` is still alive, answering `refused: 'foreign'` rather
 // than publishing. Keep both - the latch is correct for a session switch inside
 // one module instance - and do not remove that ownership fence believing it
@@ -584,12 +549,10 @@ export default function (pi): void {
       // sender's bare terminal handle, whose mailbox is legacy_read_only and is
       // consumed by nobody, so the answer is delivered and never seen.
       // `--thread-id` keeps the exchange threaded for anyone reading history.
-      const p = Bun.spawnSync(
-        [
-          ORCA,
-          'orchestration',
-          'send',
-          '--to',
+      const out = orcaRaw([
+        'orchestration',
+        'send',
+        '--to',
           // Already a full `run:<id>` address — validated by RUN_ADDRESS in
           // `receive.ts` on the way in. Re-prefixing produced `run:run:<id>`,
           // and Orca answered "Run not found" while the sending agent reported
@@ -623,17 +586,16 @@ export default function (pi): void {
           ...(route.environment ? ['--environment', route.environment] : []),
           '--json',
         ],
-        { cwd: process.cwd(), stdout: 'pipe', stderr: 'pipe', timeout: 20_000 },
+        20_000,
       );
-      const out = parse(new TextDecoder().decode(p.stdout));
-      if (out?.ok) {
+      if (out.parsed?.ok) {
         note(`replied to ${route.peer} (${message_id})`);
         return {
           content: [{ type: 'text', text: `Replied to ${route.peer}.` }],
         };
       }
       const why = String(
-        out?.error?.message ?? new TextDecoder().decode(p.stderr),
+        out.parsed?.error?.message ?? out.text,
       ).slice(0, 200);
       return {
         content: [
@@ -925,14 +887,14 @@ export default function (pi): void {
     try {
       if (!process.env.ORCA_TERMINAL_HANDLE) return; // not an Orca pane
       if (
-        !Bun.spawnSync(['which', ORCA], {
+        !Bun.spawnSync(['which', orcaBin()], {
           stdout: 'ignore',
           stderr: 'ignore',
         }).success
       ) {
         // The VPS case. `orca` is `orca-ide` there, and every silent return
         // like this one is why D-007 waited on a receiver that had never run.
-        disableReceive(pi, `the \`${ORCA}\` binary is not on PATH`);
+        disableReceive(pi, `the \`${orcaBin()}\` binary is not on PATH`);
         return;
       }
 

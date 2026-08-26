@@ -87,9 +87,10 @@
 //      no `gh` to prove landing with, or no repository to scope the sweep to
 
 import { existsSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
+import { defaultExec } from '../exec.mjs';
+import { repoView } from '../gh.mjs';
 import { createRunner, parseReceipt, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
@@ -155,17 +156,6 @@ const SETTLED = new Set(['succeeded', 'failed']);
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
-
-/**
- * `gh` and `git`, run for real. Exported because every test injects a stub in
- * its place, which once left this default entirely unexercised: the module lost
- * its `spawnSync` import in a refactor and a full green suite said nothing —
- * the first real invocation was a ReferenceError.
- */
-export const defaultExec = (bin, args, at) => {
-  const out = spawnSync(bin, args, { cwd: at, encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] });
-  return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
-};
 
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
 const landed = detail => ({ landed: true, detail });
@@ -601,14 +591,13 @@ export function release(
   }
   const scope = all || only !== '' ? '' : home;
 
-  const repoOut = gh(['repo', 'view', '--json', 'nameWithOwner']);
-  const repo = repoOut.error === undefined && repoOut.status === 0 ? String(parseReceipt(repoOut.stdout).nameWithOwner ?? '') : '';
+  const viewed = repoView(gh);
+  const repo = viewed.slug;
   // Without a repository there is no artifact to ask about, so every row would
   // be an unprovable KEEP and the report would read like a clean sweep. That is
   // an inability, and it is named as one.
   if (repo === '' && !noProof) {
-    const detail = repoOut.error ? String(repoOut.error.message ?? repoOut.error) : firstLine(repoOut.stderr) || `exit ${repoOut.status}`;
-    return cannot(`gh cannot name this repository, so no landing can be proven: ${detail}`, 'gh auth login   # then re-run; or --close --dispatch <id> --no-proof for one pane you have looked at');
+    return cannot(`gh cannot name this repository, so no landing can be proven: ${viewed.detail}`, 'gh auth login   # then re-run; or --close --dispatch <id> --no-proof for one pane you have looked at');
   }
 
   const workers = workerInventory(run);

@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { transcriptFor } from './registry.ts';
+import { transcriptFor } from './transcript.ts';
 
 let root = '';
 let saved: string | undefined;

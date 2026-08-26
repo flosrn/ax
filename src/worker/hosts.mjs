@@ -17,7 +17,7 @@
 // never declared it, is the same bug in a new place — so a ground the project
 // did not declare is reported as NOT MEASURED, which is not the same as passed.
 
-import { spawnSync } from 'node:child_process';
+import { run as execRun } from '../exec.mjs';
 
 /** MiB, the unit every `memory.*` file and every floor in this file speaks. */
 const MB = 1048576;
@@ -26,10 +26,7 @@ const MB = 1048576;
  * `ssh`, run for real. Injected everywhere so the suite proves the arithmetic
  * and the ordering with no host, no network and no credential.
  */
-const defaultSsh = args => {
-  const out = spawnSync('ssh', args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] });
-  return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
-};
+const defaultSsh = args => execRun('ssh', args, { timeout: 60000 });
 
 /** A ref is about to be pasted into a remote shell. Anything else is refused a probe. */
 const SAFE_REF = /^[A-Za-z0-9._#/-]+$/;

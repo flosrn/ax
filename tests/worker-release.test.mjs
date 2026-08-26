@@ -20,7 +20,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { defaultExec, release } from '../src/worker/release.mjs';
+import { defaultExec } from '../src/exec.mjs';
+import { release } from '../src/worker/release.mjs';
 
 /**
  * A REAL directory, canonicalised: the verb compares physical paths (a raw
@@ -124,7 +125,7 @@ function fakeExec({ repo = 'owner/repo', answers = {} } = {}) {
     const sub = bin === 'git' ? args[args.indexOf('-C') + 2] ?? args[0] : `${args[0]} ${args[1]}`;
     const key = `${bin} ${sub}`;
     if (bin === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: `${SCOPE}\n`, stderr: '' };
-    if (bin === 'gh' && args[0] === 'repo') return { status: 0, stdout: JSON.stringify({ nameWithOwner: repo }), stderr: '' };
+    if (bin === 'gh' && args[0] === 'repo') return { status: 0, stdout: `${repo}\n`, stderr: '' };
     return answers[key] ?? { status: 1, stdout: '', stderr: `stub has no answer for ${key}\n` };
   };
   return { exec, calls };

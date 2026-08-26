@@ -26,9 +26,9 @@
 // disagreement was a green verdict on a worktree serving a different origin than
 // it advertised.
 
-import { spawnSync } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { delimiter, resolve } from 'node:path';
+import { capture } from '../exec.mjs';
 
 import { baseUrlForPort } from './ports.mjs';
 
@@ -53,14 +53,7 @@ import { baseUrlForPort } from './ports.mjs';
  * @returns {string | undefined}
  */
 export function runProbe(bin, args, { cwd } = {}) {
-  let result;
-  try {
-    result = spawnSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...(cwd ? { cwd } : {}) });
-  } catch {
-    return undefined;
-  }
-  if (result.error || result.status !== 0 || !result.stdout) return undefined;
-  return result.stdout.trim();
+  return capture(bin, args, { cwd });
 }
 
 /**

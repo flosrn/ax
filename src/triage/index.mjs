@@ -15,7 +15,8 @@ import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { readPane } from '../worker/pane.mjs';
-import { defaultExec } from '../worker/release.mjs';
+import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 import { defaultStore, heldRepaired, report, workerPane } from '../worker/record.mjs';
 import { answer } from './answer.mjs';
 import { ask } from './ask.mjs';
@@ -153,11 +154,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
 
   const paths = repoPaths(cwd);
   const root = paths.root ?? cwd;
-  let slug = repo;
-  if (slug === '') {
-    const out = exec('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], root);
-    slug = out.error || out.status !== 0 ? '' : String(out.stdout ?? '').trim().split('\n')[0];
-  }
+  const slug = repo === '' ? repoSlug(args => exec('gh', args, root)) : repo;
   if (slug === '') {
     bad('could not resolve the current repository');
     fix('ax triage status --repo <owner>/<repo> --issue N');

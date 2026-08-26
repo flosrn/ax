@@ -54,28 +54,26 @@
 //   3  cannot establish. When the dispatch already happened the report says so
 //      and names the recovery; do NOT relaunch, that is how a duplicate is born.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
-import { CONTEXT_PATH } from '../worktree/context.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
-import { defaultStore, workerPane } from './record.mjs';
 import { peerRun } from './peers.mjs';
-import { readPane } from './pane.mjs';
-import { launchProof } from './transcript.mjs';
+import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
+import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, ticketKind } from './ticket.mjs';
-import { hostFor, proveHost, quote, remote, repoIdFor } from './hosts.mjs';
+import { hostFor, proveHost, repoIdFor } from './hosts.mjs';
 import { MECHANICS, renderBrief } from './brief.mjs';
 import { pinIdentity, writeMandate } from './child.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
-// injects `exec` — so there is ONE of them, and it has its own test.
-import { defaultExec } from './release.mjs';
+// injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
+import { defaultExec } from '../exec.mjs';
 
 const USAGE =
   'ax worker launch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--brief <file>] ' +
@@ -85,13 +83,8 @@ const USAGE =
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
-const firstLine = text => String(text ?? '').split('\n')[0].trim();
-/** A declared placement tool prints its path LAST; everything else it says is progress. */
-const lastLine = text =>
-  String(text ?? '')
-    .split('\n')
-    .filter(line => line.trim() !== '')
-    .pop() ?? '';
+/** The launch tick, shared by placement's selector poll and verify's proof loop. */
+const tickOf = env => Math.max(1, Number(env.AX_LAUNCH_TICK ?? 2000));
 
 /**
  * The request id every later gesture is keyed on: the store record, the stall
@@ -397,7 +390,7 @@ export function launch(
     if (paths.root === null) {
       return cannot('not inside a git checkout, so there is no repository to place a worktree in', 'cd <repo> && ax worker launch …');
     }
-    const placed = placeLocal({ request, issue: flags.issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn, env });
+    const placed = placeLocal({ request, issue: flags.issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn });
     for (const line of placed.notes) note(line);
     if (placed.refused) return refuse(placed.refused, placed.repair);
     if (placed.cannot) return cannot(placed.cannot, placed.repair);
@@ -517,188 +510,8 @@ export function launch(
     cwd,
     now,
     sleep,
+    tickMs: tickOf(env),
   });
-}
-
-const tickOf = env => Math.max(1, Number(env.AX_LAUNCH_TICK ?? 2000));
-
-/**
- * Which setup argv this ticket's labels earn.
- *
- * The worktree's database is decided by `planWorktree` from the DIFF of the tree
- * setup is provisioning, and that tree is empty: nothing has been written yet,
- * so `touchesDatabase` is false and the plan shares the primary checkout's
- * stack. That is right for most work and wrong for exactly the tickets that say
- * so in their labels — measured 2026-08-25 on ofmchat #71 (`domain:database`,
- * `domain:security`), whose brief required an isolated reset and a full pgTAP
- * run, and whose worktree was announced as "does not touch the database". The
- * guard in front of `ax supabase` promotes on the first write, so the child was
- * not going to destroy the shared stack THROUGH ax — but every path around it
- * (a raw `supabase` on PATH, a package script) resets the containers the primary
- * checkout and every other sharing worktree depend on, because a shared
- * worktree's `config.toml` is byte-identical to the primary's.
- *
- * The labels that mean "database" are the project's to declare
- * (`launch.databaseLabels`): a label vocabulary measured for one fleet and
- * inherited by a repo that never declared it is this file's own named mistake.
- */
-function databaseArgs(launchConfig, ticket) {
-  const declared = Array.isArray(launchConfig.databaseLabels) ? launchConfig.databaseLabels : [];
-  if (declared.length === 0 || ticket === null) return { argv: [], notes: [] };
-  const carried = Array.isArray(ticket.labels) ? ticket.labels : [];
-  const matched = declared.filter(label => carried.includes(label));
-  if (matched.length === 0) return { argv: [], notes: [] };
-  return {
-    argv: ['--database'],
-    notes: [`${matched.join(', ')} — this ticket says it touches the database, so its worktree gets its own stack instead of sharing the primary checkout's`],
-  };
-}
-
-/** Place the worktree on THIS host: reuse, the repo's own tool, or Orca. */
-function placeLocal({ request, issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn, env }) {
-  const notes = [];
-  const base = join(paths.root, '.worktrees');
-  // What this placement is FOR, in one word, for every line below. `issue` is ''
-  // on a named launch, and a message naming nothing sends an operator grepping
-  // for a tree that was reported without a name.
-  const subject = named ? request : issue;
-
-  // Idempotence first, and it is the only countermeasure available: `worktree
-  // create` carries no `--retry-request` (PORT invariant 2), so a create that
-  // strands cannot be replayed and the claim is bounded to THIS host. A second
-  // launch for the same ticket finds the first tree — and still proves it
-  // habitable below, because the launch that made it may be exactly the one that
-  // died before provisioning it.
-  const existing = existingFor(base, subject, { exact: named });
-  let created = false;
-
-  const tool = launchConfig.worktreeTool ?? '';
-  if (dry) {
-    // A prediction, and it is labelled as one: the placement is the step a dry
-    // run cannot perform, so the preview shows the selector it WOULD carry
-    // rather than an empty passthrough that reads like a bug.
-    const predicted = join(base, named ? request : `${issue}-${slug || 'work'}`);
-    notes.push(
-      tool === ''
-        ? `dry-run: this project declares no worktree tool, so Orca would place it (worktree create --setup run) and ax worktree setup would provision it, predicted at ${predicted}`
-        : `dry-run: would place it with \`${tool} ${[subject, ...(named || slug === '' ? [] : [slug])].join(' ')}\`, predicted at ${predicted}`,
-    );
-    return { worktree: '', predicted, notes };
-  }
-
-  let worktree = existing;
-  if (existing !== '') {
-    notes.push(`reusing the worktree that already exists for ${subject}, and placing no second one: ${existing}`);
-  } else if (tool !== '') {
-    // The declared tool BLOCKS until the tree is usable and prints the path on
-    // its last stdout line; everything else it says is progress on stderr.
-    const out = exec(tool, [subject, ...(named || slug === '' ? [] : [slug])], cwd);
-    if (out.error) return { notes, cannot: `${tool} could not run: ${String(out.error.message ?? out.error)}` };
-    if (out.status !== 0) {
-      return { notes, refused: `${tool} failed for ${subject}; nothing was dispatched`, repair: firstLine(out.stderr) || `${tool} ${subject}` };
-    }
-    worktree = lastLine(out.stdout);
-    if (worktree === '' || !existsSync(worktree)) {
-      return { notes, cannot: `${tool} printed ${JSON.stringify(worktree)}, which is not a directory` };
-    }
-    created = true;
-  } else {
-    const receipt = run(['worktree', 'create', '--name', request, '--no-parent', '--setup', 'run', '--json']);
-    if (receipt.status !== 0 || receipt.receipt?.ok !== true) {
-      const detail = receipt.receipt?.unparseable ?? firstLine(receipt.stderr) ?? '';
-      return { notes, refused: `orca worktree create failed for ${request}; nothing was dispatched`, repair: String(detail).slice(0, 200) };
-    }
-    worktree = String(receipt.receipt.result?.worktree?.path ?? '');
-    if (worktree === '') return { notes, cannot: 'the worktree receipt names no path, so there is nowhere to dispatch into' };
-    if (!existsSync(worktree)) return { notes, cannot: `the receipt names ${JSON.stringify(worktree)}, which is not a directory on this host` };
-    created = true;
-    notes.push(`orca placed the worktree and its setup hook is running: ${worktree}`);
-  }
-
-  // Provisioning is `ax worktree setup`'s job, and asking it here is what
-  // replaced this verb's own copy of it. A `--probe` session is throwaway and
-  // says so; every other launch refuses a tree with no agent context file,
-  // because a child with no URL to test against is what --setup skip produced.
-  if (probe) {
-    notes.push('--probe: no provisioning and no habitability proof — never for real work');
-    return { worktree, notes };
-  }
-
-  // Once a tree EXISTS, a provisioning failure is no longer "nothing was
-  // created": exit 1 promises that, so these answer cannot-establish and name
-  // the tree, which is also what a second launch will reuse.
-  //
-  // `cwd` is the whole contract with setup: it never chdirs, and it passes that
-  // path down to every probe that answers per directory (the proxy route in
-  // particular). This call used to add `env: { …env, PWD: worktree }`, which
-  // `setup` does not read and which `child_process` ignores anyway — a
-  // directory override that overrode nothing.
-  const database = databaseArgs(launchConfig, ticket);
-  notes.push(...database.notes);
-  const setupCode = setupFn(database.argv, { cwd: worktree });
-  if (setupCode !== 0) {
-    return {
-      notes,
-      cannot: `ax worktree setup did not finish in ${worktree}${created ? ' (which this launch just created)' : ''}, so the child would start in a tree nobody prepared`,
-      repair: `cd ${worktree} && ax worktree setup   # then re-run this launch; it reuses that tree`,
-    };
-  }
-  if (!existsSync(join(worktree, CONTEXT_PATH))) {
-    return {
-      notes,
-      cannot: `${worktree} has no ${CONTEXT_PATH}, so the child would have no URL to test against`,
-      repair: `cd ${worktree} && ax worktree setup   # then re-run this launch; it reuses that tree`,
-    };
-  }
-  notes.push(`provisioned: ${join(worktree, CONTEXT_PATH)} describes this worktree's own port and database`);
-  return { worktree, notes };
-}
-
-/**
- * The worktree this ticket already has, or ''.
- *
- * With a ticket the match is the request's OWN name plus the ticket segment
- * followed by a separator: `GAP-35` inside `gap-357-…` is a different ticket, and
- * reusing another ticket's tree dispatches a child into a branch that is not its
- * own, while a differently-slugged earlier launch of the SAME ticket is the tree
- * this launch must reuse.
- *
- * `exact` turns that prefix rule off, and `--name` needs it off. A name is not a
- * ticket segment with slugs hanging from it — it is the whole identity, so the
- * prefix rule would make `--name auth` reuse the tree of `auth-refactor`: a
- * different piece of work, already provisioned, already someone's.
- */
-function existingFor(base, subject, { exact = false } = {}) {
-  let entries;
-  try {
-    entries = readdirNames(base);
-  } catch {
-    return '';
-  }
-  const wanted = String(subject).toLowerCase();
-  const hit = entries
-    .filter(name => {
-      const lower = name.toLowerCase();
-      if (exact) return lower === wanted;
-      return lower === wanted || lower.startsWith(`${wanted}-`) || lower.startsWith(`${wanted}_`);
-    })
-    .sort();
-  return hit.length === 0 ? '' : join(base, hit[0]);
-}
-
-const readdirNames = base =>
-  readdirSync(base, { withFileTypes: true })
-    .filter(entry => entry.isDirectory())
-    .map(entry => entry.name);
-
-/** Poll the selector a dispatch will use, on evidence, against a deadline. */
-function untilSeen({ run, worktree, deadline, now, sleep, tickMs }) {
-  for (;;) {
-    const out = run(['worktree', 'show', '--worktree', `path:${worktree}`, '--json']);
-    if (out.status === 0 && out.receipt?.ok === true) return true;
-    if (now() >= deadline) return false;
-    sleep(tickMs);
-  }
 }
 
 /**
@@ -757,142 +570,5 @@ function readContract(launchConfig, root) {
     return { text: readFileSync(path, 'utf8'), path };
   } catch {
     return { missing: true, path };
-  }
-}
-
-/**
- * Four proofs, one verdict shape on both hosts: the model marker was applied by
- * the adapter, the `worker` role and its implementation playbook reached the
- * first turn, and the pane emitted.
- *
- * The transcript is authoritative for both configuration effects. A child's
- * own model word is stale after a switch; a composed `[omp role=…]` line proves
- * only that the parent wrote an intention. The hidden role receipt is written
- * by the child-side extension after OMP discovery and skill loading. Remotely
- * the identical reader runs on the machine holding that transcript.
- *
- * Liveness is CURSOR MOVEMENT, never duration: two samples, and any advance
- * proves the pty emitted.
- */
-function verify({ run, env, on, wait, worktree, request, ticket, instruction, lineage, sessionsRoot, host, exec, cwd, now, sleep }) {
-  const recordPath = join(defaultStore(env), `${request}.json`);
-  let pane = '';
-  try {
-    pane = workerPane(recordPath).handle;
-  } catch {
-    pane = '';
-  }
-
-  // `ticket === null` is a launch dispatched by name: there is no id, no title
-  // and no url, and printing empty fields would read as a tracker that failed.
-  section(ticket === null ? `LAUNCHED ${request} — ${instruction}` : `LAUNCHED ${ticket.id} — ${ticket.title}`);
-  if (ticket === null) note('ticket    none — dispatched by name, and the brief is the whole definition of the work');
-  else note(`ticket    ${ticket.url}  (${ticket.state})`);
-  note(`host      ${on === '' ? 'here' : on}`);
-  if (worktree !== '') note(`worktree  ${worktree}`);
-  note(`request   ${request}`);
-  note(`pane      ${pane === '' ? 'unnamed by the receipt' : pane}`);
-  note(`lineage   ${lineage}`);
-
-  if (wait === 0) {
-    note('verified  skipped (--wait 0)');
-    return 0;
-  }
-
-  const needle = basename(worktree === '' ? request : worktree);
-  const deadline = now() + wait * 1000;
-  const tickMs = tickOf(env);
-  let proof = null;
-  let first = null;
-  let moved = null;
-
-  for (;;) {
-    if (proof === null) proof = readProof({ needle, env, sessionsRoot, host, exec, cwd });
-    if (pane !== '') {
-      const sample = readPane(run, pane, { limit: 1, environment: on });
-      const cursor = sample.cursor;
-      if (cursor !== null) {
-        if (first === null) first = cursor;
-        else if (cursor !== first) moved = cursor;
-      }
-    }
-    if (proof !== null && moved !== null) break;
-    if (now() >= deadline) break;
-    sleep(tickMs);
-  }
-
-  const model = proof?.model ?? null;
-  const sessionRole = proof?.sessionRole ?? null;
-  const skillNames = sessionRole?.status === 'applied' ? sessionRole.skills : [];
-  note(`model     ${model === null ? 'unreadable' : `${model.model}|${model.role}`}`);
-  note(
-    `session   ${
-      sessionRole === null
-        ? 'unreadable'
-        : sessionRole.status === 'refused'
-          ? `${sessionRole.role}|REFUSED ${sessionRole.reason}`
-          : `${sessionRole.role}|${skillNames.join(',') || 'no skills'}`
-    }`,
-  );
-  note(`liveness  cursor ${first === null ? 'unreadable' : first} -> ${moved === null ? 'unchanged' : moved}`);
-
-  const roleReady =
-    sessionRole?.status === 'applied' &&
-    sessionRole.role === 'worker' &&
-    skillNames.includes('implementation');
-  if (model !== null && model.role === 'default' && roleReady && moved !== null) {
-    ok('verified  the role, playbook, model marker, and pane movement are proven');
-    fix(`ax worker tail ${pane || '<pane>'}`);
-    return 0;
-  }
-
-  if (model === null) {
-    bad('UNPROVEN model: no transcript yet. The child may still be booting, or its transcript sits on another host and was unreadable from here.');
-  } else if (model.role === '') {
-    bad('UNPROVEN model: the child runs its BOOT model — the spec marker did not apply.');
-  } else if (model.role === 'fallback') {
-    bad('UNPROVEN model: the quota chain moved this session, so the marker is not what decided.');
-  } else {
-    bad(`UNPROVEN model: ${model.model}|${model.role}`);
-  }
-  if (sessionRole === null) {
-    bad('UNPROVEN session role: no child-side role receipt was found.');
-  } else if (sessionRole.status === 'refused') {
-    const missing = sessionRole.missingSkills.length === 0 ? '' : `; missing ${sessionRole.missingSkills.join(', ')}`;
-    bad(`REFUSED session role ${sessionRole.role}: ${sessionRole.reason}${missing}`);
-  } else if (sessionRole.role !== 'worker') {
-    bad(`UNPROVEN session role: expected worker, got ${sessionRole.role}`);
-  } else if (!skillNames.includes('implementation')) {
-    bad(`UNPROVEN session playbook: worker did not receive implementation (received ${skillNames.join(', ') || 'none'})`);
-  }
-  if (moved === null) {
-    bad(`UNPROVEN liveness: the pane cursor did not advance within ${wait}s. A live in-place spinner also emits no new line — read the pane before concluding.`);
-  }
-  note('The dispatch DID happen. Do NOT relaunch (F-001) — inspect it:');
-  fix(`ax worker start --show --request ${request}`);
-  return 3;
-}
-
-/** The same launch proof read, wherever the transcript lives. */
-function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
-  if (host === null) return launchProof({ needle, env, sessionsRoot });
-  const root = host.sessions ?? '';
-  if (root === '') return null;
-  // Through ssh because ssh rejoins its arguments into one remote command.
-  // Every value is quoted as data, and the target grammar is closed by remote().
-  const out = remote(
-    args => exec('ssh', args, cwd),
-    host.ssh,
-    `ax worker transcript --launch-proof ${quote(needle)} --sessions ${quote(root)}`,
-  );
-  if (out.error || out.status !== 0) return null;
-  const answer = firstLine(out.stdout);
-  if (answer === '') return null;
-  try {
-    const parsed = JSON.parse(answer);
-    if (parsed === null || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
   }
 }

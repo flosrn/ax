@@ -19,18 +19,18 @@
 // REFUSE rather than run when promotion did not take, and hand the caller the
 // child's own exit status.
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
 import { loadCheckoutConfig, repoPaths } from './config.mjs';
 import { removeBlock, writeBlock } from './dotenv.mjs';
-import { isMainCheckout } from './git.mjs';
+import { currentBranch, isMainCheckout } from './git.mjs';
 import { fatal, warn } from './log.mjs';
 import { identify } from './worktree/identity.mjs';
-import { PREFIX, SUPABASE_LABEL, planWorktree } from './worktree/plan.mjs';
+import { PREFIX, planWorktree } from './worktree/plan.mjs';
 import { probeAll, readWorktreeRecord } from './worktree/probes.mjs';
-import { commandNeedsIsolation, isIsolatedConfig, promote } from './worktree/supabase.mjs';
+import { commandNeedsIsolation, isIsolatedConfig, promoteFromPlan } from './worktree/supabase.mjs';
 
 /** Names the CLI to run when neither the workspace nor PATH has an acceptable one. */
 export const CLI_ENV = 'AX_SUPABASE_CLI';
@@ -223,6 +223,12 @@ function protect(argv, { env, root, config, deps }) {
   warn('promoting this checkout to its own isolated Supabase stack first.');
 
   const result = promoteCheckout();
+  // The promotion's warnings are data, printed here where every outcome of the
+  // promotion is already narrated: they are the only notice anyone gets of a
+  // stack the promotion stopped addressing — a foreign config.toml claim, for
+  // instance — and resolveProjectId's contract says silence is the one outcome
+  // never acceptable. An absent list is simply "no warnings".
+  for (const line of result.warnings ?? []) warn(line);
   if (!result.promoted) {
     // Refusing outright is the whole point. Running anyway — against the shared
     // database, or against an isolated config whose stack never came up — is
@@ -286,36 +292,22 @@ function promoteCurrent({ root, config, branch = currentBranch(root) }) {
     else writeBlock(path, write);
   }
 
-  const result = promote({
-    cwd: root,
-    identity: plan.identity,
-    base: config.ports.supabaseBase,
-    step: config.ports.step,
-    maxSlot: config.ports.maxSlot,
-    recorded: String(plan.supabase.offset),
-    relativePath: configTomlPath(config),
-    envFiles: [join(config.apps.web, '.env.local')],
-    envLabel: SUPABASE_LABEL,
+  // WARN lines travel back as data for `protect` to print — the collection is
+  // measurement, the printing is the guard's own voice.
+  const warnings = plan.log.filter(line => line.startsWith('WARN:')).map(line => line.slice('WARN:'.length));
+
+  const result = promoteFromPlan({
+    plan,
+    config,
+    root,
     envPrefix: PREFIX,
-    apiUrl: plan.urls.publishedUrl,
-    prefix: `${config.project.name}-`,
     start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'], cwd: root },
     write: writeBlock,
   });
 
   return result.started
-    ? { promoted: true, projectId: result.projectId, offset: result.offset }
-    : { promoted: false, reason: `the stack for ${result.projectId} did not start` };
-}
-
-/** A detached HEAD has no branch name; the plan falls back to the directory. */
-function currentBranch(cwd) {
-  try {
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return branch === 'HEAD' ? undefined : branch;
-  } catch {
-    return undefined;
-  }
+    ? { promoted: true, projectId: result.projectId, offset: result.offset, warnings }
+    : { promoted: false, reason: `the stack for ${result.projectId} did not start`, warnings };
 }
 
 /** Run the real CLI and report its own exit status. */

@@ -26,8 +26,8 @@ import { removeBlock, writeBlock } from '../src/dotenv.mjs';
 import { addWorktree } from '../src/git.mjs';
 import { worktreeFindings } from '../src/worktree/doctor.mjs';
 import { identify } from '../src/worktree/identity.mjs';
-import { KEYS, RUNTIME_LABEL, SUPABASE_LABEL, planWorktree } from '../src/worktree/plan.mjs';
-import { applyConfig } from '../src/worktree/supabase.mjs';
+import { KEYS, RUNTIME_LABEL, planWorktree } from '../src/worktree/plan.mjs';
+import { SUPABASE_LABEL, applyConfig } from '../src/worktree/supabase.mjs';
 
 const config = {
   project: { name: 'demo', display: 'Demo' },

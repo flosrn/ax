@@ -475,7 +475,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 // No return address stated. The pane that sent this was witnessed
                 // by Orca, so the Run IT published for itself is a route this side
                 // resolves from a key the sender did not choose — see
-                // `runAddressOfHandle` in `registry.ts` for the bound on that.
+                // `runAddressOfHandle` in `store.ts` for the bound on that.
                 const published = deps.paneRoute?.(paneHandle) ?? '';
                 if (RUN_ADDRESS.test(published)) {
                   deps.recordRoute(msgId, { run: published, peer: who.name });

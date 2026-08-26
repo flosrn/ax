@@ -14,6 +14,8 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
+import { capture as execCapture } from './exec.mjs';
+
 /** Override for the primary checkout. Wins only when it names a real directory. */
 export const MAIN_CHECKOUT_ENV = 'AX_MAIN_CHECKOUT';
 
@@ -26,12 +28,7 @@ function git(cwd, args) {
 }
 
 /** Stdout of a successful git command, or `undefined`. Errors are not findings here. */
-function capture(cwd, args) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
-  const out = result.stdout.trim();
-  return out === '' ? undefined : out;
-}
+const capture = (cwd, args) => execCapture('git', args, { cwd });
 
 const physical = path => {
   try {
@@ -100,6 +97,12 @@ export function isMainCheckout(cwd = process.cwd()) {
   const root = repoRoot(cwd);
   if (root === undefined) return false;
   return root === mainCheckout(cwd);
+}
+
+/** The branch `cwd` sits on, or `undefined` for a detached HEAD (or no repository) — callers fall back to the directory. */
+export function currentBranch(cwd) {
+  const branch = capture(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return branch === 'HEAD' ? undefined : branch;
 }
 
 /**

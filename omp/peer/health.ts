@@ -8,7 +8,7 @@
  * reads and back into backoff.
  *
  * The decision lives here, apart from the extension, for the same reason
- * addressing lives in `registry.ts`: it is the part worth pinning with tests,
+ * addressing lives in `address.ts`: it is the part worth pinning with tests,
  * and it must not need a running Orca, a `pi` facade or a clock to be checked.
  * Callers pass `now`; nothing here reads the wall clock or performs I/O.
  */

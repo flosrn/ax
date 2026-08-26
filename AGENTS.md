@@ -43,20 +43,23 @@ them.
 | `src/worktree/locate.mjs` | proof that a destructive worktree target belongs to ax |
 | `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
 | `src/worker/start.mjs`, `src/worker/launch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs` | dispatch, prove, repair and close |
+| `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a LAUNCHED receipt carries |
 | `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes |
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup, tracker, placement and parent route |
 | `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
-| `src/pr-gate.mjs` | every merge ground, executed against the exact head SHA |
+| `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
+| `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |
 | `src/board.mjs` | the one monotonic writer of a worktree checkpoint |
 | `src/pin.mjs` | exact npm release migration, install proof and doctor; never git |
 | `src/orca-bin.mjs` | Orca binary resolution and JSON receipt parsing for CLI verbs |
+| `src/exec.mjs`, `src/git.mjs`, `src/gh.mjs` | process spawning (status-as-data, one default adapter), root/main derivation, the repository as `gh` names it |
 | `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
-| `omp/model/index.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
+| `omp/model/index.ts`, `omp/model/activation.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
 | `omp/roles/`, `omp/playbooks/` | coordinator, orchestrator, worker, triage-worker and refine-worker contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
-| `omp/shared/ax.ts`, `omp/ax-run.mjs` | package-local ax invocation; never PATH or a global version |
+| `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
 | `src/config.mjs`, `src/schema.mjs`, `ax.schema.json` | the per-repository contract and defaults |
 | `src/commands.mjs` | command registry: help, visibility and generated AGENTS.md lines |
 | `release-please-config.json`, `.release-please-manifest.json`, `.github/workflows/publish.yml` | version, changelog, tag, GitHub Release and OIDC npm publish |
@@ -133,6 +136,10 @@ version pins must match the code.
 `F-0xx` is a measured finding filed in `gapilabs/omp`; the module header states the rule it paid for.
 `ADR NNNN` lives under `~/.omp/docs/adr/`. Neither is required reading before a patch unless the
 header's explanation is insufficient.
+
+Documented solutions live under `docs/solutions/` — problems this repo has already solved
+(bugs, practices), one file each, with YAML frontmatter (`module`, `tags`, `problem_type`);
+relevant when implementing or debugging in an area a past learning covers.
 
 **Orca is readable source, not a black box.** This machine runs a patched Orca fork (ADR 0026);
 the source lives at `~/Code/flosrn/orca` (`upstream` = stablyai/orca). Answer an Orca behavior

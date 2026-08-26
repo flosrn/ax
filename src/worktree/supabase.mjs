@@ -18,10 +18,10 @@
  * `ports.maxSlot`); the project prefix arrives from `project.name`.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { run as execRun } from '../exec.mjs';
 import { gitBlobSha } from '../hash.mjs';
 import { isPortBound } from './ports.mjs';
 
@@ -560,6 +560,14 @@ export function envKeys({ ports, offset, projectId: id, envPrefix = '' }) {
   return keys;
 }
 
+/**
+ * The label the Supabase env block carries, for every writer that must agree
+ * on it: the plan's env writes, the promotion path, and the erase step. It
+ * lives beside `envKeys` because the key set it labels is owned here — a
+ * second spelling of either is how two writers drift.
+ */
+export const SUPABASE_LABEL = 'Supabase endpoints';
+
 /** A project id this tooling could have written: Docker-name-safe and not truncated. */
 const PLAUSIBLE_PROJECT_ID = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -622,30 +630,28 @@ export function resolveProjectId({ identity, prefix = '', recorded, cwd, relativ
  * half-way still leaves the app and the config naming the same project. The
  * reverse order produces an isolated stack the app cannot see.
  *
- * Both halves of the claim are RESOLVED rather than derived: `recorded` is the
- * block this worktree already took and `recordedProjectId` the id its
- * containers already run under, and a re-run after a branch rename keeps both.
- * Deriving the id from the current branch on every run is what used to start a
- * second stack on the first stack's ports and leave the first unaddressable.
+ * Both halves of the claim arrive DECIDED, never derived here: the plan is the
+ * one resolver of `projectId` and `offset` (resolveProjectId / resolveOffset,
+ * recorded claims included), and this verb only renders and writes. Deriving
+ * the id from the current branch on every run is what used to start a second
+ * stack on the first stack's ports and leave the first unaddressable — and
+ * both real callers had forgotten the optional parameter that prevented it,
+ * which is why the decided values now arrive through `promoteFromPlan`, read
+ * off the plan structurally instead of remembered ninth at every call site.
  *
  * `run` and `write` are injected so that order is testable without Docker.
  */
 export function promote({
   cwd,
-  identity,
+  projectId: id,
+  offset,
   base,
-  step,
-  maxSlot,
-  recorded,
-  recordedProjectId,
   relativePath,
   envFiles = [],
   envLabel,
   envPrefix = '',
   apiUrl,
-  prefix,
   start,
-  isBound = isPortBound,
   run = defaultRun,
   write,
 }) {
@@ -653,10 +659,6 @@ export function promote({
   if (!write) throw new Error('promote needs an injected `writeBlock`');
 
   const steps = [];
-  const { projectId: id, source: idSource, conflict } = resolveProjectId({
-    identity, prefix, recorded: recordedProjectId, cwd, relativePath, base,
-  });
-  const { offset, source } = resolveOffset({ identity, recorded, base, step, maxSlot, isBound, cwd, relativePath });
   const ports = blockPorts(base, offset);
 
   const config = applyConfig({ configToml: join(cwd, relativePath), projectId: id, offset, base, apiUrl });
@@ -676,10 +678,35 @@ export function promote({
   const started = run(start.command, start.args ?? [], { cwd: start.cwd ?? cwd });
   steps.push('start');
 
-  // `conflict` is a stack this run just stopped addressing. The caller has to
-  // surface it: it is the only notice anyone gets that containers were left
-  // behind under another name.
-  return { projectId: id, projectIdSource: idSource, conflict, offset, offsetSource: source, ports, config, steps, started: started.status === 0 };
+  return { projectId: id, offset, ports, config, steps, started: started.status === 0 };
+}
+
+/**
+ * The plan-shaped door to `promote`, and the only one the verbs use.
+ *
+ * It owns the assembly each caller used to hand-write a dozen options for —
+ * the label, the config.toml path, the env file — so the field that carries
+ * the invariant (the plan's own resolved `projectId`) is read structurally
+ * here instead of remembered at every call site.
+ */
+export function promoteFromPlan({ plan, config, root, start, envPrefix, run = defaultRun, write }) {
+  // Both callers decide the mode before calling (setup's isolated branch, the
+  // guard's refusal on a shared plan) — an isolated plan is this door's input,
+  // not something it re-checks.
+  return promote({
+    cwd: root,
+    projectId: plan.supabase.projectId,
+    offset: plan.supabase.offset,
+    base: config.ports.supabaseBase,
+    relativePath: join(config.apps.web, 'supabase', 'config.toml'),
+    envFiles: [join(config.apps.web, '.env.local')],
+    envLabel: SUPABASE_LABEL,
+    envPrefix,
+    apiUrl: plan.urls.publishedUrl,
+    start,
+    run,
+    write,
+  });
 }
 
 /**
@@ -703,8 +730,5 @@ export function teardown({ cwd, projectId: id, cli = 'supabase', run = defaultRu
   return { stopped: result.status === 0, projectId: target };
 }
 
-/** Default command runner. Never throws: a missing binary is a status, not a crash. */
-function defaultRun(command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options });
-  return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
-}
+/** Default command runner — the shared adapter (src/exec.mjs). Never throws: a missing binary is a status, not a crash. */
+const defaultRun = (command, args, options = {}) => execRun(command, args, options);

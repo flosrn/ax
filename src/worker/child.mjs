@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { defaultExec } from './release.mjs';
+import { defaultExec } from '../exec.mjs';
 
 /**
  * Worktree-relative, because it is written into the child's tree and excluded

@@ -35,7 +35,8 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 
 // Lineage and delivery live in one place, shared with `orca-peer.ts`.
-import { report as sendReport, warmLineage } from '../peer/registry.ts';
+import { warmLineage } from '../peer/lineage.ts';
+import { report as sendReport } from '../peer/report.ts';
 import { createSessionOwner, isSubagentSession, sessionIdOf } from '../shared/session.ts';
 
 // No-todo reports are once per SESSION, not once per pane: Orca may reuse a

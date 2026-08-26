@@ -13,19 +13,18 @@
 // Only the third step is allowed to change anything, so a plan can be printed,
 // diffed or re-derived without provisioning a thing.
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { removeBlock, writeBlock } from '../dotenv.mjs';
-import { excludePaths, installHooks, isMainCheckout } from '../git.mjs';
+import { currentBranch, excludePaths, installHooks, isMainCheckout } from '../git.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { CONTEXT_PATH, renderContext } from './context.mjs';
 import { identify } from './identity.mjs';
 import { PREFIX, planWorktree } from './plan.mjs';
 import { probeAll, readWorktreeRecord } from './probes.mjs';
-import { promote } from './supabase.mjs';
+import { promoteFromPlan } from './supabase.mjs';
 
 /** Runtime paths that exist in every worktree and belong in none of its diffs. */
 const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
@@ -117,19 +116,11 @@ function apply({ plan, config, root, main }) {
   ok(changed === 0 ? 'env files already match the plan' : `updated ${changed} env block(s)`);
 
   if (plan.supabase.mode === 'isolated') {
-    const started = promote({
-      cwd: root,
-      identity: plan.identity,
-      base: config.ports.supabaseBase,
-      step: config.ports.step,
-      maxSlot: config.ports.maxSlot,
-      recorded: String(plan.supabase.offset),
-      relativePath: join(config.apps.web, 'supabase', 'config.toml'),
-      envFiles: [join(config.apps.web, '.env.local')],
-      envLabel: 'Supabase endpoints',
+    const started = promoteFromPlan({
+      plan,
+      config,
+      root,
       envPrefix: PREFIX,
-      apiUrl: plan.urls.publishedUrl,
-      prefix: `${config.project.name}-`,
       start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'], cwd: root },
       write: writeBlock,
     });
@@ -151,7 +142,11 @@ function apply({ plan, config, root, main }) {
     // happily against the SHARED database while every check reports isolation —
     // the most confusing state this tooling can leave behind. Nothing can
     // reload that process from the outside, so the instruction has to be given.
-    if (started.offsetSource !== 'recorded') fix('restart the dev server — the database endpoint just changed');
+    // The plan is the resolver of whether this block is new (`scan`) or already
+    // this worktree's (`recorded` / `config`); `promote` only reports start.
+    if (plan.supabase.source !== 'recorded' && plan.supabase.source !== 'config') {
+      fix('restart the dev server — the database endpoint just changed');
+    }
   } else {
     note('sharing the primary checkout’s database — promoted automatically the first time a command would write');
   }
@@ -178,16 +173,3 @@ function forcedDatabase(argv) {
   return undefined;
 }
 
-/** A detached HEAD has no branch name; the plan falls back to the directory. */
-function currentBranch(cwd) {
-  try {
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return branch === 'HEAD' ? undefined : branch;
-  } catch {
-    return undefined;
-  }
-}

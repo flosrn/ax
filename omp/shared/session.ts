@@ -27,7 +27,7 @@
  * inside the accepted top-level module instance.
  *
  * The latch is still not the whole peer guard. What protects the registry
- * across processes is the ownership fence in `omp/peer/registry.ts`, where
+ * across processes is the ownership fence in `omp/peer/address.ts`, where
  * `register` refuses a differing `sessionId` whose recorded `ownerPid` is
  * alive. Keep both.
  */
