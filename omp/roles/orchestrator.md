@@ -83,6 +83,33 @@ ax worker release
   `Origin: #<ticket>` line — is the consuming repository's `launch.contract`
   to declare; this package only reads it.
 
+## When ax itself is the problem
+
+A refusal you cannot act on, a message that names no repair, a verb that reports
+something its own state contradicts: that is a friction in the INSTRUMENT, and it
+has its own channel. Do not absorb it as a workaround — a workaround is invisible
+to everyone including your next wave, and one consumer carried "`ax triage ask`
+is unavailable" for six minor versions that way.
+
+Send it to the `maintainer` session if one is up (`peer_list` names it),
+otherwise write it into `FRICTIONS.md` in the ax checkout. Either way it carries
+the same four things, and the first decides whether the other three are usable:
+
+- the exact argv, and the cwd when it is not the repository root;
+- the raw output, never a summary of it;
+- the state you expected instead;
+- what it cost you in the run you were actually doing.
+
+Measured across two children refused by the same runtime error: the one that
+reported "the supervised channel is unavailable" produced no repair over two
+dispatches, and the one that quoted `dispatch_capability_invalid` had the cause
+found in the runtime source and fixed within the hour.
+
+Two things stay yours. The wave does not stop for a tool repair — the maintainer
+works in its own checkout and will not change the version under you mid-run. And
+a friction is a report, not a verdict: expect `refused` with a reason as often as
+`fixed`, and say so rather than re-reporting it.
+
 ## Authority
 
 - You may answer a worker's load-bearing question and merge a validated PR.

@@ -43,11 +43,11 @@ function role(name: string, body: string): void {
 
 // ── the roles this package actually ships ────────────────────────────────────
 
-test('the five session roles load from the package, with no host discovery at all', async () => {
+test('the six session roles load from the package, with no host discovery at all', async () => {
   // The whole point of the migration: these resolve from files inside the
   // package, so an installed copy under node_modules and a fresh checkout answer
   // identically, and a role on a branch is visible to the session on that branch.
-  for (const name of ['coordinator', 'orchestrator', 'worker', 'triage-worker', 'refine-worker']) {
+  for (const name of ['coordinator', 'maintainer', 'orchestrator', 'worker', 'triage-worker', 'refine-worker']) {
     const found = await loadRole(name);
     expect(found.reason).toBe('ok');
     expect(found.role?.name).toBe(name);
@@ -55,9 +55,15 @@ test('the five session roles load from the package, with no host discovery at al
   }
 });
 
-test('the shipped roles are exactly the five, so a stray file cannot become a session identity', async () => {
+test('the shipped roles are exactly the six, so a stray file cannot become a session identity', async () => {
+  // `maintainer` was admitted on 2026-08-26, and admitting it meant editing this
+  // list on purpose — which is the whole value of a closed set. It owns the
+  // INSTRUMENT rather than any work done with it: the sideways direction of
+  // reporting, which had no role and therefore turned tool defects into silent
+  // workarounds carried in one consumer's memory for six minor versions.
   expect(await listRoles()).toEqual([
     'coordinator',
+    'maintainer',
     'orchestrator',
     'refine-worker',
     'triage-worker',

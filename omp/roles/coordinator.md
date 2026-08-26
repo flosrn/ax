@@ -54,6 +54,20 @@ recovery for a pass you never dispatched.
 Never hand-roll `worker-start`, reuse one session for several issues, or create a
 worktree for a comment.
 
+## When ax itself is the problem
+
+A refusal you cannot act on, or a verb that reports something its own state
+contradicts, is a friction in the INSTRUMENT and not in your pass. Send it to the
+`maintainer` session if one is up (`peer_list` names it), otherwise write it into
+`FRICTIONS.md` in the ax checkout — with the exact argv, the cwd, the raw output
+and the state you expected. A summary produces no repair: measured on two
+children refused by the same runtime error, the quoted error code was fixed
+within the hour and the summarised one was not fixed at all over two dispatches.
+
+Never absorb it as a workaround, and never stop your pass for it — the maintainer
+repairs in its own checkout and will not move your version mid-pass. `refused`
+with a reason is as normal an answer as `fixed`.
+
 ## Authority
 
 - You may edit a draft, arbitrate a refine repair proposal, and publish.
