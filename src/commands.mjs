@@ -71,7 +71,7 @@ export const COMMANDS = [
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
-      ['transcript <cible>', 'a child’s session, or --last-message: its last word'],
+      ['transcript <target>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
     ],
