@@ -51,11 +51,16 @@ const CAPABILITY = /\bdcap_[A-Za-z0-9_-]+/;
  * child's command, or a session reasoning about this very code. Taking that
  * token would hand one dispatch's grant to another caller.
  *
- * An unbounded first-match scan is therefore wrong, not merely slower: it would
- * answer "here is your capability" to a session that has none. 40 sits well
- * above the cluster and well below the outliers, and a later token is ignored on
- * purpose — this reader answers "what was I dispatched with", never "what tokens
- * appear in my history".
+ * BOTH DIRECTIONS, because a reader arrives with a symptom and not with a
+ * theory. Raise it (or drop the bound) and this answers "here is your
+ * capability" to a session that has none, handing one dispatch's grant to
+ * another caller. Lower it below the cluster and a real dispatched child reads
+ * as undispatched, so its ask goes out unauthorized and is refused.
+ *
+ * The asymmetry is the part worth reading if only one line is read: too LOW
+ * costs a refusal the caller can act on — the flag, named in that refusal, is
+ * the way through. Too HIGH costs a wrong grant, which nothing downstream can
+ * detect. When in doubt, err low.
  */
 const PREAMBLE_LINES = 40;
 

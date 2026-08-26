@@ -201,6 +201,9 @@ Three habits follow, and they are cheap:
 - **When a report and a `cat` disagree, the `cat` wins.** Reach for it first when the report is bad
   news: bad news is when a reader is least inclined to ask for proof, and most inclined to start
   repairing.
-- **A boundary documents its consequence, not its origin.** If moving a constant can change a
-  verdict, the comment beside it says which verdict, so the next reader cannot break it while
-  improving it.
+- **A boundary documents its consequence in BOTH directions, and says which side is safe.** A
+  reader arrives with a symptom, not a theory, and does not know in advance which way they are
+  tempted: raising `PREAMBLE_LINES` hands over another dispatch's key, while *lowering*
+  `MAX_THREAD_PAGES` makes ordinary PRs undecidable. So name both, then name the asymmetry — "raise
+  it and the cost is API calls, never a wrong verdict" is the one clause a hurried reader will use.
+  One side usually costs resources and the other costs a verdict; only the second is a trap.
