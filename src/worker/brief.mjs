@@ -54,7 +54,13 @@ const OPERATOR_HEADING = 'OPERATOR BRIEF';
  *  - the ticket: the coordinator reads it, and a ticket left at its opening
  *    state is a queue lie that re-dispatches finished work.
  *  - blocking decisions: a child that decides alone has silently taken the
- *    coordinator's job, and nobody is told.
+ *    coordinator's job, and nobody is told. It carries HOW to escalate for a
+ *    measured reason (2026-08-26): of two children refused by the same runtime
+ *    error, the one that reported the summary — "the supervised channel is
+ *    unavailable" — produced no repair across two dispatches, while the one that
+ *    quoted `dispatch_capability_invalid` and named the flag it was missing had
+ *    the cause found in the runtime source and fixed the same hour. An exact
+ *    code makes a source findable; a summary makes it guessable.
  *  - the stall watcher: stated so prolonged silence is not read as a demand for
  *    heartbeat noise. It is a net, not a leash.
  *  - verification: what was exercised, not a project-wide sweep run for show.
@@ -81,7 +87,9 @@ const BULLETS = [
   ].join('\n'),
   [
     '- Any decision that blocks you goes to the coordinator; your report wakes them. Deciding it alone',
-    '  is taking their job without telling them.',
+    '  is taking their job without telling them. Quote the exact error — its code, its argv, the raw',
+    '  output — never a summary of it: a code makes the cause findable, "it does not work" leaves it to',
+    '  be guessed.',
   ].join('\n'),
   [
     '- A stall watcher is armed on your dispatch: prolonged silence on your pane raises ONE alert on',

@@ -189,13 +189,32 @@ said "stop rather than loop forever", which describes the intent and leaves out 
 reader needs — that crossing it registers an `unknown`, which fails the merge gate closed, so a
 bigger PR becomes unmergeable-until-read and never passed on a partial read.
 
-## The rule behind all six
+## The seventh: the one with no consequence at all
+
+Written into a message whose subject was this file: a test count of `986` where the suite says `985`.
+No test had been added between the two runs; the number was incremented from memory while drafting.
+
+It is worth recording precisely because it breaks the pattern. The other six each had a
+consequence — a re-dispatched worker, a skewed arbitrage, a merge gate bypassed, a key handed to the
+wrong caller — and the consequence is what creates verification pressure. Here there is none: a
+count in a chat message, wrong by one, that nobody would have caught and that would have broken
+nothing. So "prefer the direction whose failure is loud" does not reach it. There is no failure at
+all, only an unverified claim, and no rule about boundaries or renderings would have caught it.
+
+**Discipline degrades where it costs nothing, which is exactly where it is trained.** A figure with
+no consequence is the one place a person can practise incrementing from memory and never be
+punished — until the same reflex lands on a safety boundary. The positive side of the same mechanism
+is already in this repo: `MAX_BUFFER` and `LABEL_CAP` were exemplary before any rule named them,
+because someone held the practice where nobody was looking.
+
+## The rule behind all seven
 
 A report about an operation is not the operation. Neither a claimed absence nor a claimed failure is
 checkable from the report that carries it, so both have to be settled against the thing itself — the
 file's bytes, the entry separator count, the cursor position, the artifact on disk.
 
-And underneath all six, one choice made by accident: **preferring the silent failure to the loud
+And underneath the first six — the seventh is outside it, having no failure to be loud — one choice
+made by accident: **preferring the silent failure to the loud
 one.** In every instance the defect was not a wrong value, it was a direction whose failure nothing
 downstream could see. A latched read printed a verdict about a session it had not waited for. A 0%
 meaning "unmeasured" rendered as "no cost, change nothing". A draft's question count stood in for an
