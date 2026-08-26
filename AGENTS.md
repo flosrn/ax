@@ -46,6 +46,7 @@ them.
 | `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a LAUNCHED receipt carries |
 | `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes |
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
+|`src/worker/capability.mjs`|the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant|
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup, tracker, placement and parent route |
 | `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
 | `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
