@@ -207,7 +207,33 @@ punished — until the same reflex lands on a safety boundary. The positive side
 is already in this repo: `MAX_BUFFER` and `LABEL_CAP` were exemplary before any rule named them,
 because someone held the practice where nobody was looking.
 
-## The rule behind all seven
+## The eighth: an unverified claim that something is impossible
+
+The costliest shape, and the last one found. Having omitted a new module from AGENTS.md's routing
+table, the omission was explained like this: "no test can guard this — a test can check that a row
+points at a real file, never that a real file has its row."
+
+The first half is true. The second is false. A routing table maps a directory listing, a listing is
+enumerable, so `readdirSync` plus the table's own rows settles completeness in three lines. The
+untestable direction is the other one — whether a row *describes* its module correctly — and the
+omission was not of that kind. It was an absent row: precisely the mechanizable half.
+
+What makes this worse than the seventh is not the error, it is the output. The 986 was a wrong number
+with no consequence. This was a wrong number of a different type — zero, as in "zero available
+guards" — and it produced a **design decision**: leave the invariant to human discipline. An
+unverified claim of impossibility does not merely misstate the world; it forecloses the work that
+would have corrected it, and it is the hardest kind to catch because it arrives sounding like an
+obvious constraint rather than a claim.
+
+The repair was to write the three tests, and to prove they fire: a planted module made the suite red,
+removing it made it green again. The exemption list is guarded too, because an exemption for a
+deleted file is a permission the next file at that path inherits in silence.
+
+**Before accepting that an invariant cannot be enforced, name the half that can.** Most invariants
+are a mechanizable proposition welded to a judgement call, and "it needs judgement" is routinely
+heard as "it needs a human", which quietly surrenders the half a machine would have held forever.
+
+## The rule behind all eight
 
 A report about an operation is not the operation. Neither a claimed absence nor a claimed failure is
 checkable from the report that carries it, so both have to be settled against the thing itself — the

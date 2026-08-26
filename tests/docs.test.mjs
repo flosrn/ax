@@ -14,7 +14,7 @@
 // code spans. A sentence may say "ax grades itself"; a code span may not say
 // `ax grade`.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -88,4 +88,55 @@ test('the help and the manifest describe the same tool', () => {
   // They did not: the help carried its own copy of the tagline, so the package
   // said one thing and `ax help` another for eight releases.
   assert.ok(renderUsage('0.0.0', { orca: true }).includes(description), 'the help renders a tagline the manifest does not carry');
+});
+
+// ── the routing table's completeness, which is the half a machine can hold ────
+//
+// Measured 2026-08-26: `src/worker/capability.mjs` was added — a module owning a
+// security boundary — and no table row named it. The omission was defended on
+// the belief that "no test can guard this: a test can check a row points at a
+// real file, never that a real file has its row." The first half is true; the
+// second is not, and it was an unverified claim that produced a design decision.
+//
+// A routing table maps a DIRECTORY LISTING, and a listing is enumerable. So
+// completeness is mechanizable and lives here. What stays untestable is the
+// other direction — whether a row DESCRIBES its module correctly — and nothing
+// below pretends otherwise.
+//
+// A barrel that only dispatches verbs to a SUBCOMMANDS table routes nothing a
+// reader needs, so it is exempt BY NAME. A new file is exempt by nobody: it
+// fails here until someone either routes it or adds it to this list on purpose.
+const UNROUTED = new Set([
+  'src/index.mjs',
+  'src/pr/index.mjs',
+  'src/worker/index.mjs',
+  'src/worktree/index.mjs',
+]);
+
+const ROUTED = /`(src\/[A-Za-z0-9_/-]+\.mjs)`/g;
+
+const modules = dir =>
+  readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap(entry =>
+    entry.isDirectory() ? modules(`${dir}/${entry.name}`) : entry.name.endsWith('.mjs') ? [`${dir}/${entry.name}`] : [],
+  );
+
+test('every src module is routed by AGENTS.md, or exempt on purpose', () => {
+  const named = new Set([...read('AGENTS.md').matchAll(ROUTED)].map(match => match[1]));
+  const unrouted = modules('src').filter(file => !named.has(file) && !UNROUTED.has(file));
+
+  assert.deepEqual(unrouted, [], 'add a row to the AGENTS.md table, or name the file in UNROUTED with a reason');
+});
+
+test('no table row points at a module that does not exist', () => {
+  const ghosts = [...read('AGENTS.md').matchAll(ROUTED)].map(match => match[1]).filter(file => !existsSync(join(ROOT, file)));
+
+  assert.deepEqual(ghosts, [], 'a renamed or deleted module left its row behind');
+});
+
+test('the exemption list itself cannot rot', () => {
+  // An exemption for a file that no longer exists is a stale permission, and the
+  // next file to take that path inherits it silently.
+  const stale = [...UNROUTED].filter(file => !existsSync(join(ROOT, file)));
+
+  assert.deepEqual(stale, [], 'drop the exemption: its file is gone');
 });
