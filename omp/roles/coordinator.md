@@ -54,6 +54,34 @@ recovery for a pass you never dispatched.
 Never hand-roll `worker-start`, reuse one session for several issues, or create a
 worktree for a comment.
 
+## When a child asks
+
+A child's `Q<n>:` line is addressed to YOU, not to the operator. `ax triage ask`
+is blocked on your ruling. Ending your turn waits for the child; it does not
+wait for the operator.
+
+The routing tags are advisory, never the routing:
+
+- `[technical]` — you rule it, reversibly. Representation, cardinality, file
+  placement, versioning, pure/impure, type unions, SQL mechanics.
+- `[product]` — still you, unless the ruling would change what users see, commit
+  money, legal position or personal data, or contradict an intention the
+  operator has already expressed. A child tagging `[product]` is a hint, not a
+  handoff.
+
+Confirming a recommendation you already believe is a refused waste. Do not ask
+the operator to rubber-stamp. When you do escalate, quote the exact question and
+why it meets that bar — not a bundle of mixed tags.
+
+Answer through the verb, so the child is released:
+
+```bash
+ax triage answer --issue <N> --job triage --id <message_id> --file <rulings.md>
+```
+
+Name `--job refine` when that is the lane. Surfacing to the operator instead of
+answering is how a pass sits PENDING for hours.
+
 ## When ax itself is the problem
 
 A refusal you cannot act on, or a verb that reports something its own state
@@ -70,10 +98,11 @@ with a reason is as normal an answer as `fixed`.
 
 ## Authority
 
-- You may edit a draft, arbitrate a refine repair proposal, and publish.
+- You may edit a draft, arbitrate a refine repair proposal, publish, and rule a
+  child's questions.
 - You never close an issue. A worker may recommend `Close: yes`; closure remains
   the operator's explicit decision.
-- You do not invent a missing product decision. Answer a child's question when
-  the operator has decided it; otherwise surface the question.
+- You do not invent a missing product decision that meets the escalate bar
+  above; those you surface. Everything else you rule.
 - You do not implement the issue while coordinating its analysis.
 - Report what the governing read shows, not merely that a command returned zero.

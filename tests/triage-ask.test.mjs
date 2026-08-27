@@ -55,15 +55,26 @@ const capture = fn => {
  * `bare` is printed WITHOUT an envelope, exactly like the shipped CLI; an
  * `envelope` is the error path. `status --json` answers reachable so the
  * readiness gate passes unless `reachable: false` says otherwise.
+ *
+ * `script` is a SEQUENCE of `{ envelope | bare, status }` answers, consumed one
+ * per `orchestration ask` call and the last one repeating. It exists because a
+ * transient refusal is only transient if a SECOND call answers differently, and
+ * a single-receipt fake cannot express that.
  */
-function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true } = {}) {
+function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true, script = null } = {}) {
   const calls = [];
+  let at = 0;
   const runner = createRunner({
     bin: 'stub-orca',
     exec: (bin, args) => {
       calls.push(args.join(' '));
       if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable } } }), stderr: '' };
       if (args[0] === 'orchestration' && args[1] === 'ask') {
+        if (script !== null) {
+          const step = script[Math.min(at, script.length - 1)];
+          at += 1;
+          return { status: step.status ?? 0, stdout: JSON.stringify(step.envelope ?? step.bare), stderr: '' };
+        }
         return { status, stdout: JSON.stringify(envelope ?? bare), stderr: '' };
       }
       return { status: 1, stdout: '', stderr: 'unexpected orca call' };
@@ -72,8 +83,12 @@ function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true }
   return { runner, calls };
 }
 
+/** Every ms this verb slept, so a backoff is asserted rather than waited out. */
+const slept = [];
+
 const run = (argv, { root = repo(), orca = fakeOrca(), env = {}, sessionsRoot } = {}) => {
   const store = env.ORCA_DISPATCH_STORE ?? join(root, 'store');
+  slept.length = 0;
   const result = capture(() =>
     ask([...argv, '--repo', REPO], {
       runner: orca.runner,
@@ -81,9 +96,10 @@ const run = (argv, { root = repo(), orca = fakeOrca(), env = {}, sessionsRoot } 
       env: { ORCA_DISPATCH_STORE: store },
       cwd: root,
       sessionsRoot,
+      sleep: ms => slept.push(ms),
     }),
   );
-  return { ...result, root, store, orcaCalls: orca.calls };
+  return { ...result, root, store, orcaCalls: orca.calls, slept: [...slept] };
 };
 
 /**
@@ -421,4 +437,64 @@ test('a token mentioned LATE is not this session grant, and is not taken', () =>
   const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
   assert.doesNotMatch(sent, /dcap_not_mine/, 'a token this session merely mentions is not a grant it holds');
   assert.doesNotMatch(sent, /--dispatch-capability/);
+});
+
+// ── runtime_busy: a refusal that must not become an infinite loop ─────────────
+//
+// Measured 2026-08-27, ofmchat #83. `long-poll capacity reached` is Orca's
+// GLOBAL long-poll guard (runtime-rpc.ts:1563-1565, LONG_POLL_CAP=16, shared
+// with terminal.wait / check --wait / browser-host). It fell into the terminal
+// generic `cannot()` here: no repair, no message id, so no `--resume` either.
+// The child then obeyed the spec sentence — never report with a question open,
+// exception `not supervised` only — and spent 62 minutes over 11 hand-rolled
+// retries, its own advisors correctly blocking every other exit. A refusal with
+// no exit is a trap, and AGENTS.md already forbids a `bad` with no `fix`.
+//
+// Two propositions: absorb a genuinely transient blip, and when it is not
+// transient, hand the child an exit it is allowed to take.
+
+const BUSY = { envelope: { ok: false, error: { code: 'runtime_busy', message: 'long-poll capacity reached; retry with backoff' } }, status: 1 };
+
+test('a transient runtime_busy is absorbed: the ask retries itself and the child never sees it', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeOrca({ script: [BUSY, { bare: ANSWERED }] });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 0, 'the second call answered, so the verb answered');
+  assert.match(r.out, /A1: bug\./);
+  assert.equal(r.orcaCalls.filter(line => line.startsWith('orchestration ask')).length, 2);
+  assert.ok(r.slept.length > 0, 'it waited between attempts rather than hammering');
+});
+
+test('a persistent runtime_busy names what it tried and hands the child an exit', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\nQ2: which priority?\n');
+  const orca = fakeOrca({ script: [BUSY] });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 3, 'the machine, not the caller');
+  // What it tried: a measured fact the child can report instead of guessing.
+  assert.match(r.out, /after \d+ attempts over \d+s/);
+  // Why hand-rolling more retries is not the answer.
+  assert.match(r.out, /shed, not queued/);
+  // The exit itself, which is the whole point of this arm.
+  assert.match(r.out, /report NOW/);
+  assert.match(r.out, /quote them/);
+  assert.match(r.out, /do not decide/i);
+  // And never a resume: no id was ever minted on this path.
+  assert.doesNotMatch(r.out, /--resume/);
+});
+
+test('--help carries the exit codes, because a child routes on them alone', () => {
+  // The shipped help was two usage lines and a flag list. A child meeting exit 1
+  // or 3 had to choose between retry, resume and report with nothing to read.
+  const r = capture(() => ask(['--help']));
+  assert.equal(r.code, 0);
+  for (const line of [/0\s+answered/, /1\s+refused/, /3\s+cannot establish/, /4\s+PENDING/]) {
+    assert.match(r.out, line);
+  }
+  assert.match(r.out, /--resume/);
 });

@@ -68,7 +68,7 @@ export function askHeader(body) {
 export function parseRulings(text) {
   const collected = [];
   let current = null;
-  const lines = String(text ?? '').split('\n');
+  const lines = String(text ?? '').split(/\r?\n/);
   for (let at = 0; at < lines.length; at += 1) {
     const line = lines[at];
     if (/^Q[0-9]+:/.test(line)) {

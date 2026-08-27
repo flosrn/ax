@@ -31,6 +31,20 @@ test('the composed ask parses back to the same questions — the wire and the re
   assert.deepEqual(questionsIn(body), QUESTIONS);
 });
 
+test('CRLF Q lines parse the same as LF — a Windows-saved draft is not an empty ask', () => {
+  // Measured 2026-08-27 on ofmchat #81: three `Q<n>: [technical] …` openings at
+  // column 0, legal shape, `ax triage ask` refused `carries no Q<n>: line`.
+  // `questionsIn` splits on `\n` and anchors `$`, so a trailing `\r` makes the
+  // line miss. Same three lines on LF parse; on CRLF they vanish.
+  const lf = 'Q1: [technical] which side of the fork?\nQ2: [technical] who supplies the value?\n';
+  const crlf = lf.replaceAll('\n', '\r\n');
+  assert.deepEqual(questionsIn(lf), [
+    { n: 1, text: '[technical] which side of the fork?' },
+    { n: 2, text: '[technical] who supplies the value?' },
+  ]);
+  assert.deepEqual(questionsIn(crlf), questionsIn(lf));
+});
+
 // ── parseRulings ──────────────────────────────────────────────────────────────
 
 test('a ruling is its marker line plus every line under it, trimmed', () => {
@@ -40,6 +54,14 @@ test('a ruling is its marker line plus every line under it, trimmed', () => {
     { n: 1, text: 'bug.\nBecause the trace names a throw.' },
     { n: 2, text: 'P2' },
   ]);
+});
+
+test('CRLF A lines parse the same as LF — a Windows-saved rulings file is not empty', () => {
+  const lf = 'A1: bug.\nBecause the trace names a throw.\n\nA2: P2\n';
+  const crlf = lf.replaceAll('\n', '\r\n');
+  const fromLf = parseRulings(lf);
+  assert.equal(fromLf.ok, true);
+  assert.deepEqual(parseRulings(crlf), fromLf);
 });
 
 test('a non-blank line before the first marker is refused BY LINE NUMBER', () => {

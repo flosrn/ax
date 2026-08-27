@@ -39,7 +39,14 @@ import { composeAsk } from './rulings.mjs';
 
 const USAGE =
   'ax triage ask --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--dispatch-capability <token>] [--timeout-ms <n>] [--dry-run]\n'
-  + '       ax triage ask --resume <message_id> [--dispatch-capability <token>] [--timeout-ms <n>]';
+  + '       ax triage ask --resume <message_id> [--dispatch-capability <token>] [--timeout-ms <n>]\n'
+  + '\n'
+  + 'Exit codes — a blocked child routes on these alone:\n'
+  + '  0  answered — the rulings are printed; revise the draft, then report\n'
+  + '  1  refused — the reason is named, and the repair line says what to do\n'
+  + '  2  usage\n'
+  + '  3  cannot establish — the machine, not you\n'
+  + '  4  PENDING — the question outlived the wait; resume the printed id\n';
 
 /**
  * The server's own clamp, mirrored so the local process outlives the wait it
@@ -53,7 +60,30 @@ export const ASK_DEFAULT_TIMEOUT_MS = 600_000;
 export const ASK_MAX_TIMEOUT_MS = 1_800_000;
 const ASK_EXIT_MARGIN_MS = 20_000;
 
-export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd(), sessionsRoot } = {}) {
+/**
+ * Backoff between internal retries of a `runtime_busy` refusal, and the whole
+ * budget this verb spends on one before it hands the caller an exit.
+ *
+ * Measured 2026-08-27 (ofmchat #83): `long-poll capacity reached` is Orca's
+ * GLOBAL long-poll guard (runtime-rpc.ts:1563-1565, LONG_POLL_CAP=16, shared
+ * with terminal.wait, check --wait and browser-host attachments), and it stood
+ * for over an hour. So retrying is worth exactly one thing — absorbing a blip
+ * the child should never have seen — and nothing beyond it: refused asks are
+ * SHED, not queued, so no amount of waiting earns priority.
+ *
+ * 30s total, deliberately small. The expensive failure was not a short retry
+ * budget; it was the absence of an exit at the end of one, which sent a child
+ * into 11 hand-rolled attempts over 62 minutes.
+ */
+const ASK_BUSY_BACKOFF_MS = [2_000, 8_000, 20_000];
+
+const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
+
+/** Is this receipt Orca refusing to admit the long poll at all? */
+const busyRefusal = out => (out.receipt ?? {}).ok === false && (out.receipt?.error?.code ?? '') === 'runtime_busy';
+
+export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd(), sessionsRoot, sleep = sleepDefault } = {}) {
   const usageError = message => {
     process.stderr.write(`ax triage ask: ${message}\n${USAGE}\n`);
     return 2;
@@ -177,11 +207,21 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   const capability = capabilityArg !== '' ? { token: capabilityArg, reason: '' } : ownCapability({ cwd, request, env, sessionsRoot });
   const authorized = capability.token === '' ? [] : ['--dispatch-capability', capability.token];
 
-  const out = run(
-    issue !== ''
-      ? ['orchestration', 'ask', '--question', body, ...authorized, '--timeout-ms', String(timeout), '--json']
-      : ['orchestration', 'ask', '--resume', resume, ...authorized, '--timeout-ms', String(timeout), '--json'],
-  );
+  const wire = issue !== ''
+    ? ['orchestration', 'ask', '--question', body, ...authorized, '--timeout-ms', String(timeout), '--json']
+    : ['orchestration', 'ask', '--resume', resume, ...authorized, '--timeout-ms', String(timeout), '--json'];
+
+  // The blip absorber. Bounded on purpose — see ASK_BUSY_BACKOFF_MS.
+  let out = run(wire);
+  let attempts = 1;
+  let waited = 0;
+  for (const pause of ASK_BUSY_BACKOFF_MS) {
+    if (!busyRefusal(out)) break;
+    sleep(pause);
+    waited += pause;
+    attempts += 1;
+    out = run(wire);
+  }
 
   // ── 4. the receipt, on the measured shapes and no others ──────────────────
   if (out.error) {
@@ -236,6 +276,21 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     }
     if (code === 'question_not_found') {
       return refuse(`${detail} — a resume only reaches a question this same Dispatch asked`, 'ax triage status   # which questions are actually pending');
+    }
+    if (code === 'runtime_busy') {
+      // The arm that did not exist. Measured 2026-08-27 on ofmchat #83: this
+      // fell into the generic branch below, so the child got exit 3 with no
+      // repair, no message id and therefore nothing to resume — while the spec
+      // sentence permitted reporting with an open question ONLY on the
+      // `not supervised` refusal. It retried 11 times over 62 minutes and its
+      // advisors correctly blocked every other exit. A refusal with no exit is
+      // a trap, and the trap was ax's, not the child's.
+      bad(`${detail} — after ${attempts} attempts over ${Math.round(waited / 1000)}s, no ask could be admitted`);
+      note('  this is the RUNTIME\'s long-poll budget, shared with terminal waits and browser hosts — not your draft, and not this repository');
+      note('  refused asks are shed, not queued, so a hand-rolled retry loop earns no priority, and no message id is minted on this path — there is nothing to go back to');
+      fix('keep the Q<n>: lines in the draft, and report NOW — quote them, and say the supervised channel is at long-poll capacity');
+      note('do not decide the open questions yourself, and do not drop them from the draft');
+      return 3;
     }
     return cannot(`orca refused the ask (${code || 'no code'}): ${detail}`);
   }
