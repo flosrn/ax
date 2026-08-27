@@ -128,14 +128,13 @@ export interface Receiver {
 /**
  * Start the one consuming loop only for the session that owns the registry row.
  *
- * A nested task can inherit its parent's terminal handle before OMP exposes a
- * nested session-file path. The registry still catches that collision and
- * returns `published: false`; starting after that refusal creates a second
- * actionable waiter on the parent's Run. Orca rejects it with `waiter_exists`
- * forever, so the foreign session reports a deaf channel while the owner is
- * healthy.
+ * A refusal is only proof that this session must not consume the Run. It is not
+ * proof that another receiver is healthy: the registration lock may merely be
+ * held, or a live owner process may already have stopped its receiver. Surface
+ * every refusal so a top-level session cannot appear able to wait while deaf.
  *
- * Registry ownership is therefore the final fence, not a diagnostic.
+ * Sessions independently identified as nested return before registration, so
+ * they remain quiet without weakening this ownership fence.
  */
 export function startReceiverIfOwned(
   registration: { published: boolean; refused?: 'invalid' | 'foreign' },
@@ -145,10 +144,7 @@ export function startReceiverIfOwned(
   onUnavailable: () => void = () => {},
 ): boolean {
   if (!registration.published) {
-    // `foreign` means the live owner is already receiving this Run. Every
-    // other refusal means nobody can prove a receiver exists, so silence would
-    // make a permanently deaf session look merely patient.
-    if (registration.refused !== 'foreign') onUnavailable();
+    onUnavailable();
     return false;
   }
   receiver.useTimers(ctx);

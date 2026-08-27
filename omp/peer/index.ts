@@ -963,11 +963,10 @@ export default function (pi): void {
         if (published.peer) peerName = published.peer;
         note(`registered as ${peerName} on ${runId} (session ${sid.slice(0, 8)}… model=${model || '∅'})`);
       } else {
-        // This is an ownership fence, not merely a registry diagnostic. A
-        // nested task can inherit the parent's handle before OMP exposes its
-        // nested session path; the live parent then owns this row and this Run.
-        // Starting anyway creates a second exclusive `check --wait`, which
-        // Orca rejects with `waiter_exists` forever.
+        // This is an ownership fence, not merely a registry diagnostic. The
+        // refusal prevents a second exclusive `check --wait` on the same Run;
+        // the startup gate below also surfaces the unavailable channel because
+        // a lock holder or live owner process does not prove a healthy receiver.
         note(`register ${published.refused ?? 'failed'} for session ${sid.slice(0, 8)}… — receiver not started`);
       }
       if (published.published) loadInjected();

@@ -118,7 +118,7 @@ function harness(overrides: Partial<ReceiveDeps> = {}) {
   return { deps, notes, health, spawned, injected, retries, sent, timers, pi };
 }
 
-test('a foreign registry owner never starts a second receiver on its Run', () => {
+test('a foreign registry owner blocks a second receiver and visibly disables it', () => {
   const calls: string[] = [];
   const receiver = {
     useTimers() {
@@ -139,7 +139,7 @@ test('a foreign registry owner never starts a second receiver on its Run', () =>
       () => calls.push('disabled'),
     ),
   ).toBe(false);
-  expect(calls).toEqual([]);
+  expect(calls).toEqual(['disabled']);
 });
 
 test('an invalid registry publication visibly disables instead of receiving deaf', () => {
