@@ -14,7 +14,7 @@ import { armStallWatcher, start } from '../src/worker/start.mjs';
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-worker-start-'));
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
 
-function stubOrca(dir) {
+function stubOrca(dir, { taskCreateDelay = '0.15' } = {}) {
   const log = join(dir, 'orca-identities.log');
   const bin = join(dir, 'orca-stub');
   writeFileSync(bin, `#!/usr/bin/env bash
@@ -27,7 +27,7 @@ done
 [ -n "$retry" ] && printf '%s\\n' "$retry" >> ${JSON.stringify(log)}
 case "$1 $2" in
   "orchestration task-create")
-    sleep 0.15
+    sleep ${taskCreateDelay}
     echo '{"ok":true,"result":{"task":{"id":"task_race"},"mutation":{"replayed":false}}}' ;;
   "orchestration worker-start")
     echo '{"ok":true,"result":{"taskId":"task_race","dispatchId":"ctx_race","state":"ready","mutation":{"replayed":false},"effects":[{"kind":"terminal","id":"term_race"}]}}' ;;
@@ -832,6 +832,80 @@ test('two reclaimers of one closed foreign refusal serialize before minting', as
   assert.equal(readdirSync(store).filter(name => name.includes('.foreign-')).length, 1);
   const record = JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8'));
   assert.deepEqual(record.attempts[0].phases.map(phase => phase.name), ['task-create', 'worker-start']);
+});
+
+// The same invariant, pinned WITHOUT a race. The test above depends on two CLIs
+// interleaving badly, which passed 20/20 locally and failed in CI: the mint used
+// to happen AFTER `ownership.release()`, so a sibling could take the recovery
+// lock, read a record holding one open phase, and replay it — and since
+// `phaseBegin`/`phaseEnd` are load-mutate-save, that write clobbered the phase
+// the first process was adding. CI ended with `['task-create']` alone while the
+// stub log proved a full pair had been issued: a recorded `worker-start`, and
+// therefore a real pane, gone from the file every recovery reads.
+//
+// Here the window is ENGINEERED rather than hoped for. The winner is held inside
+// task-create long enough to prove it is in the locked region — the lock file's
+// existence is the proof — and the second starter runs while it is.
+test('a sibling arriving DURING the mint is refused, and no recorded phase is lost', async () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const spec = join(home, 'brief.md');
+  const request = 'req-mint-window';
+  writeFileSync(spec, 'Do the one exact task.');
+  mkdirSync(store, { recursive: true });
+  // A closed foreign refusal: reclaimable, so the winner reaches the mint.
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({
+    request,
+    host: 'old-host',
+    orca: 'orca',
+    createdAt: '2026-08-01T00:00:00Z',
+    attempts: [{
+      n: 1,
+      settled: false,
+      phases: [{
+        name: 'task-create',
+        identity: 'old-id',
+        argv: ['orca', 'orchestration', 'task-create', '--run', 'run_old', '--retry-request', 'old-id', '--json'],
+        receiptPath: null,
+        receipt: { ok: false, error: { code: 'runtime_unavailable' } },
+        exit: 1,
+      }],
+    }],
+  }), { mode: 0o600 });
+
+  const stub = stubOrca(home, { taskCreateDelay: '1.5' });
+  const env = {
+    ...process.env,
+    HOME: home,
+    ORCA_CLI_COMMAND: stub.bin,
+    ORCA_DISPATCH_STORE: store,
+    ORCA_DISPATCH_AUTOSUBMIT: '0',
+    ORCA_STALL_WATCH: '0',
+  };
+  const argv = runId => [
+    'worker', 'start', '--request', request, '--run', runId,
+    '--spec-file', spec, '--', '--worktree', 'current', '--agent', 'omp',
+  ];
+
+  const winner = runCli(argv('run_a'), env);
+  // The lock file existing IS the proof that the winner is inside the region
+  // whose whole purpose is to exclude a sibling. No sleep guesses at it.
+  const lock = join(store, `${request}.json.claim.lock`);
+  await waitFor(() => existsSync(lock));
+
+  const sibling = await runCli(argv('run_b'), env);
+  assert.notEqual(sibling.code, 0, `the sibling must not proceed while the mint holds the lock: ${sibling.out}`);
+  assert.match(sibling.out, /pre-existing lock/);
+  assert.match(sibling.out, /--resume --request req-mint-window/, 'and it is handed the sanctioned recovery');
+
+  const first = await winner;
+  assert.equal(first.code, 0, first.out);
+  const record = JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8'));
+  assert.deepEqual(
+    record.attempts[0].phases.map(phase => phase.name),
+    ['task-create', 'worker-start'],
+    'both recorded phases survive a sibling that arrived mid-mint',
+  );
 });
 
 test('a USABLE CLI start arms a detached watcher that settles and cleans its pidfile', async () => {

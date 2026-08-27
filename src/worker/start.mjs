@@ -626,10 +626,28 @@ export function start(
       } catch (error) {
         return cannot(`could not preserve stale foreign record: ${String(error)}`);
       }
+      // MINT UNDER THE LOCK, not after it. Releasing first published a
+      // half-built record: a sibling then took the recovery lock, read a record
+      // holding one open phase, and replayed it — and because `phaseBegin` and
+      // `phaseEnd` are load-mutate-save, that replay's write CLOBBERED the
+      // phase this process was adding. `save()` is atomic per write, which
+      // prevents a torn file and not a lost update.
+      //
+      // Measured in CI 2026-08-27 (the first run this repository ever had):
+      // `two reclaimers of one closed foreign refusal serialize before minting`
+      // ended with the canonical record holding `['task-create']` alone while
+      // the stub log proved a full task/worker pair had been issued. A recorded
+      // `worker-start` had gone missing — a pane that exists, invisible to
+      // every recovery that reads this file. That is F-001 by another route,
+      // and it is what the test's own name always demanded.
+      //
+      // Holding across the dispatch is safe here BECAUSE `acquireLock` has no
+      // time-based takeover: a sibling gets `held: false` with a named reason
+      // and the `--resume` repair (line 600), never a silent second mint.
+      return fresh(claim.path, spec, parsed.passthru, context);
     } finally {
       ownership.release();
     }
-    return fresh(claim.path, spec, parsed.passthru, context);
   }
 
   initRecord(claim.path, { request: parsed.request, orca: bin, now });
