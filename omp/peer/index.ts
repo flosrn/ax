@@ -71,6 +71,7 @@ import {
   type ChannelState,
   disable as disableChannel,
   freshChannel,
+  markTurnCompleted,
   observe as observeChannel,
 } from './health.ts';
 
@@ -79,7 +80,7 @@ import {
 // because `d3e6d1a` fixed a session-killing throw inside the loop and shipped
 // with no cover — a module-private function is unreachable from a test, and
 // reverting the fix left the suite green.
-import { createReceiver } from './receive.ts';
+import { createReceiver, startReceiverIfOwned } from './receive.ts';
 
 // The subagent-vs-lead latch, shared with orca-report and orca-checkpoint.
 import { createSessionOwner, isSubagentSession, sessionIdOf } from '../shared/session.ts';
@@ -880,6 +881,15 @@ export default function (pi): void {
     } catch {}
   });
 
+  // A health notice may wake only after work the operator actually asked for
+  // has completed. `turn_start` is too early: the receive loop can fail while
+  // that first turn is still running, and a queued health turn would then fire
+  // immediately behind it.
+  pi.on('agent_end', (_event, ctx) => {
+    if (owner.isForeign(ctx)) return;
+    markTurnCompleted(channel);
+  });
+
   pi.on('session_start', (_event, ctx) => {
     if (isSubagentSession(ctx)) return;
     owner.claim(ctx);
@@ -932,13 +942,20 @@ export default function (pi): void {
 
       // Publish the Run under this handle. Ownership is the session id;
       // `register` refuses if another live session already owns the entry.
-      const published = publishSelf({
-        run: runId,
-        sessionId: sid,
-        model,
-        level,
-        modelSource: model ? 'transcript' : '',
-      });
+      let published;
+      try {
+        published = publishSelf({
+          run: runId,
+          sessionId: sid,
+          model,
+          level,
+          modelSource: model ? 'transcript' : '',
+        });
+      } catch (error) {
+        note(`register threw for session ${sid.slice(0, 8)}… — receiver not started: ${error}`);
+        disableReceive(pi, 'the peer registry entry could not be published');
+        return;
+      }
       // `published` gates the log, `peer` only supplies the name: an entry can
       // be written correctly while Orca is momentarily unable to derive a name,
       // and calling that a failed registration is a lie the operator reads.
@@ -946,11 +963,15 @@ export default function (pi): void {
         if (published.peer) peerName = published.peer;
         note(`registered as ${peerName} on ${runId} (session ${sid.slice(0, 8)}… model=${model || '∅'})`);
       } else {
-        // A live foreign owner, or a registry that could not be written: stay
-        // silent on the registry and keep the local loop on our own binding.
-        note(`register ${published.refused ?? 'failed'} for session ${sid.slice(0, 8)}… — not publishing model`);
+        // This is an ownership fence, not merely a registry diagnostic. A
+        // nested task can inherit the parent's handle before OMP exposes its
+        // nested session path; the live parent then owns this row and this Run.
+        // Starting anyway creates a second exclusive `check --wait`, which
+        // Orca rejects with `waiter_exists` forever.
+        note(`register ${published.refused ?? 'failed'} for session ${sid.slice(0, 8)}… — receiver not started`);
       }
-      loadInjected();
+      if (published.published) loadInjected();
+
       // No pane rename here. `orca terminal rename` returns ok and does
       // nothing that lasts: Orca's own agent-status updater rewrites the title
       // to "OMP ready" / "Pi" / "⠧ OMP" continuously, so a rename is overwritten
@@ -958,8 +979,16 @@ export default function (pi): void {
       // already shows.
 
       // Managed timers from here on: the retry path must not be a raw one.
-      receiver.useTimers(ctx);
-      receiver.start(pi);
+      // `published` is the final ownership proof. Classification above is an
+      // optimization; this fence remains correct when the host exposes a
+      // nested session's path too late for `isSubagentSession`.
+      startReceiverIfOwned(
+        published,
+        receiver,
+        pi,
+        ctx,
+        () => disableReceive(pi, 'the peer registry entry could not be published'),
+      );
     } catch {
       /* never break a session over peer messaging */
     }

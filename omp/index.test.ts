@@ -188,9 +188,9 @@ test('the one factory installs all four extensions, each exactly once', () => {
   expect(count('before_agent_start')).toBe(1);
   expect(count('tool_call')).toBe(1);
   expect(count('input')).toBe(1);
-  // peer only.
+  // peer owns turn_start; peer and report both observe agent_end.
   expect(count('turn_start')).toBe(1);
-  expect(count('agent_end')).toBe(1);
+  expect(count('agent_end')).toBe(2);
 
   expect([...commands.keys()]).toEqual(['role']);
   expect(tools).toEqual(['peer_reply', 'peer_send', 'peer_list', 'peer_read', 'peer_children']);
