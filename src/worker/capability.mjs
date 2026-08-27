@@ -33,7 +33,7 @@
 import { basename } from 'node:path';
 import { readFileSync } from 'node:fs';
 
-import { sessionFileForNeedle } from './transcript.mjs';
+import { sessionFilesForNeedle } from './transcript.mjs';
 
 /** The token shape, single-match — ../redact.mjs owns the global-replace copy. */
 const CAPABILITY = /\bdcap_[A-Za-z0-9_-]+/;
@@ -73,26 +73,54 @@ const PREAMBLE_LINES = 40;
  */
 export function ownCapability({ cwd = process.cwd(), request = '', env = process.env, sessionsRoot } = {}) {
   const needle = basename(cwd);
-  const file = sessionFileForNeedle({ needle, request, env, sessionsRoot });
-  if (file === null) {
+  const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
+  if (files.length === 0) {
     return {
       token: '',
-      reason: `no single session file under a cwd slug ending in "${needle}"${request === '' ? '' : ` that names ${request}`} — this may not be a dispatched child, or its session is not on this host`,
+      reason: `no session directory for a cwd slug ending in "${needle}" — this may not be a dispatched child, or its session is not on this host`,
     };
   }
-  let text;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch (error) {
-    return { token: '', reason: `${file} is unreadable: ${String(error.message ?? error)}` };
+
+  // THE PREAMBLE IS THE DISCRIMINANT, and it has to be, because a whole-file
+  // match is not one. Measured 2026-08-27 on ofmchat #87 and #88: triage places
+  // the child in the CURRENT checkout, so the coordinator's own session file
+  // sits in the same slug directory — and the coordinator typed the request id
+  // when it dispatched. Selecting on `includes(request)` over the whole file
+  // therefore matched BOTH, read as ambiguity, and told a genuine dispatched
+  // child it might not be one. Two children hit it on two issues.
+  //
+  // Only the child is handed a capability, and only in the preamble Orca injects
+  // as its first message. So a candidate has to carry a token WITHIN the bound,
+  // and — when a request is named — its own request there too. That keeps the
+  // "a token mentioned late is not a grant" rule intact, since nothing outside
+  // the bound is ever considered.
+  const candidates = [];
+  const unreadable = [];
+  for (const file of files) {
+    let head;
+    try {
+      head = readFileSync(file, 'utf8').split('\n', PREAMBLE_LINES).join('\n');
+    } catch (error) {
+      unreadable.push(`${file} (${String(error.message ?? error)})`);
+      continue;
+    }
+    const found = CAPABILITY.exec(head);
+    if (found === null) continue;
+    if (request !== '' && !head.includes(request)) continue;
+    candidates.push({ file, token: found[0] });
   }
-  const lines = text.split('\n', PREAMBLE_LINES);
-  for (const line of lines) {
-    const found = CAPABILITY.exec(line);
-    if (found !== null) return { token: found[0], reason: '' };
+
+  if (candidates.length === 1) return { token: candidates[0].token, reason: '' };
+  if (candidates.length > 1) {
+    // Never newest-wins: handing one dispatch's grant to another caller is the
+    // failure nothing downstream can detect.
+    return {
+      token: '',
+      reason: `${candidates.length} sessions under "${needle}" carry a dispatch capability${request === '' ? '' : ` naming ${request}`} in their first ${PREAMBLE_LINES} lines — which of them is this one cannot be established`,
+    };
   }
   return {
     token: '',
-    reason: `${file} carries no dispatch capability in its first ${PREAMBLE_LINES} lines — a supervised child is handed one in its preamble, so this session was very likely not dispatched as one`,
+    reason: `no session under "${needle}" carries a dispatch capability${request === '' ? '' : ` naming ${request}`} in its first ${PREAMBLE_LINES} lines — a supervised child is handed one in its preamble, so this session was very likely not dispatched as one${unreadable.length > 0 ? `; unreadable: ${unreadable.join(', ')}` : ''}`,
   };
 }

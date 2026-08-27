@@ -447,6 +447,59 @@ test('a token mentioned LATE is not this session grant, and is not taken', () =>
   assert.doesNotMatch(sent, /--dispatch-capability/);
 });
 
+test('the PARENT session sharing the checkout does not make the capability ambiguous', () => {
+  // Measured 2026-08-27 on ofmchat #87 and #88: `ownCapability` answered "no
+  // single session file under a cwd slug ending in \"ofmchat\" that names
+  // triage-goodluckagency-ofmchat-87" inside a genuine dispatched child.
+  //
+  // The cause is structural, not a coincidence of that machine: triage puts the
+  // child in the CURRENT checkout, so the coordinator's own session file lives
+  // in the same slug directory — and the coordinator typed the request id when
+  // it dispatched, so a whole-file `includes(request)` matches it too. Two
+  // matches read as ambiguity, and the child was told it might not be a
+  // dispatched session at all.
+  //
+  // The discriminant is the PREAMBLE: only the child is handed a capability, and
+  // only in its first lines. The parent mentions the request much later and
+  // holds no token there.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-shared-')));
+  const dir = join(sessionsRoot, `-Users-someone-${basename(root)}`);
+  mkdirSync(dir, { recursive: true });
+
+  // The coordinator: no capability in its preamble, and it names the request
+  // deep in the transcript, exactly where it ran the dispatch.
+  const parentTail = Array.from({ length: 30 }, (_, n) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `turn ${n}` }] } }));
+  writeFileSync(
+    join(dir, 'parent.jsonl'),
+    `${[
+      JSON.stringify({ type: 'session', version: 3, cwd: root }),
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: '/role coordinator' }] } }),
+      ...parentTail,
+      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'ax triage dispatch --issue 7 → triage-acme-widgets-7' }] } }),
+    ].join('\n')}\n`,
+  );
+
+  // The child: its injected preamble carries both the request and the token.
+  writeFileSync(
+    join(dir, 'child.jsonl'),
+    `${[
+      JSON.stringify({ type: 'session', version: 3, cwd: root }),
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --from term_child --dispatch-capability dcap_the_child_token --question <text>\ntriage-acme-widgets-7' }] } }),
+    ].join('\n')}\n`,
+  );
+
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.match(sent, /--dispatch-capability dcap_the_child_token/, "the child's own grant, not an ambiguity");
+});
+
 // ── runtime_busy: a refusal that must not become an infinite loop ─────────────
 //
 // Measured 2026-08-27, ofmchat #83. `long-poll capacity reached` is Orca's

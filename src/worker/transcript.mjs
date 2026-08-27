@@ -583,10 +583,10 @@ const mtime = path => {
  * first task spec and selects exactly one file. Zero or two matches is an
  * inability to establish, never newest-wins.
  */
-function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
+function sessionFilesForNeedle({ needle, env = process.env, sessionsRoot } = {}) {
   const root = sessionsRootOf(env, sessionsRoot);
   const tail = String(needle ?? '');
-  if (tail === '') return null;
+  if (tail === '') return [];
   let dirs;
   try {
     dirs = readdirSync(root, { withFileTypes: true })
@@ -597,18 +597,21 @@ function sessionFileForNeedle({ needle, request = '', env = process.env, session
       })
       .map(entry => join(root, entry.name));
   } catch {
-    return null;
+    return [];
   }
-  if (dirs.length !== 1) return null;
-
-  let files;
+  if (dirs.length !== 1) return [];
   try {
-    files = readdirSync(dirs[0])
+    return readdirSync(dirs[0])
       .filter(name => name.endsWith('.jsonl') && !name.startsWith('__advisor.'))
       .map(name => join(dirs[0], name));
   } catch {
-    return null;
+    return [];
   }
+}
+
+function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
+  const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
+  if (files.length === 0) return null;
   if (request !== '') {
     const matching = files.filter(path => {
       try {
@@ -630,4 +633,4 @@ export { findRecords, sessionCandidates, worktreesOf };
  * answers — WHICH session file is this dispatch's child — and must not own a
  * second resolver that can disagree with this one.
  */
-export { sessionFileForNeedle };
+export { sessionFileForNeedle, sessionFilesForNeedle };
