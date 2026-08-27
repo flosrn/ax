@@ -135,8 +135,17 @@ export function ownCapability({ cwd = process.cwd(), request = '', env = process
       reason: `${candidates.length} candidate session files under ${exact ? cwd : `a slug ending in "${needle}"`} carry a dispatch capability${request === '' ? '' : ` naming ${request}`} in their first ${PREAMBLE_LINES} lines — which one is THIS session cannot be established; pass --dispatch-capability to disambiguate`,
     };
   }
+  // The THIRD arm, and the third time this vocabulary misrouted the child that
+  // reported it. It used to conclude "very likely not dispatched as one", which
+  // is only one of the conditions that land here. The others are real: a
+  // dispatched child whose session file is recorded under a different checkout
+  // slug than the directory it is running in — plausible in any repository that
+  // uses worktrees — and a preamble this scan's bound deliberately did not
+  // reach. So the reason names what it KNOWS (no token inside the bound, in the
+  // sessions it was allowed to look at) and offers the one gesture that settles
+  // every branch, rather than asserting a cause it cannot support.
   return {
     token: '',
-    reason: `no session under "${needle}" carries a dispatch capability${request === '' ? '' : ` naming ${request}`} in its first ${PREAMBLE_LINES} lines — a supervised child is handed one in its preamble, so this session was very likely not dispatched as one${unreadable.length > 0 ? `; unreadable: ${unreadable.join(', ')}` : ''}`,
+    reason: `no session under ${exact ? cwd : `a slug ending in "${needle}"`} carries a dispatch capability${request === '' ? '' : ` naming ${request}`} in its first ${PREAMBLE_LINES} lines — so this session was not dispatched as a supervised child, or its session file is recorded under a different checkout slug than the directory it runs in; pass --dispatch-capability if your preamble holds the token${unreadable.length > 0 ? `. Unreadable: ${unreadable.join(', ')}` : ''}`,
   };
 }

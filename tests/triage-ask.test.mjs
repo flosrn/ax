@@ -567,6 +567,68 @@ test('an AMBIGUITY says so, and never borrows the vocabulary of an absence', () 
   assert.doesNotMatch(r.out, /dcap_one|dcap_two/, 'neither candidate token is displayed');
 });
 
+test('an EMPTY directory of its own never borrows a sibling checkout grant', () => {
+  // The fence, proven rather than asserted. This checkout's session directory
+  // exists — so the answer about it is "nothing readable here" — while a sibling
+  // whose slug merely ends the same way holds a real token. Falling back on the
+  // strength of an absence would hand that dispatch's grant to this caller, and
+  // nothing downstream could detect it (F-028).
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-empty-')));
+  const mine = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(mine, { recursive: true });
+  const sibling = join(sessionsRoot, `-Users-someone-else-${basename(root)}`);
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(
+    join(sibling, 'theirs.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --dispatch-capability dcap_not_mine --question <t>\ntriage-acme-widgets-7' }] } })}\n`,
+  );
+
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.doesNotMatch(sent, /--dispatch-capability/, 'nothing was borrowed');
+  assert.doesNotMatch(r.out, /dcap_not_mine/);
+  // And the reason is about THIS checkout, not about a slug that ends like it.
+  assert.match(r.out, /holds no readable session for this checkout/);
+  assert.doesNotMatch(r.out, /slug ends in/);
+});
+
+test('a zero-candidate refusal names the recorded-elsewhere case instead of guessing twice', () => {
+  // Raised by the child that had already been misrouted twice by this vocabulary
+  // (2026-08-27). With exact-slug-first and no sibling fallback, a dispatched
+  // child whose session file is recorded under a different checkout slug than
+  // the directory it runs in lands here — correctly, no grant borrowed. But the
+  // wording claimed "may not be a dispatched child, or its session is not on
+  // this host", and for that condition BOTH are false a third time: it is a
+  // dispatched child and its session is on this host.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-nocap-')));
+  const mine = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(mine, { recursive: true });
+  // A real session for this checkout, with no capability in its preamble.
+  writeFileSync(
+    join(mine, 'plain.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'just working here, no preamble' }] } })}\n`,
+  );
+
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /recorded under a different checkout slug/, 'the condition this branch can actually be in');
+  assert.match(r.out, /--dispatch-capability/, 'and the gesture that resolves it either way');
+  assert.doesNotMatch(r.out, /not on this host/, 'a cause this branch cannot support');
+});
+
 // ── runtime_busy: a refusal that must not become an infinite loop ─────────────
 //
 // Measured 2026-08-27, ofmchat #83. `long-poll capacity reached` is Orca's
