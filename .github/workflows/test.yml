@@ -16,10 +16,25 @@
 # the job name here and that file has to change in the same commit.
 name: Test
 
+# `workflow_dispatch` is not a convenience. GitHub creates NO workflow run for an
+# event triggered by `GITHUB_TOKEN` (anti-recursion), so a release-please pull
+# request — whose head is pushed by github-actions[bot] — gets zero check-runs,
+# and `prGate.checks` then refuses it forever on a check that structurally
+# cannot run. Measured on #18 at 2ffb48fbab1e: the workflow file was present on
+# that branch and no run existed. A manual dispatch is attributed to the caller
+# rather than to the token, which is what makes the ground reachable there:
+#
+#   gh workflow run test.yml --ref <release-please branch>
+#
+# Enumerating a check the CI cannot produce on a whole class of pull requests is
+# the same trap as enumerating one that can skip (F-014), reached from the other
+# side. This trigger is what keeps the release path gateable instead of
+# permanently hand-merged.
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
