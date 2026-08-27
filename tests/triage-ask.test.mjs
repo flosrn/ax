@@ -15,6 +15,7 @@ import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
 import { ASK_DEFAULT_TIMEOUT_MS, ASK_EXIT_MARGIN_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/triage/ask.mjs';
+import { slugOf } from '../src/worker/transcript.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -498,6 +499,72 @@ test('the PARENT session sharing the checkout does not make the capability ambig
   assert.equal(r.code, 0);
   const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
   assert.match(sent, /--dispatch-capability dcap_the_child_token/, "the child's own grant, not an ambiguity");
+});
+
+test('a SECOND checkout whose slug ends the same way does not hide this one', () => {
+  // The other half of the ofmchat report, and a tail match cannot answer it:
+  // `basename(cwd)` matches every directory ending in `-<name>`, so two
+  // checkouts called ofmchat — a worktree and its primary, say — make the lookup
+  // ambiguous and refuse. But the caller passed the WHOLE cwd, and the slug that
+  // produces is unique by construction, so the ambiguity was self-inflicted.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-twin-')));
+  // This checkout's OWN directory, named exactly as a session for it would be.
+  const mine = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(mine, { recursive: true });
+  writeFileSync(
+    join(mine, 'child.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --dispatch-capability dcap_mine --question <t>\ntriage-acme-widgets-7' }] } })}\n`,
+  );
+  // A different checkout that merely ends with the same basename.
+  const twin = join(sessionsRoot, `-Users-someone-else-${basename(root)}`);
+  mkdirSync(twin, { recursive: true });
+  writeFileSync(
+    join(twin, 'other.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --dispatch-capability dcap_theirs --question <t>\ntriage-acme-widgets-7' }] } })}\n`,
+  );
+
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.match(sent, /--dispatch-capability dcap_mine/);
+  assert.doesNotMatch(sent, /dcap_theirs/, "another checkout's grant is never this session's");
+});
+
+test('an AMBIGUITY says so, and never borrows the vocabulary of an absence', () => {
+  // Reported by the child that hit it (2026-08-27): the refusal read "no single
+  // session file … — this may not be a dispatched child, or its session is not
+  // on this host". "No SINGLE file" is true of zero matches AND of two, but both
+  // causes it then offered were zero-match causes, and both were false. The
+  // child read it as "this channel does not exist for me" and slid toward the
+  // irrecoverable branch instead of passing the token.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-ambig-')));
+  const dir = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(dir, { recursive: true });
+  for (const [name, token] of [['a.jsonl', 'dcap_one'], ['b.jsonl', 'dcap_two']]) {
+    writeFileSync(
+      join(dir, name),
+      `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `orca orchestration ask --dispatch-capability ${token} --question <t>\ntriage-acme-widgets-7` }] } })}\n`,
+    );
+  }
+
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /2 candidate session/, 'the count, so the reader knows it is an ambiguity');
+  assert.match(r.out, /--dispatch-capability/, 'and the one gesture that resolves it');
+  assert.doesNotMatch(r.out, /may not be a dispatched child/, 'a zero-match cause must not be offered for a two-match condition');
+  assert.doesNotMatch(r.out, /dcap_one|dcap_two/, 'neither candidate token is displayed');
 });
 
 // ── runtime_busy: a refusal that must not become an infinite loop ─────────────

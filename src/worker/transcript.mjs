@@ -609,6 +609,36 @@ function sessionFilesForNeedle({ needle, env = process.env, sessionsRoot } = {})
   }
 }
 
+/**
+ * The session files of ONE exact checkout — `slugOf(cwd)`, not a tail match —
+ * and whether that directory EXISTS at all.
+ *
+ * `sessionFilesForNeedle` takes a basename because some callers only hold one.
+ * A caller holding the whole cwd should never inherit that ambiguity: two
+ * checkouts named `ofmchat` make the tail match refuse, and measured 2026-08-27
+ * that refusal reached a child as "this may not be a dispatched child".
+ *
+ * `found` is separate from `files` on purpose. An existing directory that is
+ * empty or unreadable is NOT permission to go looking in a sibling checkout —
+ * that would borrow another dispatch's grant on the strength of an absence,
+ * which is exactly what F-028 forbids. Only a directory that genuinely is not
+ * there lets a caller fall back.
+ */
+function sessionFilesForCwd({ cwd, env = process.env, sessionsRoot } = {}) {
+  const dir = join(sessionsRootOf(env, sessionsRoot), slugOf(cwd, env));
+  try {
+    return {
+      dir,
+      found: true,
+      files: readdirSync(dir)
+        .filter(name => name.endsWith('.jsonl') && !name.startsWith('__advisor.'))
+        .map(name => join(dir, name)),
+    };
+  } catch (error) {
+    return { dir, found: (error?.code ?? '') !== 'ENOENT', files: [] };
+  }
+}
+
 function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
   const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
   if (files.length === 0) return null;
@@ -633,4 +663,4 @@ export { findRecords, sessionCandidates, worktreesOf };
  * answers — WHICH session file is this dispatch's child — and must not own a
  * second resolver that can disagree with this one.
  */
-export { sessionFileForNeedle, sessionFilesForNeedle };
+export { sessionFileForNeedle, sessionFilesForCwd, sessionFilesForNeedle };

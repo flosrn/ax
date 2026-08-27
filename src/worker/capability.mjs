@@ -33,7 +33,7 @@
 import { basename } from 'node:path';
 import { readFileSync } from 'node:fs';
 
-import { sessionFilesForNeedle } from './transcript.mjs';
+import { sessionFilesForCwd, sessionFilesForNeedle } from './transcript.mjs';
 
 /** The token shape, single-match — ../redact.mjs owns the global-replace copy. */
 const CAPABILITY = /\bdcap_[A-Za-z0-9_-]+/;
@@ -73,11 +73,22 @@ const PREAMBLE_LINES = 40;
  */
 export function ownCapability({ cwd = process.cwd(), request = '', env = process.env, sessionsRoot } = {}) {
   const needle = basename(cwd);
-  const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
+  // THIS checkout's own directory first. The caller holds the whole cwd, and the
+  // slug it produces is unique by construction, so inheriting the basename tail
+  // match's ambiguity would be self-inflicted: two checkouts named `ofmchat`
+  // made that lookup refuse, and the refusal reached a child as "this may not be
+  // a dispatched child" (measured 2026-08-27). The tail match stays as the
+  // fallback for a session recorded under a different HOME than this process
+  // sees, which is the only case it still answers.
+  const own = sessionFilesForCwd({ cwd, env, sessionsRoot });
+  const exact = own.found;
+  const files = exact ? own.files : sessionFilesForNeedle({ needle, env, sessionsRoot });
   if (files.length === 0) {
     return {
       token: '',
-      reason: `no session directory for a cwd slug ending in "${needle}" — this may not be a dispatched child, or its session is not on this host`,
+      reason: exact
+        ? `${own.dir} holds no readable session for this checkout — this may not be a dispatched child, or its session was pruned`
+        : `no session directory for ${cwd} (nor one whose slug ends in "${needle}") — this may not be a dispatched child, or its session is not on this host`,
     };
   }
 
@@ -113,10 +124,15 @@ export function ownCapability({ cwd = process.cwd(), request = '', env = process
   if (candidates.length === 1) return { token: candidates[0].token, reason: '' };
   if (candidates.length > 1) {
     // Never newest-wins: handing one dispatch's grant to another caller is the
-    // failure nothing downstream can detect.
+    // failure nothing downstream can detect. And it says WHICH refusal this is —
+    // the shipped message read "no single session file … this may not be a
+    // dispatched child", whose vocabulary describes an ABSENCE while the real
+    // condition was two matches, and whose offered causes were therefore both
+    // false. The child that hit it read "this channel does not exist for me" and
+    // slid toward the irrecoverable branch instead of passing the token.
     return {
       token: '',
-      reason: `${candidates.length} sessions under "${needle}" carry a dispatch capability${request === '' ? '' : ` naming ${request}`} in their first ${PREAMBLE_LINES} lines — which of them is this one cannot be established`,
+      reason: `${candidates.length} candidate session files under ${exact ? cwd : `a slug ending in "${needle}"`} carry a dispatch capability${request === '' ? '' : ` naming ${request}`} in their first ${PREAMBLE_LINES} lines — which one is THIS session cannot be established; pass --dispatch-capability to disambiguate`,
     };
   }
   return {
