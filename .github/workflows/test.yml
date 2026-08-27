@@ -1,0 +1,49 @@
+# The merge ground. `ax pr gate` refuses a repository that declares no expected
+# check ("an undeclared repository is not a repository with nothing left to
+# check"), and until this file existed that was literally true here: the package
+# that ships the gate had no CI of its own, so its own pull requests could only
+# be merged by going around it.
+#
+# UNCONDITIONAL ON ALL THREE AXES, on purpose (F-014). No `if:`, no `paths:` or
+# `paths-ignore:`, and no branch filter on `pull_request`. An enumerated gate
+# check that can legitimately skip makes `ax pr gate` refuse every future pull
+# request that does not touch the filtered path — forever, on a job that
+# correctly did not run. The job is cheap enough that always running it costs
+# less than that failure mode.
+#
+# The exact check-run name this produces is what `prGate.checks` in
+# ax.config.json enumerates, matched by string equality on the head SHA. Change
+# the job name here and that file has to change in the same commit.
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Both suites in one job: `pnpm test` is `test:node && test:omp`, and the
+    # gate wants one name to enumerate rather than a set that changes shape.
+    name: pnpm test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # test:omp is `bun test omp` — the OMP bundle is TypeScript run by Bun,
+      # so this is not optional tooling.
+      - uses: oven-sh/setup-bun@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm test
