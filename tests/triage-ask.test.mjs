@@ -8,13 +8,13 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { ASK_DEFAULT_TIMEOUT_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/triage/ask.mjs';
+import { ASK_DEFAULT_TIMEOUT_MS, ASK_EXIT_MARGIN_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/triage/ask.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -176,6 +176,7 @@ test('naming a pass nobody ran is refused, listing the ones that exist', () => {
 
 test('an answered ask prints the ruling and says what the child does next', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
   const orca = fakeOrca({ bare: ANSWERED });
   const r = run(['--issue', '7'], { root, orca });
@@ -187,11 +188,13 @@ test('an answered ask prints the ruling and says what the child does next', () =
   assert.match(sent, /--question/);
   assert.match(sent, /Q1: bug or enhancement\?/, 'the wire carries the draft verbatim');
   assert.match(sent, /triage-acme-widgets-7/, 'the ask names its sender');
-  assert.match(sent, new RegExp(`--timeout-ms ${ASK_DEFAULT_TIMEOUT_MS}`), "the server's own default, mirrored");
+  assert.match(sent, new RegExp(`--timeout-ms ${ASK_DEFAULT_TIMEOUT_MS}`), 'the default this verb chose, which is NOT the server default — see ASK_DEFAULT_TIMEOUT_MS');
 });
 
 test('a NEWEST pass is the default: a p2 draft asks as p2', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  record(join(root, 'store'), 'triage-acme-widgets-7-p2');
   draft(root, 'triage-acme-widgets-7', 'Q1: old?\n');
   draft(root, 'triage-acme-widgets-7-p2', 'Q1: new?\n');
   const orca = fakeOrca({ bare: ANSWERED });
@@ -203,6 +206,7 @@ test('a NEWEST pass is the default: a p2 draft asks as p2', () => {
 
 test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }, status: 1 });
   const r = run(['--issue', '7', '--timeout-ms', '5000'], { root, orca });
@@ -215,6 +219,7 @@ test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', (
 
 test('a cut connection is CANNOT ESTABLISH, and the question is not declared dead', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: false, cancelled: true, connectionLost: true, timeoutMs: 600000 }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
@@ -254,6 +259,7 @@ test('dispatch_inactive with no repaired-stall proof stays a named disjunction, 
   // stall killed your capability" here would be the same defect the proven
   // branch fixes — a diagnosis stated without its measure.
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'ask requires an active supervised Dispatch.' } }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
@@ -271,6 +277,7 @@ test('a token-shaped receipt is redacted before it reaches the child’s eyes', 
   // bad()/note() directly, so the redaction has to be proven here, not assumed
   // from refuse/cannot.
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'Dispatch dcap_s3cr3tT0ken capability is revoked.' } }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
@@ -293,6 +300,7 @@ test('an unreachable runtime refuses before anything is sent', () => {
 
 test('a non-JSON answer is CANNOT ESTABLISH, with the raw text preserved', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const broken = { runner: createRunner({ bin: 'stub', exec: (bin, args) => (args[0] === 'status' ? { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' } : { status: 0, stdout: 'not json', stderr: '' }) }), calls: [] };
   const r = run(['--issue', '7'], { root, orca: broken });
@@ -497,4 +505,101 @@ test('--help carries the exit codes, because a child routes on them alone', () =
     assert.match(r.out, line);
   }
   assert.match(r.out, /--resume/);
+});
+
+// ── the recorded ask: write-ahead, then settled ───────────────────────────────
+//
+// Measured 2026-08-27 on ofmchat #87. `ask` minted a real question, printed its
+// id ONLY on the exit-4 branch, and persisted nothing. So `status`, reading the
+// pane mailbox alone, answered "this pane has no pending question — it never
+// asked through `ax triage ask`" about a question that was provably pending
+// under `--resume`. Two shipped surfaces of one tool, opposite instructions,
+// and the child followed the wrong one and settled its pass.
+//
+// The record is the surface every other verb already reads, and AGENTS.md
+// already requires a live orchestration mutation to be written BEFORE it is
+// issued. So the ask keeps a lifecycle there: asking → pending | answered |
+// refused, with `asking` meaning "issued, outcome never recorded" — the state a
+// crash between the send and the write leaves behind, and a state that must
+// never read as "no question exists".
+
+const askOf = (store, request) => JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8')).ask;
+
+test('the intent is written BEFORE the wire, carrying the draft it was composed from', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  let atSendTime = null;
+  const runner = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' };
+      atSendTime = askOf(store, 'triage-acme-widgets-7');
+      return { status: 0, stdout: JSON.stringify(ANSWERED), stderr: '' };
+    },
+  });
+  const r = run(['--issue', '7'], { root, orca: { runner, calls: [] } });
+
+  assert.equal(r.code, 0);
+  assert.equal(atSendTime?.state, 'asking', 'the intent exists at the moment the mutation is issued');
+  assert.match(String(atSendTime?.sha), /^[0-9a-f]{40}$/, 'and names the exact draft it was composed from');
+});
+
+test('a timeout settles the intent to PENDING under the id it printed', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }, status: 1 });
+  const r = run(['--issue', '7', '--timeout-ms', '5000'], { root, orca });
+
+  assert.equal(r.code, 4);
+  assert.deepEqual(
+    { state: askOf(store, 'triage-acme-widgets-7').state, messageId: askOf(store, 'triage-acme-widgets-7').messageId },
+    { state: 'pending', messageId: 'msg_q9' },
+  );
+});
+
+test('an answered ask settles to ANSWERED, so nothing downstream reports it waiting', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 0);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'answered');
+});
+
+test('an intent that cannot be persisted REFUSES to send — never an unrecorded mutation', () => {
+  // F-001's rule, applied to this mutation: a record that cannot be written is
+  // an inability to establish, never permission to issue anyway. A draft-only
+  // pass loses nothing real — it has no Dispatch, so its ask could only have
+  // been refused by the runtime a moment later, with a worse reason.
+  const root = repo();
+  const store = join(root, 'store');
+  mkdirSync(join(store, 'triage-acme-widgets-7.json'), { recursive: true });
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /could not record this ask/);
+  assert.deepEqual(r.orcaCalls.filter(line => line.startsWith('orchestration ask')), [], 'nothing was issued');
+});
+
+test('the default wait fits under a 600s harness kill, receipt included', () => {
+  // Measured 2026-08-26: the default was 600_000 with a 20s exit margin, so one
+  // call needed 620s of wall clock while the agent harness killed bash at 600s.
+  // The receipt died at 600.09s — and with it the messageId that names the only
+  // recovery. The margin existed to protect exactly that window and sat outside
+  // it.
+  assert.ok(
+    ASK_DEFAULT_TIMEOUT_MS + ASK_EXIT_MARGIN_MS < 600_000,
+    `${ASK_DEFAULT_TIMEOUT_MS} + ${ASK_EXIT_MARGIN_MS} must leave the receipt inside a 600s budget`,
+  );
+  assert.equal(ASK_MAX_TIMEOUT_MS, 1_800_000, 'the server cap is unchanged — only the default moved');
 });

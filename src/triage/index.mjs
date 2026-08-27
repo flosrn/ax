@@ -272,12 +272,20 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
 
       const path = join(store, `${request}.json`);
       let handle = '';
+      // The pass's own ask lifecycle, read from the record rather than deduced
+      // from the mailbox. THE MAILBOX IS NOT THE ONLY WITNESS: measured
+      // 2026-08-27 on ofmchat #87, a question that `--resume` proved PENDING was
+      // absent from its pane's rows here, and this verb reported "it never asked
+      // through `ax triage ask`" about it. Two surfaces of one tool, opposite
+      // instructions, and the child believed this one and settled its pass.
+      let recorded = null;
       if (!existsSync(path)) note(dim('  no dispatch record'));
       else {
         try {
           const state = report(path);
           const summary = state.summary ?? {};
           handle = typeof summary.terminal === 'string' ? summary.terminal : '';
+          recorded = state.ask;
           note(`  ${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
           // Never a fresh dispatch: the recorded mutation may still be running,
           // and no snapshot can see one in flight.
@@ -306,6 +314,28 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         }
       }
 
+      // The RECORD's view, when the mailbox has nothing for this pane. It is not
+      // a fallback — it is a second witness that outranks an empty list, because
+      // an absence from a bounded, eventually-consistent inbox is not proof that
+      // no question exists (F-028).
+      const openRecorded = recorded !== null && (recorded.state === 'pending' || recorded.state === 'replying');
+      // Wider than `openRecorded` on purpose: `asking` means a send happened and
+      // its outcome was never written, so a question may be live. Anything but a
+      // PROVEN terminal state must suppress the "rule it yourself and publish"
+      // advice further down — publishing over a live question cannot be undone.
+      const liveRecorded = recorded !== null && ['asking', 'pending', 'replying'].includes(recorded.state);
+      if (openRecorded && (pending === null || pending.length === 0)) {
+        note(`  WAITING since ${recorded.at ?? 'an unrecorded time'} on message ${recorded.messageId} — from THIS PASS'S RECORD, not the mailbox`);
+        note(dim(`  the mailbox shows no such row${mailbox.ok ? '' : ' (and could not be read)'} — an inbox absence does not close a question the record says is open`));
+        fix(`ax triage answer --issue ${issue} --job ${job} --id ${recorded.messageId} --file <rulings.md>   # one A<n>: line per question`);
+      }
+      // Issued, outcome never written: the state a process killed between the
+      // send and the write leaves behind. It must never read as "no question".
+      if (recorded !== null && recorded.state === 'asking') {
+        bad(`  an ask was ISSUED for this pass and its outcome was never recorded — the process died between the send and the write, so a question may be open on the parent's mailbox`);
+        fix(`ax triage status --issue ${issue} --job ${job}   # the mailbox row above, if any, is the authority — answer THAT id rather than asking again`);
+      }
+
       // The draft's IDENTITY, not merely its existence. A coordinator reads a
       // draft, decides against it, and in between the child that owns it may
       // rewrite it. Measured 2026-08-22: #54 went from 106 to 117 lines after
@@ -331,16 +361,32 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // named and the way out is the one that exists. `ax triage answer` pairs
       // rulings to an ask THIS tool sent; nothing else can be paired, and no
       // amount of re-reading status will produce an id that was never minted.
-      if (draft.questions.length > 0 && (pending === null || pending.length === 0)) {
+      //
+      // TWO FIXES HERE, both from ofmchat #87 (2026-08-27).
+      //
+      // It is GATED on the record now. It used to fire on an empty mailbox
+      // alone, so it announced "it never asked" about a question `--resume`
+      // proved pending, and the child settled the pass on that sentence.
+      //
+      // And it no longer says "the supervised reply is not available". That
+      // phrasing was verbatim the trigger the injected child contract uses to
+      // authorise reporting with questions still open — one wording meaning
+      // "a lookup returned empty" here and "the channel is dead" there. The
+      // child cannot be asked to distrust one of two texts it is given; the
+      // cheaper fix is to stop the collision, so this says what it actually
+      // knows: nothing this verb can PAIR exists.
+      if (draft.questions.length > 0 && !liveRecorded && (pending === null || pending.length === 0)) {
         bad(`  the draft asks ${draft.questions.length}, and no answerable ask is visible: ${
           !mailbox.ok
             ? 'the mailbox could not be read'
             : handle === ''
               ? 'this pass records no pane, so no ask can be matched to it'
-              : 'this pane has no pending question — it never asked through `ax triage ask`, or its ask was already answered'
+              : recorded === null
+                ? 'this pass never asked through `ax triage ask`, and its pane holds no pending question'
+                : `this pass's ask is recorded ${recorded.state}${recorded.code ? ` (${recorded.code})` : ''}, and its pane holds no pending question`
         }`);
         note('  `ax triage answer` pairs rulings to an ask THIS tool sent; a child that asked another way cannot be answered by it');
-        fix(`  post the rulings on #${issue} and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — the supervised reply is not available for this pass`);
+        fix(`  rule the questions and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — there is no ask here for \`ax triage answer\` to pair`);
       }
     }
   }

@@ -365,7 +365,8 @@ export function phaseVerdict(path, index) {
  * Reads here are lenient — a stranded receipt has no `result` to demand.
  */
 export function report(path) {
-  const ph = phaseAt(load(path), 'last');
+  const rec = load(path);
+  const ph = phaseAt(rec, 'last');
   const receipt = ph.receipt ?? {};
   const result = receipt.result !== null && typeof receipt.result === 'object' ? receipt.result : {};
   const terminal = agentTerminal(result);
@@ -394,7 +395,88 @@ export function report(path) {
       effects: result.effects ?? [],
       residualResources: result.residualResources ?? [],
     },
+    // The question lifecycle, or null when this pass never asked. NAMED, because
+    // an absent ask and an ask whose outcome was never written are different
+    // facts and route differently — see askBegin below.
+    ask: rec.ask ?? null,
   };
+}
+
+/**
+ * The write-ahead intent for one question, and then its outcome.
+ *
+ * WHY THIS IS ON THE RECORD (ofmchat #87, 2026-08-27). `ax triage ask` minted a
+ * real question, printed its id only on the timeout branch, and persisted
+ * nothing. `ax triage status`, reading the pane mailbox alone, then answered
+ * "this pane has no pending question — it never asked through `ax triage ask`"
+ * about a question `--resume` proved was pending. The child believed status,
+ * reported, and settled a pass it had been told not to settle. Whatever mints a
+ * live identity has to leave it where every other surface already looks.
+ *
+ * WHY BEFORE THE MUTATION, not after it. Same rule as every other phase here
+ * (F-001): a mutation is issued from a record written first, so a process that
+ * dies mid-flight leaves a state a reader can act on. `asking` is exactly that
+ * state — ISSUED, OUTCOME UNKNOWN — and it must never be read as "no question
+ * exists", which is the failure this whole lifecycle was added to end.
+ *
+ * States: `asking` → `pending` (outlived the wait, id known) | `answered` |
+ * `refused`; then `replying` → `answered` once a coordinator rules it, written
+ * by ../triage/answer.mjs so a successful reply cannot leave a durable `pending`
+ * lying to the next reader.
+ */
+export function askBegin(path, { request, sha, argv, now = () => new Date().toISOString() }) {
+  const rec = load(path);
+  // A rerun after a crash, or beside a live question, must NOT mint a second
+  // one: `asking` means issued-outcome-unknown and `pending`/`replying` mean a
+  // question is open on the parent's mailbox. Overwriting any of them would put
+  // two questions on one draft, and a ruling keyed by number could then reach
+  // either. Only an absent lifecycle or a proven terminal one may begin again.
+  const prior = rec.ask ?? null;
+  if (prior !== null && (prior.state === 'asking' || prior.state === 'pending' || prior.state === 'replying')) {
+    return { ok: false, state: prior.state, messageId: prior.messageId ?? null, at: prior.at ?? null };
+  }
+  rec.ask = { state: 'asking', request, sha, argv, at: now() };
+  save(rec, path);
+  return { ok: true, state: 'asking', messageId: null, at: null };
+}
+
+/**
+ * The write-ahead intent for a RULING, recorded before the reply is issued.
+ *
+ * Create-or-transition, and the difference from `askSettle` is deliberate: a
+ * record whose `ask` field is simply absent is the ordinary shape of a question
+ * minted by a version that predates this lifecycle, and refusing to answer it
+ * would strand a live child over a bookkeeping gap. What is NOT tolerated is a
+ * record this process cannot read or write at all — `load`/`save` raise, and the
+ * caller must refuse before issuing anything (F-001).
+ *
+ * `at` is preserved when it exists, because when the question was asked and when
+ * it was ruled are two different facts and a reader needs both.
+ */
+export function replyBegin(path, { messageId, now = () => new Date().toISOString() }) {
+  const rec = load(path);
+  const prior = rec.ask ?? null;
+  rec.ask = {
+    ...(prior ?? {}),
+    state: 'replying',
+    messageId,
+    at: prior?.at ?? now(),
+    repliedAt: now(),
+    settledAt: null,
+  };
+  save(rec, path);
+}
+
+/**
+ * Move an EXISTING lifecycle to its next state. Strict on absence: settling
+ * something that was never begun would mint the very half-state this exists to
+ * remove, so it raises instead of creating one (F-028).
+ */
+export function askSettle(path, { state, messageId = null, code = null, now = () => new Date().toISOString() }) {
+  const rec = load(path);
+  const prior = must(rec, 'ask', `${path} has no ask to settle`);
+  rec.ask = { ...prior, state, messageId, code, settledAt: now() };
+  save(rec, path);
 }
 
 /**

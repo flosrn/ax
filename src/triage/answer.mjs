@@ -23,7 +23,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { defaultStore } from '../worker/record.mjs';
+import { askSettle, defaultStore, replyBegin } from '../worker/record.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, passesOf, questionProblem, questionsIn, readDraft, requestFor } from './draft.mjs';
@@ -188,6 +188,24 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   }
 
   // ── 6. the reply ───────────────────────────────────────────────────────────
+  // WRITE-AHEAD, same rule as the ask (F-001): the record says a reply is in
+  // flight BEFORE it is issued, so a process that dies mid-send leaves
+  // `replying` — issued, outcome unknown — rather than a durable `pending` that
+  // would tell the next reader to answer a question this already answered.
+  //
+  // And it REFUSES rather than sending anyway. A reply is the mutation that
+  // unblocks a live child exactly once; issuing one that no record can account
+  // for is how two coordinators answer the same question, or how a retry after
+  // a crash sends a second ruling to a child that already consumed the first.
+  const recordPath = join(store, `${requestFor({ ...base, pass })}.json`);
+  try {
+    replyBegin(recordPath, { messageId: id });
+  } catch (error) {
+    return cannot(
+      `could not record this reply against ${recordPath}: ${String(error.message ?? error)} — nothing was sent, because a reply issued from no record cannot be recovered (F-001)`,
+      `ax triage status --issue ${issue} --job ${job}   # what this pass recorded, and whether a question is really open`,
+    );
+  }
   const sent = run(['orchestration', 'reply', '--id', id, '--body', body, '--json']);
   if (sent.error) return cannot(`orca orchestration reply did not finish: ${String(sent.error)}`);
   const receipt = sent.receipt ?? {};
@@ -214,6 +232,15 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
     return 1;
   }
   if (result.duplicate === true) note('this exact ruling was already recorded — nothing new was sent');
+  // Proven landed as a QUESTION reply, so the lifecycle closes here. Without
+  // this the record would keep saying `replying` forever and `ax triage status`
+  // would report a live question over an answered one — the same class of lie,
+  // pointing the other way, as the empty-mailbox verdict this lifecycle fixed.
+  try {
+    askSettle(recordPath, { state: 'answered', messageId: id });
+  } catch (error) {
+    note(`the reply landed but the pass record could not be closed: ${String(error.message ?? error)}`);
+  }
   note(`answered ${questionSpan(draft.questions.map(question => question.n))} on ${id} — the child revises its draft, then reports`);
   return 0;
 }

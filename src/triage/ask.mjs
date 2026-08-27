@@ -30,7 +30,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { defaultStore, heldRepaired } from '../worker/record.mjs';
+import { askBegin, askSettle, defaultStore, heldRepaired } from '../worker/record.mjs';
 import { ownCapability } from '../worker/capability.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
@@ -49,16 +49,22 @@ const USAGE =
   + '  4  PENDING — the question outlived the wait; resume the printed id\n';
 
 /**
- * The server's own clamp, mirrored so the local process outlives the wait it
- * starts. Measured from the shipped orchestration-ask-timeout.js (2026-08-22):
- * default 600s, hard cap 1800s, and Orca's own CLI waits clamped+5s. The margin
- * keeps ax from killing `orca` in the window where the runtime has already
- * decided (answered or timed out) but the receipt is still in flight — a kill
- * there loses the messageId that names the recovery.
+ * The wait this verb starts, and the margin that keeps ax from killing `orca`
+ * in the window where the runtime has already decided but the receipt is still
+ * in flight — a kill there loses the messageId that names the recovery.
+ *
+ * THE DEFAULT IS NOT THE SERVER'S. Orca's own default is 600s (measured from
+ * the shipped orchestration-ask-timeout.js, 2026-08-22) and mirroring it put
+ * one call at 620s of wall clock, while the agent harness running the child
+ * kills bash at 600s. Measured 2026-08-26 on ofmchat #87: killed at 600.09s
+ * with NO output, losing exactly the receipt this margin exists to protect, and
+ * the child concluded nothing had landed. So the default fits WHOLE inside a
+ * 600s budget, receipt included; a caller who wants the server's ceiling passes
+ * --timeout-ms and owns a budget to match.
  */
-export const ASK_DEFAULT_TIMEOUT_MS = 600_000;
+export const ASK_DEFAULT_TIMEOUT_MS = 540_000;
 export const ASK_MAX_TIMEOUT_MS = 1_800_000;
-const ASK_EXIT_MARGIN_MS = 20_000;
+export const ASK_EXIT_MARGIN_MS = 20_000;
 
 /**
  * Backoff between internal retries of a `runtime_busy` refusal, and the whole
@@ -144,6 +150,10 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   // Hoisted for the same reason: it selects THIS pass's session file when the
   // capability has to be read off disk, and triage passes share one checkout.
   let request = '';
+  // Hoisted too: the write-ahead intent names the exact draft this ask was
+  // composed from, so a reader can tell a settled question from one asked
+  // against a draft the child has since rewritten.
+  let sha = '';
   if (issue !== '') {
     const paths = repoPaths(cwd);
     if (!paths.root) return refuse('not inside a git repository — the draft this ask reads lives in one');
@@ -180,7 +190,8 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     }
     request = requestFor(identity);
     recordPath = join(store, `${request}.json`);
-    body = composeAsk({ request, sha: draft.sha, questions: draft.questions });
+    sha = draft.sha;
+    body = composeAsk({ request, sha, questions: draft.questions });
   }
 
   if (dry) {
@@ -211,6 +222,41 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     ? ['orchestration', 'ask', '--question', body, ...authorized, '--timeout-ms', String(timeout), '--json']
     : ['orchestration', 'ask', '--resume', resume, ...authorized, '--timeout-ms', String(timeout), '--json'];
 
+  // WRITE-AHEAD, and it can REFUSE. A live lifecycle (`asking` — issued,
+  // outcome unknown — or `pending`/`replying`) means a question from this pass
+  // may already be open on the parent's mailbox, and a second one would let a
+  // ruling keyed by number reach either. `--resume` skips this: it carries no
+  // identity to record and mints nothing.
+  if (recordPath !== '') {
+    let began;
+    try {
+      began = askBegin(recordPath, { request, sha, argv: wire });
+    } catch (error) {
+      return cannot(
+        `could not record this ask: ${String(error.message ?? error)} — nothing was sent, because a mutation issued from no record cannot be recovered (F-001)`,
+        'ax triage status   # what this pass recorded, and whether a child is behind it',
+      );
+    }
+    if (!began.ok) {
+      bad(`this pass already has a question in flight (${began.state}${began.messageId ? ` on ${began.messageId}` : ', outcome never recorded'}) — a second ask would put two questions on one draft`);
+      if (began.messageId) fix(`ax triage ask --resume ${began.messageId} --timeout-ms ${timeout}   # go back to waiting on the SAME question`);
+      else fix('ax triage status   # the mailbox is the authority on whether it landed; answer THAT id rather than asking again');
+      return 1;
+    }
+  }
+
+  /** Settle the lifecycle, or say why it could not be. */
+  const settle = (state, { messageId = null, code = null } = {}) => {
+    if (recordPath === '') return;
+    try {
+      askSettle(recordPath, { state, messageId, code });
+    } catch (error) {
+      // The mutation already happened; refusing now would be theatre. But a
+      // reader that cannot see the outcome must be told, not left to infer it.
+      note(redactSecrets(`  the ask landed but its outcome could not be recorded: ${String(error.message ?? error)}`));
+    }
+  };
+
   // The blip absorber. Bounded on purpose — see ASK_BUSY_BACKOFF_MS.
   let out = run(wire);
   let attempts = 1;
@@ -233,6 +279,14 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   }
   if (receipt.ok === false) {
     const code = receipt.error?.code ?? '';
+    // A NAMED refusal is a proven terminal outcome: nothing was minted, so the
+    // lifecycle closes and a later ask may legitimately begin. The generic
+    // `cannot` at the end deliberately does NOT settle — an unrecognized
+    // failure leaves `asking`, the honest "issued, outcome unknown", which is
+    // what stops a blind re-ask from doubling a question that may exist.
+    if (['dispatch_inactive', 'dispatch_capability_invalid', 'question_not_found', 'runtime_busy'].includes(code)) {
+      settle('refused', { code });
+    }
     // Untrusted runtime output, exactly like a transcript: the preamble embeds
     // the dispatch capability, and an error message that quotes the request
     // can quote the token with it. Redacted HERE, once, because the branches
@@ -294,22 +348,40 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     }
     return cannot(`orca refused the ask (${code || 'no code'}): ${detail}`);
   }
+  // An id is the ONLY thing that makes a surviving question recoverable, so a
+  // receipt without one is an unknown outcome and not a pending question. Both
+  // halves matter: settling `pending` with a null id would block every later ask
+  // on a question nothing can resume, and the repair line below printed
+  // `--resume undefined` when the runtime answered without one.
+  const minted = typeof receipt.messageId === 'string' && receipt.messageId !== '' ? receipt.messageId : '';
+  if ((receipt.timedOut === true || receipt.cancelled === true) && minted === '') {
+    return cannot(
+      `the wait ended (${receipt.timedOut === true ? 'timed out' : 'cancelled'}) and the receipt named NO message id — a question may be open and nothing here can resume it; this pass stays recorded as issued-outcome-unknown`,
+      'ax triage status   # the mailbox is the authority on whether a question landed, and names the id if one did',
+    );
+  }
   if (receipt.timedOut === true) {
+    settle('pending', { messageId: minted });
     bad(`no answer within ${receipt.timeoutMs ?? timeout}ms — the question is PENDING, not dead`);
-    note(redactSecrets(`message ${receipt.messageId} stays open on the parent's mailbox; do not report, do not end your turn, do not decide it yourself`));
+    note(redactSecrets(`message ${minted} stays open on the parent's mailbox; do not report, do not end your turn, do not decide it yourself`));
     // The global command delegates to the exact package version this repo
     // pinned. A parked child copies this repair verbatim, so it must use the
     // same entry point the generated AGENTS.md teaches.
-    fix(redactSecrets(`ax triage ask --resume ${receipt.messageId} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
+    fix(redactSecrets(`ax triage ask --resume ${minted} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
     return 4;
   }
   if (receipt.cancelled === true) {
+    // A cut wait leaves a question that MAY exist under this id — so the
+    // lifecycle stays `pending` rather than closing, and the id is on record
+    // for the resume the repair names.
+    settle('pending', { messageId: minted });
     return cannot(
-      `the wait was cut (${receipt.connectionLost === true ? 'connection lost' : 'cancelled'}) — question ${receipt.messageId} may still be pending`,
-      `ax triage ask --resume ${receipt.messageId}   # nothing was lost; go back to waiting`,
+      `the wait was cut (${receipt.connectionLost === true ? 'connection lost' : 'cancelled'}) — question ${minted} may still be pending`,
+      `ax triage ask --resume ${minted}   # nothing was lost; go back to waiting`,
     );
   }
   if (typeof receipt.answer === 'string') {
+    settle('answered', { messageId: receipt.messageId ?? null });
     raw(redactSecrets(receipt.answer));
     note('revise the draft with what this decides — drop the Q<n>: lines the rulings close — and only then report');
     return 0;

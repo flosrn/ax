@@ -515,7 +515,7 @@ function fakeInbox(messages, { readable = true, cursors = [] } = {}) {
   return { runner, calls };
 }
 
-function record(store, request, { usable = true, repaired = false } = {}) {
+function record(store, request, { usable = true, repaired = false, ask = null } = {}) {
   mkdirSync(store, { recursive: true });
   writeFileSync(
     join(store, `${request}.json`),
@@ -525,6 +525,9 @@ function record(store, request, { usable = true, repaired = false } = {}) {
       // The fact `start.mjs` persists after a CONFIRMED submission, and the only
       // thing that tells a reader a child is alive behind a `failed` Dispatch.
       ...(repaired ? { heldRepairAt: '2026-08-20T10:00:26.000Z' } : {}),
+      // The question lifecycle `ax triage ask` writes: asking → pending |
+      // answered | refused, then replying → answered.
+      ...(ask ? { ask } : {}),
       attempts: [
         {
           n: 1,
@@ -659,8 +662,78 @@ test('a draft that asks with NO answerable ask says why, and names an exit that 
   assert.equal(r.code, 0);
   assert.match(r.out, /the draft asks 2, and no answerable ask is visible/);
   assert.match(r.out, /never asked through `ax triage ask`/);
-  assert.match(r.out, /post the rulings on #7 and fold them into/);
+  assert.match(r.out, /rule the questions and fold them into/);
   assert.doesNotMatch(r.out, /WAITING since/);
+  // The phrase that collided with the injected child contract, where the same
+  // words mean "the channel is dead" and authorise reporting with questions
+  // open. Measured 2026-08-27 on ofmchat #87: a child read this line as that
+  // permission and settled a pass whose ask was still pending.
+  assert.doesNotMatch(r.out, /supervised reply is not available/);
+});
+
+// ── the record is the second witness (ofmchat #87, 2026-08-27) ────────────────
+//
+// `ax triage ask` minted a question and `--resume` proved it PENDING, while this
+// verb — reading the pane mailbox alone — announced "this pane has no pending
+// question — it never asked through `ax triage ask`" and told the reader to fold
+// the rulings and publish. The child followed this surface and settled the pass.
+// An absence from a bounded inbox is not proof that no question exists (F-028),
+// so the pass's own record now answers alongside it.
+
+test('a recorded PENDING ask is WAITING even when the mailbox shows nothing', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7', {
+    ask: { state: 'pending', messageId: 'msg_recorded', at: '2026-08-27T02:00:00Z' },
+  });
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeInbox([]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /WAITING since 2026-08-27T02:00:00Z on message msg_recorded/);
+  assert.match(r.out, /THIS PASS'S RECORD, not the mailbox/);
+  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_recorded/);
+  // And the advice that destroyed the pass must be absent while it is open.
+  assert.doesNotMatch(r.out, /rule the questions and fold them into/);
+  assert.doesNotMatch(r.out, /supervised reply is not available/);
+  assert.doesNotMatch(r.out, /never asked through/);
+});
+
+test('a record stuck at ASKING says the outcome is unknown, and never advises publishing', () => {
+  // The state a process killed between the send and the write leaves behind —
+  // the ofmchat #87 shape exactly, since the harness kills bash at 600s and the
+  // ask default used to need 620s.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7', {
+    ask: { state: 'asking', at: '2026-08-27T02:00:00Z', sha: 'abc123' },
+  });
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeInbox([]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /an ask was ISSUED for this pass and its outcome was never recorded/);
+  assert.doesNotMatch(r.out, /rule the questions and fold them into/, 'publishing over a possibly-live question cannot be undone');
+  assert.doesNotMatch(r.out, /never asked through/);
+});
+
+test('an ANSWERED record does not keep the pass looking blocked', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7', {
+    ask: { state: 'answered', messageId: 'msg_done', at: '2026-08-27T02:00:00Z' },
+  });
+  draft(root, 'triage-acme-widgets-7', 'Q1: still written down?\n');
+  const orca = fakeInbox([]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /WAITING/);
+  // A terminal lifecycle is exactly when folding by hand IS the right advice.
+  assert.match(r.out, /recorded answered/);
+  assert.match(r.out, /rule the questions and fold them into/);
 });
 
 test('a pass with no pane says THAT, rather than blaming the child for not asking', () => {

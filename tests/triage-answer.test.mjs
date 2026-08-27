@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -94,6 +94,21 @@ function fakeOrca({ messages = [question()], reply = null, reachable = true } = 
   });
   return { runner, calls };
 }
+
+/**
+ * The pass's dispatch record. A reply is a live mutation, so it is written
+ * against a record or refused (F-001) — and in the new world a question
+ * carrying a valid ax header implies `ax triage ask` ran, which implies this
+ * file exists. `ask` is the lifecycle `ax triage ask` left behind.
+ */
+const record = (root, request = 'triage-acme-widgets-7', ask = { state: 'pending', messageId: 'msg_q1', at: '2026-08-22T10:00:00Z' }) => {
+  const store = join(root, 'store');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({ request, createdAt: '2026-08-20T10:00:00.000Z', ask, attempts: [{ n: 1, phases: [] }] }));
+  return join(store, `${request}.json`);
+};
+
+const askOf = path => JSON.parse(readFileSync(path, 'utf8')).ask;
 
 const run = (argv, { root = repo(), orca = fakeOrca() } = {}) => {
   const result = capture(() =>
@@ -260,6 +275,7 @@ test('an ask that disagrees on the questions themselves is refused', () => {
 
 test('a valid ruling set is paired, composed Q-above-A, and replied to the exact id', () => {
   const root = repo();
+  record(root);
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A2: P2, the trace is a crash.\nA1: bug.\n');
   const orca = fakeOrca();
@@ -275,6 +291,7 @@ test('a valid ruling set is paired, composed Q-above-A, and replied to the exact
 
 test('an identical re-answer is reported as already recorded, not as new', () => {
   const root = repo();
+  record(root);
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
   const orca = fakeOrca({ reply: { status: 0, stdout: JSON.stringify({ ok: true, result: { message: { id: 'msg_a1' }, question: { status: 'answered' }, duplicate: true } }), stderr: '' } });
@@ -286,6 +303,7 @@ test('an identical re-answer is reported as already recorded, not as new', () =>
 
 test('answer_conflict is refused: two rulings cannot both stand, and nothing was changed', () => {
   const root = repo();
+  record(root);
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
   const orca = fakeOrca({ reply: { status: 1, stdout: JSON.stringify({ id: 'x', ok: false, error: { code: 'answer_conflict', message: 'already has a different answer' } }), stderr: '' } });
@@ -297,6 +315,7 @@ test('answer_conflict is refused: two rulings cannot both stand, and nothing was
 
 test('a closed question names the recovery: the child is gone, a fresh pass carries the rulings', () => {
   const root = repo();
+  record(root);
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
   const orca = fakeOrca({ reply: { status: 1, stdout: JSON.stringify({ id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'closed' } }), stderr: '' } });
@@ -309,6 +328,7 @@ test('a closed question names the recovery: the child is gone, a fresh pass carr
 
 test('the belt: a success receipt with no question is reported as the plain-message misfire it is', () => {
   const root = repo();
+  record(root);
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
   const orca = fakeOrca({ reply: { status: 0, stdout: JSON.stringify({ ok: true, result: { message: { id: 'msg_plain' } } }), stderr: '' } });
@@ -317,6 +337,60 @@ test('the belt: a success receipt with no question is reported as the plain-mess
   assert.equal(r.code, 1);
   assert.match(r.out, /landed as a PLAIN message/);
   assert.match(r.out, /still blocked/);
+});
+
+// ── the reply is recorded before it is issued (F-001) ─────────────────────────
+//
+// A reply unblocks a live child exactly once. Issuing one no record accounts for
+// is how a retry after a crash sends a second ruling to a child that already
+// consumed the first, and how a successful reply leaves a durable `pending` that
+// makes `ax triage status` report a live question over an answered one.
+
+test('the reply intent is written BEFORE the reply is issued', () => {
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+
+  let atSendTime = null;
+  const orca = fakeOrca();
+  const wrapped = {
+    calls: orca.calls,
+    runner: args => {
+      if (args[0] === 'orchestration' && args[1] === 'reply') atSendTime = askOf(path);
+      return orca.runner(args);
+    },
+  };
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca: wrapped });
+
+  assert.equal(r.code, 0);
+  assert.equal(atSendTime?.state, 'replying', 'the intent exists at the moment the mutation is issued');
+  assert.equal(atSendTime?.messageId, 'msg_q1');
+});
+
+test('a proven reply settles the lifecycle to ANSWERED', () => {
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root });
+
+  assert.equal(r.code, 0);
+  assert.equal(askOf(path).state, 'answered');
+  assert.equal(askOf(path).messageId, 'msg_q1');
+});
+
+test('a record that cannot be written REFUSES before the reply leaves', () => {
+  const root = repo();
+  mkdirSync(join(root, 'store', 'triage-acme-widgets-7.json'), { recursive: true });
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const orca = fakeOrca();
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /could not record this reply/);
+  assert.deepEqual(replied(orca.calls), [], 'nothing was sent');
 });
 
 test('an unreachable runtime refuses with nothing sent', () => {
