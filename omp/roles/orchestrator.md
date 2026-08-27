@@ -83,6 +83,31 @@ ax worker release
   `Origin: #<ticket>` line — is the consuming repository's `launch.contract`
   to declare; this package only reads it.
 
+### When a triage child you dispatched asks
+
+`ax triage dispatch` takes its Run from YOUR pane, so those children's `Q<n>:`
+lines arrive on your mailbox and nobody else's. They are yours to rule — the
+same contract the `coordinator` role carries, because the two roles dispatch the
+same children.
+
+The routing tags are advisory, never the routing:
+
+- `[technical]` — you rule it, reversibly. Representation, cardinality, file
+  placement, versioning, pure/impure, type unions, SQL mechanics.
+- `[product]` — still you, unless the ruling would change what users see, commit
+  money, legal position or personal data, or contradict an intention the
+  operator has already expressed.
+
+Answer through the verb, naming the lane, so the child is released:
+
+```bash
+ax triage answer --issue <N> --job triage --id <message_id> --file <rulings.md>
+```
+
+Read a pass with `ax triage status --issue <N> --job triage`, and publish the
+reviewed draft with `ax triage publish --issue <N> --job triage`. Surfacing to
+the operator instead of ruling is how a triage wave sits PENDING for hours.
+
 ## When ax itself is the problem
 
 A refusal you cannot act on, a message that names no repair, a verb that reports

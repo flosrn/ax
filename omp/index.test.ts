@@ -342,6 +342,35 @@ test('the bundled coordinator role rules child questions itself', async () => {
   expect(unqualifiedAnswer).toEqual([]);
 });
 
+// THE SAME CONTRACT, THE OTHER ROLE. `orchestrator` is told to run a triage wave
+// itself — sweeping the `needs-triage` follow-ups its own workers opened, and
+// clearing the parked pile before the next PRD — and `ax triage dispatch` takes
+// its Run from the dispatching pane, so those children's questions arrive on the
+// ORCHESTRATOR's mailbox, not on any coordinator's. Yet this role said nothing
+// about ruling them: no verb, no routing bar, no tags. That is the same defect
+// repaired in `coordinator` on 2026-08-27, left standing in the role that also
+// dispatches triage.
+test('the bundled orchestrator role rules the triage questions it dispatches', async () => {
+  const installed = install('[omp model=@task]');
+  await installed.commands.get('role')?.handler('orchestrator', installed.ctx);
+  const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
+
+  // It already tells the operator to run triage waves, so it owes the answer.
+  expect(role).toMatch(/triage wave/);
+  expect(role).toContain('ax triage answer --issue <N>');
+  expect(role).toMatch(/\[technical\]/);
+  expect(role).toMatch(/\[product\]/);
+  expect(role).toMatch(/change what users see/);
+  // Same lane discipline the coordinator carries: an unqualified example polls
+  // or answers the wrong job.
+  for (const verb of ['answer', 'status']) {
+    const unqualified = [...role.matchAll(new RegExp(`ax triage ${verb} +--issue[^\`\\n]*`, 'g'))]
+      .map(match => match[0])
+      .filter(example => !example.includes('--job'));
+    expect(unqualified).toEqual([]);
+  }
+});
+
 // ── unknown names refuse, visibly ────────────────────────────────────────────
 
 test('an unknown dispatched role locks the session before its first turn', async () => {
