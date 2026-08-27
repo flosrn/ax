@@ -149,7 +149,10 @@ export function passesOf(storeDir, draftDir, identity) {
  */
 export function questionsIn(text) {
   const questions = [];
-  for (const line of String(text ?? '').split('\n')) {
+  // `\r?\n`: a CRLF draft otherwise leaves a trailing `\r`, and `$` on the
+  // Q-line regex then misses — measured 2026-08-27, ofmchat #81, three legal
+  // `Q<n>: [technical] …` openings refused as `carries no Q<n>: line`.
+  for (const line of String(text ?? '').split(/\r?\n/)) {
     const match = /^Q([0-9]+):\s*(.*)$/.exec(line);
     if (match !== null) questions.push({ n: Number(match[1]), text: match[2].trim() });
   }

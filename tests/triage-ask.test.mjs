@@ -8,13 +8,14 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { ASK_DEFAULT_TIMEOUT_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/triage/ask.mjs';
+import { ASK_DEFAULT_TIMEOUT_MS, ASK_EXIT_MARGIN_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/triage/ask.mjs';
+import { slugOf } from '../src/worker/transcript.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -55,15 +56,26 @@ const capture = fn => {
  * `bare` is printed WITHOUT an envelope, exactly like the shipped CLI; an
  * `envelope` is the error path. `status --json` answers reachable so the
  * readiness gate passes unless `reachable: false` says otherwise.
+ *
+ * `script` is a SEQUENCE of `{ envelope | bare, status }` answers, consumed one
+ * per `orchestration ask` call and the last one repeating. It exists because a
+ * transient refusal is only transient if a SECOND call answers differently, and
+ * a single-receipt fake cannot express that.
  */
-function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true } = {}) {
+function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true, script = null } = {}) {
   const calls = [];
+  let at = 0;
   const runner = createRunner({
     bin: 'stub-orca',
     exec: (bin, args) => {
       calls.push(args.join(' '));
       if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable } } }), stderr: '' };
       if (args[0] === 'orchestration' && args[1] === 'ask') {
+        if (script !== null) {
+          const step = script[Math.min(at, script.length - 1)];
+          at += 1;
+          return { status: step.status ?? 0, stdout: JSON.stringify(step.envelope ?? step.bare), stderr: '' };
+        }
         return { status, stdout: JSON.stringify(envelope ?? bare), stderr: '' };
       }
       return { status: 1, stdout: '', stderr: 'unexpected orca call' };
@@ -72,8 +84,12 @@ function fakeOrca({ bare = null, envelope = null, status = 0, reachable = true }
   return { runner, calls };
 }
 
+/** Every ms this verb slept, so a backoff is asserted rather than waited out. */
+const slept = [];
+
 const run = (argv, { root = repo(), orca = fakeOrca(), env = {}, sessionsRoot } = {}) => {
   const store = env.ORCA_DISPATCH_STORE ?? join(root, 'store');
+  slept.length = 0;
   const result = capture(() =>
     ask([...argv, '--repo', REPO], {
       runner: orca.runner,
@@ -81,9 +97,10 @@ const run = (argv, { root = repo(), orca = fakeOrca(), env = {}, sessionsRoot } 
       env: { ORCA_DISPATCH_STORE: store },
       cwd: root,
       sessionsRoot,
+      sleep: ms => slept.push(ms),
     }),
   );
-  return { ...result, root, store, orcaCalls: orca.calls };
+  return { ...result, root, store, orcaCalls: orca.calls, slept: [...slept] };
 };
 
 /**
@@ -160,6 +177,7 @@ test('naming a pass nobody ran is refused, listing the ones that exist', () => {
 
 test('an answered ask prints the ruling and says what the child does next', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
   const orca = fakeOrca({ bare: ANSWERED });
   const r = run(['--issue', '7'], { root, orca });
@@ -171,11 +189,13 @@ test('an answered ask prints the ruling and says what the child does next', () =
   assert.match(sent, /--question/);
   assert.match(sent, /Q1: bug or enhancement\?/, 'the wire carries the draft verbatim');
   assert.match(sent, /triage-acme-widgets-7/, 'the ask names its sender');
-  assert.match(sent, new RegExp(`--timeout-ms ${ASK_DEFAULT_TIMEOUT_MS}`), "the server's own default, mirrored");
+  assert.match(sent, new RegExp(`--timeout-ms ${ASK_DEFAULT_TIMEOUT_MS}`), 'the default this verb chose, which is NOT the server default — see ASK_DEFAULT_TIMEOUT_MS');
 });
 
 test('a NEWEST pass is the default: a p2 draft asks as p2', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  record(join(root, 'store'), 'triage-acme-widgets-7-p2');
   draft(root, 'triage-acme-widgets-7', 'Q1: old?\n');
   draft(root, 'triage-acme-widgets-7-p2', 'Q1: new?\n');
   const orca = fakeOrca({ bare: ANSWERED });
@@ -187,6 +207,7 @@ test('a NEWEST pass is the default: a p2 draft asks as p2', () => {
 
 test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }, status: 1 });
   const r = run(['--issue', '7', '--timeout-ms', '5000'], { root, orca });
@@ -199,6 +220,7 @@ test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', (
 
 test('a cut connection is CANNOT ESTABLISH, and the question is not declared dead', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: false, cancelled: true, connectionLost: true, timeoutMs: 600000 }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
@@ -238,6 +260,7 @@ test('dispatch_inactive with no repaired-stall proof stays a named disjunction, 
   // stall killed your capability" here would be the same defect the proven
   // branch fixes — a diagnosis stated without its measure.
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'ask requires an active supervised Dispatch.' } }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
@@ -255,6 +278,7 @@ test('a token-shaped receipt is redacted before it reaches the child’s eyes', 
   // bad()/note() directly, so the redaction has to be proven here, not assumed
   // from refuse/cannot.
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const orca = fakeOrca({ envelope: { id: 'x', ok: false, error: { code: 'dispatch_inactive', message: 'Dispatch dcap_s3cr3tT0ken capability is revoked.' } }, status: 1 });
   const r = run(['--issue', '7'], { root, orca });
@@ -277,6 +301,7 @@ test('an unreachable runtime refuses before anything is sent', () => {
 
 test('a non-JSON answer is CANNOT ESTABLISH, with the raw text preserved', () => {
   const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
   const broken = { runner: createRunner({ bin: 'stub', exec: (bin, args) => (args[0] === 'status' ? { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' } : { status: 0, stdout: 'not json', stderr: '' }) }), calls: [] };
   const r = run(['--issue', '7'], { root, orca: broken });
@@ -421,4 +446,392 @@ test('a token mentioned LATE is not this session grant, and is not taken', () =>
   const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
   assert.doesNotMatch(sent, /dcap_not_mine/, 'a token this session merely mentions is not a grant it holds');
   assert.doesNotMatch(sent, /--dispatch-capability/);
+});
+
+test('the PARENT session sharing the checkout does not make the capability ambiguous', () => {
+  // Measured 2026-08-27 on ofmchat #87 and #88: `ownCapability` answered "no
+  // single session file under a cwd slug ending in \"ofmchat\" that names
+  // triage-goodluckagency-ofmchat-87" inside a genuine dispatched child.
+  //
+  // The cause is structural, not a coincidence of that machine: triage puts the
+  // child in the CURRENT checkout, so the coordinator's own session file lives
+  // in the same slug directory — and the coordinator typed the request id when
+  // it dispatched, so a whole-file `includes(request)` matches it too. Two
+  // matches read as ambiguity, and the child was told it might not be a
+  // dispatched session at all.
+  //
+  // The discriminant is the PREAMBLE: only the child is handed a capability, and
+  // only in its first lines. The parent mentions the request much later and
+  // holds no token there.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-shared-')));
+  const dir = join(sessionsRoot, `-Users-someone-${basename(root)}`);
+  mkdirSync(dir, { recursive: true });
+
+  // The coordinator: no capability in its preamble, and it names the request
+  // deep in the transcript, exactly where it ran the dispatch.
+  const parentTail = Array.from({ length: 30 }, (_, n) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `turn ${n}` }] } }));
+  writeFileSync(
+    join(dir, 'parent.jsonl'),
+    `${[
+      JSON.stringify({ type: 'session', version: 3, cwd: root }),
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: '/role coordinator' }] } }),
+      ...parentTail,
+      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'ax triage dispatch --issue 7 → triage-acme-widgets-7' }] } }),
+    ].join('\n')}\n`,
+  );
+
+  // The child: its injected preamble carries both the request and the token.
+  writeFileSync(
+    join(dir, 'child.jsonl'),
+    `${[
+      JSON.stringify({ type: 'session', version: 3, cwd: root }),
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --from term_child --dispatch-capability dcap_the_child_token --question <text>\ntriage-acme-widgets-7' }] } }),
+    ].join('\n')}\n`,
+  );
+
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.match(sent, /--dispatch-capability dcap_the_child_token/, "the child's own grant, not an ambiguity");
+});
+
+test('a SECOND checkout whose slug ends the same way does not hide this one', () => {
+  // The other half of the ofmchat report, and a tail match cannot answer it:
+  // `basename(cwd)` matches every directory ending in `-<name>`, so two
+  // checkouts called ofmchat — a worktree and its primary, say — make the lookup
+  // ambiguous and refuse. But the caller passed the WHOLE cwd, and the slug that
+  // produces is unique by construction, so the ambiguity was self-inflicted.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-twin-')));
+  // This checkout's OWN directory, named exactly as a session for it would be.
+  const mine = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(mine, { recursive: true });
+  writeFileSync(
+    join(mine, 'child.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --dispatch-capability dcap_mine --question <t>\ntriage-acme-widgets-7' }] } })}\n`,
+  );
+  // A different checkout that merely ends with the same basename.
+  const twin = join(sessionsRoot, `-Users-someone-else-${basename(root)}`);
+  mkdirSync(twin, { recursive: true });
+  writeFileSync(
+    join(twin, 'other.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --dispatch-capability dcap_theirs --question <t>\ntriage-acme-widgets-7' }] } })}\n`,
+  );
+
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 0);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.match(sent, /--dispatch-capability dcap_mine/);
+  assert.doesNotMatch(sent, /dcap_theirs/, "another checkout's grant is never this session's");
+});
+
+test('an AMBIGUITY says so, and never borrows the vocabulary of an absence', () => {
+  // Reported by the child that hit it (2026-08-27): the refusal read "no single
+  // session file … — this may not be a dispatched child, or its session is not
+  // on this host". "No SINGLE file" is true of zero matches AND of two, but both
+  // causes it then offered were zero-match causes, and both were false. The
+  // child read it as "this channel does not exist for me" and slid toward the
+  // irrecoverable branch instead of passing the token.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-ambig-')));
+  const dir = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(dir, { recursive: true });
+  for (const [name, token] of [['a.jsonl', 'dcap_one'], ['b.jsonl', 'dcap_two']]) {
+    writeFileSync(
+      join(dir, name),
+      `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `orca orchestration ask --dispatch-capability ${token} --question <t>\ntriage-acme-widgets-7` }] } })}\n`,
+    );
+  }
+
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /2 candidate session/, 'the count, so the reader knows it is an ambiguity');
+  assert.match(r.out, /--dispatch-capability/, 'and the one gesture that resolves it');
+  assert.doesNotMatch(r.out, /may not be a dispatched child/, 'a zero-match cause must not be offered for a two-match condition');
+  assert.doesNotMatch(r.out, /dcap_one|dcap_two/, 'neither candidate token is displayed');
+});
+
+test('an EMPTY directory of its own never borrows a sibling checkout grant', () => {
+  // The fence, proven rather than asserted. This checkout's session directory
+  // exists — so the answer about it is "nothing readable here" — while a sibling
+  // whose slug merely ends the same way holds a real token. Falling back on the
+  // strength of an absence would hand that dispatch's grant to this caller, and
+  // nothing downstream could detect it (F-028).
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-empty-')));
+  const mine = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(mine, { recursive: true });
+  const sibling = join(sessionsRoot, `-Users-someone-else-${basename(root)}`);
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(
+    join(sibling, 'theirs.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'orca orchestration ask --dispatch-capability dcap_not_mine --question <t>\ntriage-acme-widgets-7' }] } })}\n`,
+  );
+
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  const sent = r.orcaCalls.find(line => line.startsWith('orchestration ask'));
+  assert.doesNotMatch(sent, /--dispatch-capability/, 'nothing was borrowed');
+  assert.doesNotMatch(r.out, /dcap_not_mine/);
+  // And the reason is about THIS checkout, not about a slug that ends like it.
+  assert.match(r.out, /holds no readable session for this checkout/);
+  assert.doesNotMatch(r.out, /slug ends in/);
+});
+
+test('a zero-candidate refusal names the recorded-elsewhere case instead of guessing twice', () => {
+  // Raised by the child that had already been misrouted twice by this vocabulary
+  // (2026-08-27). With exact-slug-first and no sibling fallback, a dispatched
+  // child whose session file is recorded under a different checkout slug than
+  // the directory it runs in lands here — correctly, no grant borrowed. But the
+  // wording claimed "may not be a dispatched child, or its session is not on
+  // this host", and for that condition BOTH are false a third time: it is a
+  // dispatched child and its session is on this host.
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ask-nocap-')));
+  const mine = join(sessionsRoot, slugOf(root, {}));
+  mkdirSync(mine, { recursive: true });
+  // A real session for this checkout, with no capability in its preamble.
+  writeFileSync(
+    join(mine, 'plain.jsonl'),
+    `${JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'just working here, no preamble' }] } })}\n`,
+  );
+
+  const orca = fakeOrca({ envelope: { ok: false, error: { code: 'dispatch_capability_invalid', message: 'The Dispatch capability is missing' } }, status: 1 });
+  const r = run(['--issue', '7'], { root, orca, sessionsRoot });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /recorded under a different checkout slug/, 'the condition this branch can actually be in');
+  assert.match(r.out, /--dispatch-capability/, 'and the gesture that resolves it either way');
+  assert.doesNotMatch(r.out, /not on this host/, 'a cause this branch cannot support');
+});
+
+// ── runtime_busy: a refusal that must not become an infinite loop ─────────────
+//
+// Measured 2026-08-27, ofmchat #83. `long-poll capacity reached` is Orca's
+// GLOBAL long-poll guard (runtime-rpc.ts:1563-1565, LONG_POLL_CAP=16, shared
+// with terminal.wait / check --wait / browser-host). It fell into the terminal
+// generic `cannot()` here: no repair, no message id, so no `--resume` either.
+// The child then obeyed the spec sentence — never report with a question open,
+// exception `not supervised` only — and spent 62 minutes over 11 hand-rolled
+// retries, its own advisors correctly blocking every other exit. A refusal with
+// no exit is a trap, and AGENTS.md already forbids a `bad` with no `fix`.
+//
+// Two propositions: absorb a genuinely transient blip, and when it is not
+// transient, hand the child an exit it is allowed to take.
+
+const BUSY = { envelope: { ok: false, error: { code: 'runtime_busy', message: 'long-poll capacity reached; retry with backoff' } }, status: 1 };
+
+test('a transient runtime_busy is absorbed: the ask retries itself and the child never sees it', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeOrca({ script: [BUSY, { bare: ANSWERED }] });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 0, 'the second call answered, so the verb answered');
+  assert.match(r.out, /A1: bug\./);
+  assert.equal(r.orcaCalls.filter(line => line.startsWith('orchestration ask')).length, 2);
+  assert.ok(r.slept.length > 0, 'it waited between attempts rather than hammering');
+});
+
+// ── a resume settles the record it came from (PR #19, Codex P1) ───────────────
+//
+// `--resume <id>` is the PRESCRIBED recovery after exit 4, so the ordinary path
+// after a timeout ran with `recordPath === ''` — set only in `--issue` mode —
+// and every settle() was a no-op. The record stayed `pending` forever: status
+// kept advertising an answered question, and `askBegin` refused the pass's next
+// question as a duplicate. The lifecycle only advanced on the path nobody takes.
+
+const recordWithAsk = (store, request, ask) => {
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({ request, createdAt: '2026-08-20T10:00:00.000Z', ask, attempts: [{ n: 1, phases: [] }] }));
+};
+
+test('a resumed ask that ANSWERS settles the record it was minted from', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_q9', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: { ...ANSWERED, messageId: 'msg_q9', threadId: 'msg_q9' } });
+  const r = run(['--resume', 'msg_q9'], { root, orca });
+
+  assert.equal(r.code, 0);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'answered');
+});
+
+test('a resumed ask that times out again stays PENDING under the same id', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_q9', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }, status: 1 });
+  const r = run(['--resume', 'msg_q9', '--timeout-ms', '5000'], { root, orca });
+
+  assert.equal(r.code, 4);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'pending');
+});
+
+test('two records claiming one message id are NOT guessed between', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_dup', at: '2026-08-27T02:00:00Z' });
+  recordWithAsk(store, 'triage-acme-widgets-8', { state: 'pending', messageId: 'msg_dup', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: { ...ANSWERED, messageId: 'msg_dup', threadId: 'msg_dup' } });
+  const r = run(['--resume', 'msg_dup'], { root, orca });
+
+  assert.equal(r.code, 0, 'the ruling still reaches the child — the record is a side effect, not the payload');
+  assert.match(r.out, /2 records claim/);
+  for (const n of [7, 8]) {
+    assert.equal(askOf(store, `triage-acme-widgets-${n}`).state, 'pending', 'neither is settled on a guess');
+  }
+});
+
+test('a persistent runtime_busy names what it tried and hands the child an exit', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\nQ2: which priority?\n');
+  const orca = fakeOrca({ script: [BUSY] });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 3, 'the machine, not the caller');
+  // What it tried: a measured fact the child can report instead of guessing.
+  assert.match(r.out, /after \d+ attempts over \d+s/);
+  // Why hand-rolling more retries is not the answer.
+  assert.match(r.out, /shed, not queued/);
+  // The exit itself, which is the whole point of this arm.
+  assert.match(r.out, /report NOW/);
+  assert.match(r.out, /quote them/);
+  assert.match(r.out, /do not decide/i);
+  // And never a resume: no id was ever minted on this path.
+  assert.doesNotMatch(r.out, /--resume/);
+});
+
+test('--help carries the exit codes, because a child routes on them alone', () => {
+  // The shipped help was two usage lines and a flag list. A child meeting exit 1
+  // or 3 had to choose between retry, resume and report with nothing to read.
+  const r = capture(() => ask(['--help']));
+  assert.equal(r.code, 0);
+  for (const line of [/0\s+answered/, /1\s+refused/, /3\s+cannot establish/, /4\s+PENDING/]) {
+    assert.match(r.out, line);
+  }
+  assert.match(r.out, /--resume/);
+});
+
+// ── the recorded ask: write-ahead, then settled ───────────────────────────────
+//
+// Measured 2026-08-27 on ofmchat #87. `ask` minted a real question, printed its
+// id ONLY on the exit-4 branch, and persisted nothing. So `status`, reading the
+// pane mailbox alone, answered "this pane has no pending question — it never
+// asked through `ax triage ask`" about a question that was provably pending
+// under `--resume`. Two shipped surfaces of one tool, opposite instructions,
+// and the child followed the wrong one and settled its pass.
+//
+// The record is the surface every other verb already reads, and AGENTS.md
+// already requires a live orchestration mutation to be written BEFORE it is
+// issued. So the ask keeps a lifecycle there: asking → pending | answered |
+// refused, with `asking` meaning "issued, outcome never recorded" — the state a
+// crash between the send and the write leaves behind, and a state that must
+// never read as "no question exists".
+
+const askOf = (store, request) => JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8')).ask;
+
+test('the intent is written BEFORE the wire, carrying the draft it was composed from', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+
+  let atSendTime = null;
+  const runner = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' };
+      atSendTime = askOf(store, 'triage-acme-widgets-7');
+      return { status: 0, stdout: JSON.stringify(ANSWERED), stderr: '' };
+    },
+  });
+  const r = run(['--issue', '7'], { root, orca: { runner, calls: [] } });
+
+  assert.equal(r.code, 0);
+  assert.equal(atSendTime?.state, 'asking', 'the intent exists at the moment the mutation is issued');
+  assert.match(String(atSendTime?.sha), /^[0-9a-f]{40}$/, 'and names the exact draft it was composed from');
+});
+
+test('a timeout settles the intent to PENDING under the id it printed', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }, status: 1 });
+  const r = run(['--issue', '7', '--timeout-ms', '5000'], { root, orca });
+
+  assert.equal(r.code, 4);
+  assert.deepEqual(
+    { state: askOf(store, 'triage-acme-widgets-7').state, messageId: askOf(store, 'triage-acme-widgets-7').messageId },
+    { state: 'pending', messageId: 'msg_q9' },
+  );
+});
+
+test('an answered ask settles to ANSWERED, so nothing downstream reports it waiting', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: bug or enhancement?\n');
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 0);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'answered');
+});
+
+test('an intent that cannot be persisted REFUSES to send — never an unrecorded mutation', () => {
+  // F-001's rule, applied to this mutation: a record that cannot be written is
+  // an inability to establish, never permission to issue anyway. A draft-only
+  // pass loses nothing real — it has no Dispatch, so its ask could only have
+  // been refused by the runtime a moment later, with a worse reason.
+  const root = repo();
+  const store = join(root, 'store');
+  mkdirSync(join(store, 'triage-acme-widgets-7.json'), { recursive: true });
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ bare: ANSWERED });
+  const r = run(['--issue', '7'], { root, orca });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /could not record this ask/);
+  assert.deepEqual(r.orcaCalls.filter(line => line.startsWith('orchestration ask')), [], 'nothing was issued');
+});
+
+test('the default wait fits under a 600s harness kill, receipt included', () => {
+  // Measured 2026-08-26: the default was 600_000 with a 20s exit margin, so one
+  // call needed 620s of wall clock while the agent harness killed bash at 600s.
+  // The receipt died at 600.09s — and with it the messageId that names the only
+  // recovery. The margin existed to protect exactly that window and sat outside
+  // it.
+  assert.ok(
+    ASK_DEFAULT_TIMEOUT_MS + ASK_EXIT_MARGIN_MS < 600_000,
+    `${ASK_DEFAULT_TIMEOUT_MS} + ${ASK_EXIT_MARGIN_MS} must leave the receipt inside a 600s budget`,
+  );
+  assert.equal(ASK_MAX_TIMEOUT_MS, 1_800_000, 'the server cap is unchanged — only the default moved');
 });

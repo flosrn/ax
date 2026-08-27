@@ -902,13 +902,14 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
   assert.match(r.out, /ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
-  // The routing ruling (maintainer, 2026-08-23): technical questions are ruled
-  // by the coordinator itself, product/high-stakes ones go up — and the tag
-  // opens the question TEXT, because `Q<n> [technical]:` would break the one
-  // Q-line grammar while `Q<n>: [technical] …` travels verbatim.
+  // The routing ruling (maintainer, 2026-08-23, tightened 2026-08-27): the
+  // coordinator RULES, reversibly. `[product]` is advisory — not a handoff to
+  // the operator. The tag opens the question TEXT, because `Q<n> [technical]:`
+  // would break the one Q-line grammar while `Q<n>: [technical] …` travels
+  // verbatim.
   assert.match(r.out, /OPEN each question's text with its routing tag/);
   assert.match(r.out, /\[technical\].*coordinator rules itself/);
-  assert.match(r.out, /\[product\].*goes up to the maintainer/);
+  assert.match(r.out, /\[product\].*advisory for the coordinator/);
   assert.match(r.out, /Do not report and do not end your turn while a question is open — with ONE exception/);
   // The write-failure ladder (measured 2026-08-23 on #60: an unwritable draft
   // left the verdict in a scrollback and the report was a lost peer message —
@@ -921,7 +922,18 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // the spec said "never report with a question open" while the only working
   // recovery says "report NOW". A child holding both either deadlocks parked
   // or improvises; the spec now says which sentence wins, and when.
-  assert.match(r.out, /follow that refusal instead of this sentence/);
+  //
+  // Widened 2026-08-27 (ofmchat #83): the exception named the composer stall
+  // ONLY, so a child refused `runtime_busy` had no exit at all and burned 62
+  // minutes over 11 hand-rolled retries with its advisors correctly blocking
+  // every alternative. The exception now defers to the VERB — whatever refusal
+  // carries a repair line saying report, wins — so the next class of dead
+  // transport needs a named arm in ask.mjs and no second edit here.
+  assert.match(r.out, /THE ASK ITSELF DECLARES IT/);
+  assert.match(r.out, /runtime_busy/);
+  assert.match(r.out, /retrying by hand buys nothing/);
+  // And the boundary the widening must not blur: a timeout stays resumable.
+  assert.match(r.out, /On every other refusal, and on a timeout, you do NOT report/);
   assert.match(r.out, /the parent answers by peer/);
   assert.match(r.out, /Report when the draft is FINAL/);
   assert.doesNotMatch(r.out, /Report when the draft is written/);
