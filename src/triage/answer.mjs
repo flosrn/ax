@@ -212,13 +212,31 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   if (sent.status !== 0 || receipt.ok !== true) {
     const code = receipt.error?.code ?? '';
     const detail = receipt.error?.message ?? receipt.unparseable ?? sent.stderr ?? 'unnamed error';
+    // A NAMED REFUSAL IS PROOF THE REPLY IS NOT IN FLIGHT, so the lifecycle
+    // closes here. Leaving `replying` made status report a live question
+    // indefinitely and tell operators to answer one that was already closed or
+    // never existed. `replying` is for genuinely unknown outcomes — a process
+    // that died, a transport that never answered — not for an answer the
+    // runtime gave. The generic `cannot` below therefore does NOT settle.
+    const close = (state, why) => {
+      try {
+        askSettle(recordPath, { state, messageId: id, code: why });
+      } catch (error) {
+        note(`the pass record could not be closed: ${String(error.message ?? error)}`);
+      }
+    };
     if (code === 'answer_conflict') {
+      // ANSWERED, not refused: a different ruling already stands on that
+      // question, so it is closed — just not by this reply.
+      close('answered', code);
       return refuse(`the question already carries a DIFFERENT answer — nothing was changed, and two rulings cannot both stand`, `orca orchestration inbox --limit 20 --full --json   # read what was already sent, then decide which ruling is right`);
     }
     if (code === 'question_not_found') {
+      close('refused', code);
       return refuse(`${String(detail)}`, `ax triage status --issue ${issue} --job ${job}`);
     }
     if (code === 'dispatch_inactive') {
+      close('refused', code);
       return refuse('the question is closed because its Dispatch is inactive — the child that asked is gone, and no reply can reach it', `ax triage dispatch --issue ${issue} --job ${job} --fresh --because <what the rulings decided>`);
     }
     return cannot(`orca refused the reply (${code || 'no code'}): ${String(detail).slice(0, 200)}`);
@@ -227,6 +245,15 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   // The belt behind step 5's proof: if this fires, the mutation ALREADY landed
   // as a plain message, and saying so is the only honest output left.
   if (result.question === undefined) {
+    // BACK TO PENDING, not closed: the ruling landed as a plain message, so the
+    // question is still open under this id and the child is still blocked.
+    // Leaving `replying` would hide an open question; closing it would claim a
+    // ruling that never paired to anything.
+    try {
+      askSettle(recordPath, { state: 'pending', messageId: id });
+    } catch (error) {
+      note(`the pass record could not be reopened: ${String(error.message ?? error)}`);
+    }
     bad(`orca answered success but recorded no question — the reply to ${id} landed as a PLAIN message, and the child is still blocked`);
     fix(`ax triage status --issue ${issue} --job ${job}   # find the pending question and answer THAT id`);
     return 1;

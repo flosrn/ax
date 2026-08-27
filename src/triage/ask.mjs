@@ -30,7 +30,7 @@ import { repoPaths } from '../config.mjs';
 import { bad, fix, note, raw } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { askBegin, askSettle, defaultStore, heldRepaired } from '../worker/record.mjs';
+import { askBegin, askSettle, defaultStore, heldRepaired, recordsForAsk } from '../worker/record.mjs';
 import { ownCapability } from '../worker/capability.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
@@ -147,6 +147,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   // `heldRepairAt` off this file instead of asserting a disjunction — the same
   // rule as everywhere else, a measure available is consulted at the verdict.
   let recordPath = '';
+  const store = defaultStore(env);
   // Hoisted for the same reason: it selects THIS pass's session file when the
   // capability has to be read off disk, and triage passes share one checkout.
   let request = '';
@@ -163,7 +164,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     if (slug === '') return refuse('could not resolve the current repository', `ax triage ask --issue ${issue} --repo <owner>/<repo>`);
 
     const base = { job, repo: slug, issue };
-    const store = defaultStore(env);
+
     const passes = passesOf(store, draftDirFor(root, base), base);
     if (passes.length === 0) {
       return refuse(`no pass of #${issue} exists here — nothing was dispatched and no draft was written`, `ax triage dispatch --issue ${issue} --job ${job}`);
@@ -192,6 +193,28 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     recordPath = join(store, `${request}.json`);
     sha = draft.sha;
     body = composeAsk({ request, sha, questions: draft.questions });
+  }
+
+  // A RESUME CARRIES NO IDENTITY BUT ITS ID, so the pass it belongs to is
+  // recovered from that id. Without this the prescribed post-timeout path —
+  // the ordinary one — settled nothing, and the record stayed `pending` for
+  // good: status kept advertising an answered question and the pass's next
+  // question was refused as a duplicate.
+  if (resume !== '') {
+    const found = recordsForAsk(store, resume);
+    // UNIQUE means unique among records this process could READ. An unreadable
+    // record may claim the same id, so one readable match beside one unreadable
+    // file is not proof of ownership — it is the same ambiguity as two matches,
+    // and settling on it would write an outcome onto a pass that may not own
+    // this question (F-028). The ruling still reaches the child either way; the
+    // record is a side effect, not the payload.
+    if (found.paths.length === 1 && found.unreadable.length === 0) recordPath = found.paths[0];
+    else if (found.paths.length > 1) {
+      note(`${found.paths.length} records claim ${resume} — none will be settled, because choosing between them would be a guess`);
+    } else if (found.paths.length === 1) {
+      note(`1 record claims ${resume} but ${found.unreadable.length} could not be read — none will be settled, because uniqueness cannot be established`);
+    }
+    if (found.unreadable.length > 0) note(`  unreadable while looking for ${resume}: ${found.unreadable.join(', ')}`);
   }
 
   if (dry) {
@@ -227,7 +250,11 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   // may already be open on the parent's mailbox, and a second one would let a
   // ruling keyed by number reach either. `--resume` skips this: it carries no
   // identity to record and mints nothing.
-  if (recordPath !== '') {
+  // The write-ahead intent belongs to a NEW question only. `--resume` mints
+  // nothing: it goes back to waiting on one that already exists, so it records
+  // no intent — but it must still be able to settle the outcome, which is why
+  // `recordPath` was recovered from the id above.
+  if (issue !== '') {
     let began;
     try {
       began = askBegin(recordPath, { request, sha, argv: wire });

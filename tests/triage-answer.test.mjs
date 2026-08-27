@@ -393,6 +393,80 @@ test('a record that cannot be written REFUSES before the reply leaves', () => {
   assert.deepEqual(replied(orca.calls), [], 'nothing was sent');
 });
 
+// ── a definitive refusal closes the lifecycle (PR #19, Codex P2) ──────────────
+//
+// `replyBegin` writes `replying` before the mutation, and only the success path
+// settled it. So the named refusals — where the receipt PROVES the reply is not
+// in flight — left the record live forever, and status kept telling operators to
+// answer a question that was already closed or never existed. `replying` is for
+// genuinely unknown outcomes: a process that died, a transport that did not
+// answer. Not for an answer the runtime gave.
+
+const refusal = code => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code, message: `${code} detail` } }), stderr: '' });
+
+test('question_not_found closes the lifecycle instead of leaving it replying', () => {
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca: fakeOrca({ reply: refusal('question_not_found') }) });
+
+  assert.equal(r.code, 1);
+  assert.equal(askOf(path).state, 'refused');
+  assert.equal(askOf(path).code, 'question_not_found');
+});
+
+test('answer_conflict records that a ruling already stands, not that ours is in flight', () => {
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca: fakeOrca({ reply: refusal('answer_conflict') }) });
+
+  assert.equal(r.code, 1);
+  assert.equal(askOf(path).state, 'answered', 'a different ruling closed it — the question is not open');
+  assert.equal(askOf(path).code, 'answer_conflict');
+});
+
+test('dispatch_inactive closes it too — the child that asked is gone', () => {
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca: fakeOrca({ reply: refusal('dispatch_inactive') }) });
+
+  assert.equal(r.code, 1);
+  assert.equal(askOf(path).state, 'refused');
+});
+
+test('an UNKNOWN transport outcome stays replying, because that is what it is', () => {
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca: fakeOrca({ reply: refusal('some_unmapped_code') }) });
+
+  assert.equal(r.code, 3);
+  assert.equal(askOf(path).state, 'replying', 'nothing proved the reply did not land');
+});
+
+test('a plain-message misfire puts the question back to PENDING — it is still open', () => {
+  // The un-flagged twin of the finding above, same invariant: the receipt says
+  // success but carries no `question`, so the ruling landed as a plain message
+  // and the child is still blocked. Leaving `replying` would hide an open
+  // question; closing it would claim a ruling that never paired.
+  const root = repo();
+  const path = record(root);
+  draft(root, 'triage-acme-widgets-7');
+  const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
+  const misfire = { status: 0, stdout: JSON.stringify({ ok: true, result: { message: { id: 'msg_a1' } } }), stderr: '' };
+  const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca: fakeOrca({ reply: misfire }) });
+
+  assert.equal(r.code, 1);
+  assert.equal(askOf(path).state, 'pending');
+  assert.equal(askOf(path).messageId, 'msg_q1');
+});
+
 test('an unreachable runtime refuses with nothing sent', () => {
   const root = repo();
   draft(root, 'triage-acme-widgets-7');

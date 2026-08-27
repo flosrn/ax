@@ -658,6 +658,56 @@ test('a transient runtime_busy is absorbed: the ask retries itself and the child
   assert.ok(r.slept.length > 0, 'it waited between attempts rather than hammering');
 });
 
+// ── a resume settles the record it came from (PR #19, Codex P1) ───────────────
+//
+// `--resume <id>` is the PRESCRIBED recovery after exit 4, so the ordinary path
+// after a timeout ran with `recordPath === ''` — set only in `--issue` mode —
+// and every settle() was a no-op. The record stayed `pending` forever: status
+// kept advertising an answered question, and `askBegin` refused the pass's next
+// question as a duplicate. The lifecycle only advanced on the path nobody takes.
+
+const recordWithAsk = (store, request, ask) => {
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({ request, createdAt: '2026-08-20T10:00:00.000Z', ask, attempts: [{ n: 1, phases: [] }] }));
+};
+
+test('a resumed ask that ANSWERS settles the record it was minted from', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_q9', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: { ...ANSWERED, messageId: 'msg_q9', threadId: 'msg_q9' } });
+  const r = run(['--resume', 'msg_q9'], { root, orca });
+
+  assert.equal(r.code, 0);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'answered');
+});
+
+test('a resumed ask that times out again stays PENDING under the same id', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_q9', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: { answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }, status: 1 });
+  const r = run(['--resume', 'msg_q9', '--timeout-ms', '5000'], { root, orca });
+
+  assert.equal(r.code, 4);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'pending');
+});
+
+test('two records claiming one message id are NOT guessed between', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_dup', at: '2026-08-27T02:00:00Z' });
+  recordWithAsk(store, 'triage-acme-widgets-8', { state: 'pending', messageId: 'msg_dup', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: { ...ANSWERED, messageId: 'msg_dup', threadId: 'msg_dup' } });
+  const r = run(['--resume', 'msg_dup'], { root, orca });
+
+  assert.equal(r.code, 0, 'the ruling still reaches the child — the record is a side effect, not the payload');
+  assert.match(r.out, /2 records claim/);
+  for (const n of [7, 8]) {
+    assert.equal(askOf(store, `triage-acme-widgets-${n}`).state, 'pending', 'neither is settled on a guess');
+  }
+});
+
 test('a persistent runtime_busy names what it tried and hands the child an exit', () => {
   const root = repo();
   record(join(root, 'store'), 'triage-acme-widgets-7');

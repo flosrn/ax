@@ -441,6 +441,41 @@ export function askBegin(path, { request, sha, argv, now = () => new Date().toIS
 }
 
 /**
+ * Every record in `store` whose ask lifecycle carries this `messageId`.
+ *
+ * `ax triage ask --resume <id>` is the PRESCRIBED recovery after a timeout, and
+ * it carries no issue, job or pass — so the pass it belongs to can only be
+ * recovered from the id itself. Without this the ordinary post-timeout path
+ * settled nothing and the record stayed `pending` forever (PR #19): status kept
+ * advertising an answered question, and the pass's next question was refused as
+ * a duplicate. The lifecycle only advanced on the path nobody takes.
+ *
+ * Returns EVERY match, never a pick. Two records claiming one id is an anomaly a
+ * caller must surface rather than resolve by guessing (F-028), and an unreadable
+ * record is counted rather than skipped silently.
+ */
+export function recordsForAsk(store, messageId) {
+  if (typeof messageId !== 'string' || messageId === '') return { paths: [], unreadable: [] };
+  let names;
+  try {
+    names = readdirSync(store).filter(name => name.endsWith('.json'));
+  } catch {
+    return { paths: [], unreadable: [] };
+  }
+  const paths = [];
+  const unreadable = [];
+  for (const name of names) {
+    const path = join(store, name);
+    try {
+      if (load(path).ask?.messageId === messageId) paths.push(path);
+    } catch (error) {
+      unreadable.push(`${name} (${String(error.message ?? error)})`);
+    }
+  }
+  return { paths, unreadable };
+}
+
+/**
  * The write-ahead intent for a RULING, recorded before the reply is issued.
  *
  * Create-or-transition, and the difference from `askSettle` is deliberate: a
