@@ -8,6 +8,20 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.14.0](https://github.com/flosrn/ax/compare/v0.13.0...v0.14.0) (2026-08-27)
+
+
+### Features
+
+* **omp:** the maintainer role, and the reporting direction that had no contract ([9615e71](https://github.com/flosrn/ax/commit/9615e71a5ed6aa7b42b2f1d7100631e4265b6e5e))
+
+
+### Bug Fixes
+
+* **commands:** the transcript row names its argument in the help's own language ([b1e92eb](https://github.com/flosrn/ax/commit/b1e92eb05a5f9b242f445383445cfd300de35f4c))
+* **scripts:** deploy reaches its own checkout and the VPS adapter ([e7f39ec](https://github.com/flosrn/ax/commit/e7f39ecc6fe63ed9f10b473d2dc864d3326f05a3))
+* **triage:** repair the question channel — eight defects one live wave paid for ([#19](https://github.com/flosrn/ax/issues/19)) ([ae8cbac](https://github.com/flosrn/ax/commit/ae8cbac660df4f3b72812381620820053346fb20))
+
 ## [0.13.0](https://github.com/flosrn/ax/compare/v0.12.3...v0.13.0) (2026-08-26)
 
 
