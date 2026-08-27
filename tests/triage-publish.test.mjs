@@ -773,6 +773,26 @@ test('an answered question is not WAITING: the reply that threads back to it clo
   assert.doesNotMatch(r.out, /WAITING/);
 });
 
+test('a question threaded to ITSELF is still WAITING — a self-reference is not a reply', () => {
+  // THE ROOT CAUSE of the #87 contradiction, measured 2026-08-27 on this
+  // machine's own mailbox: of 25 questions, 17 carried `thread_id === id`,
+  // including msg_59bbc463c531 — the exact id whose `--resume` was answering
+  // PENDING while this verb reported the pane had none. Orca stamps the ask's
+  // own row that way; `threaded` collected every thread_id including those, so
+  // a question closed itself the moment it was asked.
+  //
+  // A reply is another message pointing AT this one. Nothing else is.
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([question({ id: 'msg_q1', thread_id: 'msg_q1' })]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /WAITING since 2026-08-22T10:00:00Z on Q1-Q2 — message msg_q1/);
+  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1/);
+});
+
 test("another pane's question is not attributed to this pass", () => {
   const root = repo();
   const store = join(root, 'store');

@@ -43,8 +43,10 @@ const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
  * died after writing its questions, or from an answer that arrived without a
  * revision; the header comment below records what deducing it nearly cost.
  * The shapes are measured (2026-08-22): a question is a message with
- * `type: "question"`, and its answer — when one exists — is a message whose
- * `thread_id` is the question's own id.
+ * `type: "question"`, and its answer — when one exists — is ANOTHER message
+ * whose `thread_id` is the question's own id. Another, because Orca stamps the
+ * ask's own row with its own id too, and reading that as an answer is what let
+ * 17 of this machine's 25 questions close themselves the moment they were asked.
  *
  * Unreadable is NOT fatal and NOT silent: `status` answers from records and
  * drafts on a machine with no Orca at all, but the gap is named on the output,
@@ -63,7 +65,16 @@ function readMailbox({ resolve, runner, env }) {
     return { ok: false, reason: `orca orchestration inbox unreadable (exit ${out.status})${detail ? `: ${detail.slice(0, 160)}` : ''}` };
   }
   const messages = receipt.result.messages.filter(entry => entry !== null && typeof entry === 'object');
-  const threaded = new Set(messages.map(entry => entry.thread_id).filter(Boolean));
+  // A REPLY IS ANOTHER MESSAGE POINTING AT THIS ONE. Measured 2026-08-27 on
+  // this machine's mailbox: of 25 questions, 17 carried `thread_id === id` —
+  // Orca stamps the ask's own row that way — so collecting every thread_id made
+  // each of those questions close itself the moment it was asked. That is the
+  // root cause of the #87 contradiction: `--resume msg_59bbc463c531` answered
+  // PENDING while this verb reported the pane had no pending question, and a
+  // child settled its pass on the difference. 17 of 25 were invisible here.
+  const threaded = new Set(
+    messages.filter(entry => entry.thread_id && entry.thread_id !== entry.id).map(entry => entry.thread_id),
+  );
   const pending = new Map();
   for (const entry of messages) {
     if (entry.type !== 'question' || threaded.has(entry.id)) continue;
