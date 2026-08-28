@@ -8,6 +8,14 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.14.3](https://github.com/flosrn/ax/compare/v0.14.2...v0.14.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* **triage:** find a question by the key its sender stamped, not the pane a record stores ([#27](https://github.com/flosrn/ax/issues/27)) ([b4fcd12](https://github.com/flosrn/ax/commit/b4fcd1283f2503103cd046df0c83ab4ce96ef4b6))
+* **triage:** wait out a booting child instead of reading its boot state as a verdict ([#26](https://github.com/flosrn/ax/issues/26)) ([ca2c4e8](https://github.com/flosrn/ax/commit/ca2c4e8eef3449f8b83c2468ab2c8ff655e650c3))
+
 ## [0.14.2](https://github.com/flosrn/ax/compare/v0.14.1...v0.14.2) (2026-08-28)
 
 
