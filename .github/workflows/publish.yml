@@ -135,3 +135,67 @@ jobs:
 
       - if: ${{ steps.registry.outputs.publish == 'true' }}
         run: npm publish
+
+  # Tell every consuming repository that a version it can install now exists.
+  #
+  # WHY THIS EXISTS. The pin is the version authority (`src/dispatch.mjs`), so a
+  # fix released here does not reach a consumer until that consumer's pin moves.
+  # Dependabot moves it, but on a `daily` schedule — and a scheduled poll is not
+  # what "propagate on release" means: measured 2026-08-28, five releases shipped
+  # while every bump was still made by hand. This job is the event half. The
+  # consumer's own workflow does the bump, validates it, and pushes; nothing here
+  # touches its tree, so ax never needs to know how a consumer builds.
+  #
+  # AFTER `publish`, NEVER BESIDE IT. A consumer told about a version npm does not
+  # serve yet installs nothing and fails, so this waits for the publish job's own
+  # success rather than the release's. A skipped publish (bootstrap not done, or a
+  # release-please run that created no release) means no notification.
+  #
+  # FAILS OPEN, ON PURPOSE. The token and the consumer list are operational
+  # config, not release inputs: a missing one prints what is missing and exits 0.
+  # A release that already tagged and published must not report red because a
+  # downstream courtesy could not run — the pin still moves on Dependabot's daily
+  # pass, which is exactly the floor this job improves on.
+  #
+  # THE LIST IS A VARIABLE, NOT CODE. `gh variable set AX_CONSUMERS --body
+  # '["goodluckagency/ofmchat"]'` — adding a consumer is an operational act and
+  # must not require a release of this package to take effect.
+  notify-consumers:
+    needs: [release, publish]
+    if: ${{ always() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release.outputs.tag_name }}
+      CONSUMERS: ${{ vars.AX_CONSUMERS }}
+      GH_TOKEN: ${{ secrets.AX_CONSUMER_DISPATCH_TOKEN }}
+    steps:
+      - name: Dispatch ax-release to every consumer
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice title=No dispatch token::AX_CONSUMER_DISPATCH_TOKEN is unset, so $VERSION was not announced. Consumers still pick it up on their own Dependabot pass."
+            exit 0
+          fi
+          if [ -z "${CONSUMERS:-}" ]; then
+            echo "::notice title=No consumers declared::Set the AX_CONSUMERS repository variable to a JSON array of owner/repo to announce releases."
+            exit 0
+          fi
+
+          # One failing consumer must not hide the others: each is attempted, and
+          # the summary names every outcome. A 404 here is almost always the token
+          # missing that repository rather than the repository missing.
+          failed=0
+          for repo in $(printf '%s' "$CONSUMERS" | jq -r '.[]'); do
+            if gh api "repos/$repo/dispatches" \
+                 -f event_type=ax-release \
+                 -f "client_payload[version]=$VERSION" \
+                 -f "client_payload[tag]=$RELEASE_TAG" >/dev/null 2>&1; then
+              echo "::notice title=Announced::$repo told about $VERSION"
+            else
+              echo "::warning title=Not announced::$repo refused the dispatch — check AX_CONSUMER_DISPATCH_TOKEN has Contents:write on it"
+              failed=$((failed + 1))
+            fi
+          done
+          echo "announced $VERSION to $(printf '%s' "$CONSUMERS" | jq -r 'length') consumer(s), $failed refused" >> "$GITHUB_STEP_SUMMARY"
