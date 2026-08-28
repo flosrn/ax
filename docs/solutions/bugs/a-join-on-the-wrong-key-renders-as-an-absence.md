@@ -82,6 +82,50 @@ names this request* — the record never learned it landed, the mailbox proves i
 the scoped `orca orchestration inbox --full` read and `ax worker tail <pane>`, i.e. two commands
 that produce something the reader did not already have.
 
+## The near-miss the fix itself carried, caught in review
+
+The first version of this fix widened the keys without splitting the verdict, and a P1 review caught
+what that produced. A child whose own `ax triage ask` fails falls back to raw
+`orca orchestration ask`: that row is dispatch-keyed but carries **no ax header**. The wider lookup
+admitted it, so `status` printed `ax triage answer --id <id>` for a row `answer()` refuses
+unconditionally (nothing proves which draft it asked from) — and, worse, the non-empty list
+suppressed the fold-and-publish escape below it. The repair for a loop with no exit had rebuilt that
+loop one layer up.
+
+So `questionsForPass` returns two lists, not one. **Answerable** means an ax header naming *this*
+request; a missing header and a header naming another pass are both **unpairable**, because `answer`
+refuses each for its own reason. Unpairable rows are still reported — a blocked child is the fact an
+operator scans for — but with the reason and never with the command, and every downstream branch
+(the escape, the record-witness, the `asking` finding, the `--brief` row) gates on the answerable
+set alone.
+
+Two fixtures turned out to be wrong rather than merely affected, and were repaired instead of
+pinned: the publish suite's ask body used `draft abc`, which `askHeader` never parsed, so it had
+been standing for a raw ask while claiming to be an ax one; and the pane-attribution test now guards
+a header naming another pass, because the pin outranks the pane by design.
+
+## The class, named by the reporter
+
+Three instances now, and they are one defect wearing three faces — an **authority emitting an
+instruction that cannot succeed**:
+
+|When|The authority said|Why it could not succeed|
+|---|---|---|
+|2026-08-26|`ax triage status` prints the pending question's real id|the child asked through a channel that mints no ax header, so no id was pairable|
+|2026-08-28|the mailbox row above is the authority — answer THAT id|the row was keyed by dispatch and this verb only read panes, so no row was rendered|
+|2026-08-28 (caught in review)|`ax triage answer --id <id>`|the row carried no ax header, so `answer` refuses it unconditionally|
+
+The failure is never the refusal — each refusal was individually correct. It is that the surface
+*routing* the reader is not answerable to the same evidence the surface *refusing* them uses. Two
+correct components compose into a circle, and a reader who follows it twice concludes the tool has
+no answer.
+
+**So a repair line is a claim, and it gets checked like one.** Before printing a command, ask what
+the receiving verb requires and whether this evidence satisfies it — `answer` needs a header-pinned
+id, so a row without one may be reported but never routed to it. When nothing satisfies the
+requirement, say the state is blocked, name the reason, and route to something that does work
+(read the row by hand, tail the pane, or rule it and fold it into the draft).
+
 ## Why it survived
 
 `ax triage status` had **no behavioral test file**. `tests/triage-index.test.mjs` covered the verb
