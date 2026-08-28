@@ -207,7 +207,19 @@ test('no single catch-all category may dominate the report', () => {
   );
 });
 
-test('a live worker is still kept and reported, not swept into a residual count', () => {
+test('a live worker whose ownership this row does not prove carries the fallback with it', () => {
+  // Measured 2026-08-28 on goodluckagency/ofmchat#100, and it is the SAME defect
+  // as the `user_owned` row below, fixed for one ownership value out of five.
+  // `worker-list` carried no ownership for this dispatch, so release named
+  // `orca orchestration worker-stop`, which answered
+  // `dispatch_inactive: Dispatch ctx_… is not stopping.` — a closed loop: two
+  // verbs, neither able to close the record, and a pane still counted in the cap.
+  //
+  // Orca closes a terminal on a stop ONLY when its own resource row reads
+  // `ownership_state === 'owned'` (rpc/methods/orchestration-worker-stop.ts:141);
+  // every other value answers `processAction: 'none'` and closes nothing. An
+  // absent ownership here is "unknown to this row", never proven owned — so the
+  // stop stays named, and the command that follows a `none` is named WITH it.
   const r = run(['--all'], {
     orca: {
       workers: [...THREE_CAUSES, worker('ctx_live', { workerState: 'ready' })],
@@ -217,7 +229,34 @@ test('a live worker is still kept and reported, not swept into a residual count'
 
   assert.match(r.out, /ctx_live/);
   assert.match(r.out, /1 kept/);
-  assert.match(r.out, /worker-stop/, 'cancelling a live session is a different decision, and it is named');
+  assert.match(r.out, /ownership unproven on this row/);
+  assert.match(r.out, /worker-stop --dispatch ctx_live/, 'cancelling a live session is a different decision, and it is named');
+  assert.match(r.out, /orca terminal close --terminal term_ctx_live/, 'and the route a processAction: none leaves is named on the same line');
+});
+
+test('the offered stop carries its dispatch_inactive aftermath, so a failure is not read as a no-op', () => {
+  // REPORT-ONLY: this verb runs no stop and observes no receipt, so the assertion
+  // is about the caveat travelling with the command it offers — never about a stop
+  // having happened here.
+  //
+  // Why the caveat exists: `dispatch_inactive` from a stop is thrown by
+  // `settleWorkerStop` (orchestration/db/worker-dispatch/worker-dispatch-stop.ts:96),
+  // which runs only after `closeTerminal` reported `ptyKilled` — so that failure
+  // receipt can arrive over a pane that is already gone. Confirmed on
+  // ctx_5ffd0641bcf5 (ofmchat #100, 2026-08-28): the stop answered
+  // `dispatch_inactive`, and the next `ax triage release` counted the row
+  // `1 terminal gone`. Without this clause the operator reads the error as "the
+  // command did nothing" and stops re-running the one verb that would have closed
+  // the record.
+  const r = run(['--all'], {
+    orca: {
+      workers: [worker('ctx_live', { workerState: 'ready' })],
+      terminals: [terminal('term_ctx_live')],
+    },
+  });
+
+  assert.match(r.out, /re-run this verb/);
+  assert.match(r.out, /dispatch_inactive/);
 });
 
 test('a live pane Orca owns as the USER names the one command that can close it', () => {

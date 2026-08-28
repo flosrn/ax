@@ -151,7 +151,17 @@ Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
 /** The store namespace release records live in — never beside the dispatches. */
 export const RELEASE_NS = 'release';
 
-/** Orca settles a worker as `succeeded` or `failed`; only those may be released. */
+/**
+ * Orca settles a worker as `succeeded` or `failed`; only those may be released.
+ *
+ * This set is read from Orca's source and must not be widened. Its own
+ * `WORKER_RELEASABLE_STATES` is exactly `['succeeded', 'failed']`
+ * (orchestration/worker-terminal-ownership.ts, fork at ~/Code/flosrn/orca), and
+ * `stopped`/`abandoned` — which ARE in its wider `WORKER_SETTLED_STATES` — are
+ * answered `retained · identity_unproven` by `requestWorkerTerminalRelease`
+ * (worker-terminal-release.ts:58). Adding them here would print a repair that
+ * cannot land, which is the defect this file has now paid for twice.
+ */
 const SETTLED = new Set(['succeeded', 'failed']);
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -726,12 +736,53 @@ export function release(
       // Measured 2026-08-26: three commands, two of them refusals, to free one
       // pane this tool created. Naming the stop there sends the operator down a
       // route this row already proves cannot work.
+      //
+      // AND OWNERSHIP HAS THREE STATES HERE, NOT TWO. Read from Orca's source
+      // (rpc/methods/orchestration-worker-stop.ts:141, fork at ~/Code/flosrn/orca):
+      // a stop closes a terminal only when the runtime's own resource row reads
+      // `ownership_state === 'owned'`; `transferred`, `external`, `released` and
+      // `user_owned` all answer `processAction: 'none'` and close nothing. This
+      // row's `ownership` is often ABSENT (pane.mjs reads it by name and never
+      // defaults it), and an absent value is "unknown to this row" — not proven
+      // owned, and not proven user-owned either. Measured 2026-08-28 on ofmchat
+      // #100: an unproven row named the stop alone, the stop answered
+      // `dispatch_inactive`, and neither verb could close the record. So the stop
+      // stays named where it may still work, and the command that follows a
+      // `processAction: none` is named ON THE SAME LINE rather than one refusal
+      // later.
+      //
+      // The aftermath rides on the same comment rather than a row of its own: this
+      // verb never runs a stop, so it reports no outcome — it qualifies a command
+      // it offers. `dispatch_inactive: "… is not stopping."` is thrown by
+      // `settleWorkerStop` (orchestration/db/worker-dispatch/worker-dispatch-stop.ts:96),
+      // which runs only AFTER `closeTerminal` reported `ptyKilled`, so that failure
+      // can arrive over a pane that is already gone — and reading it as "nothing
+      // happened" is what left #100's record unclosable in the operator's head.
+      //
+      // CONFIRMED on that dispatch, 2026-08-28: ctx_5ffd0641bcf5 answered
+      // `dispatch_inactive` to the stop, and the very next `ax triage release`
+      // counted it `1 terminal gone` — the pty was already dead and the error
+      // described the settle, not the action. So the caveat is a measured
+      // sequence, not a reading of the state machine.
+      const stopSuffix = `${
+        row.ownership === 'owned'
+          ? ''
+          : `; a processAction: none or state stop_unknown means this pane is not Orca-owned and only \`orca terminal close --terminal ${row.handle}\` frees it`
+      }; a dispatch_inactive answer can arrive AFTER the pane was closed, so re-run this verb rather than reading it as a no-op`;
       keep(
-        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · not settled, so not releasable${row.ownership === 'user_owned' ? ' · and user_owned, so no worker-stop can ever settle it' : ''}`,
+        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · not settled, so not releasable${
+          row.ownership === 'user_owned'
+            ? ' · and user_owned, so no worker-stop can ever settle it'
+            : row.ownership === '' && row.workerState === 'ready'
+              ? ' · ownership unproven on this row, so a stop may close nothing'
+              : row.ownership !== 'owned' && row.workerState === 'ready'
+                ? ` · ownership ${row.ownership}, so a stop closes nothing`
+                : ''
+        }`,
         row.ownership === 'user_owned'
           ? `orca terminal close --terminal ${row.handle}   # closing a live pane is still your decision — a stop would answer processAction: none`
           : row.workerState === 'ready'
-            ? `orca orchestration worker-stop --dispatch ${row.dispatchId} --json   # cancelling a live session is a different decision`
+            ? `orca orchestration worker-stop --dispatch ${row.dispatchId} --json   # cancelling a live session is a different decision${stopSuffix}`
             : `orca terminal close --terminal ${row.handle}   # a ${row.workerState} worker cannot be released`,
       );
       continue;
