@@ -218,6 +218,30 @@ test('doctor fails on a guarded tree path claimed by neither side', () => {
   rmSync(join(dir, 'docs', 'surprise'), { recursive: true });
 });
 
+test('a checkout with no vendor remote is NOT MEASURED there, never an incoherent checkout', () => {
+  // MEASURED 2026-08-28, and it blocked a real deployment. `@flosrn/ax@0.14.4`
+  // was announced to goodluckagency/ofmchat; its bump workflow checked out main
+  // with `actions/checkout` — which configures `origin` and nothing else — and
+  // ran `ax pin`, whose doctor gate then refused the checkout because no remote
+  // pointed at the vendored kit. The pin was never committed, so a published fix
+  // could not reach the repository that reported the bug.
+  //
+  // The finding's own words were "vendor checks cannot run": an inability to
+  // measure, printed as a failure. A missing upstream remote does not make a tree
+  // incoherent — `ax vendor` is what needs that remote, and it refuses for
+  // itself. So this reports, loudly, and names the repair; `docs/ declared
+  // guarded but absent here` two lines below has always behaved exactly this way.
+  assert.equal(doctor(dir), 0, 'the fixture is coherent with its kit remote');
+
+  git('remote', 'remove', 'kit');
+  try {
+    assert.equal(doctor(dir), 0, 'no remote for the kit is not a failing checkout');
+  } finally {
+    git('remote', 'add', 'kit', 'git@github.com:makerkit/next-supabase-saas-kit-turbo.git');
+  }
+  assert.equal(doctor(dir), 0);
+});
+
 test('doctor names the repair when the bootstrap is edited or removed', () => {
   writeFileSync(join(dir, 'bin', 'ax'), '#!/bin/sh\necho tampered\n');
   assert.equal(doctor(dir), 1);
