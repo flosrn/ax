@@ -24,7 +24,7 @@ import { dispatch } from './dispatch.mjs';
 import { draftDirFor, passesIn, passesOf, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
 import { triageRelease } from './release.mjs';
-import { INBOX_WINDOW, questionSpan } from './rulings.mjs';
+import { INBOX_WINDOW, askHeader, questionSpan } from './rulings.mjs';
 
 const USAGE = 'ax triage status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom|refine] [--repo <owner/repo>]';
 
@@ -76,13 +76,78 @@ function readMailbox({ resolve, runner, env }) {
     messages.filter(entry => entry.thread_id && entry.thread_id !== entry.id).map(entry => entry.thread_id),
   );
   const pending = new Map();
+  // THE SAME ROW, KEYED BY WHAT IT PROVES ABOUT ITSELF. `composeAsk` writes the
+  // request id into the body, so an ax-sent ask names its own pass with no
+  // handle involved at all — the only key that survives a transport this side
+  // does not control. See `questionsForPass` for what that repaired.
+  const byRequest = new Map();
+  const push = (map, key, entry) => {
+    const list = map.get(key) ?? [];
+    list.push(entry);
+    map.set(key, list);
+  };
   for (const entry of messages) {
     if (entry.type !== 'question' || threaded.has(entry.id)) continue;
-    const list = pending.get(entry.from_handle) ?? [];
-    list.push(entry);
-    pending.set(entry.from_handle, list);
+    push(pending, entry.from_handle, entry);
+    const header = askHeader(entry.body);
+    if (header !== null) push(byRequest, header.request, entry);
   }
-  return { ok: true, pending };
+  return { ok: true, pending, byRequest };
+}
+
+/**
+ * Every pending question that belongs to ONE pass, from three keys, deduped by
+ * message id.
+ *
+ * THE PANE HANDLE IS NOT THE KEY A QUESTION CARRIES, and reading only that key
+ * is what made this verb blind to the asks it sends itself. `ax triage ask`
+ * sends from the child's DISPATCH, so Orca stamps
+ * `from_handle: "dispatch:ctx_…"`, while the dispatch record names the child's
+ * TERMINAL (`term_…`). Measured 2026-08-28 across this machine's mailbox: 12 of
+ * 24 open question rows were keyed `dispatch:…`, i.e. exactly half of them were
+ * unreachable through the verb documented as the authority on them.
+ *
+ * goodluckagency/ofmchat#101 is what that cost. `msg_bf6613d0ee33`, a real
+ * `type: "question"` from `dispatch:ctx_ff9aa6dce051`, sat in the mailbox while
+ * `ax triage status` printed no row for it and its own repair line pointed back
+ * at itself — so a child blocked on a legitimate question had no sanctioned way
+ * to be answered, and the operator unblocked it out of band.
+ *
+ * The header pin is tried FIRST because it is transport-independent, and the
+ * two handle keys stay because a child that asked through raw
+ * `orca orchestration ask` writes no header — for those rows a handle is the
+ * only evidence there is.
+ *
+ * SO THE RESULT IS TWO LISTS, NOT ONE, and that split is the whole reason this
+ * returns an object. `ax triage answer` refuses any id whose body carries no ax
+ * header (`answer.mjs`: nothing proves which draft it asked from) and any id
+ * whose header names another pass. Rendering a headerless row as answerable
+ * would print a repair that is guaranteed to be refused AND suppress the manual
+ * fold/publish escape — rebuilding the exact loop-with-no-exit that
+ * `tests/triage-publish.test.mjs` was written for on 2026-08-26, where four
+ * correct refusals closed a circle with no way out. A headerless row is still
+ * REAL EVIDENCE that a child is blocked, so it is reported; it is simply not
+ * something this tool can pair a ruling to.
+ */
+function questionsForPass({ mailbox, request, handle = '', dispatchId = '' }) {
+  if (!mailbox.ok) return { answerable: [], unpairable: [], all: [] };
+  const seen = new Set();
+  const answerable = [];
+  const unpairable = [];
+  const take = list => {
+    for (const row of list ?? []) {
+      const id = String(row?.id ?? '');
+      if (id === '' || seen.has(id)) continue;
+      seen.add(id);
+      const header = askHeader(row.body);
+      if (header !== null && header.request === request) answerable.push(row);
+      else unpairable.push({ row, why: header === null ? 'no ax header' : `asked by ${header.request}` });
+    }
+  };
+  take(mailbox.byRequest.get(request));
+  if (handle !== '') take(mailbox.pending.get(handle));
+  if (dispatchId !== '') take(mailbox.pending.get(`dispatch:${dispatchId}`));
+  return { answerable, unpairable, all: [...answerable, ...unpairable.map(entry => entry.row)] };
 }
 
 /**
@@ -200,10 +265,12 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       let recordState = 'no record';
       let handle = '';
       let paneEnv = '';
+      let dispatchId = '';
       if (existsSync(recordPath)) {
         try {
           const state = report(recordPath);
           handle = typeof state.summary?.terminal === 'string' ? state.summary.terminal : '';
+          dispatchId = typeof state.summary?.dispatchId === 'string' ? state.summary.dispatchId : '';
           recordState = state.usable ? 'settled' : heldRepaired(recordPath) ? 'child running (repaired)' : 'UNSETTLED';
           // The execution ENVIRONMENT rides with the handle, exactly as
           // workerPane preserves it for autosubmit: a remote child (--on) read
@@ -227,8 +294,16 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
               // is the coordinator's row to arbitrate, not a malformed draft.
               ? `NOT-READY ${draft.sha.slice(0, 12)} · repair proposed`
               : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
-      const pending = mailbox.ok && handle !== '' ? (mailbox.pending.get(handle) ?? []) : [];
-      const waiting = pending.length > 0 ? ` · WAITING on ${pending[0].id}` : '';
+      const pending = questionsForPass({ mailbox, request: requestFor(identity), handle, dispatchId });
+      // A polled row says WAITING either way — a blocked child is the fact an
+      // operator scans for — but only an ax-sent ask is one `ax triage answer`
+      // can pair, so the unpairable case says so instead of naming an id that
+      // would be refused.
+      const waiting = pending.answerable.length > 0
+        ? ` · WAITING on ${pending.answerable[0].id}`
+        : pending.unpairable.length > 0
+          ? ` · WAITING on ${pending.unpairable[0].row.id} (UNPAIRABLE — ${pending.unpairable[0].why})`
+          : '';
       rows.push({ line: `#${issue} p${pass} · ${shape} · ${recordState}${waiting}`, handle: final ? '' : handle, paneEnv });
     }
 
@@ -283,6 +358,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
 
       const path = join(store, `${request}.json`);
       let handle = '';
+      let dispatchId = '';
       // The pass's own ask lifecycle, read from the record rather than deduced
       // from the mailbox. THE MAILBOX IS NOT THE ONLY WITNESS: measured
       // 2026-08-27 on ofmchat #87, a question that `--resume` proved PENDING was
@@ -296,6 +372,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
           const state = report(path);
           const summary = state.summary ?? {};
           handle = typeof summary.terminal === 'string' ? summary.terminal : '';
+          dispatchId = typeof summary.dispatchId === 'string' ? summary.dispatchId : '';
           recorded = state.ask;
           note(`  ${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
           // Never a fresh dispatch: the recorded mutation may still be running,
@@ -312,16 +389,26 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         }
       }
 
-      // The pane's PENDING questions, matched by the handle the record holds.
-      // Only here — behind a real record — because a draft-only pass has no
-      // pane to have asked anything.
+      // This pass's PENDING questions, from every key one can carry — the ask
+      // header, the recorded pane, and the DISPATCH the ask was sent from. Only
+      // here, behind a real record, because a draft-only pass has no child to
+      // have asked anything.
       let pending = null;
-      if (mailbox.ok && handle !== '') {
-        pending = mailbox.pending.get(handle) ?? [];
-        for (const question of pending) {
+      if (mailbox.ok && (handle !== '' || dispatchId !== '')) {
+        pending = questionsForPass({ mailbox, request, handle, dispatchId });
+        for (const question of pending.answerable) {
           const numbers = questionsIn(question.body).map(entry => entry.n);
           note(`  WAITING since ${question.created_at ?? 'an unrecorded time'} on ${numbers.length > 0 ? questionSpan(numbers) : 'its question'} — message ${question.id}`);
           fix(`ax triage answer --issue ${issue} --job ${job} --id ${question.id} --file <rulings.md>   # one A<n>: line per question`);
+        }
+        // A row this pass's child is blocked on that `ax triage answer` cannot
+        // pair. Reported, because a blocked child is the fact that matters —
+        // but never with the answer command, which `answer` would refuse, and
+        // never in a way that hides the fold-and-publish exit below.
+        for (const { row, why } of pending.unpairable) {
+          const numbers = questionsIn(row.body).map(entry => entry.n);
+          note(`  WAITING since ${row.created_at ?? 'an unrecorded time'} on ${numbers.length > 0 ? questionSpan(numbers) : 'its question'} — message ${row.id}`);
+          bad(`  ^ UNPAIRABLE (${why}) — \`ax triage answer\` refuses an id it cannot prove asked from this draft, so that command is not the exit here`);
         }
       }
 
@@ -335,16 +422,30 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // PROVEN terminal state must suppress the "rule it yourself and publish"
       // advice further down — publishing over a live question cannot be undone.
       const liveRecorded = recorded !== null && ['asking', 'pending', 'replying'].includes(recorded.state);
-      if (openRecorded && (pending === null || pending.length === 0)) {
+      if (openRecorded && (pending === null || pending.answerable.length === 0)) {
         note(`  WAITING since ${recorded.at ?? 'an unrecorded time'} on message ${recorded.messageId} — from THIS PASS'S RECORD, not the mailbox`);
         note(dim(`  the mailbox shows no such row${mailbox.ok ? '' : ' (and could not be read)'} — an inbox absence does not close a question the record says is open`));
         fix(`ax triage answer --issue ${issue} --job ${job} --id ${recorded.messageId} --file <rulings.md>   # one A<n>: line per question`);
       }
       // Issued, outcome never written: the state a process killed between the
       // send and the write leaves behind. It must never read as "no question".
+      //
+      // AND ITS REPAIR MUST NOT BE THIS COMMAND. It used to name "the mailbox
+      // row above, if any" and then re-print the verb the reader had just run —
+      // a loop with no exit whenever no row was rendered, which on
+      // goodluckagency/ofmchat#101 was every time, because the row was keyed by
+      // dispatch and this verb only looked up panes. So the branch says which of
+      // the two states it is in, and each names a command that produces
+      // something the other did not.
       if (recorded !== null && recorded.state === 'asking') {
         bad(`  an ask was ISSUED for this pass and its outcome was never recorded — the process died between the send and the write, so a question may be open on the parent's mailbox`);
-        fix(`ax triage status --issue ${issue} --job ${job}   # the mailbox row above, if any, is the authority — answer THAT id rather than asking again`);
+        if (pending !== null && pending.answerable.length > 0) {
+          note(`  the WAITING row above IS that ask (its ax header names ${request}) — the record never learned it landed, the mailbox proves it did`);
+        } else {
+          note(dim(`  no ax-sent row for this pass is visible here${mailbox.ok ? '' : ' (the mailbox could not be read)'}, so there is no id \`ax triage answer\` can pair`));
+          fix(`orca orchestration inbox --limit ${INBOX_WINDOW} --full --json   # find the question row by hand: it is the one whose body opens with ${request}`);
+          fix(`ax worker tail ${handle || '<pane>'}   # what the child is blocked on, if the row cannot be found`);
+        }
       }
 
       // The draft's IDENTITY, not merely its existence. A coordinator reads a
@@ -386,15 +487,22 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // child cannot be asked to distrust one of two texts it is given; the
       // cheaper fix is to stop the collision, so this says what it actually
       // knows: nothing this verb can PAIR exists.
-      if (draft.questions.length > 0 && !liveRecorded && (pending === null || pending.length === 0)) {
+      // GATED ON THE ANSWERABLE SET, NEVER ON THE ROWS SEEN. A headerless row
+      // reached by pane or dispatch key is a question this tool cannot pair, so
+      // counting it as "an ask is visible" would withhold the only exit that
+      // exists — which is precisely the 2026-08-26 loop this branch was written
+      // to end, rebuilt by a wider lookup.
+      if (draft.questions.length > 0 && !liveRecorded && (pending === null || pending.answerable.length === 0)) {
         bad(`  the draft asks ${draft.questions.length}, and no answerable ask is visible: ${
           !mailbox.ok
             ? 'the mailbox could not be read'
-            : handle === ''
-              ? 'this pass records no pane, so no ask can be matched to it'
-              : recorded === null
-                ? 'this pass never asked through `ax triage ask`, and its pane holds no pending question'
-                : `this pass's ask is recorded ${recorded.state}${recorded.code ? ` (${recorded.code})` : ''}, and its pane holds no pending question`
+            : pending !== null && pending.unpairable.length > 0
+              ? `${pending.unpairable.length} question row(s) reach this pass, but none carries an ax header naming it (${pending.unpairable[0].why})`
+              : handle === '' && dispatchId === ''
+                ? 'this pass records neither a pane nor a dispatch, so no ask can be matched to it'
+                : recorded === null
+                  ? 'this pass never asked through `ax triage ask`, and no question is keyed to its request, its pane or its dispatch'
+                  : `this pass's ask is recorded ${recorded.state}${recorded.code ? ` (${recorded.code})` : ''}, and no question is keyed to its request, its pane or its dispatch`
         }`);
         note('  `ax triage answer` pairs rulings to an ask THIS tool sent; a child that asked another way cannot be answered by it');
         fix(`  rule the questions and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — there is no ask here for \`ax triage answer\` to pair`);
