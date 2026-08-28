@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.14.5](https://github.com/flosrn/ax/compare/v0.14.4...v0.14.5) (2026-08-28)
+
+
+### Bug Fixes
+
+* a published fix could not reach the repository that reported the bug ([#31](https://github.com/flosrn/ax/issues/31)) ([c9d18d0](https://github.com/flosrn/ax/commit/c9d18d0a4d624b09d24258d99b390dcca6d664c1))
+
 ## [0.14.4](https://github.com/flosrn/ax/compare/v0.14.3...v0.14.4) (2026-08-28)
 
 
