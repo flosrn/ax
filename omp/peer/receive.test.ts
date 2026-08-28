@@ -118,9 +118,9 @@ function harness(overrides: Partial<ReceiveDeps> = {}) {
   return { deps, notes, health, spawned, injected, retries, sent, timers, pi };
 }
 
-test('a foreign registry owner blocks a second receiver and visibly disables it', () => {
-  const calls: string[] = [];
-  const receiver = {
+/** A receiver whose lifecycle calls are recorded in order. */
+function recordingReceiver(calls: string[]) {
+  return {
     useTimers() {
       calls.push('timers');
     },
@@ -129,65 +129,49 @@ test('a foreign registry owner blocks a second receiver and visibly disables it'
     },
     stop() {},
   };
+}
+
+test('a LIVE foreign owner blocks a second receiver and visibly disables this one', () => {
+  const calls: string[] = [];
 
   expect(
-    startReceiverIfOwned(
-      { published: false, refused: 'foreign' },
-      receiver,
-      {},
-      {},
-      () => calls.push('disabled'),
-    ),
+    startReceiverIfOwned({ published: false, refused: 'foreign' }, recordingReceiver(calls), {}, {}, {
+      onUnavailable: () => calls.push('disabled'),
+      beforeStart: () => calls.push('load'),
+    }),
   ).toBe(false);
   expect(calls).toEqual(['disabled']);
 });
 
-test('an invalid registry publication visibly disables instead of receiving deaf', () => {
+// The distinction this file exists to keep. `foreign` proves a live session owns
+// the handle's entry, so consuming its Run would race it. `invalid` is the
+// registry WRITE failing — nobody else owns this Run, and the loop consumes the
+// Run from `ensureRun`, not from the registry. Refusing to receive there would
+// turn an addressing failure into the deaf channel this fence exists to prevent.
+test('an unwritable registry still receives, rather than becoming deaf', () => {
   const calls: string[] = [];
-  const receiver = {
-    useTimers() {
-      calls.push('timers');
-    },
-    start() {
-      calls.push('start');
-    },
-    stop() {},
-  };
 
   expect(
-    startReceiverIfOwned(
-      { published: false, refused: 'invalid' },
-      receiver,
-      {},
-      {},
-      () => calls.push('disabled'),
-    ),
-  ).toBe(false);
-  expect(calls).toEqual(['disabled']);
-});
-
-test('the registry owner installs timers before starting its receiver', () => {
-  const calls: string[] = [];
-  const receiver = {
-    useTimers() {
-      calls.push('timers');
-    },
-    start() {
-      calls.push('start');
-    },
-    stop() {},
-  };
-
-  expect(
-    startReceiverIfOwned(
-      { published: true },
-      receiver,
-      {},
-      {},
-      () => calls.push('disabled'),
-    ),
+    startReceiverIfOwned({ published: false, refused: 'invalid' }, recordingReceiver(calls), {}, {}, {
+      onUnavailable: () => calls.push('disabled'),
+      beforeStart: () => calls.push('load'),
+    }),
   ).toBe(true);
-  expect(calls).toEqual(['timers', 'start']);
+  expect(calls).toEqual(['load', 'timers', 'start']);
+});
+
+test('the registry owner loads its replay window and installs timers BEFORE starting', () => {
+  const calls: string[] = [];
+
+  expect(
+    startReceiverIfOwned({ published: true }, recordingReceiver(calls), {}, {}, {
+      onUnavailable: () => calls.push('disabled'),
+      beforeStart: () => calls.push('load'),
+    }),
+  ).toBe(true);
+  // Order is the assertion: a delivery replayed by Orca must be deduplicated
+  // against the durable window, so the window is loaded before the loop runs.
+  expect(calls).toEqual(['load', 'timers', 'start']);
 });
 
 test('a throw in the synchronous section is caught and retried', async () => {

@@ -952,8 +952,12 @@ export default function (pi): void {
           modelSource: model ? 'transcript' : '',
         });
       } catch (error) {
+        // A throw is NOT the `invalid` path above. `register` returning `invalid`
+        // has already proved there is no live foreign owner; a throw proves
+        // nothing, and consuming a Run another session may own would eat its
+        // deliveries silently. Being loudly deaf is the lesser failure.
         note(`register threw for session ${sid.slice(0, 8)}… — receiver not started: ${error}`);
-        disableReceive(pi, 'the peer registry entry could not be published');
+        disableReceive(pi, 'this pane could not establish who owns its peer Run');
         return;
       }
       // `published` gates the log, `peer` only supplies the name: an entry can
@@ -962,14 +966,16 @@ export default function (pi): void {
       if (published.published) {
         if (published.peer) peerName = published.peer;
         note(`registered as ${peerName} on ${runId} (session ${sid.slice(0, 8)}… model=${model || '∅'})`);
+      } else if (published.refused === 'foreign') {
+        // The ownership fence. A live session owns this handle's entry, so a
+        // second `check --wait` on its Run is answered `waiter_exists` forever.
+        note(`register foreign for session ${sid.slice(0, 8)}… — receiver not started`);
       } else {
-        // This is an ownership fence, not merely a registry diagnostic. The
-        // refusal prevents a second exclusive `check --wait` on the same Run;
-        // the startup gate below also surfaces the unavailable channel because
-        // a lock holder or live owner process does not prove a healthy receiver.
-        note(`register ${published.refused ?? 'failed'} for session ${sid.slice(0, 8)}… — receiver not started`);
+        // A WRITE failure, not a contested Run: `register` took the lock, found
+        // no live foreign owner, and failed to write. Peers cannot resolve this
+        // session by name until that succeeds; it still receives.
+        note(`register ${published.refused ?? 'failed'} for session ${sid.slice(0, 8)}… — unaddressable by name, still receiving`);
       }
-      if (published.published) loadInjected();
 
       // No pane rename here. `orca terminal rename` returns ok and does
       // nothing that lasts: Orca's own agent-status updater rewrites the title
@@ -978,16 +984,14 @@ export default function (pi): void {
       // already shows.
 
       // Managed timers from here on: the retry path must not be a raw one.
-      // `published` is the final ownership proof. Classification above is an
-      // optimization; this fence remains correct when the host exposes a
-      // nested session's path too late for `isSubagentSession`.
-      startReceiverIfOwned(
-        published,
-        receiver,
-        pi,
-        ctx,
-        () => disableReceive(pi, 'the peer registry entry could not be published'),
-      );
+      // Publication is not the question — OWNERSHIP is, and only a live foreign
+      // owner answers it. `loadInjected` rides `beforeStart` so the durable
+      // replay window is loaded on exactly the paths that start a loop.
+      startReceiverIfOwned(published, receiver, pi, ctx, {
+        onUnavailable: () =>
+          disableReceive(pi, 'another live session already owns the peer Run for this pane'),
+        beforeStart: loadInjected,
+      });
     } catch {
       /* never break a session over peer messaging */
     }

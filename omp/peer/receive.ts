@@ -126,27 +126,45 @@ export interface Receiver {
 }
 
 /**
- * Start the one consuming loop only for the session that owns the registry row.
+ * Start the one consuming loop, unless a LIVE session already owns this Run.
  *
- * A refusal is only proof that this session must not consume the Run. It is not
- * proof that another receiver is healthy: the registration lock may merely be
- * held, or a live owner process may already have stopped its receiver. Surface
- * every refusal so a top-level session cannot appear able to wait while deaf.
+ * ONE refusal is an ownership fence, and it is not "the registry said no".
+ * `foreign` means the handle's entry belongs to another session whose owner pid
+ * is alive, or its registration lock is held right now: consuming that Run would
+ * race the owner's `check --wait`, which Orca answers with `waiter_exists`
+ * forever. That session does not start, and it says so — a held lock or a live
+ * pid is not proof that the other receiver is healthy, so a top-level session
+ * must never look able to wait while deaf.
+ *
+ * EVERY OTHER REFUSAL IS A WRITE FAILURE, and receiving must survive it.
+ * `register` returns `invalid` when the registry file itself could not be
+ * written. Nobody else owns the Run, and this loop consumes the Run from
+ * `ensureRun` rather than from the registry, so refusing to receive would
+ * convert an ADDRESSING failure into exactly the deaf channel this fence
+ * exists to prevent — self-inflicted, and indistinguishable from the bug.
+ * Peers cannot resolve this session BY NAME until the write succeeds; replies
+ * on a recorded route and completion reports from dispatched workers still
+ * arrive, because both ride the Run.
  *
  * Sessions independently identified as nested return before registration, so
- * they remain quiet without weakening this ownership fence.
+ * they stay quiet without weakening either rule.
+ *
+ * `beforeStart` runs only on the paths that start: the durable replay window
+ * must be loaded before the loop can inject, or a delivery Orca replays is
+ * handed to the model twice.
  */
 export function startReceiverIfOwned(
   registration: { published: boolean; refused?: 'invalid' | 'foreign' },
   receiver: Receiver,
   pi: unknown,
   ctx: TimerCtx,
-  onUnavailable: () => void = () => {},
+  hooks: { onUnavailable?: () => void; beforeStart?: () => void } = {},
 ): boolean {
-  if (!registration.published) {
-    onUnavailable();
+  if (!registration.published && registration.refused === 'foreign') {
+    hooks.onUnavailable?.();
     return false;
   }
+  hooks.beforeStart?.();
   receiver.useTimers(ctx);
   receiver.start(pi);
   return true;
