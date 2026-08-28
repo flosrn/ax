@@ -744,7 +744,7 @@ test('a pass with no pane says THAT, rather than blaming the child for not askin
   const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
 
   assert.equal(r.code, 0);
-  assert.match(r.out, /no answerable ask is visible: this pass records no pane/);
+  assert.match(r.out, /no answerable ask is visible: this pass records neither a pane nor a dispatch/);
 });
 
 test('an unreadable mailbox is named as the reason, never as the child not asking', () => {
