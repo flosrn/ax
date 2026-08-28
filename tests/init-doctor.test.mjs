@@ -218,6 +218,54 @@ test('doctor fails on a guarded tree path claimed by neither side', () => {
   rmSync(join(dir, 'docs', 'surprise'), { recursive: true });
 });
 
+test('a checkout with no vendor remote is NOT MEASURED there, never an incoherent checkout', () => {
+  // MEASURED 2026-08-28, and it blocked a real deployment. `@flosrn/ax@0.14.4`
+  // was announced to goodluckagency/ofmchat; its bump workflow checked out main
+  // with `actions/checkout` — which configures `origin` and nothing else — and
+  // ran `ax pin`, whose doctor gate then refused the checkout because no remote
+  // pointed at the vendored kit. The pin was never committed, so a published fix
+  // could not reach the repository that reported the bug.
+  //
+  // The finding's own words were "vendor checks cannot run": an inability to
+  // measure, printed as a failure. The remote's only consumers in this package
+  // are `ax init` (which infers the vendor block from it) and this grading, so
+  // nothing ax does breaks without it — while the guarded-tree ownership checks
+  // read the filesystem and still run. That is what the last assertion pins:
+  // demoting this line must not silence the domain it introduces.
+  const capture = fn => {
+    const written = [];
+    const stdout = process.stdout.write;
+    process.stdout.write = chunk => (written.push(String(chunk)), true);
+    try {
+      return { code: fn(), out: written.join('') };
+    } finally {
+      process.stdout.write = stdout;
+    }
+  };
+
+  assert.equal(doctor(dir), 0, 'the fixture is coherent with its kit remote');
+
+  git('remote', 'remove', 'kit');
+  try {
+    const r = capture(() => doctor(dir));
+    assert.equal(r.code, 0, 'no remote for the kit is not a failing checkout');
+    assert.match(r.out, /vendor checks NOT MEASURED here/);
+    assert.match(r.out, /git remote add vendor git@github\.com:makerkit\/next-supabase-saas-kit-turbo\.git/);
+
+    // The domain is not silenced with the remote: an unclaimed path under a
+    // guarded tree still fails, remote or no remote.
+    mkdirSync(join(dir, 'docs', 'surprise'));
+    try {
+      assert.equal(doctor(dir), 1, 'ownership grading does not need the remote');
+    } finally {
+      rmSync(join(dir, 'docs', 'surprise'), { recursive: true });
+    }
+  } finally {
+    git('remote', 'add', 'kit', 'git@github.com:makerkit/next-supabase-saas-kit-turbo.git');
+  }
+  assert.equal(doctor(dir), 0);
+});
+
 test('doctor names the repair when the bootstrap is edited or removed', () => {
   writeFileSync(join(dir, 'bin', 'ax'), '#!/bin/sh\necho tampered\n');
   assert.equal(doctor(dir), 1);

@@ -110,10 +110,28 @@ export function doctor(cwd = process.cwd()) {
 
   // 4. Vendor ownership is optional. When declared, the remote is found by URL
   // and every guarded tree is checked; a plain repo simply skips this domain.
+  //
+  // A MISSING REMOTE IS NOT MEASURED, NOT A REFUSAL, and that distinction cost a
+  // deployment. Measured 2026-08-28: `@flosrn/ax@0.14.4` was announced to
+  // goodluckagency/ofmchat, its bump workflow checked out main with
+  // `actions/checkout` — which configures `origin` and nothing else — and ran
+  // `ax pin`, whose doctor gate refused the tree on this one line. The pin never
+  // landed, so a published fix could not reach the repository that reported the
+  // bug it fixes.
+  //
+  // The finding's own words were "vendor checks cannot run": an inability to
+  // measure, reported as incoherence. The remote has exactly two consumers in
+  // this package — `ax init`, which infers the vendor block from it, and this
+  // grading — so nothing ax DOES breaks without it. And the guarded-tree
+  // ownership checks below do not need it at all: they read the filesystem, so
+  // they still run and still fail on an unclaimed path. Demoting this line loses
+  // the remote's presence and nothing else, which is why it reports loudly with
+  // its repair instead, exactly like the absent guarded trees do.
   if (config.vendor !== undefined) {
     const remote = vendorRemote(root, config.vendor.repo);
     if (!remote) {
-      fail(`no remote points at ${config.vendor.repo} — vendor checks cannot run`, `git remote add vendor git@github.com:${config.vendor.repo}.git`);
+      note(`no remote points at ${config.vendor.repo} — vendor checks NOT MEASURED here`);
+      fix(`git remote add vendor git@github.com:${config.vendor.repo}.git   # then vendor ownership is graded again`);
     } else {
       ok(`vendor kit ${config.vendor.repo} on remote "${remote}"`);
     }
