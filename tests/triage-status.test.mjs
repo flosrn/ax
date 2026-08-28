@@ -227,13 +227,85 @@ test('an ISSUED ask with no visible row routes somewhere other than this verb', 
   const r = run(['--issue', '7'], { root, orca: fakeOrca({ messages: [] }) });
   assert.equal(r.code, 0);
   assert.match(r.out, /an ask was ISSUED for this pass and its outcome was never recorded/);
-  assert.match(r.out, /no row for this pass is visible here/);
+  assert.match(r.out, /no ax-sent row for this pass is visible here/);
   assert.match(r.out, /orca orchestration inbox --limit \d+ --full --json/);
   assert.match(r.out, new RegExp(`ax worker tail ${HANDLE}`));
   // The old repair was this command, which produced nothing the reader did not
   // already have. A loop with no exit is not a repair.
   assert.doesNotMatch(r.out, /# the mailbox row above, if any, is the authority/);
 });
+
+// Codex P1 on #27. A child whose own `ax triage ask` failed falls back to raw
+// `orca orchestration ask`: the row is dispatch-keyed but carries NO ax header.
+// `answer()` refuses such an id ("carries no ax ask header"), so rendering it as
+// answerable prints a guaranteed-refused repair AND hides the fold/publish exit
+// — the exact loop-with-no-exit measured on 2026-08-26, rebuilt by a wider
+// lookup.
+const RAW_ASK = 'Q1: bug or enhancement?\nQ2: which priority?\n';
+
+test('a headerless raw ask is reported, but never as an answerable id', () => {
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })] }),
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /message msg_bf6613d0ee33/, 'a blocked child is still the fact that matters');
+  assert.match(r.out, /UNPAIRABLE \(no ax header\)/);
+  assert.doesNotMatch(r.out, /ax triage answer .* --id msg_bf6613d0ee33/, 'answer() would refuse this id');
+});
+
+test('a headerless row does not suppress the fold-and-publish exit', () => {
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })] }),
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /no answerable ask is visible: 1 question row\(s\) reach this pass, but none carries an ax header/);
+  assert.match(r.out, /rule the questions and fold them into/);
+});
+
+// A header that names ANOTHER pass is equally unpairable: `answer` refuses it
+// with "was asked by X, not Y", so it must not be offered either.
+test("a row whose header names another pass is unpairable, not this pass's ask", () => {
+  const root = repo();
+  record(root);
+  const foreign = composeAsk({ request: 'triage-acme-widgets-99', sha: gitBlobSha(DRAFT), questions: QUESTIONS });
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: foreign })] }),
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /UNPAIRABLE \(asked by triage-acme-widgets-99\)/);
+  assert.doesNotMatch(r.out, /ax triage answer .* --id msg_bf6613d0ee33/);
+});
+
+test('an ISSUED ask with only a headerless row does not claim an ax header exists', () => {
+  const root = repo();
+  record(root, { ask: { state: 'asking', at: '2026-08-28T01:37:00Z' } });
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })] }),
+  });
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /IS that ask \(its ax header names/);
+  assert.match(r.out, /no ax-sent row for this pass is visible here/);
+});
+
+test('the brief row marks an unpairable question instead of naming it answerable', () => {
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7', '--brief'], {
+    root,
+    orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })] }),
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /WAITING on msg_bf6613d0ee33 \(UNPAIRABLE — no ax header\)/);
+});
+
 
 test('an unreadable mailbox is named, never rendered as no question', () => {
   const root = repo();

@@ -627,7 +627,11 @@ const question = (over = {}) => ({
   from_handle: 'term_child',
   to_handle: 'run:run_owner',
   type: 'question',
-  body: 'triage-acme-widgets-7 is blocked on the question(s) below, asked from draft abc. Each needs one ruling, paired by number.\nQ1: bug or enhancement?\nQ2: which priority?',
+  // A REAL `composeAsk` header: the sha is 40 hex, because that is what
+  // `askHeader` parses and what decides whether `ax triage answer` can pair
+  // this row at all. `draft abc` parsed as no header, so this fixture used to
+  // stand for a raw `orca orchestration ask` while claiming to be an ax one.
+  body: 'triage-acme-widgets-7 is blocked on the question(s) below, asked from draft 0123456789abcdef0123456789abcdef01234567. Each needs one ruling, paired by number.\nQ1: bug or enhancement?\nQ2: which priority?',
   thread_id: null,
   created_at: '2026-08-22T10:00:00Z',
   ...over,
@@ -793,15 +797,37 @@ test('a question threaded to ITSELF is still WAITING — a self-reference is not
   assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1/);
 });
 
-test("another pane's question is not attributed to this pass", () => {
+// THE PIN OUTRANKS THE PANE, and that is the point of the header. `composeAsk`
+// writes the request id into the body, and `answer()` verifies exactly that
+// before replying — so a row whose header names THIS pass is this pass's ask no
+// matter which handle relayed it. What must never be attributed here is a row
+// belonging to ANOTHER pass; that one is unpairable, and `answer` would refuse
+// it with "was asked by X, not Y".
+test("another pass's question is not attributed to this pass", () => {
   const root = repo();
   const store = join(root, 'store');
   record(store, 'triage-acme-widgets-7');
-  const orca = fakeInbox([question({ from_handle: 'term_other' })]);
+  const foreign = question({
+    from_handle: 'term_other',
+    body: 'triage-acme-widgets-99 is blocked on the question(s) below, asked from draft 0123456789abcdef0123456789abcdef01234567. Each needs one ruling, paired by number.\nQ1: bug or enhancement?',
+  });
+  const orca = fakeInbox([foreign]);
   const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
 
   assert.equal(r.code, 0);
-  assert.doesNotMatch(r.out, /WAITING/);
+  assert.doesNotMatch(r.out, /WAITING/, 'a foreign pane carrying a foreign header reaches this pass by no key at all');
+});
+
+test("a question the header pins to this pass is attributed however it was relayed", () => {
+  const root = repo();
+  const store = join(root, 'store');
+  record(store, 'triage-acme-widgets-7');
+  const orca = fakeInbox([question({ from_handle: 'term_relay' })]);
+  const r = runStatus(['--issue', '7'], { root, store, runner: orca.runner });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /WAITING since 2026-08-22T10:00:00Z on Q1-Q2 — message msg_q1/);
+  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1 --file/);
 });
 
 test('an unreadable mailbox is NAMED, never rendered as an absence of questions', () => {
