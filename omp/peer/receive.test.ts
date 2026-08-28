@@ -20,6 +20,7 @@ import {
   RETRY_MAX_MS,
   RETRY_MIN_MS,
   createReceiver,
+  startReceiverIfOwned,
   type ReceiveDeps,
 } from './receive.ts';
 
@@ -116,6 +117,78 @@ function harness(overrides: Partial<ReceiveDeps> = {}) {
 
   return { deps, notes, health, spawned, injected, retries, sent, timers, pi };
 }
+
+test('a foreign registry owner blocks a second receiver and visibly disables it', () => {
+  const calls: string[] = [];
+  const receiver = {
+    useTimers() {
+      calls.push('timers');
+    },
+    start() {
+      calls.push('start');
+    },
+    stop() {},
+  };
+
+  expect(
+    startReceiverIfOwned(
+      { published: false, refused: 'foreign' },
+      receiver,
+      {},
+      {},
+      () => calls.push('disabled'),
+    ),
+  ).toBe(false);
+  expect(calls).toEqual(['disabled']);
+});
+
+test('an invalid registry publication visibly disables instead of receiving deaf', () => {
+  const calls: string[] = [];
+  const receiver = {
+    useTimers() {
+      calls.push('timers');
+    },
+    start() {
+      calls.push('start');
+    },
+    stop() {},
+  };
+
+  expect(
+    startReceiverIfOwned(
+      { published: false, refused: 'invalid' },
+      receiver,
+      {},
+      {},
+      () => calls.push('disabled'),
+    ),
+  ).toBe(false);
+  expect(calls).toEqual(['disabled']);
+});
+
+test('the registry owner installs timers before starting its receiver', () => {
+  const calls: string[] = [];
+  const receiver = {
+    useTimers() {
+      calls.push('timers');
+    },
+    start() {
+      calls.push('start');
+    },
+    stop() {},
+  };
+
+  expect(
+    startReceiverIfOwned(
+      { published: true },
+      receiver,
+      {},
+      {},
+      () => calls.push('disabled'),
+    ),
+  ).toBe(true);
+  expect(calls).toEqual(['timers', 'start']);
+});
 
 test('a throw in the synchronous section is caught and retried', async () => {
   const h = harness({

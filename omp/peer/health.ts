@@ -24,14 +24,29 @@ export type Announcement = {
 export type ChannelState = {
   /** First failure of the current outage; 0 while healthy. */
   downSince: number;
-  /** An outage (or a permanent disablement) has already been announced. */
+  /** The current outage has been shown at least once. */
   announced: boolean;
+  /** The current outage has triggered a model turn. */
+  woken: boolean;
+  /** At least one model turn has completed in this session. */
+  turnCompleted: boolean;
   /** Non-empty when the loop never started at all, and why. */
   disabled: string;
 };
 
 export function freshChannel(): ChannelState {
-  return { downSince: 0, announced: false, disabled: '' };
+  return {
+    downSince: 0,
+    announced: false,
+    woken: false,
+    turnCompleted: false,
+    disabled: '',
+  };
+}
+
+/** Arm outage wakeups only after this session has completed a real turn. */
+export function markTurnCompleted(state: ChannelState): void {
+  state.turnCompleted = true;
 }
 
 /**
@@ -75,6 +90,7 @@ export function observe(
 
   if (healthy) {
     state.downSince = 0;
+    state.woken = false;
     if (!state.announced) return null;
     state.announced = false;
     // No wake on good news: the delivery that follows will wake the session
@@ -85,14 +101,18 @@ export function observe(
 
   if (!state.downSince) state.downSince = now;
   const elapsed = now - state.downSince;
-  if (state.announced || elapsed < downAfterMs) return null;
+  if (elapsed < downAfterMs) return null;
+
+  // A cold outage is shown without spending a model turn. If a real turn later
+  // completes while that same outage continues, it earns exactly one wake:
+  // `announced` and `woken` are separate because displaying is not waking.
+  const wake = state.turnCompleted && !state.woken;
+  if (state.announced && !wake) return null;
   state.announced = true;
+  if (wake) state.woken = true;
   return {
     kind: 'down',
-    // The session this exists for ended its turn to wait for a reply. A notice
-    // that only lands on the next turn never reaches it, because for a session
-    // waiting on a dead channel there is no next turn.
-    wake: true,
+    wake,
     text: DOWN_TEXT(Math.round(elapsed / 60_000), 'the check loop keeps failing'),
   };
 }

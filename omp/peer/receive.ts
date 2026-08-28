@@ -126,6 +126,33 @@ export interface Receiver {
 }
 
 /**
+ * Start the one consuming loop only for the session that owns the registry row.
+ *
+ * A refusal is only proof that this session must not consume the Run. It is not
+ * proof that another receiver is healthy: the registration lock may merely be
+ * held, or a live owner process may already have stopped its receiver. Surface
+ * every refusal so a top-level session cannot appear able to wait while deaf.
+ *
+ * Sessions independently identified as nested return before registration, so
+ * they remain quiet without weakening this ownership fence.
+ */
+export function startReceiverIfOwned(
+  registration: { published: boolean; refused?: 'invalid' | 'foreign' },
+  receiver: Receiver,
+  pi: unknown,
+  ctx: TimerCtx,
+  onUnavailable: () => void = () => {},
+): boolean {
+  if (!registration.published) {
+    onUnavailable();
+    return false;
+  }
+  receiver.useTimers(ctx);
+  receiver.start(pi);
+  return true;
+}
+
+/**
  * WHY A SEQUENCE IS CHECKED AT ALL.
  *
  * Orca's receipt for `orchestration send` cannot be used to detect loss. On

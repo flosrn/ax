@@ -4,6 +4,7 @@ import {
   type ChannelState,
   disable,
   freshChannel,
+  markTurnCompleted,
   observe,
 } from './health';
 
@@ -34,8 +35,27 @@ describe('receive-channel health', () => {
     expect(observe(s, true, T0 + DOWN_AFTER_MS)).toBeNull();
   });
 
+  test('an outage in a session with no turn is visible but never starts the model', () => {
+    const s = freshChannel();
+    const [said] = failFor(s, DOWN_AFTER_MS * 2);
+    expect(said.kind).toBe('down');
+    expect(said.wake).toBe(false);
+  });
+
+  test('a cold outage wakes exactly once after the first real turn completes', () => {
+    const s = freshChannel();
+    failFor(s, DOWN_AFTER_MS * 2);
+    markTurnCompleted(s);
+
+    const wake = observe(s, false, T0 + DOWN_AFTER_MS * 3);
+    expect(wake?.kind).toBe('down');
+    expect(wake?.wake).toBe(true);
+    expect(observe(s, false, T0 + DOWN_AFTER_MS * 4)).toBeNull();
+  });
+
   test('an outage past the threshold is announced exactly once, and wakes', () => {
     const s = freshChannel();
+    markTurnCompleted(s);
     const said = failFor(s, DOWN_AFTER_MS * 4);
     expect(said).toHaveLength(1);
     expect(said[0].kind).toBe('down');
