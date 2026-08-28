@@ -645,17 +645,64 @@ test('a real run creates one verified triage-worker session per issue', () => {
   assert.match(r.out, /#8 VERIFIED/);
 });
 
+// The verdict is a snapshot: a quota fallback is written when the first
+// provider call fails, which can land after the receipt this loop settles on,
+// and no bounded wait can prove a later mover will not arrive. So the success
+// line NAMES the model it proved — that is what makes a later `fallback` in the
+// same session file legible against it rather than silently contradicting a
+// green line nobody can re-read.
+test('the verified line names the model it proved, so a later mover is legible', () => {
+  const r = run(['--issue', '7'], {
+    proofFn: () => ({
+      model: { model: 'omniroute/or-opus', role: 'default' },
+      sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] },
+    }),
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /reached the first turn on omniroute\/or-opus/);
+});
+
 test('a dispatch with no role receipt is cannot-establish and is never relaunched', () => {
   let reads = 0;
   const r = run(['--issue', '7'], {
     env: { AX_TRIAGE_ROLE_WAIT: '0' },
     proofFn: () => (reads += 1, null),
   });
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 3, 'a live child whose effects are unproven is not the code that means "retry"');
   assert.equal(r.started.length, 1);
   assert.equal(reads, 1);
   assert.match(r.out, /#7 CANNOT-ESTABLISH/);
   assert.match(r.out, /Do NOT relaunch/);
+});
+
+// The friction reported from goodluckagency/ofmchat#101 on 2026-08-27: the
+// session file exists as soon as the child boots, carrying the boot
+// `model_change` and no receipt. Reading once is reading that boot state.
+test('a booted session file is waited out, not reported as an unproven marker', () => {
+  let read = 0;
+  const answers = [
+    { model: { model: 'omniroute/or-opus', role: '' }, sessionRole: null },
+    { model: { model: 'omniroute/or-opus', role: '' }, sessionRole: null },
+    { model: { model: 'omniroute/or-opus', role: 'default' }, sessionRole: null },
+    // A read that carries only the receipt must not erase the latched model.
+    { model: null, sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] } },
+  ];
+  const r = run(['--issue', '7'], { proofFn: () => answers[Math.min(read++, answers.length - 1)] });
+  assert.equal(r.code, 0);
+  assert.equal(read, 4, 'each proposition latches on its own read');
+  assert.match(r.out, /triage-worker \+ triage reached the first turn/);
+  assert.match(r.out, /#7 VERIFIED/);
+});
+
+test('a child still on its boot model when the window closes is named as such', () => {
+  const r = run(['--issue', '7'], {
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
+    proofFn: () => ({ model: { model: 'omniroute/or-opus', role: '' }, sessionRole: null }),
+  });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /still runs its BOOT model/);
+  assert.match(r.out, /no session-role receipt/);
+  assert.match(r.out, /#7 CANNOT-ESTABLISH/);
 });
 
 test('a pre-turn triage role refusal names the missing playbook', () => {
@@ -670,7 +717,7 @@ test('a pre-turn triage role refusal names the missing playbook', () => {
       },
     }),
   });
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 3);
   assert.match(r.out, /role triage-worker refused — skill-not-found; missing triage/);
   assert.match(r.out, /#7 CANNOT-ESTABLISH/);
 });
@@ -699,8 +746,20 @@ test('a second run on the same issue replays the record instead of creating a se
 
 test('a dispatch that cannot establish is reported as such, and does not become DISPATCHED', () => {
   const r = run(['--issue', '7'], { startCodes: [3] });
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 3, 'the summary carries the same code the start did — never 1, which reads as "nothing happened"');
   assert.match(r.out, /#7 CANNOT-ESTABLISH/);
+});
+
+test('an unproven live child dominates a duplicate in the summary code', () => {
+  const mixed = run(['--issue', '7', '--issue', '8'], {
+    issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' },
+    env: { ORCA_TRIAGE_SESSION_CAP: '5', AX_TRIAGE_ROLE_WAIT: '0' },
+    startCodes: [2, 0],
+    proofFn: () => null,
+  });
+  assert.equal(mixed.code, 3, 'one unproven child dominates a duplicate: the worse hazard decides the code');
+  assert.match(mixed.out, /#7 DUPLICATE/);
+  assert.match(mixed.out, /#8 CANNOT-ESTABLISH/);
 });
 
 test('a duplicate exit is named, never counted as a fresh session', () => {
@@ -1045,6 +1104,6 @@ test('a refine dispatch verifies the refine role pair, not the triage one', () =
     issues: { 7: 'OPEN|0|a' },
     proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] } }),
   });
-  assert.equal(wrong.code, 1);
+  assert.equal(wrong.code, 3);
   assert.match(wrong.out, /expected refine-worker/);
 });
