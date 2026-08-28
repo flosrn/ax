@@ -117,11 +117,16 @@ export function doctor(cwd = process.cwd()) {
   // `actions/checkout` — which configures `origin` and nothing else — and ran
   // `ax pin`, whose doctor gate refused the tree on this one line. The pin never
   // landed, so a published fix could not reach the repository that reported the
-  // bug it fixes. The finding's own words were "vendor checks cannot run": an
-  // inability to measure, reported as incoherence. `ax vendor` is the verb that
-  // needs this remote and it refuses for itself; a tree without it is a tree
-  // where one domain cannot be graded, which is what this now says — loudly,
-  // with its repair, exactly like the absent guarded trees below.
+  // bug it fixes.
+  //
+  // The finding's own words were "vendor checks cannot run": an inability to
+  // measure, reported as incoherence. The remote has exactly two consumers in
+  // this package — `ax init`, which infers the vendor block from it, and this
+  // grading — so nothing ax DOES breaks without it. And the guarded-tree
+  // ownership checks below do not need it at all: they read the filesystem, so
+  // they still run and still fail on an unclaimed path. Demoting this line loses
+  // the remote's presence and nothing else, which is why it reports loudly with
+  // its repair instead, exactly like the absent guarded trees do.
   if (config.vendor !== undefined) {
     const remote = vendorRemote(root, config.vendor.repo);
     if (!remote) {

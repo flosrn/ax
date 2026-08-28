@@ -227,15 +227,39 @@ test('a checkout with no vendor remote is NOT MEASURED there, never an incoheren
   // could not reach the repository that reported the bug.
   //
   // The finding's own words were "vendor checks cannot run": an inability to
-  // measure, printed as a failure. A missing upstream remote does not make a tree
-  // incoherent — `ax vendor` is what needs that remote, and it refuses for
-  // itself. So this reports, loudly, and names the repair; `docs/ declared
-  // guarded but absent here` two lines below has always behaved exactly this way.
+  // measure, printed as a failure. The remote's only consumers in this package
+  // are `ax init` (which infers the vendor block from it) and this grading, so
+  // nothing ax does breaks without it — while the guarded-tree ownership checks
+  // read the filesystem and still run. That is what the last assertion pins:
+  // demoting this line must not silence the domain it introduces.
+  const capture = fn => {
+    const written = [];
+    const stdout = process.stdout.write;
+    process.stdout.write = chunk => (written.push(String(chunk)), true);
+    try {
+      return { code: fn(), out: written.join('') };
+    } finally {
+      process.stdout.write = stdout;
+    }
+  };
+
   assert.equal(doctor(dir), 0, 'the fixture is coherent with its kit remote');
 
   git('remote', 'remove', 'kit');
   try {
-    assert.equal(doctor(dir), 0, 'no remote for the kit is not a failing checkout');
+    const r = capture(() => doctor(dir));
+    assert.equal(r.code, 0, 'no remote for the kit is not a failing checkout');
+    assert.match(r.out, /vendor checks NOT MEASURED here/);
+    assert.match(r.out, /git remote add vendor git@github\.com:makerkit\/next-supabase-saas-kit-turbo\.git/);
+
+    // The domain is not silenced with the remote: an unclaimed path under a
+    // guarded tree still fails, remote or no remote.
+    mkdirSync(join(dir, 'docs', 'surprise'));
+    try {
+      assert.equal(doctor(dir), 1, 'ownership grading does not need the remote');
+    } finally {
+      rmSync(join(dir, 'docs', 'surprise'), { recursive: true });
+    }
   } finally {
     git('remote', 'add', 'kit', 'git@github.com:makerkit/next-supabase-saas-kit-turbo.git');
   }

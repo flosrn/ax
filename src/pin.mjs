@@ -161,10 +161,19 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   // second as the first sends someone to repair findings that do not exist.
   const doctor = exec(join(root, 'bin', 'ax'), ['doctor'], root);
   if (doctor.error) {
-    return refuse(
-      `ax doctor could not run under ${target}, so nothing graded this checkout: ${String(doctor.error.message ?? doctor.error).trim()}`,
-      `${join(root, 'bin', 'ax')} doctor   # make the bootstrap runnable, then re-run this verb`,
-    );
+    // The repair must NOT be the path that just failed. This branch is reached on
+    // ENOENT (no committed bootstrap) and EACCES (present, not executable), and
+    // both are repaired by something else: `ax init` rewrites `bin/ax` from the
+    // package that was just proven installed, and `chmod +x` fixes the mode. The
+    // installed package is reachable here by construction — the proof above read
+    // its manifest — so the repair runs through it rather than through the file
+    // that is broken.
+    const reason = String(doctor.error.message ?? doctor.error).trim();
+    bad(`ax doctor could not run under ${target}, so nothing graded this checkout: ${reason}`);
+    note(`${join(root, 'bin', 'ax')} is the bootstrap this verb calls — missing, or present and not executable`);
+    fix(`pnpm exec ax init   # rewrite bin/ax from the installed ${PACKAGE_NAME} ${target}`);
+    fix(`chmod +x ${join(root, 'bin', 'ax')}   # if it exists already and only the mode is wrong`);
+    return 1;
   }
   if (doctor.status !== 0) {
     const findings = `${String(doctor.stdout ?? '')}${String(doctor.stderr ?? '')}`
