@@ -645,6 +645,23 @@ test('a real run creates one verified triage-worker session per issue', () => {
   assert.match(r.out, /#8 VERIFIED/);
 });
 
+// The verdict is a snapshot: a quota fallback is written when the first
+// provider call fails, which can land after the receipt this loop settles on,
+// and no bounded wait can prove a later mover will not arrive. So the success
+// line NAMES the model it proved — that is what makes a later `fallback` in the
+// same session file legible against it rather than silently contradicting a
+// green line nobody can re-read.
+test('the verified line names the model it proved, so a later mover is legible', () => {
+  const r = run(['--issue', '7'], {
+    proofFn: () => ({
+      model: { model: 'omniroute/or-opus', role: 'default' },
+      sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] },
+    }),
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /reached the first turn on omniroute\/or-opus/);
+});
+
 test('a dispatch with no role receipt is cannot-establish and is never relaunched', () => {
   let reads = 0;
   const r = run(['--issue', '7'], {

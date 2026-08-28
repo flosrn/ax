@@ -117,13 +117,22 @@ function verifyTriageRole({ request, job = 'triage', root, env, sessionsRoot, pr
         : `${role.role}|${skills.join(',') || 'no skills'}`
   }`);
 
+  // THE VERDICT IS A POINT-IN-TIME PROOF, and the success line names the model
+  // it proved so a later mover is legible against it. A quota fallback is
+  // written when the FIRST PROVIDER CALL fails, which can be after the receipt
+  // this loop settles on, so no bounded wait here can prove the selection final
+  // — a fallback at wait+1s exists for every wait. What the channel does
+  // instead is keep the evidence durable: `launchProof` reads the whole session
+  // file and the LAST mover wins, so any later read (`ax triage status`,
+  // `ax worker transcript`) sees a fallback this line could not have seen, and
+  // a `fallback` mover observed at ANY time fails below rather than passing.
   if (
     model?.role === 'default' &&
     role?.status === 'applied' &&
     role.role === expected.role &&
     skills.includes(expected.skill)
   ) {
-    ok(`${request}: ${expected.role} + ${expected.skill} reached the first turn`);
+    ok(`${request}: ${expected.role} + ${expected.skill} reached the first turn on ${model.model}`);
     return 'VERIFIED';
   }
 
