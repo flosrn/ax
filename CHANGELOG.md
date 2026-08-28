@@ -8,6 +8,14 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.14.2](https://github.com/flosrn/ax/compare/v0.14.1...v0.14.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* **omp:** keep foreign sessions off the peer receiver ([#23](https://github.com/flosrn/ax/issues/23)) ([e3ae77e](https://github.com/flosrn/ax/commit/e3ae77e68fb071f0a91b4cd6b9ecc8b883755f10))
+* **omp:** only a LIVE owner may keep a session off its peer Run ([#25](https://github.com/flosrn/ax/issues/25)) ([1234d18](https://github.com/flosrn/ax/commit/1234d182eb1276731533fdc0cb319d12b415cce5))
+
 ## [0.14.1](https://github.com/flosrn/ax/compare/v0.14.0...v0.14.1) (2026-08-27)
 
 
