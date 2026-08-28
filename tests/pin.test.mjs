@@ -141,13 +141,40 @@ test('an install that served another version is refused — the proof is the dis
   assert.doesNotMatch(r.out, /git add/, 'no commit line for a bump that did not happen');
 });
 
-test('a doctor that refuses the new pin blocks the commit line', () => {
-  const exec = fakeExec({ onInstall: at => installAs(at, '0.6.6'), doctor: { status: 1 } });
+test('a doctor that refuses the new pin blocks the commit line AND prints what it found', () => {
+  // Measured 2026-08-28: `@flosrn/ax@0.14.4` was announced to
+  // goodluckagency/ofmchat, its bump workflow ran `ax pin 0.14.4`, and the run
+  // failed with `ax doctor refuses this checkout under 0.14.4` and NOTHING else.
+  // The doctor's findings went to a captured subprocess this verb discarded, so
+  // the only artefact of a real blocked deployment named no cause — and the
+  // repair it printed (`ax doctor`) is a command the CI runner cannot be asked to
+  // type. The findings are the whole content of the refusal.
+  const exec = fakeExec({
+    onInstall: at => installAs(at, '0.6.6'),
+    doctor: { status: 1, stdout: '  ✗ AGENTS.md carries no BEGIN:ax block\n      → ax init\n', stderr: '' },
+  });
   const r = run(['v0.6.6'], { exec });
 
   assert.equal(r.code, 1);
   assert.match(r.out, /do not commit a pin the doctor rejects/);
+  assert.match(r.out, /AGENTS\.md carries no BEGIN:ax block/, 'the finding travels with the refusal');
   assert.doesNotMatch(r.out, /git add/);
+});
+
+test('a doctor that could not RUN is not reported as a checkout it refused', () => {
+  // Two different states: "the checkout is incoherent" and "nothing graded it".
+  // Collapsing them sends an operator to repair findings that were never
+  // produced — the same class as reporting an absence as a verdict (F-028).
+  const exec = fakeExec({
+    onInstall: at => installAs(at, '0.6.6'),
+    doctor: { error: new Error('spawn ENOENT'), status: null, stdout: '', stderr: '' },
+  });
+  const r = run(['v0.6.6'], { exec });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /could not run/);
+  assert.match(r.out, /ENOENT/);
+  assert.doesNotMatch(r.out, /do not commit a pin the doctor rejects/, 'nothing graded this checkout, so nothing refused it');
 });
 
 test('a dirty package.json refuses before anything moves — the diff must be its own', () => {

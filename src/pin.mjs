@@ -149,9 +149,33 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   }
   ok(`installed ${PACKAGE_NAME} ${target}, proven from node_modules`);
 
+  // THE FINDINGS ARE THE REFUSAL. Measured 2026-08-28: 0.14.4 was announced to
+  // goodluckagency/ofmchat, its bump workflow ran this verb, and the only artefact
+  // of a blocked deployment was `ax doctor refuses this checkout under 0.14.4` —
+  // the grading itself went to a captured subprocess and was dropped here. A
+  // refusal whose cause is discarded cannot be acted on by the CI that hit it, and
+  // the repair it names (`ax doctor`) is a command no runner will type.
+  //
+  // And a doctor that could not RUN is a different state from a checkout it
+  // refused: one is incoherent, the other was never graded (F-028). Reporting the
+  // second as the first sends someone to repair findings that do not exist.
   const doctor = exec(join(root, 'bin', 'ax'), ['doctor'], root);
-  if (doctor.error || doctor.status !== 0) {
-    return refuse(`ax doctor refuses this checkout under ${target} — do not commit a pin the doctor rejects`, 'ax doctor   # read the findings, repair, then re-run this verb');
+  if (doctor.error) {
+    return refuse(
+      `ax doctor could not run under ${target}, so nothing graded this checkout: ${String(doctor.error.message ?? doctor.error).trim()}`,
+      `${join(root, 'bin', 'ax')} doctor   # make the bootstrap runnable, then re-run this verb`,
+    );
+  }
+  if (doctor.status !== 0) {
+    const findings = `${String(doctor.stdout ?? '')}${String(doctor.stderr ?? '')}`
+      .split('\n')
+      .map(line => line.trimEnd())
+      .filter(line => line.trim() !== '');
+    bad(`ax doctor refuses this checkout under ${target} — do not commit a pin the doctor rejects`);
+    for (const line of findings) raw(line);
+    if (findings.length === 0) note(`ax doctor exited ${doctor.status} and printed nothing — run it by hand to see why`);
+    fix('ax doctor   # repair the findings above, then re-run this verb');
+    return 1;
   }
   ok('doctor coherent under the new pin');
 
