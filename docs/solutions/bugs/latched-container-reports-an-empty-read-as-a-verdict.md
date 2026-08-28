@@ -2,7 +2,7 @@
 title: A reader that answers with a container is non-null before its fields exist, so latching the container latches an absence as a verdict
 date: 2026-08-26
 category: bugs
-module: src/worker
+module: src/worker, src/triage
 problem_type: bug
 component: verification
 severity: high
@@ -11,6 +11,7 @@ symptoms:
   - "The same receipt reported `liveness cursor 0 -> 604`, so the pane was proven live by the same loop that called the configuration unproven"
   - "Reproducible on every launch, both slugs, with a clean `ax worker start --show` receipt and a readable `ax worker tail`"
   - "The coordinator had to read the pane by hand after each launch to disbelieve the verb's own verdict"
+  - "`ax triage dispatch` exited 1 with `model omniroute/or-opus|`, `session unreadable` and `CANNOT-ESTABLISH` while `ax worker gate` reported the same child LIVE and working"
 root_cause: absence_read_as_value
 resolution_type: code_fix
 related_components:
@@ -94,6 +95,28 @@ and a latch over a partially written source records the earliest observation as 
 This is F-028 — absence is not zero — in its most expensive form: not an absent list read as empty,
 but an absent receipt read as a *verdict about the thing*, printed with the authority of a
 measurement.
+
+## The second site of the same latch, one day later
+
+The fix above landed in `src/worker/verify.mjs`, with its reasoning in a twenty-line header. The
+other caller of `launchProof()` — `verifyTriageRole()` in `src/triage/dispatch.mjs` — kept the
+original loop, and on 2026-08-27 produced the identical false verdict on
+goodluckagency/ofmchat#101: `proof … model omniroute/or-opus| · session unreadable`, then
+`model marker unproven`, `no session-role receipt`, `CANNOT-ESTABLISH`, on a child that was reading
+the issue with its role applied. `ax worker gate` refused the relaunch that verdict invited, which
+is the only reason it cost a report instead of a duplicated agent.
+
+Two things generalize past the one-line repair:
+
+- **A fix to a rule belongs at every reader of the source, not at the site where it was found.** The
+  cheap query is the one that finds them: `grep launchProof src` returned three callers, one of
+  which was the bug. A header explaining a latch does not travel to a caller that never reads it.
+- **The reporting verb's exit code was the actual hazard.** The summary collapsed every non-verified
+  verdict into `1`, the code this verb uses for "the input was wrong and NOTHING was dispatched".
+  CANNOT-ESTABLISH is the opposite state — a child IS running — and it was printing under the one
+  code that reads as safe to retry. It now returns `3`, matching `cannot()` in the same file, and an
+  unproven live child dominates a duplicate when a batch mixes them (ADR 0003: exit codes belong to
+  the verb, so the summary has to speak the same alphabet as its refusals).
 
 ## The same defect, again, in the instrument built to measure it
 

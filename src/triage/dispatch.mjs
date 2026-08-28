@@ -59,30 +59,55 @@ const roleWaitOf = env => {
  * A missing role cannot mutate — orca-model removes the tool surface and blocks
  * every tool call before the first provider turn — but the parent still needs
  * the exact refusal rather than a green "dispatch recorded" line.
+ *
+ * EACH PROPOSITION LATCHES SEPARATELY, and that is why this is two variables
+ * and not one `proof` — the rule `../worker/verify.mjs` states at length, on
+ * the reader both verbs share. `launchProof` answers non-null the moment the
+ * session FILE exists, and that file exists as soon as the child boots: it then
+ * carries only the boot `model_change` Orca writes, which has no mover, and no
+ * role receipt at all. Measured 2026-08-27 on goodluckagency/ofmchat#101: a
+ * loop that stopped reading at the first non-null object printed
+ * `model omniroute/or-opus|` and `session unreadable`, exit 1, on a child that
+ * was reading the issue with its role applied — and `ax worker gate` was the
+ * only thing standing between that verdict and the relaunch of a live agent
+ * (F-001). An absent receipt is not a refused receipt (F-028).
  */
 function verifyTriageRole({ request, job = 'triage', root, env, sessionsRoot, proofFn, now, sleep }) {
   const expected = ROLE_BY_JOB[job];
   const wait = roleWaitOf(env);
   const deadline = now() + wait * 1000;
-  let proof = null;
-  do {
+  let model = null;
+  let role = null;
+
+  // Settled means the model has a MOVER (`role !== ''`, i.e. someone selected
+  // it) and the receipt exists in either polarity. A refusal is a real verdict
+  // and stops the wait; an empty mover is indistinguishable from "not yet".
+  const settled = () => model !== null && model.role !== '' && role !== null;
+
+  for (;;) {
+    let proof = null;
     try {
       proof = proofFn({ needle: basename(root), request, env, sessionsRoot });
     } catch {
       proof = null;
     }
-    if (proof !== null || now() >= deadline) break;
+    // The session file is cumulative, so a later read supersedes an earlier
+    // one — and a read that carries only one of the two fields must never
+    // erase the other.
+    if (proof !== null) {
+      if (proof.model !== null) model = proof.model;
+      if (proof.sessionRole !== null) role = proof.sessionRole;
+    }
+    if (settled() || now() >= deadline) break;
     sleep(250);
-  } while (true);
+  }
 
-  if (proof === null) {
+  if (model === null && role === null) {
     bad(`CANNOT ESTABLISH — ${request}: no child-side role receipt appeared within ${wait}s`);
     note('The dispatch DID happen. Do NOT relaunch; inspect its recorded pane with `ax worker ls`.');
     return 'CANNOT-ESTABLISH';
   }
 
-  const model = proof.model;
-  const role = proof.sessionRole;
   const skills = role?.status === 'applied' ? role.skills : [];
   note(`proof ${request}: model ${model === null ? 'unreadable' : `${model.model}|${model.role}`} · session ${
     role === null
@@ -92,17 +117,31 @@ function verifyTriageRole({ request, job = 'triage', root, env, sessionsRoot, pr
         : `${role.role}|${skills.join(',') || 'no skills'}`
   }`);
 
+  // THE VERDICT IS A POINT-IN-TIME PROOF, and the success line names the model
+  // it proved so a later mover is legible against it. A quota fallback is
+  // written when the FIRST PROVIDER CALL fails, which can be after the receipt
+  // this loop settles on, so no bounded wait here can prove the selection final
+  // — a fallback at wait+1s exists for every wait. What the channel does
+  // instead is keep the evidence durable: `launchProof` reads the whole session
+  // file and the LAST mover wins, so any later read (`ax triage status`,
+  // `ax worker transcript`) sees a fallback this line could not have seen, and
+  // a `fallback` mover observed at ANY time fails below rather than passing.
   if (
     model?.role === 'default' &&
     role?.status === 'applied' &&
     role.role === expected.role &&
     skills.includes(expected.skill)
   ) {
-    ok(`${request}: ${expected.role} + ${expected.skill} reached the first turn`);
+    ok(`${request}: ${expected.role} + ${expected.skill} reached the first turn on ${model.model}`);
     return 'VERIFIED';
   }
 
-  if (model?.role !== 'default') bad(`${request}: model marker unproven (${model === null ? 'no model receipt' : `${model.model}|${model.role}`})`);
+  if (model === null) bad(`${request}: model marker unproven (no model receipt)`);
+  else if (model.role === '') {
+    bad(`${request}: the child still runs its BOOT model after ${wait}s (${model.model}) — the spec marker did not apply`);
+  } else if (model.role === 'fallback') {
+    bad(`${request}: model marker unproven — the quota chain moved this session to ${model.model}, so the marker is not what decided`);
+  } else if (model.role !== 'default') bad(`${request}: model marker unproven (${model.model}|${model.role})`);
   if (role === null) bad(`${request}: no session-role receipt`);
   else if (role.status === 'refused') {
     const missing = role.missingSkills.length === 0 ? '' : `; missing ${role.missingSkills.join(', ')}`;
@@ -454,17 +493,25 @@ export function dispatch(
   }
 
   // ── 8. summary ───────────────────────────────────────────────────────────
+  // ADR 0003 — this verb's own alphabet, and the summary has to speak it too.
+  // 1 is `refuse`: the input was wrong and NOTHING was dispatched, so running
+  // again after fixing it is correct. 3 is `cannot`: a child IS running and its
+  // effects could not be proven, so a re-run duplicates a live agent (F-001).
+  // Printing CANNOT-ESTABLISH under exit 1 gave a caller the one code that
+  // reads as "safe to retry" for the one state where retrying is the hazard.
   section('summary');
-  let failed = 0;
+  let unproven = false;
+  let failed = false;
   for (const { issue, verdict } of results) {
     note(`#${issue} ${verdict}`);
-    if (verdict !== 'VERIFIED' && verdict !== 'DRY') failed = 1;
+    if (verdict === 'CANNOT-ESTABLISH') unproven = true;
+    else if (verdict !== 'VERIFIED' && verdict !== 'DRY') failed = true;
   }
   if (!dry) {
     note('each session wakes you when it reports — do not poll, and never run `orchestration check --wait`: the peer extension owns the only consuming loop on this Run');
     note('a report is a signal, not a verdict: the evidence is the draft it wrote, and nothing lands until you publish it');
   }
-  return failed;
+  return unproven ? 3 : failed ? 1 : 0;
 }
 
 const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' : code === 3 ? 'CANNOT-ESTABLISH' : 'REFUSED');
