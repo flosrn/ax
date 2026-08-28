@@ -11,7 +11,7 @@
 // `ax worker start` are all injected, so no runtime, no ssh and no network is
 // touched, and nothing is ever dispatched for real.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -19,6 +19,7 @@ import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
 import { launch, requestIdFor } from '../src/worker/launch.mjs';
+import { verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
 
 const ISSUE = 'GAP-353';
@@ -563,6 +564,172 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.match(r.out, /would run: ax worker start/);
   assert.deepEqual(r.started, [], 'a dry run dispatches nothing');
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
+});
+
+/**
+ * The bundle `.omp/settings.json` registers, installed in that worktree — the
+ * state pnpm reaches a few seconds after `git worktree add` returns.
+ */
+function equipped(worktree, { installed = true } = {}) {
+  mkdirSync(join(worktree, '.omp'), { recursive: true });
+  writeFileSync(join(worktree, '.omp', 'settings.json'), JSON.stringify({ extensions: ['./node_modules/@flosrn/ax'] }));
+  if (!installed) return worktree;
+  const pkg = join(worktree, 'node_modules', '@flosrn', 'ax');
+  mkdirSync(join(pkg, 'omp'), { recursive: true });
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@flosrn/ax', omp: { extensions: ['./omp/index.ts'] } }));
+  writeFileSync(join(pkg, 'omp', 'index.ts'), 'export default {};\n');
+  return worktree;
+}
+
+// ── the bundle the child boots with, BEFORE the dispatch ─────────────────────
+
+test('a worktree whose registered OMP bundle is not installed dispatches NOTHING', () => {
+  // Measured 2026-08-28, ofmchat #101: the dispatch went out five seconds before
+  // pnpm created `node_modules/@flosrn/ax`, so the child never consumed its own
+  // `[omp role=worker model=@default]` marker — boot model, no role, no playbook,
+  // for the whole of a real implementation. Refusing here is cheap; that child
+  // cost a wave.
+  const root = repo();
+  equipped(provisioned(root, `${ISSUE}-${SLUG}`), { installed: false });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, env: { AX_LAUNCH_EQUIP_WAIT: '0' } });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /node_modules\/@flosrn\/ax/);
+  assert.match(r.out, /no worker role, no playbook/);
+  assert.deepEqual(r.started, [], 'nothing is dispatched into a worktree that cannot equip it');
+});
+
+test('a worktree whose settings file registers no ax bundle dispatches NOTHING, and says ax init', () => {
+  // An unequipped child by the other route: OMP loads, and nothing in it consumes
+  // the role marker the brief carries. Waiting is not the repair here.
+  const root = repo();
+  const tree = provisioned(root, `${ISSUE}-${SLUG}`);
+  mkdirSync(join(tree, '.omp'), { recursive: true });
+  writeFileSync(join(tree, '.omp', 'settings.json'), JSON.stringify({ extensions: [] }));
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /none of them is @flosrn\/ax/);
+  assert.match(r.out, /ax init/);
+  assert.deepEqual(r.started, []);
+});
+
+test('a settings file that exists and cannot be parsed dispatches NOTHING', () => {
+  const root = repo();
+  const tree = provisioned(root, `${ISSUE}-${SLUG}`);
+  mkdirSync(join(tree, '.omp'), { recursive: true });
+  writeFileSync(join(tree, '.omp', 'settings.json'), '{ not json');
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /could not be read/);
+  assert.deepEqual(r.started, [], 'a declared loader that loads nothing is not a launch');
+});
+
+test('an unequipped child is named as the CAUSE, not left as two unexplained UNPROVENs', () => {
+  // The verdict that was overruled (ofmchat #101). Reachable after the ground
+  // because a concurrent pnpm install RELINKS: the bundle can be there when the
+  // dispatch goes out and gone while the child boots. The three cheap checks an
+  // operator reaches for — `--show`, `gate`, `tail` — all answer "healthy" over an
+  // unequipped child, so this line is the only one that separates them.
+  const root = repo();
+  const tree = equipped(provisioned(root, `${ISSUE}-${SLUG}`));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  // Boot model, no role receipt: exactly what a child with no AX bundle writes.
+  transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, null, { sessionRole: null });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    root,
+    home,
+    sleep: () => rmSync(join(tree, 'node_modules'), { recursive: true, force: true }),
+  });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /CAUSE: this worktree cannot load its AX bundle/);
+  assert.match(r.out, /working UNEQUIPPED, not still booting/);
+  assert.match(r.out, /install in/);
+  assert.equal(r.started.length, 1, 'the dispatch happened once and is never repeated');
+});
+
+test('a wiring fault discovered at verification names `ax init`, not an install', () => {
+  // The other half of the CAUSE line, and the reason the probe is an INJECTED
+  // dependency: a registration that broke between the pre-dispatch ground and the
+  // child's boot is real but not worth staging on disk, and the two states route
+  // to different repairs — one is bytes to install, the other is wiring `ax init`
+  // rewrites. `verify` is called directly here because that is the unit that owns
+  // the verdict.
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  const sessions = join(home, 'sessions');
+  transcript(sessions, `${ISSUE}-${SLUG}`, null, { sessionRole: null });
+  record(store, REQUEST);
+  const { runner } = fakeOrca();
+  let clock = 0;
+  const r = capture(() =>
+    verify({
+      run: runner,
+      env: { HOME: home, ORCA_DISPATCH_STORE: store },
+      on: '',
+      wait: 1,
+      worktree: join(root, '.worktrees', `${ISSUE}-${SLUG}`),
+      request: REQUEST,
+      ticket: null,
+      instruction: '/entry',
+      lineage: 'repo-id::/parent/wt',
+      sessionsRoot: sessions,
+      host: null,
+      exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      cwd: root,
+      now: () => (clock += 1000),
+      sleep: () => {},
+      tickMs: 1,
+      equipmentProbe: () => ({
+        measured: true,
+        ready: false,
+        wiring: true,
+        missing: [],
+        reason: '.omp/settings.json registers 1 extension(s) and none of them is @flosrn/ax',
+      }),
+    }),
+  );
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /CAUSE: this worktree cannot load its AX bundle \(\.omp\/settings\.json registers 1 extension/);
+  assert.match(r.out, /ax init {3}# then settle this dispatch and launch again/);
+  assert.doesNotMatch(r.out, /package manager's install/, 'a wiring fault is not repaired by an install');
+});
+
+test('an install that lands during the wait is dispatched into, not refused', () => {
+  // `ax worktree setup` installs nothing, so a concurrent install is the ORDINARY
+  // state of a fresh worktree. The measured window was five seconds.
+  const root = repo();
+  const tree = equipped(provisioned(root, `${ISSUE}-${SLUG}`), { installed: false });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, 'default');
+  let slept = 0;
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    root,
+    home,
+    sleep: () => {
+      slept += 1;
+      if (slept === 1) equipped(tree);
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /AX bundle/);
+  assert.equal(r.started.length, 1);
+});
+
+test('an installed bundle is proven before the dispatch, and says so once', () => {
+  const root = repo();
+  equipped(provisioned(root, `${ISSUE}-${SLUG}`));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  transcript(join(home, 'sessions'), `${ISSUE}-${SLUG}`, 'default');
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, home });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /AX bundle this worktree registers is loadable/);
 });
 
 // ── dispatch and verification ────────────────────────────────────────────────

@@ -12,6 +12,7 @@ symptoms:
   - "Reproducible on every launch, both slugs, with a clean `ax worker start --show` receipt and a readable `ax worker tail`"
   - "The coordinator had to read the pane by hand after each launch to disbelieve the verb's own verdict"
   - "`ax triage dispatch` exited 1 with `model omniroute/or-opus|`, `session unreadable` and `CANNOT-ESTABLISH` while `ax worker gate` reported the same child LIVE and working"
+  - "The same receipt, one race later and CORRECT, was disbelieved: `model omniroute/default|` and `session not written within the window` on a child that ran a whole implementation with no role, no playbook and its boot model"
 root_cause: absence_read_as_value
 resolution_type: code_fix
 related_components:
@@ -297,3 +298,45 @@ Three habits follow, and they are cheap:
   `MAX_THREAD_PAGES` makes ordinary PRs undecidable. So name both, then name the asymmetry — "raise
   it and the cost is API calls, never a wrong verdict" is the one clause a hurried reader will use.
   One side usually costs resources and the other costs a verdict; only the second is a trap.
+
+## The ninth: a TRUE negative, disbelieved, because it named no cause
+
+2026-08-28, goodluckagency/ofmchat#101. `ax worker launch` printed `model omniroute/default|`,
+`session not written within the window`, `liveness cursor 0 -> 1650`, exit 3. The coordinator ran the
+three cheap checks — `ax worker start --show`, `ax worker gate`, `ax worker tail` — got LIVE,
+`worker=ready`, and a pane mid-implementation, and reported the verdict as friction: a proof window
+too short, on a dispatch that was in reality healthy.
+
+The verdict was right. That child's session file holds exactly one `model_change` — the boot model,
+no mover — and no role receipt in either polarity, for the whole run. `git worktree add` hands you a
+tree with no node_modules and `ax worktree setup` installs nothing, so the install ran concurrently
+with the launch: the dispatch went out at 07:17:06 and `node_modules/@flosrn/ax` was not created
+until 07:17:11. The OMP bundle registered in that worktree's `.omp/settings.json` did not exist when
+the child booted, so nothing consumed the `[omp role=worker model=@default]` marker its own brief
+carried. It then implemented a real ticket on the wrong model, with neither the worker role nor the
+implementation playbook, reading `skill://lfg` out of the brief prose — which is why the pane looked
+exactly like a healthy worker.
+
+Every signal used to overrule the verdict answers a different question. `gate` counts panes, `tail`
+shows a frame, `--show` renders a receipt: all three are about whether a session is alive, and none
+is about *who* that session is. The one surface that answers identity is the one that was printed
+and doubted.
+
+Two repairs, and only the second is about wording:
+
+- **The ground moved before the dispatch.** `equipment()` (`src/worker/child.mjs`) proves the AX
+  bundle a worktree registers is loadable, and `ax worker launch` waits for an install in flight,
+  then refuses rather than dispatching into a tree that cannot equip a child. A refusal before a
+  dispatch costs a re-run; an unequipped child costs a wave, and it is indistinguishable from a good
+  one from the outside.
+- **A verdict must name its cause, or a cheaper signal will overrule it.** `UNPROVEN` with no
+  candidate explanation invites exactly the inspection that was performed here, and that inspection
+  is answerable in the affirmative for an unequipped child. The proposal it produced — soften the
+  exit code, distinguish "unproven but possibly healthy" from a real failure — would have made the
+  one true report of this defect quieter.
+
+**A true negative that names no cause is treated as a false one.** The reader always has cheaper
+instruments than the verdict, and they will use them; when those instruments measure something else,
+agreement between them is not corroboration. Name what the verdict measured, name what would explain
+it, and name which command settles the difference — otherwise the correct answer loses to three
+confident ones about another question.

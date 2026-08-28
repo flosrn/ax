@@ -48,10 +48,10 @@ them.
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |
 | `src/worker/sweep.mjs` | reclaiming processes a dead worktree left behind, by pgid and never by name |
-| `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup, tracker, placement and parent route |
+| `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup — including the AX bundle a child must load before it is dispatched — tracker, placement and parent route |
 | `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
 | `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
-| `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted; issue → pass → dispatch, then delegate |
+| `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
 | `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
 | `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |
 | `src/board.mjs` | the one monotonic writer of a worktree checkpoint |
