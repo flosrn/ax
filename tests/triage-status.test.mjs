@@ -112,7 +112,7 @@ const capture = fn => {
 };
 
 /** An Orca whose inbox holds `messages`, and whose panes answer a cursor. */
-function fakeOrca({ messages = [], inbox = null } = {}) {
+function fakeOrca({ messages = [], inbox = null, terminals = null } = {}) {
   const calls = [];
   const runner = createRunner({
     bin: 'stub-orca',
@@ -120,6 +120,9 @@ function fakeOrca({ messages = [], inbox = null } = {}) {
       calls.push(args.join(' '));
       if (args[0] === 'orchestration' && args[1] === 'inbox') {
         return inbox ?? { status: 0, stdout: JSON.stringify({ ok: true, result: { count: messages.length, messages } }), stderr: '' };
+      }
+      if (args[0] === 'terminal' && args[1] === 'list') {
+        return terminals ?? { status: 1, stdout: '', stderr: 'runtime not reachable' };
       }
       if (args[0] === 'terminal' && args[1] === 'read') {
         return { status: 0, stdout: JSON.stringify({ ok: true, result: { cursor: 1, content: '' } }), stderr: '' };
@@ -129,6 +132,24 @@ function fakeOrca({ messages = [], inbox = null } = {}) {
   });
   return { runner, calls };
 }
+
+/**
+ * `orca terminal list`. A handle's ABSENCE is one proof a pane is gone; a listed
+ * row carrying `orphaned: true` is the other (F-003), so a string is a live row
+ * and `{ handle, orphaned: true }` is a corpse the runtime still lists.
+ */
+const terminalList = (handles, { hosts = ['local'], omittedHostIds = [] } = {}) => ({
+  status: 0,
+  stdout: JSON.stringify({
+    ok: true,
+    result: {
+      terminals: handles.map(entry => (typeof entry === 'string' ? { handle: entry } : entry)),
+      hostScope: { hostIds: hosts, omittedHostIds },
+      truncated: false,
+    },
+  }),
+  stderr: '',
+});
 
 const run = (argv, { root = repo(), orca = fakeOrca(), store } = {}) => {
   const result = capture(() =>
@@ -328,4 +349,85 @@ test('the brief view carries the waiting id for a dispatch-keyed question', () =
   });
   assert.equal(r.code, 0);
   assert.match(r.out, /#7 p1 · ASKING Q1-Q2 .* · WAITING on msg_bf6613d0ee33/);
+});
+
+// ── the fold-it-yourself repair, and the pane that owns that file ─────────────
+
+test('a LIVE pane is never told to fold rulings into the draft it is writing', () => {
+  // Measured 2026-08-28 on goodluckagency/ofmchat#100: this exact finding printed
+  // "rule the questions and fold them into <draft> yourself, then publish" while
+  // `ax worker gate` said LIVE and the child's own pane read "Retrying final draft
+  // write after gate cleared" — rulings already absorbed into its text. Two
+  // writers, one file, and the operator's own instruction as the race.
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({
+      messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })],
+      terminals: terminalList([HANDLE]),
+    }),
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /no answerable ask is visible/, 'the finding is still a fact');
+  assert.doesNotMatch(r.out, /fold them into/, 'and its repair is not a write into a live child\'s file');
+  assert.match(r.out, new RegExp(`pane is LIVE \\(${HANDLE}\\)`));
+  assert.match(r.out, new RegExp(`ax worker tail ${HANDLE}`));
+});
+
+test('a pane the runtime does not know keeps the fold-and-publish exit', () => {
+  // The exit exists because four correct refusals once closed a circle with no way
+  // out (2026-08-26). A dead pane owns no file, so the guard must not take it.
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({
+      messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })],
+      terminals: terminalList(['term_someone_else']),
+    }),
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /rule the questions and fold them into/);
+  assert.doesNotMatch(r.out, /pane is LIVE/);
+});
+
+test('a LISTED but ORPHANED pane is a corpse, and keeps the fold-and-publish exit', () => {
+  // The second way a pane dies (F-003): the runtime still lists the row, so a
+  // guard reading presence-in-the-list as liveness would withhold the only exit
+  // that exists over a session nobody is running. `paneVerdict` answers MORT on
+  // `orphaned: true`, and this verb has to inherit that, not re-derive it.
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({
+      messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })],
+      terminals: terminalList([{ handle: HANDLE, orphaned: true }]),
+    }),
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /rule the questions and fold them into/);
+  assert.doesNotMatch(r.out, /pane is LIVE/);
+  assert.doesNotMatch(r.out, /could not be established/, 'an orphaned row is a verdict, never an unknown');
+});
+
+test('a pane whose standing cannot be established discloses that before advising a fold', () => {
+  // INCONNU is the third value and it is not a permission (F-028): the advice
+  // stays, because withholding it rebuilds the loop with no exit, but the reader
+  // is told what was not established and which verb decides it.
+  const root = repo();
+  record(root);
+  const r = run(['--issue', '7'], {
+    root,
+    orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })] }),
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /rule the questions and fold them into/);
+  assert.match(r.out, /could not be established/);
+  assert.match(r.out, new RegExp(`ax worker gate ${REQUEST}`));
 });

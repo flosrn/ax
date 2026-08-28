@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section } from '../log.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
-import { readPane } from '../worker/pane.mjs';
+import { paneVerdict, readPane, terminalInventory } from '../worker/pane.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { defaultStore, heldRepaired, report, workerPane } from '../worker/record.mjs';
@@ -244,6 +244,38 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   if (!mailbox.ok) note(dim(`waiting state unknown: ${mailbox.reason} — an absent answer is not an absent question (F-028)`));
   const store = defaultStore(env);
 
+  // WHOSE FILE IS THAT DRAFT RIGHT NOW. Read lazily, once per execution
+  // environment, and ONLY when a finding is about to tell an operator to write
+  // into a draft by hand — every other row here answers from records and drafts,
+  // and this verb stays usable on a machine with no Orca.
+  //
+  // Measured 2026-08-28 on goodluckagency/ofmchat#100: the fold-it-yourself
+  // repair below printed while `ax worker gate` said LIVE and the child's own
+  // pane read "Retrying final draft write after gate cleared" — its rulings
+  // already folded into its text. Following the line would have put a second
+  // writer on one file, and the only reason it did not is that the operator held
+  // gate as the authority over this verb's own advice.
+  //
+  // The verdict is the SHARED one (../worker/pane.mjs), never a second definition
+  // of "is that pane dead": VIVANT withholds the write, MORT allows it, and
+  // INCONNU discloses and names the verb that decides — an absence of information
+  // is not a permission (F-028).
+  const inventories = new Map();
+  const paneStanding = (handle, paneEnv, why) => {
+    if (!inventories.has(paneEnv)) {
+      const bin = runner ? 'injected' : resolve({ env });
+      inventories.set(
+        paneEnv,
+        bin === null
+          ? { ok: false, reason: 'no Orca CLI on this machine' }
+          : terminalInventory(runner ?? createRunner({ bin }), { environment: paneEnv }),
+      );
+    }
+    const inventory = inventories.get(paneEnv);
+    if (!inventory.ok) return { pane: 'INCONNU', detail: inventory.reason };
+    return paneVerdict(handle === '' ? null : handle, why, inventory, { host: paneEnv });
+  };
+
   // ── the completion view: one line per issue, built to be POLLED ────────────
   // The push half of the loop is lossy by measurement (five peer messages lost
   // on 2026-08-23, one of them a final report — the wave stalled on finished
@@ -359,6 +391,11 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       const path = join(store, `${request}.json`);
       let handle = '';
       let dispatchId = '';
+      // The execution ENVIRONMENT rides with the handle (../worker/record.mjs
+      // workerPane): a remote child's pane is invisible to a list that never
+      // asked its host, and reading that absence as death is how a live agent
+      // gets written over.
+      let paneEnv = '';
       // The pass's own ask lifecycle, read from the record rather than deduced
       // from the mailbox. THE MAILBOX IS NOT THE ONLY WITNESS: measured
       // 2026-08-27 on ofmchat #87, a question that `--resume` proved PENDING was
@@ -374,6 +411,11 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
           handle = typeof summary.terminal === 'string' ? summary.terminal : '';
           dispatchId = typeof summary.dispatchId === 'string' ? summary.dispatchId : '';
           recorded = state.ask;
+          try {
+            paneEnv = workerPane(path).env;
+          } catch {
+            paneEnv = '';
+          }
           note(`  ${state.mode} · ${summary.state ?? 'unnamed state'} · ${summary.terminal ?? 'no pane recorded'}${state.usable ? '' : ' — UNSETTLED'}`);
           // Never a fresh dispatch: the recorded mutation may still be running,
           // and no snapshot can see one in flight.
@@ -505,7 +547,20 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
                   : `this pass's ask is recorded ${recorded.state}${recorded.code ? ` (${recorded.code})` : ''}, and no question is keyed to its request, its pane or its dispatch`
         }`);
         note('  `ax triage answer` pairs rulings to an ask THIS tool sent; a child that asked another way cannot be answered by it');
-        fix(`  rule the questions and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — there is no ask here for \`ax triage answer\` to pair`);
+
+        // THE FINDING IS A FACT; THE REPAIR IS A WRITE, and a write needs to know
+        // who else holds that file. See `paneStanding` above for what this cost.
+        const standing = paneStanding(handle, paneEnv, 'this pass records no pane, so nothing here can say whether a child still holds that draft');
+        if (standing.pane === 'VIVANT') {
+          bad(`  and this pass's pane is LIVE (${standing.detail}) — folding rulings into a draft its child is still writing loses one of the two writes, whichever lands second`);
+          note('  it may already have absorbed them: a child that asked outside `ax triage ask` reads its own answers however it asked for them');
+          fix(`  ax worker tail ${handle}   # what it is doing before you touch its draft`);
+        } else {
+          if (standing.pane === 'INCONNU') {
+            note(dim(`  this pass's pane could not be established (${standing.detail}), so the write below is not proven unopposed — \`ax worker gate ${request}\` is the authority, never this line`));
+          }
+          fix(`  rule the questions and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — there is no ask here for \`ax triage answer\` to pair`);
+        }
       }
     }
   }
