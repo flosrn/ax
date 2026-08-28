@@ -10,13 +10,13 @@
 // Nothing here touches the machine's own git config: every invocation runs with
 // an isolated GIT_CONFIG_GLOBAL and no system config.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
-import { pinIdentity, writeMandate } from '../src/worker/child.mjs';
+import { equipment, pinIdentity, untilEquipped, writeMandate } from '../src/worker/child.mjs';
 
 const MANDATE_REL = '.omp/WATCHDOG.yml';
 
@@ -212,4 +212,263 @@ test('a refused per-worktree write is ANNOUNCED with the scope to enable', () =>
   assert.equal(result.pinned, false);
   assert.match(result.notes.join('\n'), /could NOT pin a per-worktree git identity/);
   assert.match(result.notes.join('\n'), /extensions\.worktreeConfig true/);
+});
+
+// ── the OMP bundle the child boots with ──────────────────────────────────────
+
+/** `.omp/settings.json` as `ax init` leaves it, tracked and therefore in every worktree. */
+function registers(worktree, ...extensions) {
+  mkdirSync(join(worktree, '.omp'), { recursive: true });
+  writeFileSync(join(worktree, '.omp', 'settings.json'), `${JSON.stringify({ extensions }, null, 2)}\n`);
+}
+
+/** The installed package, as pnpm links it: a root with an `omp.extensions` manifest. */
+function installs(worktree, rel, { manifest = true, entry = true } = {}) {
+  const root = join(worktree, rel);
+  mkdirSync(join(root, 'omp'), { recursive: true });
+  if (manifest) writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@flosrn/ax', omp: { extensions: ['./omp/index.ts'] } }));
+  if (entry) writeFileSync(join(root, 'omp', 'index.ts'), 'export default {};\n');
+  return root;
+}
+
+/** A complete, valid extension that is NOT ax — nothing in it consumes a role marker. */
+function foreign(worktree, rel) {
+  const root = join(worktree, rel);
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@vendor/omp-thing', omp: { extensions: ['./src/index.ts'] } }));
+  writeFileSync(join(root, 'src', 'index.ts'), 'export default {};\n');
+  return root;
+}
+
+test('a settings file registering NO ax bundle is a wiring fault, never equipment', () => {
+  // The proof is not "every declared extension resolves" — a project can load a
+  // perfectly healthy foreign extension and still consume no role marker, which
+  // is the same unequipped child by a different route. Waiting cannot fix it, so
+  // it must not be reported as an install in flight either.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@vendor/omp-thing');
+  foreign(s.worktree, 'node_modules/@vendor/omp-thing');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.measured, true);
+  assert.equal(probe.ready, false);
+  assert.equal(probe.wiring, true);
+  assert.match(probe.reason, /@flosrn\/ax/);
+  assert.deepEqual(probe.missing, [], 'nothing is missing from disk — the registration is');
+});
+
+test('a LOOKALIKE package path is not the ax bundle, however healthy it is', () => {
+  // `./node_modules/@flosrn/ax-fork` carries the substring, ships a valid
+  // `omp.extensions` of its own, and consumes no AX role marker. Identifying the
+  // registration by path shape would answer READY for a worktree that registers
+  // no ax at all — the same unequipped child, now with a green ground in front
+  // of it. Identity is the NAME the package declares, or the exact root init
+  // writes when no manifest is readable yet.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax-fork');
+  const root = join(s.worktree, 'node_modules', '@flosrn', 'ax-fork');
+  mkdirSync(join(root, 'omp'), { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@flosrn/ax-fork', omp: { extensions: ['./omp/index.ts'] } }));
+  writeFileSync(join(root, 'omp', 'index.ts'), 'export default {};\n');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.ready, false);
+  assert.equal(probe.wiring, true);
+  assert.match(probe.reason, /none of them is @flosrn\/ax/);
+});
+
+test('bytes at the ax path that declare ANOTHER name are not the ax bundle', () => {
+  // The expected root is only a fallback for a manifest that cannot be read yet.
+  // Once it is readable it decides: a package sitting at `node_modules/@flosrn/ax`
+  // and calling itself something else consumes no role marker, and a probe that
+  // trusted the path would hand a launch a green ground over an unequipped child.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+  const root = join(s.worktree, 'node_modules', '@flosrn', 'ax');
+  mkdirSync(join(root, 'omp'), { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@vendor/impostor', omp: { extensions: ['./omp/index.ts'] } }));
+  writeFileSync(join(root, 'omp', 'index.ts'), 'export default {};\n');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.ready, false);
+  assert.equal(probe.wiring, true);
+  assert.match(probe.reason, /none of them is @flosrn\/ax/);
+});
+
+test('a settings file that EXISTS and cannot be read is a wiring fault, never unmeasured', () => {
+  // An absent file is a project that declared nothing. A present, broken one is a
+  // declared loader that loads nothing — same unequipped child, and no wait
+  // repairs it, so it must not pass as "not measured here".
+  const s = fixture();
+  mkdirSync(join(s.worktree, '.omp'), { recursive: true });
+  writeFileSync(join(s.worktree, '.omp', 'settings.json'), '{ not json');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.measured, true);
+  assert.equal(probe.wiring, true);
+  assert.match(probe.reason, /\.omp\/settings\.json exists and could not be read/);
+});
+
+test('a settings file carrying no extensions array is a wiring fault', () => {
+  const s = fixture();
+  mkdirSync(join(s.worktree, '.omp'), { recursive: true });
+  writeFileSync(join(s.worktree, '.omp', 'settings.json'), JSON.stringify({ extensions: 'ax' }));
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.wiring, true);
+  assert.match(probe.reason, /package-root strings/);
+});
+
+test('an empty extensions array is a wiring fault, not an equipped worktree', () => {
+  const s = fixture();
+  registers(s.worktree);
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.measured, true);
+  assert.equal(probe.ready, false);
+  assert.equal(probe.wiring, true);
+});
+
+test('a foreign extension beside an installed ax bundle is equipped, and never blocks on the neighbour', () => {
+  // Foreign wiring is not ax's ground. A missing neighbour is the project's
+  // business; refusing a launch over it would be a floor nobody declared.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@vendor/omp-thing', './node_modules/@flosrn/ax');
+  installs(s.worktree, 'node_modules/@flosrn/ax');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.ready, true);
+  assert.equal(probe.wiring, false);
+});
+
+test('the ax bundle registered TWICE is a wiring fault: OMP would load every handler twice', () => {
+  // `ax doctor` grades exactly one registration, and duplicate peer receive loops
+  // consume each other's messages (AGENTS.md). A launch must not call that ready.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax', './node_modules/@flosrn/ax');
+  installs(s.worktree, 'node_modules/@flosrn/ax');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.ready, false);
+  assert.equal(probe.wiring, true);
+  assert.match(probe.reason, /twice|2 time/);
+});
+
+test('a wiring fault ends the poll immediately — no wait can install a registration', () => {
+  const s = fixture();
+  registers(s.worktree);
+
+  let slept = 0;
+  const result = untilEquipped({ worktree: s.worktree, deadline: 1e9, now: () => 0, sleep: () => (slept += 1), tickMs: 1 });
+  assert.equal(result.wiring, true);
+  assert.equal(slept, 0);
+});
+
+test('an ax package that declares NO omp.extensions is not equipment either', () => {
+  // The registration is right and the bytes are there, and OMP still loads no
+  // bundle: it reads what to load from this manifest. Treating a present package
+  // as sufficient is the same false green the whole probe exists to remove.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+  const root = join(s.worktree, 'node_modules', '@flosrn', 'ax');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@flosrn/ax', version: '0.9.0' }));
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.ready, false);
+  assert.match(probe.missing.join(' '), /omp\.extensions/);
+});
+
+test('a settings file naming an uninstalled bundle is NOT equipped, and names the path', () => {
+  // Measured 2026-08-28 on ofmchat #101: the dispatch went out at 07:17:06 and
+  // `node_modules/@flosrn/ax` did not exist until 07:17:11. The child booted with
+  // no AX bundle, so nothing consumed its `[omp role=worker model=@default]`
+  // marker — one model_change on the boot model, no role receipt, ever. It
+  // implemented the ticket unequipped and looked healthy in `gate` and `tail`.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.measured, true);
+  assert.equal(probe.ready, false);
+  assert.deepEqual(probe.missing, ['./node_modules/@flosrn/ax']);
+});
+
+test('an installed bundle whose own omp manifest resolves IS equipped', () => {
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+  installs(s.worktree, 'node_modules/@flosrn/ax');
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.measured, true);
+  assert.equal(probe.ready, true);
+  assert.deepEqual(probe.missing, []);
+});
+
+test('an install still in flight is NOT equipped: the directory exists and the manifest does not', () => {
+  // The window this closes is small and real — pnpm created the directory five
+  // seconds before the boot that could not load it.
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+  installs(s.worktree, 'node_modules/@flosrn/ax', { manifest: false });
+
+  assert.equal(equipment(s.worktree).ready, false);
+});
+
+test('a manifest whose declared entry is absent is NOT equipped', () => {
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+  installs(s.worktree, 'node_modules/@flosrn/ax', { entry: false });
+
+  const probe = equipment(s.worktree);
+  assert.equal(probe.ready, false);
+  assert.match(probe.missing.join(' '), /omp\/index\.ts/);
+});
+
+test('a worktree carrying no settings file is NOT MEASURED, never reported equipped', () => {
+  // A ground a project does not declare is not measured and says so. `ax doctor`
+  // owns the wiring; a launch must not invent a floor this repo never set.
+  const s = fixture();
+  const probe = equipment(s.worktree);
+  assert.equal(probe.measured, false);
+  assert.equal(probe.ready, false);
+  assert.match(probe.reason, /\.omp\/settings\.json/);
+});
+
+test('the poll answers ready as soon as the install lands, and spends no further tick', () => {
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+
+  let clock = 0;
+  let slept = 0;
+  const result = untilEquipped({
+    worktree: s.worktree,
+    deadline: 10_000,
+    now: () => (clock += 1000),
+    sleep: () => {
+      slept += 1;
+      if (slept === 2) installs(s.worktree, 'node_modules/@flosrn/ax');
+    },
+    tickMs: 1,
+  });
+
+  assert.equal(result.ready, true);
+  assert.equal(slept, 2, 'the loop stops on the tick the bundle appeared');
+});
+
+test('an install that never lands times out UNREADY, and still names the path', () => {
+  const s = fixture();
+  registers(s.worktree, './node_modules/@flosrn/ax');
+
+  let clock = 0;
+  const result = untilEquipped({
+    worktree: s.worktree,
+    deadline: 3000,
+    now: () => (clock += 1000),
+    sleep: () => {},
+    tickMs: 1,
+  });
+
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.missing, ['./node_modules/@flosrn/ax']);
 });

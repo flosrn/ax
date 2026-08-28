@@ -9,6 +9,7 @@ import { basename, join } from 'node:path';
 
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { defaultStore, workerPane } from './record.mjs';
+import { equipment } from './child.mjs';
 import { readPane } from './pane.mjs';
 import { launchProof } from './transcript.mjs';
 import { quote, remote } from './hosts.mjs';
@@ -29,7 +30,7 @@ const firstLine = text => String(text ?? '').split('\n')[0].trim();
  * Liveness is CURSOR MOVEMENT, never duration: two samples, and any advance
  * proves the pty emitted.
  */
-export function verify({ run, env, on, wait, worktree, request, ticket, instruction, lineage, sessionsRoot, host, exec, cwd, now, sleep, tickMs }) {
+export function verify({ run, env, on, wait, worktree, request, ticket, instruction, lineage, sessionsRoot, host, exec, cwd, now, sleep, tickMs, equipmentProbe = equipment }) {
   const recordPath = join(defaultStore(env), `${request}.json`);
   let pane = '';
   try {
@@ -148,6 +149,25 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   if (moved === null) {
     bad(`UNPROVEN liveness: the pane cursor did not advance within ${wait}s. A live in-place spinner also emits no new line — read the pane before concluding.`);
   }
+
+  // THE CAUSE, WHEN IT CAN BE NAMED. Both configuration proofs are written by the
+  // child's own AX bundle, so a child that booted before that bundle was
+  // installed writes NEITHER, ever — while its pane moves and `gate` calls it
+  // LIVE. Measured 2026-08-28 (ofmchat #101): this verdict was correct and was
+  // overruled by `--show`, `gate` and `tail`, because none of those three answers
+  // who the session is and this line did not exist. `launch` now proves the bundle
+  // before dispatching; a dispatch made any other way, or an install that relinks
+  // mid-flight, still lands here. The probe is a NAMED dependency with a real
+  // default, like every other machine answer this function takes.
+  if (model?.role === '' && sessionRole === null && worktree !== '' && on === '') {
+    const equip = equipmentProbe(worktree);
+    if (equip.measured && !equip.ready) {
+      bad(`CAUSE: this worktree cannot load its AX bundle (${equip.wiring ? equip.reason : equip.missing.join(', ')}), so nothing in that child ever consumed its role marker — it is working UNEQUIPPED, not still booting`);
+      fix(equip.wiring ? 'ax init   # then settle this dispatch and launch again' : `run your package manager's install in ${worktree}   # then settle this dispatch and launch again`);
+      note('Its work is real and its model is not the one you asked for: decide whether to keep it before anything else. A live pane is never relaunched over (F-001).');
+    }
+  }
+
   note('The dispatch DID happen. Do NOT relaunch (F-001) — inspect it:');
   fix(`ax worker start --show --request ${request}`);
   return 3;

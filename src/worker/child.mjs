@@ -1,17 +1,24 @@
 // What is prepared INSIDE a dispatched child's worktree, before it is dispatched.
 //
-// Two writes, and both are about a failure that is invisible from the
+// Three things, and all of them are about a failure that is invisible from the
 // coordinator's side until it is expensive: a child whose todo list never moves
-// is never reported home, and a child that inherits a shared git identity gets
-// its commits signed by a sibling's babysitter.
+// is never reported home, a child that inherits a shared git identity gets its
+// commits signed by a sibling's babysitter, and a child that boots before its
+// OMP bundle is installed runs with no role, no playbook and its boot model.
 //
-// Neither function prints. Each returns its `notes` for the caller to emit
-// through ../log.mjs, so the same preparation can be asserted offline and the
-// operator still reads one stream.
+// Only `equipment` refuses anything. The other two ANNOUNCE, because neither
+// degrades the work itself. An unequipped child does: it is a different agent
+// than the one the brief addressed, editing the repository for real.
+//
+// Nothing here prints. Each function returns its `notes` or its verdict for the
+// caller to emit through ../log.mjs, so the same preparation can be asserted
+// offline and the operator still reads one stream.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { PACKAGE_NAME } from '../config.mjs';
+import { OMP_PACKAGE_ROOT, OMP_SETTINGS, ompExtensionRoot } from '../init.mjs';
 import { defaultExec } from '../exec.mjs';
 
 /**
@@ -176,4 +183,141 @@ export function pinIdentity(worktree, { exec = defaultExec } = {}) {
 
   notes.push(`git identity pinned to this worktree (${name}) — a sibling\u2019s babysitter can no longer sign this child\u2019s commits`);
   return { pinned: true, name, notes };
+}
+
+/**
+ * Is the AX bundle this worktree REGISTERS actually loadable in it?
+ *
+ * MEASURED 2026-08-28, ofmchat #101. `git worktree add` hands you a tree with no
+ * node_modules (../worktree/setup.mjs says so and installs nothing), so the
+ * install runs concurrently with the launch. That dispatch went out at 07:17:06
+ * and `node_modules/@flosrn/ax` was not created until 07:17:11: the child booted
+ * with no AX bundle at all, so nothing consumed the `[omp role=worker
+ * model=@default]` marker its own brief carried. Its transcript holds exactly one
+ * `model_change` — the boot model, no mover — and no role receipt in either
+ * polarity, forever. It then implemented the ticket for real, on the wrong model,
+ * with neither the worker role nor the implementation playbook, and both `gate`
+ * and `tail` showed a healthy working agent. The launch's own verification said
+ * UNPROVEN and was disbelieved, because it named no cause.
+ *
+ * THE PROPOSITION IS ABOUT THE AX ENTRY, NOT ABOUT EVERY ENTRY. "each declared
+ * extension resolves" passes on `extensions: []` and on a project that loads a
+ * perfectly healthy foreign extension — both of which produce the same
+ * unequipped child. And the mirror error costs a launch: a foreign extension
+ * this project owns and has not installed is not ax's floor to enforce. So
+ * exactly one thing is graded, and it is identified by ../init.mjs's own rule
+ * (`ompExtensionRoot`: `.` for the ax checkout, the installed root everywhere
+ * else) rather than by a second copy of that string — a self-hosted launch is
+ * registered as `"."` and must not be refused as unwired.
+ *
+ * The two not-ready states are DIFFERENT ANSWERS and are separated by `wiring`:
+ *   an install in flight  -> wait for it; the measured window was five seconds
+ *   no/duplicate ax entry -> `ax init`; no amount of waiting installs a registration
+ *
+ * A worktree whose settings file cannot be read at all is NOT MEASURED and says
+ * so. `ax doctor` owns the wiring, and a launch inventing a floor the project
+ * never declared would refuse every repo that loads no ax bundle.
+ */
+export function equipment(worktree, { exists = existsSync, read = path => readFileSync(path, 'utf8') } = {}) {
+  const settings = join(worktree, ...OMP_SETTINGS.split('/'));
+  const wiring = reason => ({ measured: true, ready: false, wiring: true, missing: [], reason });
+  // ABSENT is the one NOT MEASURED case: a project that never wired OMP here has
+  // declared nothing, and a launch must not invent a floor for it. A file that
+  // EXISTS and cannot be read is the opposite — a declared loader that loads
+  // nothing, which no wait repairs and which boots an unequipped child.
+  if (!exists(settings)) {
+    return {
+      measured: false,
+      ready: false,
+      wiring: false,
+      missing: [],
+      reason: `${worktree}/${OMP_SETTINGS} does not exist, so nothing registers the AX bundle here and this child's session role is NOT MEASURED`,
+    };
+  }
+
+  let declared;
+  try {
+    declared = JSON.parse(read(settings))?.extensions;
+  } catch (error) {
+    return wiring(`${worktree}/${OMP_SETTINGS} exists and could not be read (${String(error.message ?? error)}), so OMP loads no project extension and this child consumes no role marker`);
+  }
+  if (!Array.isArray(declared) || declared.some(entry => typeof entry !== 'string')) {
+    return wiring(`${worktree}/${OMP_SETTINGS} carries no extensions array of package-root strings, so OMP loads no project extension and this child consumes no role marker`);
+  }
+
+  const manifestOf = entry => {
+    try {
+      return JSON.parse(read(join(worktree, entry, 'package.json')));
+    } catch {
+      return null;
+    }
+  };
+
+  // EXACT IDENTITY, never a path that looks like one. The NAME the package
+  // declares is the proof, and it covers ax's own checkout (`"."`), a `link:` and
+  // a workspace path in one rule. `./node_modules/@flosrn/ax-fork` carries the
+  // substring and is a different package, whose own healthy `omp.extensions`
+  // would otherwise answer READY for a worktree that registers no ax at all.
+  //
+  // The expected root is a fallback for ONE state and no wider: a manifest that
+  // cannot be read YET, which is the install in flight this whole probe exists
+  // for. Once that manifest is readable it decides — bytes at the ax path that
+  // declare another name are another package, and nothing in them consumes a role
+  // marker. Any other path with no readable manifest is reported as missing
+  // WIRING, which is doctor's domain and the honest answer.
+  const expected = ompExtensionRoot(worktree);
+  const isAx = entry => {
+    const manifest = manifestOf(entry);
+    return manifest === null ? entry === expected : manifest.name === PACKAGE_NAME;
+  };
+  const ax = declared.filter(isAx);
+  if (ax.length === 0) {
+    return wiring(
+      `${worktree}/${OMP_SETTINGS} registers ${declared.length} extension(s) and none of them is ${PACKAGE_NAME}, so nothing in this child consumes a role marker`,
+    );
+  }
+  if (ax.length > 1) {
+    return wiring(`${worktree}/${OMP_SETTINGS} registers ${PACKAGE_NAME} ${ax.length} times — OMP would load every AX handler twice, and duplicate receive loops consume each other's messages`);
+  }
+
+  // What OMP itself loads: the package root, then the `omp.extensions` manifest
+  // inside it, then every file that manifest names. A directory pnpm has created
+  // but not yet filled is NOT loadable — that is the five-second window above —
+  // and neither is a package that declares no bundle at all: the registration is
+  // right, the bytes are there, and OMP is told nothing to load.
+  const [entry] = ax;
+  const root = join(worktree, entry);
+  const missing = [];
+  if (!exists(root)) missing.push(entry);
+  else {
+    const entries = manifestOf(entry)?.omp?.extensions;
+    if (!Array.isArray(entries) || entries.length === 0) missing.push(`${entry}/package.json omp.extensions`);
+    else {
+      for (const file of entries) {
+        if (typeof file !== 'string') missing.push(`${entry}/package.json omp.extensions`);
+        else if (!exists(join(root, file))) missing.push(`${entry}/${file.replace(/^\.\//, '')}`);
+      }
+    }
+  }
+
+  return { measured: true, ready: missing.length === 0, wiring: false, missing, reason: '' };
+}
+
+/**
+ * The same probe, until the install in flight lands or the deadline passes.
+ *
+ * Waiting is the right disposition rather than an immediate refusal: the measured
+ * window was five seconds of a pnpm install nobody could have run earlier, and
+ * the same install completed three minutes later. `../worktree/setup.mjs` does
+ * not install, so a concurrent install is the ordinary state of a fresh worktree.
+ *
+ * A wiring fault ends the loop at once. `.omp/settings.json` is tracked, so no
+ * wait can make it register a bundle it does not name.
+ */
+export function untilEquipped({ worktree, deadline, now = () => Date.now(), sleep = () => {}, tickMs = 2000, exists, read } = {}) {
+  for (;;) {
+    const probe = equipment(worktree, { exists, read });
+    if (!probe.measured || probe.ready || probe.wiring || now() >= deadline) return probe;
+    sleep(tickMs);
+  }
 }

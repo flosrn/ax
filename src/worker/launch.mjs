@@ -40,8 +40,11 @@
 //   3. --needs-ref: a ref the work is DEFINED by is proven on origin first
 //   4. placement: reuse | the repo's own tool | Orca, then `ax worktree setup`,
 //      then prove Orca can SEE the selector a dispatch will use
-//   5. lineage, the advisor mandate and the git identity: three things the child
-//      cannot fix for itself, each degrading with an announcement, never silently
+//   5. what the child cannot fix for itself. The AX bundle its worktree registers
+//      is the one that REFUSES — waited for while an install lands, because a
+//      child that boots without it is a different agent than the brief addressed
+//      (./child.mjs equipment). Lineage, the advisor mandate and the git identity
+//      each degrade with an announcement instead, never silently.
 //   6. the brief, as a FILE
 //   7. `ax worker start`, whose STRANDED exit is REPLAYED here rather than
 //      reported — the recovery is the ordinary path for a remote launch
@@ -60,7 +63,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
@@ -69,7 +72,7 @@ import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, repoIdFor } from './hosts.mjs';
 import { MECHANICS, renderBrief } from './brief.mjs';
-import { pinIdentity, writeMandate } from './child.mjs';
+import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
 // injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
@@ -421,9 +424,40 @@ export function launch(
   }
 
   // ── 5. what the child cannot fix for itself ────────────────────────────────
+  // The OMP bundle FIRST: it is the only one of these whose absence changes WHO
+  // the child is. Measured 2026-08-28 (ofmchat #101) — a dispatch five seconds
+  // ahead of its worktree's install produced a child with no worker role, no
+  // playbook and its boot model, which then implemented a ticket for real while
+  // `gate` and `tail` showed a healthy agent. `ax worktree setup` installs
+  // nothing (../worktree/setup.mjs only notes the absence), so the install is
+  // concurrent by construction and this ground WAITS for it rather than refusing
+  // a fresh worktree outright.
+  if (worktree !== '' && !dry) {
+    const equip = untilEquipped({
+      worktree,
+      deadline: now() + Number(env.AX_LAUNCH_EQUIP_WAIT ?? 180) * 1000,
+      now,
+      sleep,
+      tickMs: tickOf(env),
+    });
+    if (!equip.measured) note(equip.reason);
+    else if (equip.wiring) {
+      // Nothing here can be waited out, and the repair is not an install: this
+      // worktree would load OMP and consume no role marker at all.
+      return cannot(
+        `${equip.reason} — a child dispatched into it boots with no worker role, no playbook and its BOOT model, and implements the ticket anyway`,
+        `ax init   # register exactly one ${PACKAGE_NAME} bundle, then re-run this launch`,
+      );
+    } else if (!equip.ready) {
+      return cannot(
+        `this worktree registers an AX bundle it does not carry (${equip.missing.join(', ')}), so a child dispatched into it boots with no worker role, no playbook and its BOOT model — and implements the ticket anyway`,
+        `run your package manager's install in ${worktree}   # then re-run this launch`,
+      );
+    } else note('the AX bundle this worktree registers is loadable, so the child can apply its role marker');
+  }
+
   const lineage = setLineage({ run, worktree, on, dry, env });
   note(`lineage ${lineage}`);
-
   if (worktree !== '' && !dry) {
     const mandate = writeMandate(worktree, {
       exec: (b, a, at) => exec(b, a, at ?? worktree),
