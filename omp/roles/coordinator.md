@@ -47,6 +47,13 @@ The child recommends; you hold the tracker mutation.
    publication posts the Agent Brief alone, then `ready-for-agent` — the
    Verification section never reaches the tracker.
 
+   Publish reads the issue first and refuses one that already carries this job's
+   own publication: two verdicts on one issue is worse than a late one, and the
+   refusal names the comment it read. When a corrected pass really must
+   supersede a landed one, say so out loud with `--republish`. A warning that the
+   issue moved after the draft was written means the verdict may have been
+   authored against an older view — read the issue before landing it.
+
 Use `ax triage status --issue <N> --job refine` for the recorded dispatch of a
 refine pass and its recovery; drop `--job` only when the active job really is
 `triage`, because an unqualified read reports the triage lane and would offer a
