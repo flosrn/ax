@@ -112,8 +112,21 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   }
 
   if (issues.length === 0) return usageError('no --issue given');
+  // Every occurrence gets its own full preflight, and the preflight reads the
+  // tracker BEFORE this verb writes to it — so a repeated number is two reads of
+  // an untouched issue, two entries in `ready`, and two identical comments from
+  // one invocation, with no `--republish` asked for. Found by review on PR #33.
+  //
+  // Refused rather than deduplicated: a batch naming one issue twice is a typo,
+  // and collapsing it silently would also swallow the likelier mistake behind it
+  // — a second number the operator meant to type differently. `--republish` is
+  // how a second verdict is asked for; it is never something argv repetition
+  // buys by accident.
+  const named = new Set();
   for (const issue of issues) {
     if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
+    if (named.has(issue)) return usageError(`--issue ${issue} given twice — one issue is published once per invocation`);
+    named.add(issue);
   }
   if (job === 'custom') {
     return refuse(

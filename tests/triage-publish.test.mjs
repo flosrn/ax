@@ -500,6 +500,23 @@ test('one still-asking issue refuses the whole batch — the finished sibling do
   assert.deepEqual(mutations(r.calls), [], 'the batch is one gesture: all or nothing');
 });
 
+test('one issue named twice is refused before any read — the gate cannot see its own first comment', () => {
+  // Codex, reviewing PR #33: `--issue 7 --issue 7` runs the whole preflight per
+  // occurrence, so BOTH tracker reads happen before either mutation and both see
+  // an untouched issue. The mutation loop then posts the same verdict twice, in
+  // one invocation, with no `--republish` — the guard defeated by a repeated
+  // argument. Refused rather than deduplicated: a batch that names one issue
+  // twice is a typo, and silently collapsing it would also swallow the likelier
+  // mistake behind it — a second number the operator meant to type differently.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7', '--issue', '7'], { root });
+
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--issue 7 given twice/);
+  assert.deepEqual(r.calls, [], 'refused before even the label list — nothing was read, nothing was posted');
+});
+
 // ── publish: the verdict already on the tracker (ofmchat #98, 2026-08-29) ─────
 //
 // A published pass leaves a draft in `.scratch/triage/`, and that leftover is the
