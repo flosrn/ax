@@ -8,6 +8,19 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.15.0](https://github.com/flosrn/ax/compare/v0.14.6...v0.15.0) (2026-08-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* `--job refine` is removed from `ax ready dispatch|ask|answer|publish|status|release`, and the `refine-worker` session role no longer exists. A project whose tickets were waiting on a refine pass publishes them from its spec flow instead: `to-tickets` applies `ready-for-agent` at publish time. `ready.provenance` keeps its meaning and gains teeth — a spec label now means "this work needs no pass", and a triage dispatch over it is refused.
+* `ax triage <verb>` is now `ax ready <verb>`; the `ax.config.json` key `triage.{labels,provenance}` is now `ready.{...}`; the session role `coordinator` is now `readiness` (`/role readiness`); the exported entry `triage()` is now `ready()` (`triageRelease` -> `readyRelease`, `verifyTriageRole` -> `verifyPassRole`); and the environment knobs `ORCA_TRIAGE_SESSION_CAP` and `AX_TRIAGE_ROLE_WAIT` are now `ORCA_READY_SESSION_CAP` and `AX_READY_ROLE_WAIT`. A consuming repo edits `ax.config.json` and moves its pin in the same commit: each ax version refuses the other's config, so a split commit leaves the repo unable to run either. `ax doctor` and `ax init` both name the rename when they meet the old key, and the two env knobs refuse by name rather than falling back to a default.
+
+### Features
+
+* drop the refine lane — a ticket the spec flow published is already agent-ready ([728541e](https://github.com/flosrn/ax/commit/728541e4af1cdd20e15bc75115b6215b420cc2fa))
+* rename the readiness umbrella from `ax triage` to `ax ready`, and gate a pass on its ticket's provenance ([2b9cb5d](https://github.com/flosrn/ax/commit/2b9cb5d1b717dc6ead9b2c32137b45008925b7c7))
+
 ## [0.14.6](https://github.com/flosrn/ax/compare/v0.14.5...v0.14.6) (2026-08-29)
 
 
