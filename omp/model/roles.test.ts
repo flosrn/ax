@@ -106,19 +106,23 @@ test('the operator roles declare no playbook, so activating one costs no file re
 // reader would COPY and says so in its header, and nothing graded what a session
 // would OBEY.
 //
-// What a test can hold is our own prose, never the upstream skill — so this
-// asserts the retired phrasings are gone. Every string below existed in these
-// files one commit before this test, which is what makes the list falsifiable
-// rather than decorative.
-const RETIRED_BRIEF_CLAIMS = [
-  'with an Agent Brief on it',
-  'with a brief already on them',
-  'with a brief on it',
-  'carrying an Agent Brief',
-  '`ready-for-agent` with a brief',
-];
+// WHY THIS IS NOT A BANNED-PHRASE LIST
+// The first version of this test rejected `with an Agent Brief on it` outright.
+// That phrase is TRUE of an inbound ticket — it is what `--job brief` lands — so
+// the test reserved correct prose forever and would have pushed a future editor
+// to reword a true sentence. The defect was never a phrase, it was an
+// unattributed one: a surface that names the spec flow AND a brief without
+// saying which lane the brief belongs to. That is the contract below, and prose
+// speaking only of the on-ramp is out of its scope by construction.
+const SPEC_FLOW = /to-tickets|to-spec|spec flow|spec-born/;
+const BRIEF_CARRIED = /Agent Brief|with a brief|brief on (?:it|them)/;
+const ATTRIBUTED = /posts no comment|no Agent Brief step|zero comments is normal|absent Brief on a spec-born|assignment (?:already )?in the (?:ticket )?body|its assignment in the body/;
 
-test('no shipped surface tells a session the spec flow publishes a brief', async () => {
+/** The unattributed shape: both subjects named, neither one's brief accounted for. */
+const unattributed = (body: string): boolean =>
+  SPEC_FLOW.test(body) && BRIEF_CARRIED.test(body) && !ATTRIBUTED.test(body);
+
+test('a surface naming both the spec flow and a brief says which lane the brief belongs to', async () => {
   const bodies = new Map<string, string>();
   for (const name of await listRoles()) {
     bodies.set(`roles/${name}.md`, (await loadRole(name)).role?.systemPrompt ?? '');
@@ -130,17 +134,23 @@ test('no shipped surface tells a session the spec flow publishes a brief', async
   // agent reads before editing any of the above.
   bodies.set('AGENTS.md', readFileSync(join(import.meta.dir, '..', '..', 'AGENTS.md'), 'utf8'));
 
-  const found: string[] = [];
-  for (const [where, body] of bodies) {
-    for (const claim of RETIRED_BRIEF_CLAIMS) {
-      if (body.includes(claim)) found.push(`${where}: ${claim}`);
-    }
-  }
-  expect(found).toEqual([]);
+  expect([...bodies].filter(([, body]) => unattributed(body)).map(([where]) => where)).toEqual([]);
+});
+
+test('the contract fires on the retired claim and leaves inbound prose alone', () => {
+  // Both strings are real: the first is `omp/roles/triage-worker.md` at b3aaab4~1,
+  // the second is the shape `readiness` legitimately uses for its own lane. A
+  // contract that cannot tell them apart is worth less than none, so the
+  // discrimination is asserted rather than assumed.
+  expect(unattributed('Tickets the spec flow produced are `ready-for-agent` with a brief by construction.')).toBe(true);
+  expect(unattributed('A `brief` publication posts the Agent Brief alone, then `ready-for-agent`.')).toBe(false);
+  expect(unattributed('The on-ramp converges on an issue labelled `ready-for-agent` with an Agent Brief on it.')).toBe(false);
+  // Naming both lanes is fine once the brief is attributed — this is the fix.
+  expect(unattributed('`to-tickets` posts no comment; the on-ramp posts it as an Agent Brief.')).toBe(false);
 });
 
 test('the dispatch precondition says a spec-born ticket without comments is normal', async () => {
-  // The negative above is satisfiable by deleting the rule outright, so the one
+  // The contract above is satisfiable by deleting the rule outright, so the one
   // sentence whose ABSENCE strands a wave is pinned positively. Either shape of
   // it passes; a rewording that keeps the meaning is not a regression.
   const orchestrator = (await loadRole('orchestrator')).role?.systemPrompt ?? '';
