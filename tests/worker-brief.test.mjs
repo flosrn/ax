@@ -29,11 +29,33 @@ test('the worker role, model marker and instruction are on ONE first line', () =
   assert.equal(first, '[omp role=worker model=@task] /entry T-353');
 });
 
+test('the contract ax owns names no session role, so it stays true of any parent', () => {
+  // The header's own rule — MECHANICS names no skill, no repository, no ticket —
+  // never covered ROLES, and the omission cost the sentence `coordinator` in
+  // child-facing text for the two releases after that role was deleted (0.15.0).
+  // The repair was not the newer name: `orchestrator` is one role that dispatches
+  // an implementation child, `omp/roles/worker.md` names it because a role file
+  // may, and this text has to stay true for a parent that is something else.
+  //
+  // `parent` alone was tried and is wrong here: it is a LINEAGE word, and the
+  // remote addendum's whole job is to say the cross-host child has none (`d0`).
+  // Naming the dispatching session says who dispatched without claiming lineage,
+  // which is why both assertions below live in one test.
+  for (const [name, text] of [['MECHANICS', MECHANICS], ['MECHANICS_UNTRACKED', MECHANICS_UNTRACKED]]) {
+    const named = text.split('\n').filter(line => /coordinator|orchestrator|readiness|maintainer|triage-worker/i.test(line));
+    assert.deepEqual(named, [], `${name} names a session role`);
+  }
+
+  const remote = brief({ host: 'gapicore' });
+  assert.match(remote, /you are `d0` with no parent/);
+  assert.doesNotMatch(remote, /[Yy]our parent/);
+});
+
 test('the address line is the handle the child ACTS on, not a link it cannot read', () => {
   // A `https://…/issues/61` line is a second representation of the ticket, and it
   // is the one the child must NOT use: an https URL is not a read. When the
   // tracker answers with a handle the harness resolves, that handle is the line.
-  // The clickable url stays on the coordinator's own receipt, where a human reads it.
+  // The clickable url stays on the dispatching session's own receipt, where a human reads it.
   const text = brief({ ticket: { ...TICKET, handle: 'issue://61' } });
   assert.match(text, /^issue:\/\/61$/m);
   assert.doesNotMatch(text, /https:\/\/tracker\.test/);
@@ -59,8 +81,8 @@ test('a launch with NO ticket never tells the child to read one', () => {
 });
 
 test('a ticketless brief drops the keep-the-ticket-current bullet, and only that one', () => {
-  // The bullet is not merely irrelevant: it states the coordinator READS the
-  // ticket, so a child with none either invents one or concludes its report
+  // The bullet is not merely irrelevant: it states the dispatching session READS
+  // the ticket, so a child with none either invents one or concludes its report
   // lands somewhere it does not. Every other mechanic still applies.
   assert.match(MECHANICS, /Keep the ticket current yourself/);
   assert.doesNotMatch(MECHANICS_UNTRACKED, /Keep the ticket current/);
@@ -68,7 +90,7 @@ test('a ticketless brief drops the keep-the-ticket-current bullet, and only that
   // And it says what to do INSTEAD, which is the half a bare deletion loses: the
   // child must not open a ticket to fill the gap either.
   assert.match(MECHANICS_UNTRACKED, /do not open\s+one/);
-  assert.match(MECHANICS_UNTRACKED, /dispatched this by name/);
+  assert.match(MECHANICS_UNTRACKED, /named this work, and that name is what it looks for/);
 
   const bullets = text => text.split('\n').filter(line => line.startsWith('- ')).length;
   assert.equal(bullets(MECHANICS_UNTRACKED), bullets(MECHANICS));
@@ -105,9 +127,9 @@ test('the taught read command and the ticket URL are both in the brief', () => {
   assert.equal(lines[2], TICKET.url);
 });
 
-test('the contract header names the coordinator Run and the execution host', () => {
-  assert.match(brief(), /PILOT CONTRACT — coordinator Run run_abc, execution host here/);
-  assert.match(brief({ host: 'other-host' }), /PILOT CONTRACT — coordinator Run run_abc, execution host other-host/);
+test('the contract header names the dispatching Run and the execution host', () => {
+  assert.match(brief(), /PILOT CONTRACT — dispatching Run run_abc, execution host here/);
+  assert.match(brief({ host: 'other-host' }), /PILOT CONTRACT — dispatching Run run_abc, execution host other-host/);
 });
 
 test("a project's own contract replaces MECHANICS, and never both", () => {
@@ -161,7 +183,7 @@ test('MECHANICS names no skill, no repository and no ticket', () => {
     'You own the shipping tail',
     'You do not merge',
     'Keep the ticket current',
-    'blocks you goes to the coordinator',
+    'blocks you goes to the session that dispatched you',
     'net, not a leash',
     'say what you exercised',
   ];
@@ -174,7 +196,7 @@ test('MECHANICS names no skill, no repository and no ticket', () => {
   // `ax worker launch` REFUSES to dispatch into a tree without this file — "the
   // child would have no URL to test against" — and then never named it, so the
   // one artifact written to answer "which port, which database, which branch"
-  // was read by the coordinator and not by its reader. It rides bullet 1: same
+  // was read by the dispatching session and not by its reader. It rides bullet 1: same
   // proposition, the tree you were given is prepared and it says how.
   assert.match(MECHANICS, /\.agent\/worktree-context\.local\.md/);
 });
@@ -186,11 +208,11 @@ test('the remote addendum appears only when the child runs on another host', () 
   // before the first unattributed message does.
   const local = brief();
   assert.ok(!local.includes('ANOTHER HOST'));
-  assert.ok(!local.includes('You cannot message them back'));
+  assert.ok(!local.includes('You cannot message it back'));
 
   const remote = brief({ host: 'other-host' });
   assert.ok(remote.includes('UNIDENTIFIED'));
-  assert.ok(remote.includes('You cannot message them back'));
+  assert.ok(remote.includes('You cannot message it back'));
   // The channel that DOES cross, as a runnable command with a placeholder the
   // child fills — never a path guessed here.
   assert.ok(remote.includes('orca worktree set --worktree path:<your worktree> --comment "DECISION: <one line>"'));
