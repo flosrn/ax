@@ -14,7 +14,7 @@
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -88,6 +88,63 @@ test('the operator roles declare no playbook, so activating one costs no file re
   for (const name of ['readiness', 'orchestrator']) {
     expect((await loadRole(name)).role?.autoloadSkills).toBeUndefined();
   }
+});
+
+// ── the claim that would have stranded a wave ────────────────────────────────
+//
+// Measured 2026-08-30: removing the `refine` lane put a new sentence in six
+// places across five shipped files — that `to-tickets` publishes an Agent Brief.
+// It does not. Verified against the installed skills: "Agent Brief" occurs in
+// neither `to-tickets/SKILL.md` nor `to-spec/SKILL.md`, and `AGENT-BRIEF.md`
+// ships only with `triage`. A spec-born ticket therefore has ZERO comments by
+// construction, so `orchestrator`'s "`ready-for-agent` with an Agent Brief on it
+// — both must be present" refused every ticket the spec flow ever produced. Ten
+// of them were open in a consuming repo when this was found.
+//
+// The full suite stayed green through all six edits, because prose was the one
+// shipped surface carrying no contract: `tests/docs.test.mjs` grades what a
+// reader would COPY and says so in its header, and nothing graded what a session
+// would OBEY.
+//
+// What a test can hold is our own prose, never the upstream skill — so this
+// asserts the retired phrasings are gone. Every string below existed in these
+// files one commit before this test, which is what makes the list falsifiable
+// rather than decorative.
+const RETIRED_BRIEF_CLAIMS = [
+  'with an Agent Brief on it',
+  'with a brief already on them',
+  'with a brief on it',
+  'carrying an Agent Brief',
+  '`ready-for-agent` with a brief',
+];
+
+test('no shipped surface tells a session the spec flow publishes a brief', async () => {
+  const bodies = new Map<string, string>();
+  for (const name of await listRoles()) {
+    bodies.set(`roles/${name}.md`, (await loadRole(name)).role?.systemPrompt ?? '');
+  }
+  for (const file of readdirSync(playbooksDir()).filter(name => name.endsWith('.md'))) {
+    bodies.set(`playbooks/${file}`, readFileSync(join(playbooksDir(), file), 'utf8'));
+  }
+  // The repo's own standards file carried the same sentence, and it is the one an
+  // agent reads before editing any of the above.
+  bodies.set('AGENTS.md', readFileSync(join(import.meta.dir, '..', '..', 'AGENTS.md'), 'utf8'));
+
+  const found: string[] = [];
+  for (const [where, body] of bodies) {
+    for (const claim of RETIRED_BRIEF_CLAIMS) {
+      if (body.includes(claim)) found.push(`${where}: ${claim}`);
+    }
+  }
+  expect(found).toEqual([]);
+});
+
+test('the dispatch precondition says a spec-born ticket without comments is normal', async () => {
+  // The negative above is satisfiable by deleting the rule outright, so the one
+  // sentence whose ABSENCE strands a wave is pinned positively. Either shape of
+  // it passes; a rewording that keeps the meaning is not a regression.
+  const orchestrator = (await loadRole('orchestrator')).role?.systemPrompt ?? '';
+  expect(orchestrator).toMatch(/spec-born ticket with zero comments is normal|absent Brief on a spec-born/);
 });
 
 // ── the parser, on the shapes the role files actually use ────────────────────
