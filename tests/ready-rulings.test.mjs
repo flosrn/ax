@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { questionProblem, questionsIn } from '../src/ready/draft.mjs';
-import { composeAsk, composeReply, pairRulings, parseRulings, questionSpan } from '../src/ready/rulings.mjs';
+import { askHeader, composeAsk, composeReply, pairRulings, parseRulings, questionSpan } from '../src/ready/rulings.mjs';
 
 const QUESTIONS = [
   { n: 1, text: 'bug or enhancement?' },
@@ -29,6 +29,39 @@ test('composeAsk carries the request, the draft fingerprint, and the Q lines ver
 test('the composed ask parses back to the same questions — the wire and the record cannot diverge', () => {
   const body = composeAsk({ request: 'r', sha: 's', questions: QUESTIONS });
   assert.deepEqual(questionsIn(body), QUESTIONS);
+});
+
+test('the ask body names its own reply route — the delivered message is the whole answer', () => {
+  // Measured 2026-08-30, ofmchat PRD 2 #126: the question landed on the parent's
+  // Run flagged [NO REPLY ROUTE] (`peer_reply` refuses it, `peer_list` shows no
+  // triage session), because the transport's reply capability is the child's
+  // Dispatch and that had settled. The body carried the header and the Q lines
+  // and nothing else, so the one artifact the parent HELD named no way back. It
+  // re-derived `ax ready answer` through three command turns — `ready --help`,
+  // `ready answer` usage, `ready status` — while a live child sat blocked.
+  //
+  // `ax ready status` already prints the exact command (src/ready/index.mjs),
+  // which is what ended that hunt. But status is a pull: reaching it requires
+  // already suspecting the channel. The message is the push, and it is what a
+  // woken reader has in hand, so the route belongs in it.
+  const body = composeAsk({ request: 'triage-acme-widgets-7', sha: 'abc123', questions: QUESTIONS, issue: '7', job: 'triage' });
+  assert.match(body, /ax ready answer --issue 7 --job triage --id <the id shown on this message> --file <rulings\.md>/);
+  // The id CANNOT be rendered here: it is minted by the send that carries this
+  // body. The reader always has it — a delivered message shows its own id — so
+  // the route names it as the one blank to fill, never a guess.
+  assert.doesNotMatch(body, /--id (msg_|<message_id>)/);
+});
+
+test('the reply route is not a question, and does not disturb the header', () => {
+  // The route rides in the same body as the pairing grammar, so it must be
+  // invisible to both readers of that body: `questionsIn` (which `answer` runs
+  // over the wire to prove it still matches the draft) and `askHeader` (which
+  // pins the ask to one pass). A route line captured as a Q would be a question
+  // no draft records, and every reply would then refuse to pair.
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const body = composeAsk({ request: 'triage-acme-widgets-7', sha, questions: QUESTIONS, issue: '7', job: 'triage' });
+  assert.deepEqual(questionsIn(body), QUESTIONS);
+  assert.deepEqual(askHeader(body), { request: 'triage-acme-widgets-7', sha });
 });
 
 test('CRLF Q lines parse the same as LF — a Windows-saved draft is not an empty ask', () => {

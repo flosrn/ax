@@ -195,7 +195,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     request = requestFor(identity);
     recordPath = join(store, `${request}.json`);
     sha = draft.sha;
-    body = composeAsk({ request, sha, questions: draft.questions });
+    body = composeAsk({ request, sha, questions: draft.questions, issue, job });
   }
 
   // A RESUME CARRIES NO IDENTITY BUT ITS ID, so the pass it belongs to is

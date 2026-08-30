@@ -91,7 +91,7 @@ const question = (over = {}) => ({
   from_handle: HANDLE,
   to_handle: 'run:run_owner',
   type: 'question',
-  body: composeAsk({ request: REQUEST, sha: gitBlobSha(DRAFT), questions: QUESTIONS }),
+  body: composeAsk({ request: REQUEST, sha: gitBlobSha(DRAFT), questions: QUESTIONS, issue: '7', job: 'triage' }),
   thread_id: 'msg_bf6613d0ee33',
   created_at: '2026-08-28T01:37:14Z',
   ...over,
@@ -294,7 +294,7 @@ test('a headerless row does not suppress the fold-and-publish exit', () => {
 test("a row whose header names another pass is unpairable, not this pass's ask", () => {
   const root = repo();
   record(root);
-  const foreign = composeAsk({ request: 'triage-acme-widgets-99', sha: gitBlobSha(DRAFT), questions: QUESTIONS });
+  const foreign = composeAsk({ request: 'triage-acme-widgets-99', sha: gitBlobSha(DRAFT), questions: QUESTIONS, issue: '99', job: 'triage' });
   const r = run(['--issue', '7'], {
     root,
     orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: foreign })] }),

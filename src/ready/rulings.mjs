@@ -27,16 +27,36 @@ export const INBOX_WINDOW = 500;
 
 /**
  * The body `ask` puts on the wire: a header naming the sender and the draft
- * version it asked from, then the draft's own `Q<n>:` lines, verbatim.
+ * version it asked from, then the draft's own `Q<n>:` lines, verbatim, then the
+ * one command that answers them.
  *
  * Verbatim is the contract — `answer` re-parses these lines and refuses to
  * reply when they no longer match the draft, which is what makes "the questions
- * asked" and "the questions on record" provably the same set.
+ * asked" and "the questions on record" provably the same set. The route rides
+ * below them for the same reason it is here at all: it must be invisible to
+ * `questionsIn` and to `askHeader`, which read this body for the pairing and
+ * the pass.
+ *
+ * WHY THE ROUTE IS IN THE MESSAGE. The transport's own reply capability belongs
+ * to the child's Dispatch, so it dies with it: measured 2026-08-30 on ofmchat
+ * #126, the question arrived on the parent's Run flagged [NO REPLY ROUTE] and
+ * `peer_reply` refused it while the child sat blocked. `ax ready status` prints
+ * this same command, and finding it there is what ended that hunt — but status
+ * is a PULL, reached only by already suspecting the channel. The message is the
+ * push, and it is the one artifact a woken reader holds. It now names its own
+ * way back, so a revoked capability costs a read instead of three command turns
+ * of re-derivation.
+ *
+ * The id is the one blank: it is minted by the send that carries this body, and
+ * a delivered message always shows its own. Named as a blank, never guessed.
  */
-export function composeAsk({ request, sha, questions }) {
+export function composeAsk({ request, sha, questions, issue, job }) {
   return [
     `${request} is blocked on the question(s) below, asked from draft ${sha}. Each needs one ruling, paired by number.`,
     ...questions.map(question => `Q${question.n}: ${question.text}`),
+    '',
+    `Reply with: ax ready answer --issue ${issue} --job ${job} --id <the id shown on this message> --file <rulings.md>`,
+    'One A<n>: line per question, same numbers. A ruling that pairs with nothing is refused rather than half-applied.',
   ].join('\n');
 }
 

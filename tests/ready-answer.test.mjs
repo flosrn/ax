@@ -65,7 +65,7 @@ const question = (over = {}) => ({
   from_handle: 'term_child',
   to_handle: 'run:run_owner',
   type: 'question',
-  body: composeAsk({ request: 'triage-acme-widgets-7', sha: gitBlobSha(DRAFT), questions: QUESTIONS }),
+  body: composeAsk({ request: 'triage-acme-widgets-7', sha: gitBlobSha(DRAFT), questions: QUESTIONS, issue: '7', job: 'triage' }),
   thread_id: null,
   created_at: '2026-08-22T10:00:00Z',
   ...over,
@@ -237,7 +237,7 @@ test("another pass's ask is refused by REQUEST, even when its Q lines coincide w
   const root = repo();
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
-  const orca = fakeOrca({ messages: [question({ body: composeAsk({ request: 'triage-acme-widgets-9', sha: gitBlobSha(DRAFT), questions: QUESTIONS }) })] });
+  const orca = fakeOrca({ messages: [question({ body: composeAsk({ request: 'triage-acme-widgets-9', sha: gitBlobSha(DRAFT), questions: QUESTIONS, issue: '9', job: 'triage' }) })] });
   const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca });
 
   assert.equal(r.code, 1);
@@ -262,7 +262,7 @@ test('an ask that disagrees on the questions themselves is refused', () => {
   draft(root, 'triage-acme-widgets-7');
   const file = rulingsFile(root, 'A1: bug.\nA2: P2.\n');
   const orca = fakeOrca({
-    messages: [question({ body: composeAsk({ request: 'triage-acme-widgets-7', sha: gitBlobSha(DRAFT), questions: [{ n: 1, text: 'a different question entirely?' }] }) })],
+    messages: [question({ body: composeAsk({ request: 'triage-acme-widgets-7', sha: gitBlobSha(DRAFT), questions: [{ n: 1, text: 'a different question entirely?' }], issue: '7', job: 'triage' }) })],
   });
   const r = run(['--issue', '7', '--id', 'msg_q1', '--file', file], { root, orca });
 
