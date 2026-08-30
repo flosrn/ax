@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.15.2](https://github.com/flosrn/ax/compare/v0.15.1...v0.15.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **worker:** the contract ax owns names the dispatching session, not a deleted role ([983636f](https://github.com/flosrn/ax/commit/983636fb8cae567c50adbd02968bbcdf59251d5d))
+
 ## [0.15.1](https://github.com/flosrn/ax/compare/v0.15.0...v0.15.1) (2026-08-30)
 
 
