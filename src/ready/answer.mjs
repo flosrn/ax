@@ -28,9 +28,10 @@ import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, passesOf, questionProblem, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { INBOX_WINDOW, askHeader, composeReply, pairRulings, parseRulings, questionSpan } from './rulings.mjs';
+import { REFINE_REMOVED } from './spec.mjs';
 
 const USAGE =
-  'ax ready answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--dry-run]';
+  'ax ready answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dry-run]';
 
 export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   const usageError = message => {
@@ -71,6 +72,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
     else return usageError(`unknown argument "${arg}"`);
   }
 
+  if (job === 'refine') return usageError(REFINE_REMOVED);
   if (issue === '') return usageError('no --issue given');
   if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
   if (passArg !== '' && !/^[1-9][0-9]*$/.test(passArg)) return usageError(`--pass expects a number, got "${passArg}"`);
@@ -87,7 +89,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
 
   const base = { job, repo: slug, issue };
   const store = defaultStore(env);
-  const passes = passesOf(store, draftDirFor(root, base), base);
+  const passes = passesOf(store, draftDirFor(root), base);
   if (passes.length === 0) {
     return refuse(`no pass of #${issue} exists here — there is no draft whose questions this could answer`, `ax ready status --issue ${issue} --job ${job}`);
   }

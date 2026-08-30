@@ -20,8 +20,9 @@ import { repoSlug } from '../gh.mjs';
 import { defaultStore, report } from '../worker/record.mjs';
 import { release } from '../worker/release.mjs';
 import { draftDirFor, passesOf, requestFor } from './draft.mjs';
+import { REFINE_REMOVED } from './spec.mjs';
 
-const USAGE = 'ax ready release --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--no-proof]';
+const USAGE = 'ax ready release --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--no-proof]';
 
 export function readyRelease(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), releaseFn = release, ...rest } = {}) {
   const usageError = message => {
@@ -51,6 +52,7 @@ export function readyRelease(argv = [], { exec = defaultExec, env = process.env,
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else return usageError(`unknown argument "${arg}"`);
   }
+  if (job === 'refine') return usageError(REFINE_REMOVED);
   if (issue === '') return usageError('no --issue given');
   if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
   if (passArg !== '' && !/^[1-9][0-9]*$/.test(passArg)) return usageError(`--pass expects a number, got "${passArg}"`);
@@ -63,7 +65,7 @@ export function readyRelease(argv = [], { exec = defaultExec, env = process.env,
 
   const base = { job, repo: slug, issue };
   const store = defaultStore(env);
-  const passes = passesOf(store, draftDirFor(paths.root, base), base);
+  const passes = passesOf(store, draftDirFor(paths.root), base);
   if (passes.length === 0) return refuse(`no pass of #${issue} exists here — nothing was dispatched, so there is no pane to free`);
   const pass = passArg === '' ? passes[passes.length - 1] : Number(passArg);
   if (!passes.includes(pass)) return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax ready status --issue ${issue} --job ${job}`);

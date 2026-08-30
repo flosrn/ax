@@ -62,7 +62,7 @@ them.
 | `src/blocks.mjs`, `src/dotenv.mjs`, `src/hash.mjs`, `src/proc.mjs`, `src/supabase-guard.mjs` | managed block edits, env files, deterministic naming, pgid lookup, the shared-database guard |
 | `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
 | `omp/model/index.ts`, `omp/model/activation.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
-| `omp/roles/`, `omp/playbooks/` | readiness, orchestrator, worker, triage-worker, refine-worker and maintainer contracts |
+| `omp/roles/`, `omp/playbooks/` | readiness, orchestrator, worker, triage-worker and maintainer contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
@@ -97,9 +97,9 @@ repos register `"./node_modules/@flosrn/ax"`.
 extension; both `[omp role=worker …]` and `/role orchestrator` resolve without OMP agent or skill
 discovery — never through an OMP `agents/` directory hidden by `disabledAgents`.
 
-**Playbooks are package-internal.** `omp/playbooks/implementation.md`, `triage.md` and `refine.md`
-are generic AX procedures. They do not vendor Compound Engineering, Matt Pocock skills, provider IDs
-or private repo paths. Their proof names describe the work: `implementation`, `triage` and `refine`.
+**Playbooks are package-internal.** `omp/playbooks/implementation.md` and `triage.md` are generic AX
+procedures. They do not vendor Compound Engineering, Matt Pocock skills, provider IDs or private
+repo paths. Their proof names describe the work: `implementation` and `triage`.
 
 **Every finding names its repair.** Output goes through `src/log.mjs`. A `bad` without a `fix` is a
 finding neither an agent nor a human can act on.
@@ -110,11 +110,15 @@ expected failure, then change production. Prefer real temp git repos over mocked
 **Absence is not zero** (F-028). Read receipts by named key; an absent list is unknown, not empty.
 Never `||` a missing container into a value that authorizes a mutation.
 
-**One readiness activity, two lanes by provenance.** `ax ready` turns an issue into work an agent
-can execute: `--job refine` for a spec-born ticket (a PRD sub-issue, whose categorization its PRD
-already decided), `--job triage` for an inbound one — reported, agent-found, or born as a follow-up.
-The umbrella used to be named after one of its two lanes. `ax ready dispatch` refuses a lane the
-ticket's provenance contradicts, reading the labels a project declares in `ready.provenance`.
+**One readiness artifact, two ways in.** The spec flow publishes its own tickets ready: `to-spec`
+decides the work and `to-tickets` cuts it into tickets that are agent-grabbable by construction,
+labelled `ready-for-agent` at publication, so a spec-born ticket needs no readiness pass. `ax ready`
+serves the other way in — the triage on-ramp for work that arrived from outside: reported,
+agent-found, or born as a follow-up. `--job triage` decides what such an issue is, `--job brief`
+writes the brief for a verdict already reached, `--job custom` runs a project's own pass. Both ways
+in converge on the same artifact: an issue labelled `ready-for-agent` carrying an Agent Brief.
+`ax ready dispatch` refuses a triage pass over spec-born work, reading the labels a project declares
+in `ready.provenance` — triage is for inbound issues only.
 
 **Proof, not self-report.** Liveness is cursor movement. Completion is a merged PR or the governing
 artifact. Every merge ground runs; nothing stops after the first refusal.

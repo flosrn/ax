@@ -14,8 +14,41 @@ export const ROLE_BY_JOB = {
   triage: { role: 'triage-worker', skill: 'triage' },
   brief: { role: 'triage-worker', skill: 'triage' },
   custom: { role: 'triage-worker', skill: 'triage' },
-  refine: { role: 'refine-worker', skill: 'refine' },
 };
+
+/**
+ * The label that says an issue is agent-grabbable — the artifact the spec chain
+ * and the triage on-ramp both converge on.
+ *
+ * It lives HERE, next to the job vocabulary, because two parties need the same
+ * name and neither may spell it itself: the `brief` child is TOLD to write it
+ * into its own `Labels:` directive (below), and `publish` applies exactly what
+ * a draft names. A second literal in either place is how the instruction and
+ * the applied label drift apart — the same one-source rule as `ROLE_BY_JOB`.
+ *
+ * There is deliberately no ax-composed label: a name no draft author wrote is
+ * the whole failure mode `publish` exists to prevent, so `brief` earns the
+ * label the same way it earns every other one, through a directive a human can
+ * read and correct before it lands.
+ */
+export const READY_LABEL = 'ready-for-agent';
+
+/**
+ * The one sentence every `--job` reader prints for a retired lane, so six verbs
+ * cannot drift apart — the same one-source rule as `LEGACY_READY_KEY_FIX`,
+ * which `doctor` and `init` share.
+ *
+ * `refine` was this repo's own Definition-of-Ready pass over PRD sub-issues,
+ * and it contradicted the methodology it was built beside: `to-tickets`
+ * publishes `ready-for-agent` itself, so its tickets are agent-grabbable by
+ * construction, and `/triage` is an on-ramp for work you did NOT create. A pass
+ * between the two had nothing left to decide. So the name is refused BY NAME
+ * rather than swept into the unknown-job usage error: an operator with the old
+ * command in their shell history is owed the reason and the repair, not a list
+ * of three words that no longer contains theirs.
+ */
+export const REFINE_REMOVED =
+  '--job refine no longer exists: `to-tickets` publishes ready-for-agent itself, so a spec-born ticket is already agent-ready and earns no readiness pass — and triage is for inbound work only. A ticket that genuinely is not ready is a `to-tickets` defect: fix it on the ticket, then dispatch nothing.';
 
 /**
  * The one instruction a session gets, on one line.
@@ -29,7 +62,7 @@ export const ROLE_BY_JOB = {
  * close, never the bare size labels — is the publisher's contract now, and
  * belongs to `ax ready publish`. What the child owes is one file.
  */
-export function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, parent, instruction, pass = 1, previous = null, because = '' }) {
+export function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, instruction, pass = 1, previous = null, because = '' }) {
   const marker = `[omp role=${ROLE_BY_JOB[job].role} model=${model}]`;
   // The write-failure ladder exists because #60 (2026-08-23) could not write
   // its draft at all, put the verdict in its terminal, and its report was the
@@ -107,26 +140,6 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
     ].filter(Boolean).join(' ');
   }
 
-  if (job === 'refine') {
-    // The parent PRD is named when the precheck could read it; a child told to
-    // find it itself is the degraded path, not the ordinary one.
-    const lineage = typeof parent === 'number'
-      ? `Then run the Definition-of-Ready pass on issue #${issue} (issue://${issue}), a sub-issue of issue://${parent} — read both before scoring.`
-      : `Then run the Definition-of-Ready pass on issue #${issue} (issue://${issue}); identify its parent PRD from the issue itself before scoring.`;
-    return [
-      marker,
-      redo,
-      'Use the preloaded refine playbook: score its five Definition-of-Ready gates against this checkout and the parent ticket.',
-      lineage,
-      `Write your verdict to ${draft}: exactly one \`Ready: yes\` or \`Ready: no\` line, then one \`## Agent Brief\` section — published verbatim on the issue, so it carries no line numbers and no file-placement instructions — then one \`## Verification\` section, which is never published: your per-gate evidence, where file:line reads belong.`,
-      'Never write `Labels:`, `Remove labels:` or `Close:` — a refine draft that names labels is refused whole; publication applies only ready-for-agent, and the PRD already decided the categorization.',
-      'On a failed gate the verdict is `Ready: no` and the draft carries the diagnosis plus a concrete repair proposal — corrected acceptance criteria, or a split. You recommend; the parent that dispatched you arbitrates.',
-      nothing,
-      asking,
-      'Report when the draft is FINAL — which means it carries no open question.',
-    ].filter(Boolean).join(' ');
-  }
-
   if (job === 'brief') {
     return [
       marker,
@@ -134,6 +147,14 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
       `Use the preloaded triage playbook, especially its Agent Brief section, and ${labels}.`,
       `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass: do not redo it, do not re-measure what is established, and do not render a competing verdict.`,
       `Write the Agent Brief that follows from that pass to ${draft}, absorbing everything its "what is missing" section asks for, with a \`Labels:\` line for any label the pass left unapplied and a \`Remove labels:\` line for any state label your transition supersedes — label names only, no group prefix and no parenthetical, each checked against this repository's label list before it is applied.`,
+      // `brief` is the ONLY pass that produces a brief, so it is the only pass
+      // that can make an issue agent-grabbable: the label and the brief are one
+      // artifact, and an AFK launcher dispatches on both together. The child
+      // writes the name itself, in the same directive grammar as every other
+      // label, because `publish` applies exactly what a draft names and nothing
+      // it composed. A brief the pass judges incomplete is the one case where
+      // the name is withheld — and then the draft says why, in its body.
+      `Your \`Labels:\` line MUST include \`${READY_LABEL}\`: this brief is what makes the issue grabbable by an agent, and the label plus the brief are one artifact. Withhold it only if the brief is not something you would hand an implementer, and then say in the body what is missing.`,
       `An underdetermined acceptance criterion is not something to fill in: write no criterion for it and ask instead. If you find the pass itself is wrong, do not correct it silently — ask.`,
       asking,
       nothing,

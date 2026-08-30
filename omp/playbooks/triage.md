@@ -7,6 +7,11 @@ You are not the decision. A readiness session reads what you write, corrects it,
 owns whether any of it reaches the tracker. That separation is the whole design:
 an analysis that can also act on itself has no reviewer.
 
+This is the only analysis pass there is. It runs on INBOUND work — an issue
+reported, agent-found, or born as a follow-up. Tickets the spec flow produced
+arrive `ready-for-agent` with a brief already on them and get no pass at all, so
+if your assignment names one, say so rather than analysing it.
+
 ## The job
 
 Your assignment names one of three jobs, and they are not interchangeable.

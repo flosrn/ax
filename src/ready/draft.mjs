@@ -26,27 +26,22 @@ import { join } from 'node:path';
 
 import { gitBlobSha } from '../hash.mjs';
 
-/** Where triage/brief/custom drafts live, relative to the repository root. Gitignored, by design. */
+/** Where every ready draft lives, relative to the repository root. Gitignored, by design. */
 export const DRAFT_DIR = join('.scratch', 'triage');
-/** Where refine drafts live. Its own directory, because one flat dir for every job was measured as noise. */
-const REFINE_DIR = join('.scratch', 'refine');
 
 /**
- * Where one identity's drafts live. Job-keyed and derived from the identity
- * alone — no record read, no network — which is the invariant the whole verb
- * set rests on: the child, `publish`, `status`, `ask`, `answer` and `release`
- * all reach the same directory without being told where it is.
+ * Where one identity's drafts live. Derived from the ROOT alone — no record
+ * read, no network — which is the invariant the whole verb set rests on: the
+ * child, `publish`, `status`, `ask`, `answer` and `release` all reach the same
+ * directory without being told where it is.
  *
- * Grouping refine drafts by PARENT PRD was considered and deliberately
- * deferred: the parent is not in the identity, so a parent-keyed path would
- * need the dispatch record (or a `gh` call) at every read site — and the
- * record writer lives in `src/worker/start.mjs`, whose write-ahead schema
- * (F-001) has no seam for a triage parent. The wave record, which owns the
- * tickets→PRD mapping, is where per-PRD grouping belongs when it exists.
- * Triage/brief/custom paths stay byte-identical: transient per-machine drafts
- * are never migrated mid-flight.
+ * One directory, because there is one lane. The retired readiness pass had its
+ * own `.scratch/refine/`, and nothing here migrates it: a draft is a transient
+ * per-machine artifact, so an old directory left on disk is simply never read
+ * again. Files still key on the request id, which carries the job, so two jobs
+ * on one issue cannot collide inside it.
  */
-export const draftDirFor = (root, identity) => join(root, identity.job === 'refine' ? REFINE_DIR : DRAFT_DIR);
+export const draftDirFor = root => join(root, DRAFT_DIR);
 
 /**
  * The dispatch identity, which is also the record's key and the draft's name.
@@ -76,7 +71,7 @@ export const requestFor = ({ job, repo, issue, pass = 1 }) =>
   `${job}-${String(repo).replace(/\//g, '-')}-${issue}${pass > 1 ? `-p${pass}` : ''}`;
 
 /** The one path three parties derive independently. */
-export const draftPath = (root, identity) => join(draftDirFor(root, identity), `${requestFor(identity)}.md`);
+export const draftPath = (root, identity) => join(draftDirFor(root), `${requestFor(identity)}.md`);
 
 /**
  * Which passes of one issue already exist in a directory, oldest first.
@@ -215,8 +210,7 @@ export function questionProblem(questions) {
  * and every fold was a bespoke ~200-line string edit against anchors that went
  * stale when a child rewrote its draft.
  */
-export function parseDraft(text, job = 'triage') {
-  if (job === 'refine') return parseRefineDraft(text);
+export function parseDraft(text) {
   const labels = [];
   const remove = [];
   const body = [];
@@ -274,81 +268,6 @@ export function parseDraft(text, job = 'triage') {
 }
 
 /**
- * The refine ruleset: a Definition-of-Ready verdict, not a categorization.
- *
- * Everything the triage grammar treats as the point — label directives — is a
- * refusal here. A refine child that writes `Labels:` has misread its job
- * (categorization was decided by the PRD), and silently ignoring the line would
- * publish a draft whose author believed something the publisher discarded.
- *
- * Readiness is said out loud, `Ready: yes|no`, because with directives gone the
- * draft has no structured channel left and structural inference is wrong twice
- * over: a gate-failed draft carrying a repair proposal has no `Q<n>:` lines
- * either, and an absent line must be a MALFORMED refusal, never a quiet verdict
- * — a hand edit that drops the line, or leaves two of them, must not publish by
- * parser accident. That is also why the cardinality rules below are fail-closed,
- * and ordered: exactly one `Ready:`, above exactly one `## Agent Brief`, then
- * exactly one `## Verification`. Ordered because a `Ready:` line is only the
- * draft's ruling in the preamble — the same bytes inside the Brief or the
- * Verification evidence are prose the child quoted, and reading them as the
- * verdict publishes a ruling nobody made.
- *
- * The split between the two sections is the noise fix measured on
- * goodluckagency/ofmchat#52-#54: the published comment triple-stated rulings and
- * justified labels the PRD had already decided, while the evidence a reviewer
- * needs (file:line reads) rots on the tracker. So `body` is the Agent Brief
- * slice ONLY — what `publish` posts — and the Verification section never leaves
- * `.scratch`; it is the coordinator's review material.
- *
- * The return distinguishes three states `status` must render apart (R8):
- * publishable (`ok: true`), not-ready-by-verdict (`ok: false, ready: 'no'`,
- * structure valid — the repair path), and malformed (`ok: false, ready: null`
- * or a structural reason). `ready` is set only once the structure held, so a
- * caller may branch on it without re-deriving the grammar.
- */
-function parseRefineDraft(text) {
-  const lines = String(text ?? '').split('\n');
-  const questions = questionsIn(text);
-  const refuse = (reason, ready = null) => ({ ok: false, reason, labels: [], remove: [], body: '', close: false, questions, ready });
-
-  for (const line of lines) {
-    if (/^(Labels|Remove labels|Close):/.test(line)) {
-      return refuse(`a refine draft carries no label directives, but this one says \`${line.trim()}\` — categorization was decided by the PRD; refine publishes only ready-for-agent`);
-    }
-  }
-
-  const verdictAt = lines.flatMap((line, i) => (/^Ready:/.test(line) ? [i] : []));
-  if (verdictAt.length === 0) return refuse('this draft says no `Ready: yes|no` — an absent verdict is a malformed draft, never a quiet not-ready');
-  if (verdictAt.length > 1) return refuse(`this draft says \`Ready:\` ${verdictAt.length} times — two verdicts cannot both stand, and a hand edit that left both must not publish by accident`);
-  const verdictLine = lines[verdictAt[0]];
-  const verdict = verdictLine.slice('Ready:'.length).trim().toLowerCase();
-  if (verdict !== 'yes' && verdict !== 'no') return refuse(`\`${verdictLine.trim()}\` is neither \`Ready: yes\` nor \`Ready: no\` — the verdict has two values, said exactly`);
-
-  const locations = pattern => lines.flatMap((line, i) => (pattern.test(line) ? [i] : []));
-  const briefAt = locations(/^## Agent Brief\s*$/);
-  const verifAt = locations(/^## Verification\s*$/);
-  if (briefAt.length === 0) return refuse('this draft has no `## Agent Brief` section — there is nothing to publish');
-  if (briefAt.length > 1) return refuse('this draft has two `## Agent Brief` sections — the publishable slice must be unambiguous');
-  if (verdictAt[0] > briefAt[0]) return refuse('the `Ready:` verdict is written inside the sections, not above `## Agent Brief` — a verdict quoted in the published slice or the evidence is prose, not the draft\'s ruling');
-  if (verifAt.length === 0) return refuse('this draft has no `## Verification` section — the coordinator reviews the gate evidence, not the verdict alone');
-  if (verifAt.length > 1) return refuse('this draft has two `## Verification` sections — the boundary of what never reaches the tracker must be unambiguous');
-  if (verifAt[0] < briefAt[0]) return refuse('the `## Verification` section precedes `## Agent Brief` — the published slice is the bytes between the two, in that order');
-
-  const body = lines.slice(briefAt[0] + 1, verifAt[0]).join('\n').trim();
-  const verification = lines.slice(verifAt[0] + 1).join('\n').trim();
-  if (body === '') return refuse('the Agent Brief is empty — a verdict with nothing to publish is not ready');
-  if (verdict === 'yes' && verification === '') {
-    return refuse('the Verification section is empty — Ready: yes needs the per-gate evidence the coordinator reviews');
-  }
-
-  const out = { labels: [], remove: [], body, close: false, questions, ready: verdict };
-  const asked = questionProblem(questions);
-  if (asked !== null) return { ok: false, reason: asked, ...out };
-  if (verdict === 'no') return { ok: false, reason: 'not ready — this draft carries a repair proposal; correct the ticket (or the draft) and redispatch with --fresh', ...out };
-  return { ok: true, ...out };
-}
-
-/**
  * The draft for one dispatch, off disk.
  *
  * An absent file is the ordinary case, not an error: it means the session has
@@ -371,5 +290,5 @@ export function readDraft(root, identity) {
   // has to be able to check the version they hold with a command they already
   // trust. Measured 2026-08-22: #54 went from 106 lines to 117 after its child
   // had already reported, with no signal, and every anchor against it was stale.
-  return { ...parseDraft(text, identity.job), path, sha: gitBlobSha(text), lines: text.split('\n').length };
+  return { ...parseDraft(text), path, sha: gitBlobSha(text), lines: text.split('\n').length };
 }

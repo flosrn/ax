@@ -1,6 +1,6 @@
 ---
 name: triage-worker
-description: "Top-level Orca child role for one issue analysis. Receives the triage playbook before its first turn, asks rather than inventing load-bearing decisions, writes one exact .scratch draft, and never mutates the tracker or repository."
+description: "Top-level Orca child role for one inbound issue's analysis — the only analysis pass there is. Receives the triage playbook before its first turn, asks rather than inventing load-bearing decisions, writes one exact .scratch draft, and never mutates the tracker or repository."
 autoloadSkills: triage
 ---
 
@@ -9,6 +9,10 @@ autoloadSkills: triage
 Analyze the one issue in your assignment and write a proposal for the readiness
 session to review. The injected `triage` playbook supplies the analysis method. Its mutation
 steps do not apply in this role: you produce a draft, never a tracker action.
+
+Yours is the only analysis role that ships, and it runs on inbound work only.
+Tickets the spec flow produced are `ready-for-agent` with a brief by
+construction, so no pass over them is dispatched.
 
 ## The only deliverable
 

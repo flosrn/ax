@@ -1036,109 +1036,82 @@ test('the child keeps its own context: the spec says why the answer comes back t
   assert.match(r.out, /revise the draft into a final verdict/);
 });
 
-// ── the refine job ───────────────────────────────────────────────────────────
-// A Definition-of-Ready pass on a spec-born ticket: same machinery, its own
-// role pair, its own draft grammar, and none of the inbound-shaped gates.
+// ── the retired readiness lane ───────────────────────────────────────────────
+// `refine` was a Definition-of-Ready pass over PRD sub-issues, and it was the
+// deviation: `to-tickets` publishes `ready-for-agent` itself, so its tickets are
+// agent-grabbable by construction, and triage is the on-ramp for work that
+// arrived instead. A pass wedged between the two had nothing left to decide.
+// What must hold now is that the name is refused BY NAME, with the reason and
+// the repair, before any read of the tracker happens.
 
-test('the refine spec carries the refine-worker marker, the gates, and the directive prohibition', () => {
+test('--job refine is refused by name, with its reason and repair, and reads nothing', () => {
   const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues: { 7: 'OPEN|0|Widget import|.|10' } });
-  assert.match(r.out, /\[omp role=refine-worker model=@default\]/);
-  assert.match(r.out, /preloaded refine playbook/);
-  assert.match(r.out, /Definition-of-Ready/);
-  assert.match(r.out, /issue:\/\/10/, 'the known parent PRD is named to the child');
-  assert.match(r.out, /Ready: yes/);
-  assert.match(r.out, /## Agent Brief/);
-  assert.match(r.out, /## Verification/);
-  assert.match(r.out, /refused whole/, 'label directives are forbidden, the inverse of the triage instruction');
-  assert.match(r.out, /draft is FINAL/);
-  assert.match(r.out, /\.scratch\/refine\/refine-acme-widgets-7\.md/, 'the child is told the refine-dir path, never left to derive it');
+  assert.equal(r.code, 2, 'a retired lane is a usage error, not a tracker refusal');
+  assert.match(r.out, /--job refine no longer exists/);
+  assert.match(r.out, /to-tickets` publishes ready-for-agent itself/);
+  assert.match(r.out, /triage is for inbound work only/);
+  assert.match(r.out, /fix it on the ticket/);
+  assert.doesNotMatch(r.out, /--job expects/, 'it never falls through to the generic unknown-job error');
+  assert.deepEqual(r.started, [], 'nothing was dispatched');
+  assert.ok(r.calls.every(line => !line.includes('issue view')), 'the refusal precedes every tracker read');
 });
 
-test('refine needs no label contract — it applies only ready-for-agent, at publish time', () => {
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { root: repo({ labels: '' }), issues: { 7: 'OPEN|0|a' } });
-  assert.equal(r.code, 0);
-});
-
-test('refine on an issue already ready-for-agent is refused, and the repair never advertises --fresh alone', () => {
-  const issues = { 7: 'OPEN|0|a|enhancement;ready-for-agent' };
-  const refused = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues });
-  assert.equal(refused.code, 1);
-  assert.match(refused.out, /ready-for-agent/);
-  // The only advertised repair is a new pass: same-pass --force resumes the
-  // recorded request and cannot amend a published draft.
-  const repairs = refused.out.split('\n').filter(line => line.includes('ax ready dispatch --issue 7 --job refine'));
-  assert.equal(repairs.length, 1);
-  assert.match(repairs[0], /--force --fresh --because <what moved>/);
-  // A --fresh-only invocation is still refused, which is why it is never offered.
-  const freshOnly = run(['--issue', '7', '--job', 'refine', '--dry-run', '--fresh', '--because', 'the PRD moved'], { issues });
-  assert.equal(freshOnly.code, 1);
-  const forced = run(['--issue', '7', '--job', 'refine', '--dry-run', '--force'], { issues });
-  assert.equal(forced.code, 0);
-});
-
-test('comments do not gate a refine dispatch — F-030 is an inbound rule', () => {
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues: { 7: 'OPEN|4|a' } });
-  assert.equal(r.code, 0);
+test('a genuinely unknown job still gets the ordinary usage error naming the three passes', () => {
+  const r = run(['--issue', '7', '--job', 'groom', '--dry-run']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--job expects triage\|brief\|custom, got "groom"/);
+  assert.doesNotMatch(r.out, /no longer exists/, 'only the retired name earns the named refusal');
 });
 
 test('a gh without the parent field degrades to a note, never a refusal', () => {
+  // The parent read rides on every label-applying lane now, so a gh too old to
+  // answer `--json parent` reaches the fallback read on the ORDINARY dispatch.
+  // It must cost nothing when the project declared no provenance to gate on.
   const gh = fakeGh({ 7: 'OPEN|0|a' }, { parentField: false });
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { gh });
+  const r = run(['--issue', '7', '--dry-run'], { gh });
   assert.equal(r.code, 0);
-  assert.match(r.out, /parent unknown/i);
-  assert.match(r.out, /identify its parent/, 'the child is told to find the PRD itself');
+  assert.doesNotMatch(r.out, /UNREADABLE/, 'a capability gap is not an unreadable issue');
 });
 
-test('a successful issue read with no parent key stays unknown — absence is not confirmed parentless (F-028)', () => {
+test('a successful issue read with no parent key does not refuse either (F-028)', () => {
   const gh = fakeGh({ 7: 'OPEN|0|a' }, { omitParent: true });
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { gh });
-  assert.equal(r.code, 0);
-  assert.match(r.out, /parent unknown/i);
-  assert.doesNotMatch(r.out, /no parent issue/i);
-  assert.match(r.out, /identify its parent/, 'the child must recover the unknown parent itself');
+  assert.equal(run(['--issue', '7', '--dry-run'], { gh }).code, 0);
 });
 
-test('malformed parent metadata is unknown, never coerced into a fake parent number', () => {
+test('malformed parent metadata is never coerced into a fake parent number', () => {
   const gh = fakeGh({ 7: 'OPEN|0|a' }, { malformedParent: true });
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { gh });
+  const r = run(['--issue', '7', '--dry-run'], { gh });
   assert.equal(r.code, 0);
-  assert.match(r.out, /parent unknown/i);
-  assert.doesNotMatch(r.out, /parent #NaN|no parent issue/i);
+  assert.doesNotMatch(r.out, /parent #NaN/);
 });
 
-test('a parentless spec-born issue is noted as a possible mis-routing, not refused', () => {
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], { issues: { 7: 'OPEN|0|a|.|null' } });
-  assert.equal(r.code, 0);
-  assert.match(r.out, /no parent/i);
-});
-
-// ── provenance: which lane a ticket's ORIGIN earns ───────────────────────────
+// ── provenance: whether a ticket's ORIGIN forbids the pass ───────────────────
 //
-// A PRD sub-issue and an inbound report are two different jobs, and until now
-// only prose said so: the readiness role told the operator "provenance decides the
-// job", and `readIssue` asked for the parent ONLY in the refine lane — so
-// `--job triage` on a spec-born ticket could not notice what it was looking at.
-// Measured 2026-08-30 on ofmchat: ten tickets carrying `needs-triage`,
-// `source:roadmap` AND a parent PRD at once (#118 → #11), and one sentence was
-// enough to start triaging the lot. A triage child would have applied label
-// groups over a categorization that PRD had already decided — which the refine
-// draft grammar refuses outright (`draft.mjs`: "categorization was decided by
-// the PRD").
+// Triage is an ON-RAMP, not a step in the spec chain: it is the pass for work
+// that ARRIVED, and `to-tickets` publishes its own tickets as `ready-for-agent`
+// by construction. So a spec-born ticket in a label-applying lane is refused,
+// and until now only prose said so — the readiness role told the operator
+// "provenance decides the job", and `readIssue` asked for the parent ONLY in the
+// retired readiness lane, so `--job triage` on a spec-born ticket could not
+// notice what it was looking at. Measured 2026-08-30 on ofmchat: ten tickets
+// carrying `needs-triage`, `source:roadmap` AND a parent PRD at once (#118 →
+// #11), and one sentence was enough to start triaging the lot — re-deciding a
+// categorization those PRDs had already fixed.
 //
 // NEITHER SIGNAL DECIDES ALONE. A parent proves nesting, not provenance: a
-// follow-up nested under its origin ticket is inbound and would be misrouted by
+// follow-up nested under its origin ticket is inbound and would be misjudged by
 // a parent-only rule. A `source:` label declares intent, and the repository owns
 // that vocabulary — so the gate reads the DECLARED label, the parent only
 // colours the message, and a disagreement between the two is itself the finding.
 //
-// There is no override. Every other precheck gate takes `--force` because it
-// asks a question about state the operator may have already answered; a routing
-// mistake has one correct repair instead — the other lane, or the label that is
-// wrong.
+// NO OVERRIDE AND NO REDIRECT. Every other precheck gate takes `--force`
+// because it asks about state the operator may have already read. Here there is
+// no other lane to offer: the two repairs are the ready label the spec flow owed
+// the ticket, or a fix to the ticket itself.
 
 const PROVENANCE = { spec: ['source:roadmap'], inbound: ['source:agent-found', 'source:user-report'] };
 
-test('a spec-born ticket refuses the triage lane and names refine, with the PRD it read', () => {
+test('a spec-born ticket is refused in the triage lane because it is already agent-ready', () => {
   const r = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
     issues: { 7: 'OPEN|0|PRD 2 — ingestion|source:roadmap;needs-triage|11' },
@@ -1146,26 +1119,30 @@ test('a spec-born ticket refuses the triage lane and names refine, with the PRD 
   assert.equal(r.code, 1);
   assert.match(r.out, /source:roadmap/);
   assert.match(r.out, /#11/, 'the parent PRD is named, so the refusal is checkable');
-  assert.match(r.out, /ax ready dispatch --issue 7 --job refine/);
+  assert.match(r.out, /published ready-for-agent by construction/);
+  assert.match(r.out, /re-decide a categorization its spec already fixed/);
+  // The two repairs, and NO third lane to switch to.
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.match(r.out, /defect in the ticket its spec produced/);
+  assert.doesNotMatch(r.out, /--job refine/, 'there is no readiness pass to redirect into');
   assert.ok(r.calls.every(line => !line.includes('worker-start')), 'nothing was dispatched');
 });
 
-test('a spec label with no parent is a contradiction, and neither lane is offered', () => {
+test('a spec label with no parent is a contradiction, and no pass is authorized', () => {
   const r = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
     issues: { 7: 'OPEN|0|orphan roadmap ticket|source:roadmap|null' },
   });
   assert.equal(r.code, 1);
   assert.match(r.out, /links to no PRD|no parent/i);
-  assert.doesNotMatch(r.out, /--job refine/, 'a spec-born ticket with no PRD is not refine work either');
+  assert.doesNotMatch(r.out, /--job refine/);
 });
 
-test('an unreadable parent refuses the lane WITHOUT offering the other one', () => {
+test('an unreadable parent refuses the lane on the label alone, and the repair is the read', () => {
   // The label stands on its own as a reason to stop — it is the repository's
-  // declaration of intent. It does not stand on its own as a reason to GO: a
-  // redirect into refine needs the PRD that pass scores against, and "the parent
-  // could not be read" is an unknown, not a link (F-028). So the repair is the
-  // readability, not a second lane.
+  // declaration of intent. It does not stand on its own as a reason to GO
+  // either: "the parent could not be read" is an unknown, not a link (F-028),
+  // so the repair is the readability rather than a verdict about the ticket.
   const gh = fakeGh({ 7: 'OPEN|0|a|source:roadmap' }, { parentField: false });
   const r = run(['--issue', '7', '--dry-run'], { root: repo({ provenance: PROVENANCE }), gh });
   assert.equal(r.code, 1);
@@ -1175,15 +1152,14 @@ test('an unreadable parent refuses the lane WITHOUT offering the other one', () 
   assert.match(r.out, /--json parent/, 'the repair is the read that failed');
 });
 
-test('an inbound ticket refuses the refine lane and names triage', () => {
-  const r = run(['--issue', '7', '--job', 'refine', '--dry-run'], {
+test('an INBOUND ticket is exactly what the triage lane is for, and passes the gate', () => {
+  // The flat rule: triage is only for issues you did not create. An inbound
+  // label is the repository saying this is one of those, so nothing is refused.
+  const r = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
     issues: { 7: 'OPEN|0|analyzer accepts prototype versions|source:agent-found|null' },
   });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /source:agent-found/);
-  assert.match(r.out, /ax ready dispatch --issue 7/);
-  assert.ok(r.calls.every(line => !line.includes('worker-start')), 'no refine child was dispatched');
+  assert.equal(r.code, 0, 'the on-ramp does not gate the work it exists for');
 });
 
 test('one ticket carrying both vocabularies is refused without picking a side', () => {
@@ -1213,13 +1189,12 @@ test('a declared vocabulary the ticket does not carry gates nothing', () => {
 });
 
 // The brief lane applies labels too — `LABEL_JOBS` has said so since the
-// vocabulary preflight was written — so it is routed by provenance for the same
-// reason triage is: its child spec still permits `Labels:` directives, and a
-// spec-born ticket's categorization was decided by its PRD. Measured on the
-// 2026-08-30 review: `readIssue` routed on a second, hand-kept list of two jobs
-// that had drifted from the first, so `--job brief` read no labels at all and
-// the gate ran on an empty set — indistinguishable from a project that declared
-// nothing.
+// vocabulary preflight was written — so it is judged by provenance for the same
+// reason triage is: its child spec permits `Labels:` directives, and a spec-born
+// ticket's categorization was decided by its PRD. Measured on the 2026-08-30
+// review: `readIssue` routed on a second, hand-kept list of jobs that had
+// drifted from the first, so `--job brief` read no labels at all and the gate
+// ran on an empty set — indistinguishable from a project that declared nothing.
 test('a spec-born ticket refuses the BRIEF lane too, because a brief may apply labels', () => {
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
@@ -1228,7 +1203,9 @@ test('a spec-born ticket refuses the BRIEF lane too, because a brief may apply l
   assert.equal(r.code, 1);
   assert.match(r.out, /source:roadmap/);
   assert.match(r.out, /#11/);
-  assert.match(r.out, /ax ready dispatch --issue 7 --job refine --repo acme\/widgets/);
+  assert.match(r.out, /published ready-for-agent by construction/);
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.doesNotMatch(r.out, /--job refine/);
   assert.ok(r.calls.every(line => !line.includes('worker-start')), 'nothing was dispatched');
 });
 
@@ -1237,7 +1214,7 @@ test('an INBOUND ticket is legitimate in the brief lane — a brief distils the 
     root: repo({ provenance: PROVENANCE }),
     issues: { 7: 'OPEN|2|analyzer accepts prototype versions|source:agent-found|null' },
   });
-  assert.equal(r.code, 0, 'the inbound branch is refine-only: brief follows an inbound triage pass');
+  assert.equal(r.code, 0, 'a brief follows the inbound triage pass that already ran');
 });
 
 // A tracker label name is case-insensitively unique on GitHub, so comparing the
@@ -1252,7 +1229,7 @@ test('a declared provenance label gates despite case and surrounding whitespace'
   });
   assert.equal(r.code, 1);
   assert.match(r.out, /Source:Roadmap/, 'the refusal prints the DECLARED name that matched, not a normalized form');
-  assert.match(r.out, /ax ready dispatch --issue 7 --job refine --repo acme\/widgets/);
+  assert.match(r.out, /published ready-for-agent by construction/);
 });
 
 // `meta.parent === undefined` has three causes and only one of them is a `gh`
@@ -1322,35 +1299,32 @@ test('a non-capability gh failure surfaces its exit and stderr, never a guessed 
 
 // `--repo` is a real flag, so a repair pasted into a shell in a different
 // checkout re-resolves the issue NUMBER against whatever repo it lands in — and
-// dispatches a different ticket. The sibling `gh` repairs already carry it.
-test('both lane-redirect repairs carry --repo, so a pasted repair cannot address another repo', () => {
+// mutates a different ticket. Every repair this gate prints carries it.
+test('every provenance repair carries --repo, so a pasted repair cannot address another repo', () => {
   const spec = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
     issues: { 7: 'OPEN|0|a|source:roadmap|11' },
   });
-  assert.match(spec.out, /ax ready dispatch --issue 7 --job refine --repo acme\/widgets/);
-  const inbound = run(['--issue', '7', '--job', 'refine', '--dry-run'], {
-    root: repo({ provenance: PROVENANCE }),
-    issues: { 7: 'OPEN|0|a|source:user-report|null' },
-  });
-  assert.match(inbound.out, /ax ready dispatch --issue 7 --repo acme\/widgets/);
+  const repairs = spec.out.split('\n').filter(line => line.includes('gh issue'));
+  assert.ok(repairs.length >= 2, 'both repairs are printed');
+  for (const line of repairs) assert.match(line, /--repo acme\/widgets/, line);
 });
 
-test('a refine dispatch verifies the refine role pair, not the triage one', () => {
-  const good = run(['--issue', '7', '--job', 'refine'], {
-    issues: { 7: 'OPEN|0|a' },
-    proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'refine-worker', skills: ['refine'] } }),
-  });
-  assert.equal(good.code, 0);
-  assert.match(good.out, /refine-worker \+ refine reached the first turn/);
-  assert.match(good.started[0], /\.scratch\/refine\/refine-acme-widgets-7\.spec\.txt/, 'the spec file lands beside the draft');
-  const wrong = run(['--issue', '7', '--job', 'refine'], {
-    env: { AX_READY_ROLE_WAIT: '0' },
-    issues: { 7: 'OPEN|0|a' },
+test('the brief lane verifies its role pair off the one shared map', () => {
+  const good = run(['--issue', '7', '--job', 'brief'], {
+    issues: { 7: 'OPEN|2|a' },
     proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'triage-worker', skills: ['triage'] } }),
   });
+  assert.equal(good.code, 0);
+  assert.match(good.out, /triage-worker \+ triage reached the first turn/);
+  assert.match(good.started[0], /\.scratch\/triage\/brief-acme-widgets-7\.spec\.txt/, 'the spec file lands beside the draft, in the one draft dir');
+  const wrong = run(['--issue', '7', '--job', 'brief'], {
+    env: { AX_READY_ROLE_WAIT: '0' },
+    issues: { 7: 'OPEN|2|a' },
+    proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'launch-worker', skills: ['launch'] } }),
+  });
   assert.equal(wrong.code, 3);
-  assert.match(wrong.out, /expected refine-worker/);
+  assert.match(wrong.out, /expected triage-worker/);
 });
 
 test('AX_TRIAGE_ROLE_WAIT is refused and the repair names AX_READY_ROLE_WAIT', () => {

@@ -644,27 +644,6 @@ test('a brief is not a verdict: it publishes over one, and only a landed brief b
   assert.match(other.out, /already carries 1 AI-published comment/);
 });
 
-test('refine is keyed on its OWN disclaimer: a triage verdict does not block it, a landed Brief does', () => {
-  const root = repo();
-  mkdirSync(join(root, '.scratch', 'refine'), { recursive: true });
-  writeFileSync(
-    join(root, '.scratch', 'refine', 'refine-acme-widgets-7.md'),
-    ['Ready: yes', '', '## Agent Brief', '', 'Wire the widget.', '', '## Verification', '', 'G3 pass — src/socket.mjs.'].join('\n'),
-  );
-  const labelList = { status: 0, stdout: JSON.stringify([...REPO_LABELS, 'ready-for-agent'].map(name => ({ name }))), stderr: '' };
-  const answers = { labelList, comments: [onIssue(`${AI_TRIAGE}\n\nThe verdict.`)] };
-
-  const first = run(['--issue', '7', '--job', 'refine'], { root, answers });
-  assert.equal(first.code, 0);
-
-  const again = run(['--issue', '7', '--job', 'refine'], {
-    root,
-    answers: { ...answers, comments: [...answers.comments, onIssue(`${AI_REFINE}\n\nThe Brief.`)] },
-  });
-  assert.equal(again.code, 1);
-  assert.match(again.out, /already carries 1 AI-published comment/);
-});
-
 test('a corrected pass 2 still publishes over a landed pass 1 — the repair names the exact permission, and the release hint survives it', () => {
   // The pass mechanism (`triage dispatch --fresh --because …`) exists to
   // supersede a verdict, so this guard must not make the second one
@@ -698,7 +677,7 @@ test('a corrected pass 2 still publishes over a landed pass 1 — the repair nam
 //
 // Measured on goodluckagency/ofmchat at the reporter's request, 2026-08-29: 14
 // Agent Briefs — one each on #50-#61, #98 and #100 — were published under the
-// shared triage wording, and `refine` had never run there. So the marker alone
+// shared triage wording. So the marker alone
 // leaves a second brief armed on every one of them, and the offered repair — 14
 // `gh api -X PATCH` rewrites of published comments — would have made this
 // package's correctness depend on a per-repository migration the next consuming
@@ -1474,91 +1453,105 @@ test('--pass expects a number', () => {
   assert.match(r.out, /--pass expects a number/);
 });
 
-/** A refine draft, in the refine job's own directory. */
-const refineDraftAt = (root, issue, text) => {
-  const path = draftPath(root, { job: 'refine', repo: REPO, issue: String(issue) });
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, text);
-};
+// ── status: the two draft states a publisher can be in ───────────────────────
+// There were three while the readiness grammar existed: a NOT-READY row read a
+// `ready: 'no'` verdict only that grammar produced. With it gone there are two,
+// and a malformed draft must not read as anything softer.
 
-test('status renders the three refine draft states apart: ready, repair-carrying, malformed', () => {
+test('status renders a publishable draft apart from an unpublishable one', () => {
   const root = repo();
-  refineDraftAt(root, 7, ['Ready: yes', '', '## Agent Brief', '', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
-  refineDraftAt(root, 8, ['Ready: no', '', '## Agent Brief', '', 'Repair: split the ticket.', '', '## Verification', '', 'G2 fail.'].join('\n'));
-  refineDraftAt(root, 9, 'Ready: yes\nno sections at all\n');
-  const r = runStatus(['--issue', '7-9', '--brief', '--job', 'refine'], { root });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  draft(root, 'triage-acme-widgets-8', 'no directives at all\n');
+  const r = runStatus(['--issue', '7-8', '--brief'], { root });
   assert.equal(r.code, 0);
   assert.match(r.out, /#7 p1 · FINAL/);
-  assert.match(r.out, /#8 p1 · NOT-READY/);
-  assert.match(r.out, /#9 p1 · NOT-PUBLISHABLE/);
+  assert.match(r.out, /#8 p1 · NOT-PUBLISHABLE/);
+  assert.doesNotMatch(r.out, /NOT-READY/, 'the retired grammar had the only producer of that row');
 });
 
-// ── publish: the refine job ──────────────────────────────────────────────────
-// One label, one Brief-only comment — and the comment goes FIRST: the label is
-// the automation trigger, and a label-then-failed-comment would leave a
-// ready-for-agent issue with no Brief for an AFK launcher to act on.
+// ── publish: the brief, and the label that makes an issue grabbable ──────────
+//
+// `brief` is the only pass that produces a brief, so it is the only pass that
+// makes an issue agent-grabbable. The label arrives through the draft's OWN
+// `Labels:` directive — the child is instructed to write it (`spec.mjs`) and
+// this verb applies exactly what the draft names, with no second mechanism.
+//
+// The ORDER flips when `ready-for-agent` is among those names, and it is keyed
+// on that rather than on the job: the label is an automation trigger, an AFK
+// launcher dispatches on `ready-for-agent` plus the brief, and a
+// label-then-failed-comment would expose a briefless ready signal that cannot be
+// retracted once a launcher consumed it. An orphan brief with no label is
+// visible but not runnable, which is the safe direction for a partial failure.
 
 const READY_LABELS = { status: 0, stdout: JSON.stringify([...REPO_LABELS, 'ready-for-agent'].map(name => ({ name }))), stderr: '' };
 
-const refineReady = ['Ready: yes', '', '## Agent Brief', '', 'Summary: wire the widget.', '', '## Verification', '', 'G3 pass — src/socket.mjs.'].join('\n');
+const BRIEF_READY = 'Labels: ready-for-agent, category/bug\nRemove labels: needs-triage\n\nSummary: wire the widget to the socket.\n';
 
-test('a ready refine draft posts its Brief FIRST, then applies only ready-for-agent', () => {
+test('a brief publishes the Agent Brief and applies ready-for-agent — the comment FIRST', () => {
   const root = repo();
-  refineDraftAt(root, 7, refineReady);
-  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  draft(root, 'brief-acme-widgets-7', BRIEF_READY);
+  const r = run(['--issue', '7', '--job', 'brief'], { root, answers: { labelList: READY_LABELS } });
   assert.equal(r.code, 0);
   const [comment, edit] = mutations(r.calls);
-  assert.match(comment, /issue comment 7/);
-  assert.match(edit, /issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
-  assert.ok(!edit.includes('--remove-label'), 'refine removes nothing');
+  assert.match(comment, /issue comment 7/, 'the brief lands before the trigger label');
+  assert.match(edit, /issue edit 7 --repo acme\/widgets/);
+  assert.match(edit, /--add-label ready-for-agent/);
+  assert.match(edit, /--add-label category\/bug/, 'the rest of the directive lands in the same edit');
+  assert.match(edit, /--remove-label needs-triage/);
   const posted = /--body-file (\S+)/.exec(comment)[1];
   const body = readFileSync(posted, 'utf8');
-  assert.match(body, /wire the widget/);
-  assert.ok(!body.includes('G3 pass'), 'the Verification section never reaches the tracker');
-  assert.match(body, /during refinement/);
+  assert.match(body, /wire the widget to the socket/);
+  assert.match(body, /This Agent Brief was generated by AI during triage/);
+  assert.match(r.out, /makes the issue agent-grabbable/);
 });
 
-test('a refused refine comment applies NO label, and never promises a blind re-post', () => {
+test('an ordinary triage publication keeps labels FIRST — the order follows the label, not the lane', () => {
   const root = repo();
-  refineDraftAt(root, 7, refineReady);
-  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, comment: { status: 1, stderr: 'boom' } } });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+  assert.equal(r.code, 0);
+  const [first, second] = mutations(r.calls);
+  assert.match(first, /issue edit 7/, 'a comment whose label set never applied reads as a finished pass');
+  assert.match(second, /issue comment 7/);
+});
+
+test('a brief whose comment is refused applies NO label, and never promises a blind re-post', () => {
+  const root = repo();
+  draft(root, 'brief-acme-widgets-7', BRIEF_READY);
+  const r = run(['--issue', '7', '--job', 'brief'], { root, answers: { labelList: READY_LABELS, comment: { status: 1, stderr: 'boom' } } });
   assert.equal(r.code, 1);
   assert.equal(mutations(r.calls).length, 1, 'the label edit never ran');
-  assert.match(r.out, /label was NOT applied/);
-  assert.match(r.out, /did the Brief land\?/, 'the repair reads the state before any retry');
+  assert.match(r.out, /no label was applied/);
+  assert.match(r.out, /did it land\?/, 'the repair reads the state before any retry');
+  assert.match(r.out, /--job brief --pass 1/, 'the re-run repair names the pass it resolved');
 });
-test('a refused refine label names the label-only repair, never a publish re-run', () => {
+
+test('a brief whose label edit is refused names the label-only repair, never a publish re-run', () => {
   const root = repo();
-  refineDraftAt(root, 7, refineReady);
-  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS, labels: { status: 1, stderr: 'nope' } } });
+  draft(root, 'brief-acme-widgets-7', BRIEF_READY);
+  const r = run(['--issue', '7', '--job', 'brief'], { root, answers: { labelList: READY_LABELS, labels: { status: 1, stderr: 'nope' } } });
   assert.equal(r.code, 1);
-  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets .*--add-label ready-for-agent/);
   assert.match(r.out, /already posted/i);
 });
 
-test('a repository without the ready-for-agent label refuses the refine batch before any mutation', () => {
+test('a repository without the ready-for-agent label refuses the batch, and the repair creates it', () => {
+  // The generic "edit the draft" repair is wrong for this one name: a
+  // repository new to this flow has simply never created the label, and the
+  // directive is right.
   const root = repo();
-  refineDraftAt(root, 7, refineReady);
-  const r = run(['--issue', '7', '--job', 'refine'], { root });
+  draft(root, 'brief-acme-widgets-7', BRIEF_READY);
+  const r = run(['--issue', '7', '--job', 'brief'], { root });
   assert.equal(r.code, 1);
-  assert.equal(mutations(r.calls).length, 0);
+  assert.equal(mutations(r.calls).length, 0, 'nothing landed');
   assert.match(r.out, /ready-for-agent/);
+  assert.match(r.out, /gh label create ready-for-agent --repo acme\/widgets/);
 });
 
-test('Ready: no blocks with the repair path, never as a malformed draft', () => {
+test('open questions block a brief publish exactly as they block a triage one', () => {
   const root = repo();
-  refineDraftAt(root, 7, ['Ready: no', '', '## Agent Brief', '', 'Gate 2 fails; split proposal below.', '', '## Verification', '', 'G2 fail.'].join('\n'));
-  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
-  assert.equal(r.code, 1);
-  assert.equal(mutations(r.calls).length, 0);
-  assert.match(r.out, /not ready/);
-  assert.match(r.out, /--fresh/);
-});
-
-test('open questions block a refine publish exactly as they block a triage one', () => {
-  const root = repo();
-  refineDraftAt(root, 7, ['Ready: yes', '', '## Agent Brief', '', 'Q1: [product] cap the import where?', 'Summary.', '', '## Verification', '', 'ok.'].join('\n'));
-  const r = run(['--issue', '7', '--job', 'refine'], { root, answers: { labelList: READY_LABELS } });
+  draft(root, 'brief-acme-widgets-7', 'Labels: ready-for-agent\n\nQ1: [product] cap the import where?\nSummary.\n');
+  const r = run(['--issue', '7', '--job', 'brief'], { root, answers: { labelList: READY_LABELS } });
   assert.equal(r.code, 1);
   assert.equal(mutations(r.calls).length, 0);
   assert.match(r.out, /open question/);

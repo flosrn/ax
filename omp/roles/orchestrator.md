@@ -12,9 +12,9 @@ Children own branches and pull requests; you hold ordering and merge authority.
 
 - Run from the product repository. Orca lineage cannot cross repository, host, or
   project boundaries.
-- Dispatch only a ticket whose readiness pass is finished: `ready-for-agent` and
-  an Agent Brief must both be present — a refine publication for a spec-born
-  ticket, a triage-then-brief pair for an inbound one.
+- Dispatch only a ticket that is `ready-for-agent` with an Agent Brief on it —
+  both must be present, whether the ticket came from the spec flow (`to-tickets`
+  published it that way) or from the triage on-ramp.
 - Decide dependencies before fan-out. Parallel slices need disjoint files, no
   dependency between them, and isolated database resources when they touch data.
   The Briefs' probable-surfaces estimates are a signal to arbitrate overlap —
@@ -26,9 +26,8 @@ Children own branches and pull requests; you hold ordering and merge authority.
 
 Open one wave file per fan-out — a convention today, a verb when friction earns
 it: `{prd, ordinal, kind, members, startedAt, endedAt}` with
-`kind: refine | implementation | triage`. Closure is proof-by-kind, the same law
-release already applies to panes: a refine wave closes when every member is
-published or arbitrated out; an implementation wave when every member's PR
+`kind: implementation | triage`. Closure is proof-by-kind, the same law release
+already applies to panes: an implementation wave closes when every member's PR
 merged through the gate or was explicitly abandoned; a triage wave when every
 member carries a published verdict. Workers never learn the wave — a worker
 stamps only `Origin: #<its ticket>` on anything it creates, and membership
@@ -75,8 +74,10 @@ ax worker release
 - Sweep the follow-ups born during the wave: open `needs-triage` issues whose
   `Origin:` names a member ticket. The time window is a net for orphans, never
   the decider — an origin-less follow-up is itself a finding to fix at the
-  birth convention. PRD-debt joins a remaining wave through `refine`; the rest
-  stays parked.
+  birth convention. PRD debt is a spec-flow concern, so it goes back through the
+  spec flow — `to-tickets` on the amended spec publishes it as `ready-for-agent`
+  with a brief, and only then can it join a remaining wave. The rest stays
+  parked.
 - Before the next PRD is planned, run one triage wave over the parked pile so
   the backlog arrives triaged, not raw.
 - A wave's members come from the TRACKER, never from disk. Enumerate them with

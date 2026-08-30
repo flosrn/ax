@@ -4,12 +4,12 @@
  * WHY THIS FILE EXISTS SEPARATELY FROM `model.test.ts`
  * That file drives the APPLIER through injected seams, which is right for it and
  * useless here: a seam-driven suite cannot tell whether the package's own files
- * parse, whether a name can escape the roles directory, or whether the four roles
+ * parse, whether a name can escape the roles directory, or whether the five roles
  * this package ships are still loadable after somebody edits one. Those are
  * questions about DATA, so they are asked against real files.
  *
- * The four shipped roles are asserted by name. A role that stops loading is not a
- * red somewhere in the applier — it is four sessions that refuse to start, and
+ * The five shipped roles are asserted by name. A role that stops loading is not a
+ * red somewhere in the applier — it is five sessions that refuse to start, and
  * the refusal is correct behaviour, so nothing else in the suite would go red.
  */
 
@@ -42,12 +42,11 @@ function role(name: string, body: string): void {
 }
 
 // ── the roles this package actually ships ────────────────────────────────────
-
-test('the six session roles load from the package, with no host discovery at all', async () => {
+test('the five session roles load from the package, with no host discovery at all', async () => {
   // The whole point of the migration: these resolve from files inside the
   // package, so an installed copy under node_modules and a fresh checkout answer
   // identically, and a role on a branch is visible to the session on that branch.
-  for (const name of ['readiness', 'maintainer', 'orchestrator', 'worker', 'triage-worker', 'refine-worker']) {
+  for (const name of ['readiness', 'maintainer', 'orchestrator', 'worker', 'triage-worker']) {
     const found = await loadRole(name);
     expect(found.reason).toBe('ok');
     expect(found.role?.name).toBe(name);
@@ -55,17 +54,18 @@ test('the six session roles load from the package, with no host discovery at all
   }
 });
 
-test('the shipped roles are exactly the six, so a stray file cannot become a session identity', async () => {
+test('the shipped roles are exactly the five, so a stray file cannot become a session identity', async () => {
   // `maintainer` was admitted on 2026-08-26, and admitting it meant editing this
   // list on purpose — which is the whole value of a closed set. It owns the
   // INSTRUMENT rather than any work done with it: the sideways direction of
   // reporting, which had no role and therefore turned tool defects into silent
   // workarounds carried in one consumer's memory for six minor versions.
+  // `refine-worker` was removed the same way, on purpose: `to-tickets` publishes
+  // `ready-for-agent` itself, so a spec-born ticket needs no readiness pass.
   expect(await listRoles()).toEqual([
     'maintainer',
     'orchestrator',
     'readiness',
-    'refine-worker',
     'triage-worker',
     'worker',
   ]);
@@ -75,7 +75,7 @@ test('each declared playbook is one this package ships - there is no host fallba
   // A role whose playbook is absent REFUSES, by design. So an autoloadSkills name
   // that no longer matches a file is not a degraded session, it is a dead one —
   // and nothing else in the suite notices, because refusing is correct.
-  for (const name of ['worker', 'triage-worker', 'refine-worker']) {
+  for (const name of ['worker', 'triage-worker']) {
     const found = await loadRole(name);
     for (const wanted of found.role?.autoloadSkills ?? []) {
       const playbook = await loadPlaybook(wanted);

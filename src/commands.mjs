@@ -93,7 +93,7 @@ export const COMMANDS = [
   },
   {
     name: 'ready',
-    summary: 'make an issue ready for an agent — refine a spec ticket, triage an inbound one',
+    summary: 'make an issue ready for an agent — triage what arrived, brief what a pass decided',
     // Gated on the same predicate as `worker`: the dispatch needs an Orca CLI.
     // `publish` needs only `gh`, but it publishes what a dispatched session
     // wrote, so a machine that cannot dispatch has nothing to publish either.

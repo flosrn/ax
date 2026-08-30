@@ -36,9 +36,10 @@ import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, passesOf, questionProblem, readDraft, requestFor } from './draft.mjs';
 import { composeAsk } from './rulings.mjs';
+import { REFINE_REMOVED } from './spec.mjs';
 
 const USAGE =
-  'ax ready ask --issue N [--pass P] [--job triage|brief|custom|refine] [--repo <owner/repo>] [--dispatch-capability <token>] [--timeout-ms <n>] [--dry-run]\n'
+  'ax ready ask --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dispatch-capability <token>] [--timeout-ms <n>] [--dry-run]\n'
   + '       ax ready ask --resume <message_id> [--dispatch-capability <token>] [--timeout-ms <n>]\n'
   + '\n'
   + 'Exit codes — a blocked child routes on these alone:\n'
@@ -130,6 +131,8 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     else return usageError(`unknown argument "${arg}"`);
   }
 
+  if (job === 'refine') return usageError(REFINE_REMOVED);
+
   // Exactly one mode, like the transport underneath: a new ask reads the draft,
   // a resume waits on a question that already exists and needs nothing local.
   if ((issue !== '' ? 1 : 0) + (resume !== '' ? 1 : 0) !== 1) {
@@ -165,7 +168,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
 
     const base = { job, repo: slug, issue };
 
-    const passes = passesOf(store, draftDirFor(root, base), base);
+    const passes = passesOf(store, draftDirFor(root), base);
     if (passes.length === 0) {
       return refuse(`no pass of #${issue} exists here — nothing was dispatched and no draft was written`, `ax ready dispatch --issue ${issue} --job ${job}`);
     }

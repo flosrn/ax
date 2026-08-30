@@ -36,11 +36,10 @@ import { launchProof } from '../worker/transcript.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
 import { capOf, liveCount, passPlan } from './capacity.mjs';
-import { ROLE_BY_JOB, renderSpec } from './spec.mjs';
-import { READY_LABEL } from './publish.mjs';
+import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
 const USAGE =
-  'ax ready dispatch --issue N [--issue M …] [--job triage|brief|custom|refine] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
+  'ax ready dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
@@ -61,34 +60,36 @@ const sameLabel = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 const declaredCarried = (names, labels) => names.filter(name => labels.some(carried => sameLabel(name, carried)));
 
 /**
- * Which lane a ticket's ORIGIN earns, when the repository declared the
- * vocabulary that says so (`ready.provenance`). Returns the refusal, or null
- * when nothing in the ticket contradicts the requested job.
+ * Whether a ticket's ORIGIN forbids the requested job, when the repository
+ * declared the vocabulary that says so (`ready.provenance`). Returns the
+ * refusal, or null when nothing in the ticket contradicts it.
  *
- * WHY THIS EXISTS. A PRD sub-issue and an inbound report are two different
- * passes: refine scores a Definition-of-Ready and publishes a Brief plus
- * `ready-for-agent`, while triage decides categorization and applies label
- * groups. Only prose separated them — the readiness role told the operator that
- * "provenance decides the job" — and `readIssue` asked for the sub-issue parent
- * in the REFINE lane only, so the one lane that must refuse a spec-born ticket
- * was the one lane that never looked. Measured 2026-08-30: ten tickets carrying
- * the inbound triage label, a spec label AND a parent PRD at once, one sentence
- * away from a triage wave that would have applied label groups over a
- * categorization their PRD had already decided — which `draft.mjs` refuses a
- * refine draft for even naming.
+ * WHY THIS EXISTS. Triage is an ON-RAMP, not a step in the spec chain: it is
+ * the pass for work that ARRIVED — a human's report, another agent's
+ * follow-up — and `to-tickets` publishes its own tickets as `ready-for-agent`
+ * by construction. So a spec-born ticket has nothing to gain from a triage
+ * pass and something to lose: its categorization was decided by its PRD, and a
+ * triage or brief child writes label groups over it. Only prose said so — the
+ * readiness role told the operator that "provenance decides the job" — and
+ * `readIssue` asked for the sub-issue parent in the retired readiness lane
+ * only, so the lanes that must refuse a spec-born ticket were the ones that
+ * never looked. Measured 2026-08-30: ten tickets carrying the inbound triage
+ * label, a spec label AND a parent PRD at once, one sentence away from a triage
+ * wave that would have re-decided a categorization their PRD had already fixed.
  *
- * TWO SIGNALS, AND A LANE NEEDS BOTH. The `source:`-style label is the
+ * TWO SIGNALS, AND THE REFUSAL NEEDS BOTH. The `source:`-style label is the
  * repository's declaration of intent, read from config and never inferred. The
  * sub-issue parent is the tracker's own answer. Nesting alone proves nesting —
- * a follow-up nested under its origin ticket is inbound, so a parent-only rule
- * would route it to refine — and the label alone proves an intention nobody
- * linked. So a redirect is offered only when both agree; a disagreement and an
- * unreadable parent both refuse, and say which one it was (F-028: an unknown is
- * not an absence).
+ * a follow-up nested under its origin ticket is inbound — and the label alone
+ * proves an intention nobody linked. So the two are required to agree; a
+ * disagreement and an unreadable parent both refuse, and say which one it was
+ * (F-028: an unknown is not an absence).
  *
- * NO OVERRIDE. The other precheck gates take `--force` because they ask about
- * state the operator may already have read; a routing mistake has one correct
- * repair instead — the other lane, or the signal that is wrong.
+ * NO OVERRIDE, AND NO REDIRECT. There is no other lane to send the ticket to:
+ * the readiness pass that used to be offered here was removed, because
+ * `to-tickets` already did that work with the human in the room. What is left
+ * is the two repairs the refusal names — apply the ready label the spec flow
+ * owed the ticket, or fix the ticket where `to-tickets` left it incomplete.
  */
 export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared }) {
   const spec = declaredCarried(declared?.spec ?? [], labels);
@@ -97,22 +98,20 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
 
   if (spec.length > 0 && inbound.length > 0) {
     return {
-      bad: `^ carries ${spec.join(', ')} and ${inbound.join(', ')} — one ticket cannot be both spec-born and inbound, and no lane follows from a contradiction`,
-      fix: `gh issue view ${issue} --repo ${slug} --json labels # remove whichever of the two is wrong, then re-dispatch`,
+      bad: `^ carries ${spec.join(', ')} and ${inbound.join(', ')} — one ticket cannot be both spec-born and inbound, and no pass follows from a contradiction`,
+      fix: [`gh issue view ${issue} --repo ${slug} --json labels # remove whichever of the two is wrong, then re-dispatch`],
     };
   }
 
   // EVERY label-applying lane, not just triage. `brief` is in `LABEL_JOBS` for
   // the same reason triage is — its child spec permits `Labels:` directives — so
   // a spec-born ticket briefed here writes label groups over a categorization
-  // its PRD already decided. The inbound branch below stays refine-only on
-  // purpose: an inbound ticket in the brief lane is the ordinary sequence,
-  // because a brief distils a triage pass that already happened.
+  // its PRD already decided.
   if (LABEL_JOBS.has(job) && spec.length > 0) {
     if (parent === null) {
       return {
-        bad: `^ carries ${spec.join(', ')} but links to no PRD — the label says spec-born, the tracker says nothing, and neither pass is safe on that`,
-        fix: `gh issue edit ${issue} --repo ${slug} --remove-label ${spec[0]} # if it truly came from outside; otherwise link it to its PRD first`,
+        bad: `^ carries ${spec.join(', ')} but links to no PRD — the label says spec-born, the tracker says nothing, and a ${job} pass is not safe on that`,
+        fix: [`gh issue edit ${issue} --repo ${slug} --remove-label ${spec[0]} # if it truly came from outside; otherwise link it to its PRD first`],
       };
     }
     if (typeof parent !== 'number') {
@@ -132,23 +131,27 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
               ? 'gh answered a parent that is not a usable issue number'
               : 'the read established no parent number';
       return {
-        bad: `^ carries ${spec.join(', ')} and its sub-issue parent could not be read — ${why} — so the ${job} lane is refused on the label alone, and refine cannot be offered on one signal either`,
-        fix:
+        bad: `^ carries ${spec.join(', ')} and its sub-issue parent could not be read — ${why} — so the ${job} lane is refused on the label alone`,
+        fix: [
           parentCause === 'capability'
             ? 'gh --version # upgrade until --json parent answers'
-            : `gh issue view ${issue} --repo ${slug} --json parent # read it directly: until a parent is established, neither lane is safe`,
+            : `gh issue view ${issue} --repo ${slug} --json parent # read it directly: until a parent is established, this pass is not safe`,
+        ],
       };
     }
+    // Both signals agree, so the conclusion is the flat rule and not a
+    // redirect: triage is the on-ramp for work that ARRIVED, and this ticket
+    // was produced by this project's own spec flow, which publishes
+    // `ready-for-agent` itself. There is no readiness pass to send it to and
+    // there never should have been one — a spec-born ticket is agent-ready by
+    // construction, quizzed by the human who cut it. So the two repairs are the
+    // only two things that can actually be true here.
     return {
-      bad: `^ ${spec.join(', ')}, a sub-issue of #${parent} — its categorization was decided by that PRD, and a ${job} draft would apply label groups over it`,
-      fix: `ax ready dispatch --issue ${issue} --job refine --repo ${slug} # the readiness pass a spec-born ticket earns`,
-    };
-  }
-
-  if (job === 'refine' && inbound.length > 0) {
-    return {
-      bad: `^ carries ${inbound.join(', ')} — an issue born outside a spec has no Definition-of-Ready to score against one`,
-      fix: `ax ready dispatch --issue ${issue} --repo ${slug} # triage is the pass that decides an inbound ticket's categorization`,
+      bad: `^ ${spec.join(', ')}, a sub-issue of #${parent} — a spec-born ticket is published ready-for-agent by construction, so a ${job} pass would re-decide a categorization its spec already fixed`,
+      fix: [
+        `gh issue edit ${issue} --repo ${slug} --add-label ${READY_LABEL} # if the ticket is sound, this is all it was ever owed`,
+        `gh issue view ${issue} --repo ${slug} # if it is NOT sound, that is a defect in the ticket its spec produced: fix it there, and dispatch nothing`,
+      ],
     };
   }
 
@@ -333,6 +336,7 @@ export function dispatch(
     if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
   }
   if (job === '') job = 'triage';
+  if (job === 'refine') return usageError(REFINE_REMOVED);
   if (!Object.hasOwn(ROLE_BY_JOB, job)) return usageError(`--job expects ${Object.keys(ROLE_BY_JOB).join('|')}, got "${job}"`);
   if (job === 'custom' && instruction === '') return usageError('--job custom needs --instruction <file> holding the one-line task');
   if (job === 'custom' && !existsSync(instruction)) return refuse(`--instruction file unreadable: ${instruction}`);
@@ -486,7 +490,7 @@ export function dispatch(
     });
     if (routing !== null) {
       bad(routing.bad);
-      fix(routing.fix);
+      for (const repair of routing.fix) fix(repair);
       blocked = true;
       continue;
     }
@@ -503,7 +507,7 @@ export function dispatch(
       // is one this tool cannot see, so what changes is the repair, never the
       // refusal.
       const seen = { job: 'triage', repo: slug, issue };
-      const triaged = passesOf(store, draftDirFor(paths.root, seen), seen).length > 0;
+      const triaged = passesOf(store, draftDirFor(paths.root), seen).length > 0;
       bad('^ F-030: this issue already carries comment(s), and the label cannot tell "never triaged" from "triaged, awaiting a human"');
       if (triaged) {
         note('  a full pass sent here re-measures finished work and returns a competing verdict');
@@ -524,7 +528,7 @@ export function dispatch(
       // alone would distil pass 1 while pass 2's child is still writing — a brief
       // built on a verdict its own author is in the middle of replacing.
       const triageBase = { job: 'triage', repo: slug, issue };
-      const triagePasses = passesOf(store, draftDirFor(paths.root, triageBase), triageBase);
+      const triagePasses = passesOf(store, draftDirFor(paths.root), triageBase);
       const from = triagePasses.length === 0 ? 1 : triagePasses[triagePasses.length - 1];
       const draft = readDraft(paths.root, { ...triageBase, pass: from });
       if (triagePasses.length > 0 && !existsSync(draft.path)) {
@@ -542,24 +546,6 @@ export function dispatch(
       if (meta.comments === 0) note(`  distilling the unpublished draft at ${draft.path}`);
     }
     if (job === 'custom' && meta.comments > 0) note('  ^ already triaged — the spec opens by saying so, and forbids a re-triage');
-    if (job === 'refine') {
-      // Inbound gates do not apply here: comments on a spec-born issue are the
-      // ordinary state (rulings folded into bodies), so F-030 stays triage-only.
-      if (meta.labels.includes(READY_LABEL) && !force) {
-        bad('^ already ready-for-agent — a second refine pass on a published verdict needs to be deliberate');
-        // `--force` lifts the guard; `--fresh` is what actually starts a new
-        // analysis. Same-pass `--force` alone resumes the recorded request
-        // (F-001) and does not amend the published draft.
-        fix(
-          `ax ready dispatch --issue ${issue} --job refine --force --fresh --because <what moved> # redo it as a new pass, telling the child what changed`,
-        );
-        blocked = true;
-        continue;
-      }
-      if (meta.parent === undefined) note('  parent unknown — this gh cannot read the sub-issue parent; the child will identify the PRD itself');
-      else if (meta.parent === null) note('  ^ no parent issue — refine expects a PRD sub-issue; a bug or inbound request belongs to --job triage');
-      else note(`  parent #${meta.parent}`);
-    }
   }
   if (blocked) return refuse('precheck refused — nothing was dispatched');
 
@@ -595,7 +581,6 @@ export function dispatch(
       draft,
       labels: labels.path,
       triaged: (state.get(issue)?.comments ?? 0) > 0,
-      parent: state.get(issue)?.parent,
       instruction: job === 'custom' ? readFileSync(instruction, 'utf8') : '',
       pass,
       previous,
@@ -616,7 +601,7 @@ export function dispatch(
     } else {
       // Free text never touches argv: the spec goes to a file, always. A pasted
       // multi-line prompt is what left two briefs unsent in a composer.
-      const specDir = draftDirFor(paths.root, identity);
+      const specDir = draftDirFor(paths.root);
       const path = join(specDir, `${request}.spec.txt`);
       mkdirSync(specDir, { recursive: true });
       writeFileSync(path, `${spec}\n`);
@@ -676,12 +661,12 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  * State, comment count and title in one read — plus, for every lane that is
  * routed by provenance, the labels and the sub-issue parent.
  *
- * EVERY ROUTED LANE, and that used to be refine only. The asymmetry is what let
- * a triage pass start on a PRD sub-issue: the lane that must refuse a spec-born
- * ticket was the one lane that never asked what it was looking at. The routed
- * set is derived from `LABEL_JOBS` rather than hand-kept beside it — the second
- * list had already drifted, so `--job brief` read no labels and the gate ran on
- * an empty set. See `provenanceVerdict`.
+ * EVERY LABEL-APPLYING LANE, and that used to be the retired readiness lane
+ * only. The asymmetry is what let a triage pass start on a PRD sub-issue: the
+ * lanes that must refuse a spec-born ticket were the ones that never asked what
+ * they were looking at. The routed set IS `LABEL_JOBS` rather than a second
+ * list kept beside it — the second list had already drifted, so `--job brief`
+ * read no labels and the gate ran on an empty set. See `provenanceVerdict`.
  *
  * The parent read is best-effort and advisory: a gh older than the sub-issues
  * API fails the WHOLE view when asked for the field (it does not answer with the
@@ -696,7 +681,7 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  * upgrading gh.
  */
 function readIssue(gh, repo, issue, job = 'triage') {
-  const routed = LABEL_JOBS.has(job) || job === 'refine';
+  const routed = LABEL_JOBS.has(job);
   const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments';
   let out = gh(['issue', 'view', issue, '--repo', repo, '--json', fields]);
   let parentReadable = routed;

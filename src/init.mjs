@@ -197,7 +197,7 @@ const report = (label, state) => (state === 'unchanged' ? note(`${label} — unc
 export const namesLegacyReadyKey = errors => errors.some(error => error === 'root: unknown key "triage"');
 
 /** One sentence, printed by both verbs, so the two can never drift apart. */
-export const LEGACY_READY_KEY_FIX = `rename the "triage" key to "ready" in ${CONFIG_FILE} — the noun is \`ax ready\` now; the two lanes stayed jobs (--job refine for a spec-born ticket, --job triage for an inbound one)`;
+export const LEGACY_READY_KEY_FIX = `rename the "triage" key to "ready" in ${CONFIG_FILE} — the noun is \`ax ready\` now, because triage is one pass under it and not the whole of it (the jobs are --job triage|brief|custom)`;
 
 /**
  * Make a project ax-ready: the config, the committed bootstrap, and the managed

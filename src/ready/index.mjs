@@ -24,9 +24,10 @@ import { dispatch } from './dispatch.mjs';
 import { draftDirFor, passesIn, passesOf, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
 import { readyRelease } from './release.mjs';
+import { REFINE_REMOVED } from './spec.mjs';
 import { INBOX_WINDOW, askHeader, questionSpan } from './rulings.mjs';
 
-const USAGE = 'ax ready status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom|refine] [--repo <owner/repo>]';
+const USAGE = 'ax ready status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom] [--repo <owner/repo>]';
 
 /** The widest --issue range status will expand — see the refusal for why. */
 const RANGE_MAX = 100;
@@ -193,6 +194,10 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       return 2;
     }
   }
+  if (job === 'refine') {
+    process.stderr.write(`ax ready status: ${REFINE_REMOVED}\n${USAGE}\n`);
+    return 2;
+  }
   if (issues.length === 0) {
     process.stderr.write(`ax ready status: no --issue given\n${USAGE}\n`);
     return 2;
@@ -286,7 +291,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     const rows = [];
     for (const issue of expanded) {
       const base = { job, repo: slug, issue };
-      const all = passesOf(store, draftDirFor(root, base), base);
+      const all = passesOf(store, draftDirFor(root), base);
       if (all.length === 0) {
         rows.push({ line: `#${issue} — no pass`, handle: '' });
         continue;
@@ -321,11 +326,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
           ? `ASKING ${questionSpan(draft.questions.map(question => question.n))} · ${draft.sha.slice(0, 12)}`
           : draft.ok
             ? `FINAL ${draft.sha.slice(0, 12)} · ${draft.lines} ln`
-            : draft.ready === 'no'
-              // Only the refine grammar sets `ready`: a repair-carrying verdict
-              // is the coordinator's row to arbitrate, not a malformed draft.
-              ? `NOT-READY ${draft.sha.slice(0, 12)} · repair proposed`
-              : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
+            : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
       const pending = questionsForPass({ mailbox, request: requestFor(identity), handle, dispatchId });
       // A polled row says WAITING either way — a blocked child is the fact an
       // operator scans for — but only an ax-sent ask is one `ax ready answer`
@@ -377,7 +378,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     // a record and no draft; one written by hand could be the reverse. Reporting
     // only the newest would hide the row an operator is deciding against, and
     // reporting only one silently is what cost draft #54.
-    const all = [...new Set([...passesIn(store, base, '.json'), ...passesIn(draftDirFor(root, base), base, '.md')])].sort((a, b) => a - b);
+    const all = [...new Set([...passesIn(store, base, '.json'), ...passesIn(draftDirFor(root), base, '.md')])].sort((a, b) => a - b);
     const passes = all.length === 0 ? [1] : all;
     section(`issue #${issue} — ${passes.length} pass(es)`);
 

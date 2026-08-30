@@ -340,7 +340,12 @@ function proveLanded(gh, git, { repo, worktree, base }) {
 /** Which proof a session owes, decided by the request that dispatched it. */
 function prove(gh, git, { request, issuedAt, worktree, repo, base }) {
   if (request === null) return missing('unknown provenance — this host recorded no request for that dispatch');
-  const kind = /^(triage|brief|refine)-/.exec(request);
+  // The set shrank from three to two, and that is a removal and not an
+  // omission: the `refine-` request kind went with the readiness lane `ax
+  // ready` no longer has. A stale `refine-…` record on some host falls through
+  // to `proveLanded`, which asks for a merged PR and answers MISSING — the
+  // conservative direction, and the one a retired kind deserves.
+  const kind = /^(triage|brief)-/.exec(request);
   if (kind === null) return proveLanded(gh, git, { repo, worktree, base });
   const number = request.split('-').pop() ?? '';
   if (!/^[1-9][0-9]*$/.test(number)) return missing('the request names no issue');
