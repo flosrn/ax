@@ -1,6 +1,6 @@
 // The Run a dispatched child must report into, read from the peer registry.
 //
-// This is not a detail of one verb: `launch` needs it, `triage dispatch` needs
+// This is not a detail of one verb: `launch` needs it, `ready dispatch` needs
 // it, and any later verb that puts an agent in front of work needs it too. It
 // lives here because the alternative already cost a bug — `defaultExec` was
 // declared twice, one copy was dropped in a refactor, and no test noticed

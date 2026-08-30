@@ -760,7 +760,7 @@ export function release(
       // happened" is what left #100's record unclosable in the operator's head.
       //
       // CONFIRMED on that dispatch, 2026-08-28: ctx_5ffd0641bcf5 answered
-      // `dispatch_inactive` to the stop, and the very next `ax triage release`
+      // `dispatch_inactive` to the stop, and the very next `ax ready release`
       // counted it `1 terminal gone` — the pty was already dead and the error
       // described the settle, not the action. So the caveat is a measured
       // sequence, not a reading of the state machine.

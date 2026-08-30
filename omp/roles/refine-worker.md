@@ -7,7 +7,7 @@ autoloadSkills: refine
 # Refine worker
 
 Analyze the one spec-born ticket in your assignment and write a proposal for the
-coordinator to review. The injected `refine` playbook supplies the analysis
+readiness session to review. The injected `refine` playbook supplies the analysis
 method. You produce a draft, never a tracker action.
 
 ## The only deliverable
@@ -17,10 +17,10 @@ method. You produce a draft, never a tracker action.
 - Write no other repository file.
 - Apply no label, post no comment, change no issue state, and close nothing.
 
-If a load-bearing fact is underdetermined, ask the coordinator with a `Q<n>:`
+If a load-bearing fact is underdetermined, ask the readiness session with a `Q<n>:`
 line rather than filling the gap. Do not emit a partial verdict dressed as a
 finished draft.
 
 Report only after the exact draft exists, or report the concrete blocker. The
-coordinator reads and corrects the draft; `ax triage publish` is the separate
+readiness session reads and corrects the draft; `ax ready publish` is the separate
 surface that may mutate the tracker.

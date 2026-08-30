@@ -1,4 +1,4 @@
-// The one instruction a triage child receives, and the role map its marker is
+// The one instruction a ready child receives, and the role map its marker is
 // built from — identity and context in, one line out. Pure and offline:
 // extracted from dispatch.mjs so a sentence of the child's contract can be
 // proved without an Orca pipeline behind it. Every string's incident history
@@ -27,7 +27,7 @@ export const ROLE_BY_JOB = {
  * Under this contract the child mutates NOTHING. Everything the Bash spec spent
  * its length on — apply five groups with `gh issue edit`, never wontfix, never
  * close, never the bare size labels — is the publisher's contract now, and
- * belongs to `ax triage publish`. What the child owes is one file.
+ * belongs to `ax ready publish`. What the child owes is one file.
  */
 export function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, parent, instruction, pass = 1, previous = null, because = '' }) {
   const marker = `[omp role=${ROLE_BY_JOB[job].role} model=${model}]`;
@@ -59,7 +59,7 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
   // this string named `orca orchestration ask` raw instead, and that put the
   // whole middle of the loop outside the tool that knows the rules — a child
   // typing its own `--question` can ask something other than what its draft
-  // records. `ax triage ask` reads the Q lines off the draft itself, so the
+  // records. `ax ready ask` reads the Q lines off the draft itself, so the
   // wire and the record cannot diverge; underneath it is the same measured
   // transport (blocks until answered; from an active Dispatch it defaults to
   // the owning Run's mailbox; a timeout leaves the question PENDING and a
@@ -68,7 +68,7 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
   //
   // The global command is the stable entry point a fresh child receives; its
   // dispatcher hands this argv to the exact project package.
-  const askCommand = `ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
+  const askCommand = `ax ready ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
   // The routing tag lives INSIDE the question text, never between the number
   // and the colon: `Q<n> [technical]:` would break the one Q-line grammar
   // (draft.mjs), while `Q<n>: [technical] …` travels verbatim through ask and
@@ -78,7 +78,7 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
   // `[product]` is advisory — escalate only when the ruling would change what
   // users see, commit money, legal position or personal data, or contradict an
   // expressed intention. The tag is not validated — an untagged question costs
-  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and OPEN each question's text with its routing tag — \`[technical]\` for representation, cardinality, file placement, versioning, pure/impure, type unions or SQL mechanics, which the coordinator rules itself and reversibly; \`[product]\` for scope, user-visible behavior, security, money, data, or business taxonomy — advisory for the coordinator, who still rules unless the answer would change what users see, commit money, legal position or personal data, or contradict an expressed intention — so the parent routes each question without reading it twice. Keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open — with ONE exception, and THE ASK ITSELF DECLARES IT: when its repair line tells you to report, that line outranks this sentence. Two refusals say so today — this Dispatch is not supervised (its capability died at a composer stall), and the runtime refusing to admit any ask after the verb's own retries (\`runtime_busy\`, long-poll capacity) — and in both, no ask can land from this session at all, so retrying by hand buys nothing. Then keep the \`Q<n>:\` lines in the draft and report immediately, quoting them verbatim and saying exactly why the supervised channel is unavailable; your report is the only channel left, and the parent answers by peer. On every other refusal, and on a timeout, you do NOT report: exit 4 is pending, not dead. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
+  const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and OPEN each question's text with its routing tag — \`[technical]\` for representation, cardinality, file placement, versioning, pure/impure, type unions or SQL mechanics, which the parent that dispatched you rules itself and reversibly; \`[product]\` for scope, user-visible behavior, security, money, data, or business taxonomy — advisory for that parent, who still rules unless the answer would change what users see, commit money, legal position or personal data, or contradict an expressed intention — so the parent routes each question without reading it twice. Keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`ax ready ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open — with ONE exception, and THE ASK ITSELF DECLARES IT: when its repair line tells you to report, that line outranks this sentence. Two refusals say so today — this Dispatch is not supervised (its capability died at a composer stall), and the runtime refusing to admit any ask after the verb's own retries (\`runtime_busy\`, long-poll capacity) — and in both, no ask can land from this session at all, so retrying by hand buys nothing. Then keep the \`Q<n>:\` lines in the draft and report immediately, quoting them verbatim and saying exactly why the supervised channel is unavailable; your report is the only channel left, and the parent answers by peer. On every other refusal, and on a timeout, you do NOT report: exit 4 is pending, not dead. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
 
   // What a SECOND pass is told, and it is told before anything else it reads.
   // Empty on pass 1, so the ordinary dispatch is byte-identical to what it was.
@@ -120,7 +120,7 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
       lineage,
       `Write your verdict to ${draft}: exactly one \`Ready: yes\` or \`Ready: no\` line, then one \`## Agent Brief\` section — published verbatim on the issue, so it carries no line numbers and no file-placement instructions — then one \`## Verification\` section, which is never published: your per-gate evidence, where file:line reads belong.`,
       'Never write `Labels:`, `Remove labels:` or `Close:` — a refine draft that names labels is refused whole; publication applies only ready-for-agent, and the PRD already decided the categorization.',
-      'On a failed gate the verdict is `Ready: no` and the draft carries the diagnosis plus a concrete repair proposal — corrected acceptance criteria, or a split. You recommend; the coordinator arbitrates.',
+      'On a failed gate the verdict is `Ready: no` and the draft carries the diagnosis plus a concrete repair proposal — corrected acceptance criteria, or a split. You recommend; the parent that dispatched you arbitrates.',
       nothing,
       asking,
       'Report when the draft is FINAL — which means it carries no open question.',

@@ -92,8 +92,8 @@ export const COMMANDS = [
     ],
   },
   {
-    name: 'triage',
-    summary: 'one session per issue, and the drafts they write — you publish',
+    name: 'ready',
+    summary: 'make an issue ready for an agent — refine a spec ticket, triage an inbound one',
     // Gated on the same predicate as `worker`: the dispatch needs an Orca CLI.
     // `publish` needs only `gh`, but it publishes what a dispatched session
     // wrote, so a machine that cannot dispatch has nothing to publish either.
@@ -111,7 +111,7 @@ export const COMMANDS = [
     name: 'pr',
     summary: 'decide whether a pull request may merge, and merge it',
     // The one verb here reads `gh` and `git` only, so unlike `worker` and
-    // `triage` this noun carries no `gated` key: it answers wherever ax is
+    // `ready` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
     subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
   },

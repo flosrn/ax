@@ -124,14 +124,31 @@
         }
       }
     },
-    "triage": {
+    "ready": {
       "type": "object",
       "additionalProperties": false,
-      "description": "What `ax triage` has to know about THIS project to put a session in front of an issue. A triage child mutates nothing: it writes a draft, and you publish it — so what a project declares here is the vocabulary that draft has to speak.",
+      "description": "What `ax ready` has to know about THIS project to put a session in front of an issue. Two lanes: refine for spec-born tickets, triage for inbound ones. A child mutates nothing: it writes a draft, and you publish it — so what a project declares here is the vocabulary that draft has to speak.",
       "properties": {
         "labels": {
           "type": "string",
           "description": "Path to this project's label mapping — repo-relative, or absolute when shared. It names the groups a finished triage has to fill, which `skill://triage` does not carry: left to the skill alone a session recommends in prose and stops, and on 2026-08-10 four issues landed with three empty groups each while the maintainer did the data entry. Absent or unreadable is a refusal for the jobs that apply labels: `gh label list` enumerates names but knows nothing about groups or completeness, so a child dispatched without this is under-specified before it starts."
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Which lane a ticket's ORIGIN earns, named with labels this project already applies. `spec` names the labels meaning 'born from a PRD or spec': those tickets earn the readiness pass (`--job refine`), whose publication applies only `ready-for-agent` because the PRD already decided their categorization. `inbound` names the labels meaning 'came from outside a spec' — a human, another agent, a follow-up — and those earn `--job triage`, the pass that decides categorization. Absent means nothing is gated: an undeclared vocabulary is never an inferred one, and a project that tracks provenance some other way keeps routing by hand. Declared, a ticket whose label contradicts the requested job is refused before any child is dispatched, and so is a ticket whose two signals disagree. Measured 2026-08-30: ten tickets carrying `needs-triage`, a spec label AND a parent PRD at once, one sentence away from a triage pass that would have applied label groups over a categorization their PRD had already decided — which a refine draft is refused for even naming.",
+          "properties": {
+            "spec": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Labels meaning this ticket was born from a PRD or spec. The parent sub-issue link is read too, but it decides nothing on its own: nesting proves nesting, and a follow-up nested under its origin ticket is inbound."
+            },
+            "inbound": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Labels meaning this ticket came from outside a spec: a human report, another agent's finding, a follow-up born during a wave."
+            }
+          }
         }
       }
     },

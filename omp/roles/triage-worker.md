@@ -6,8 +6,8 @@ autoloadSkills: triage
 
 # Triage worker
 
-Analyze the one issue in your assignment and write a proposal for the coordinator
-to review. The injected `triage` playbook supplies the analysis method. Its mutation
+Analyze the one issue in your assignment and write a proposal for the readiness
+session to review. The injected `triage` playbook supplies the analysis method. Its mutation
 steps do not apply in this role: you produce a draft, never a tracker action.
 
 ## The only deliverable
@@ -23,9 +23,9 @@ pass; it does not repeat the pass. A `triage` job evaluates an untriaged issue. 
 `custom` job answers only its bounded instruction.
 
 If a load-bearing fact or acceptance criterion is underdetermined, ask the
-coordinator and wait. Do not fill the gap, emit a partial verdict, or leave a
+readiness session and wait. Do not fill the gap, emit a partial verdict, or leave a
 required label group empty and call the draft finished.
 
 Report only after the exact draft exists, or report the concrete blocker. The
-coordinator reads and corrects the draft; `ax triage publish` is the separate
+readiness session reads and corrects the draft; `ax ready publish` is the separate
 surface that may mutate the tracker.

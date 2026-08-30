@@ -1,4 +1,4 @@
-// `ax triage dispatch` — one Orca session per issue, and nothing else.
+// `ax ready dispatch` — one Orca session per issue, and nothing else.
 //
 // It does not read the issue, judge it, or write a word about it. The session
 // does that, from the preloaded triage playbook plus the project's own label
@@ -14,11 +14,11 @@
 // sidebar to produce one comment. Prose did not hold. This is the shape that
 // does.
 //
-// What a triage session needs: the repo readable, `gh`, and a pane that can talk
+// What a ready session needs: the repo readable, `gh`, and a pane that can talk
 // to its orchestrator. What it does not need: a worktree, a branch, a setup run,
 // a PR. So it runs with `--worktree current` — a real session in the existing
 // checkout, with nothing left behind, and several of them share the checkout
-// without colliding because a triage child writes only its own draft.
+// without colliding because a ready child writes only its own draft.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
@@ -40,18 +40,137 @@ import { ROLE_BY_JOB, renderSpec } from './spec.mjs';
 import { READY_LABEL } from './publish.mjs';
 
 const USAGE =
-  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom|refine] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
+  'ax ready dispatch --issue N [--issue M …] [--job triage|brief|custom|refine] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
 
+/**
+ * Does a DECLARED provenance label name the same tracker label as a carried one?
+ *
+ * GitHub label names are case-insensitively unique, so this comparison cannot
+ * over-match — and byte-exact matching had a real cost: a config that wrote
+ * `Source:Roadmap`, or left a trailing space, produced an empty intersection,
+ * which `provenanceVerdict` cannot tell from "this project declared no
+ * vocabulary". So the gate returned null and the wrong lane started. The
+ * messages still print the DECLARED name that matched, because that is the
+ * string an operator has to go and correct.
+ */
+const sameLabel = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+const declaredCarried = (names, labels) => names.filter(name => labels.some(carried => sameLabel(name, carried)));
+
+/**
+ * Which lane a ticket's ORIGIN earns, when the repository declared the
+ * vocabulary that says so (`ready.provenance`). Returns the refusal, or null
+ * when nothing in the ticket contradicts the requested job.
+ *
+ * WHY THIS EXISTS. A PRD sub-issue and an inbound report are two different
+ * passes: refine scores a Definition-of-Ready and publishes a Brief plus
+ * `ready-for-agent`, while triage decides categorization and applies label
+ * groups. Only prose separated them — the readiness role told the operator that
+ * "provenance decides the job" — and `readIssue` asked for the sub-issue parent
+ * in the REFINE lane only, so the one lane that must refuse a spec-born ticket
+ * was the one lane that never looked. Measured 2026-08-30: ten tickets carrying
+ * the inbound triage label, a spec label AND a parent PRD at once, one sentence
+ * away from a triage wave that would have applied label groups over a
+ * categorization their PRD had already decided — which `draft.mjs` refuses a
+ * refine draft for even naming.
+ *
+ * TWO SIGNALS, AND A LANE NEEDS BOTH. The `source:`-style label is the
+ * repository's declaration of intent, read from config and never inferred. The
+ * sub-issue parent is the tracker's own answer. Nesting alone proves nesting —
+ * a follow-up nested under its origin ticket is inbound, so a parent-only rule
+ * would route it to refine — and the label alone proves an intention nobody
+ * linked. So a redirect is offered only when both agree; a disagreement and an
+ * unreadable parent both refuse, and say which one it was (F-028: an unknown is
+ * not an absence).
+ *
+ * NO OVERRIDE. The other precheck gates take `--force` because they ask about
+ * state the operator may already have read; a routing mistake has one correct
+ * repair instead — the other lane, or the signal that is wrong.
+ */
+export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared }) {
+  const spec = declaredCarried(declared?.spec ?? [], labels);
+  const inbound = declaredCarried(declared?.inbound ?? [], labels);
+  if (spec.length === 0 && inbound.length === 0) return null;
+
+  if (spec.length > 0 && inbound.length > 0) {
+    return {
+      bad: `^ carries ${spec.join(', ')} and ${inbound.join(', ')} — one ticket cannot be both spec-born and inbound, and no lane follows from a contradiction`,
+      fix: `gh issue view ${issue} --repo ${slug} --json labels # remove whichever of the two is wrong, then re-dispatch`,
+    };
+  }
+
+  // EVERY label-applying lane, not just triage. `brief` is in `LABEL_JOBS` for
+  // the same reason triage is — its child spec permits `Labels:` directives — so
+  // a spec-born ticket briefed here writes label groups over a categorization
+  // its PRD already decided. The inbound branch below stays refine-only on
+  // purpose: an inbound ticket in the brief lane is the ordinary sequence,
+  // because a brief distils a triage pass that already happened.
+  if (LABEL_JOBS.has(job) && spec.length > 0) {
+    if (parent === null) {
+      return {
+        bad: `^ carries ${spec.join(', ')} but links to no PRD — the label says spec-born, the tracker says nothing, and neither pass is safe on that`,
+        fix: `gh issue edit ${issue} --repo ${slug} --remove-label ${spec[0]} # if it truly came from outside; otherwise link it to its PRD first`,
+      };
+    }
+    if (typeof parent !== 'number') {
+      // An unknown parent has three causes and only ONE of them is a gh too old
+      // to answer `--json parent`. Offering the upgrade for the other two sends
+      // the operator after a binary that answered fine. And the label-removal
+      // clause this repair used to carry was worse than useless: nothing has
+      // been established here, and removing the spec label starts the very pass
+      // the gate refused. Measured 2026-08-30: gh 2.97.0 answers `--json
+      // parent` and `--json subIssues`.
+      const why =
+        parentCause === 'capability'
+          ? 'this gh refuses the parent field outright'
+          : parentCause === 'absent'
+            ? 'gh answered with no parent key at all, which is an unknown and not a confirmed absence (F-028)'
+            : parentCause === 'unparseable'
+              ? 'gh answered a parent that is not a usable issue number'
+              : 'the read established no parent number';
+      return {
+        bad: `^ carries ${spec.join(', ')} and its sub-issue parent could not be read — ${why} — so the ${job} lane is refused on the label alone, and refine cannot be offered on one signal either`,
+        fix:
+          parentCause === 'capability'
+            ? 'gh --version # upgrade until --json parent answers'
+            : `gh issue view ${issue} --repo ${slug} --json parent # read it directly: until a parent is established, neither lane is safe`,
+      };
+    }
+    return {
+      bad: `^ ${spec.join(', ')}, a sub-issue of #${parent} — its categorization was decided by that PRD, and a ${job} draft would apply label groups over it`,
+      fix: `ax ready dispatch --issue ${issue} --job refine --repo ${slug} # the readiness pass a spec-born ticket earns`,
+    };
+  }
+
+  if (job === 'refine' && inbound.length > 0) {
+    return {
+      bad: `^ carries ${inbound.join(', ')} — an issue born outside a spec has no Definition-of-Ready to score against one`,
+      fix: `ax ready dispatch --issue ${issue} --repo ${slug} # triage is the pass that decides an inbound ticket's categorization`,
+    };
+  }
+
+  return null;
+}
+
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
 
-const roleWaitOf = env => {
-  const value = Number(env.AX_TRIAGE_ROLE_WAIT ?? 30);
-  return Number.isFinite(value) && value >= 0 ? value : 30;
-};
+/**
+ * How long `verifyPassRole` waits for the child's own receipts. Consumed
+ * there; refused here at the reader so a retired name cannot become a silent
+ * 30s default. Empty is absence.
+ */
+export function roleWaitOf(env) {
+  const retired = env.AX_TRIAGE_ROLE_WAIT;
+  if (retired !== undefined && retired !== '') {
+    return { ok: false, from: 'AX_TRIAGE_ROLE_WAIT', to: 'AX_READY_ROLE_WAIT' };
+  }
+  const value = Number(env.AX_READY_ROLE_WAIT ?? 30);
+  return { ok: true, wait: Number.isFinite(value) && value >= 0 ? value : 30 };
+}
 
 /**
  * Prove the child-side effect, not the marker ax composed.
@@ -72,9 +191,9 @@ const roleWaitOf = env => {
  * only thing standing between that verdict and the relaunch of a live agent
  * (F-001). An absent receipt is not a refused receipt (F-028).
  */
-function verifyTriageRole({ request, job = 'triage', root, env, sessionsRoot, proofFn, now, sleep }) {
+function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proofFn, now, sleep }) {
   const expected = ROLE_BY_JOB[job];
-  const wait = roleWaitOf(env);
+  const wait = roleWaitOf(env).wait;
   const deadline = now() + wait * 1000;
   let model = null;
   let role = null;
@@ -123,7 +242,7 @@ function verifyTriageRole({ request, job = 'triage', root, env, sessionsRoot, pr
   // this loop settles on, so no bounded wait here can prove the selection final
   // — a fallback at wait+1s exists for every wait. What the channel does
   // instead is keep the evidence durable: `launchProof` reads the whole session
-  // file and the LAST mover wins, so any later read (`ax triage status`,
+  // file and the LAST mover wins, so any later read (`ax ready status`,
   // `ax worker transcript`) sees a fallback this line could not have seen, and
   // a `fallback` mover observed at ANY time fails below rather than passing.
   if (
@@ -168,7 +287,7 @@ export function dispatch(
   } = {},
 ) {
   const usageError = message => {
-    process.stderr.write(`ax triage dispatch: ${message}\n${USAGE}\n`);
+    process.stderr.write(`ax ready dispatch: ${message}\n${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -230,31 +349,31 @@ export function dispatch(
 
   // ── 2. the machine, before the tracker ────────────────────────────────────
   const bin = runner ? null : resolve({ env });
-  if (!runner && bin === null) return cannot('no Orca CLI on this machine — a triage session is an Orca session, so none can be created here');
+  if (!runner && bin === null) return cannot('no Orca CLI on this machine — a ready session is an Orca session, so none can be created here');
   const run = runner ?? createRunner({ bin, exec });
   const ready = runtimeReady(run);
   if (!ready.ready) return cannot(ready.reason, 'orca open # start the runtime, then re-run this dispatch');
 
   const paths = repoPaths(cwd);
-  if (!paths.root) return refuse('not inside a git repository — a triage session reads this checkout, so it needs one');
+  if (!paths.root) return refuse('not inside a git repository — a ready session reads this checkout, so it needs one');
 
   const gh = args => exec('gh', args, paths.root);
   const slug = repo || repoSlug(gh);
-  if (slug === '') return refuse('could not resolve the current repository', 'ax triage dispatch --repo <owner>/<repo>');
+  if (slug === '') return refuse('could not resolve the current repository', 'ax ready dispatch --repo <owner>/<repo>');
 
   // ── 3. the vocabulary the child is answerable to ──────────────────────────
   // Declared and unreadable is a refusal, exactly like `launch.contract`: a spec
   // pointing at nothing sends a child to improvise, and improvising here means
   // recommending in prose and stopping.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
-  if (!loaded.exists) return refuse(`no ax.config.json for ${paths.root}`, 'ax init # a triage session reads this project\'s contract, so the project has to have one');
+  if (!loaded.exists) return refuse(`no ax.config.json for ${paths.root}`, 'ax init # a ready session reads this project\'s contract, so the project has to have one');
   if (loaded.errors.length > 0) return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
   const config = loaded.config ?? {};
-  const labels = readLabels(config.triage?.labels ?? '', paths.root);
+  const labels = readLabels(config.ready?.labels ?? '', paths.root);
   if (LABEL_JOBS.has(job) && labels.missing) {
     return refuse(
-      `ax.config.json declares triage.labels ${labels.why} — a ${job} child would have no group vocabulary and would land an incomplete verdict (2026-08-10: four issues, three empty groups each)`,
-      labels.path ? `create or repair ${labels.path} # the file that names this project's label groups` : "declare triage.labels in ax.config.json # the file that names this project's label groups",
+      `ax.config.json declares ready.labels ${labels.why} — a ${job} child would have no group vocabulary and would land an incomplete verdict (2026-08-10: four issues, three empty groups each)`,
+      labels.path ? `create or repair ${labels.path} # the file that names this project's label groups` : "declare ready.labels in ax.config.json # the file that names this project's label groups",
     );
   }
 
@@ -303,15 +422,30 @@ export function dispatch(
   const newSessions = plan.filter(entry => !existsSync(join(store, `${requestFor({ job, repo: slug, issue: entry.issue, pass: entry.pass })}.json`)));
   const cap = capOf(env);
   if (!cap.ok) {
+    if (cap.from) {
+      return refuse(
+        `${cap.from} is set — the umbrella is ax ready now, so the cap is ${cap.to}`,
+        `unset ${cap.from} and export ${cap.to} instead`,
+      );
+    }
     return refuse(
-      `ORCA_TRIAGE_SESSION_CAP is ${JSON.stringify(cap.raw)}, which is not a whole number of sessions — refusing rather than dispatching with no cap at all`,
-      'unset ORCA_TRIAGE_SESSION_CAP # the default is 3, and 0 means "no new session here"',
+      `ORCA_READY_SESSION_CAP is ${JSON.stringify(cap.raw)}, which is not a whole number of sessions — refusing rather than dispatching with no cap at all`,
+      'unset ORCA_READY_SESSION_CAP # the default is 3, and 0 means "no new session here"',
+    );
+  }
+  const wait = roleWaitOf(env);
+  if (!wait.ok) {
+    // Reachable from the same place the wait is consumed: before any session
+    // starts. Putting it only in verifyPassRole would start children first.
+    return refuse(
+      `${wait.from} is set — the umbrella is ax ready now, so the wait is ${wait.to}`,
+      `unset ${wait.from} and export ${wait.to} instead`,
     );
   }
   if (live + newSessions.length > cap.cap) {
     return refuse(
       `cap: ${live} live child pane(s) + ${newSessions.length} new > ${cap.cap}`,
-      'let a session finish, dispatch fewer issues, or raise ORCA_TRIAGE_SESSION_CAP',
+      'let a session finish, dispatch fewer issues, or raise ORCA_READY_SESSION_CAP',
     );
   }
 
@@ -323,6 +457,11 @@ export function dispatch(
     const meta = readIssue(gh, slug, issue, job);
     if (!meta.ok) {
       bad(`#${issue} UNREADABLE — ${meta.reason}`);
+      // The routed lanes ask for `--json parent`, which an older gh refuses by
+      // failing the whole view. Only one stderr is matched as that capability
+      // gap, so the narrower read is what separates it from a token, a network
+      // or a permission failure: both arrive here as a non-zero exit.
+      fix(`gh issue view ${issue} --repo ${slug} --json state,title,comments # if this answers, the parent field is what failed`);
       blocked = true;
       continue;
     }
@@ -331,6 +470,23 @@ export function dispatch(
 
     if (meta.state !== 'OPEN') {
       bad('^ not OPEN — a closed issue is not triage work');
+      blocked = true;
+      continue;
+    }
+    // The routing question comes before every state question: a pass that should
+    // never run in this lane is not made safe by having no comments yet.
+    const routing = provenanceVerdict({
+      job,
+      issue,
+      slug,
+      labels: meta.labels,
+      parent: meta.parent,
+      parentCause: meta.parentCause,
+      declared: config.ready?.provenance,
+    });
+    if (routing !== null) {
+      bad(routing.bad);
+      fix(routing.fix);
       blocked = true;
       continue;
     }
@@ -351,11 +507,11 @@ export function dispatch(
       bad('^ F-030: this issue already carries comment(s), and the label cannot tell "never triaged" from "triaged, awaiting a human"');
       if (triaged) {
         note('  a full pass sent here re-measures finished work and returns a competing verdict');
-        fix(`ax triage dispatch --issue ${issue} --job brief # the pass is recorded here, so distil it — not --force`);
+        fix(`ax ready dispatch --issue ${issue} --job brief # the pass is recorded here, so distil it — not --force`);
       } else {
         note('  no triage pass is recorded here and no draft exists, so those comment(s) are not a pass this tool wrote');
         note('  read them first: a coordination note is not a verdict, and a human verdict is one this tool cannot see');
-        fix(`ax triage dispatch --issue ${issue} --force # once you have read them and they are not a triage pass`);
+        fix(`ax ready dispatch --issue ${issue} --force # once you have read them and they are not a triage pass`);
       }
       blocked = true;
       continue;
@@ -373,13 +529,13 @@ export function dispatch(
       const draft = readDraft(paths.root, { ...triageBase, pass: from });
       if (triagePasses.length > 0 && !existsSync(draft.path)) {
         bad(`^ triage pass ${from} is dispatched but has written no draft yet — there is nothing to distil, and falling back to an older pass would brief a verdict being replaced`);
-        fix(`ax triage status --issue ${issue} --job triage   # wait for pass ${from} to write, then run the brief`);
+        fix(`ax ready status --issue ${issue} --job triage   # wait for pass ${from} to write, then run the brief`);
         blocked = true;
         continue;
       }
       if (meta.comments === 0 && !draft.ok && !existsSync(draft.path)) {
         bad('^ no comment and no triage draft — there is no pass to distil into a brief');
-        fix(`ax triage dispatch --issue ${issue} # run the triage pass first`);
+        fix(`ax ready dispatch --issue ${issue} # run the triage pass first`);
         blocked = true;
         continue;
       }
@@ -395,7 +551,7 @@ export function dispatch(
         // analysis. Same-pass `--force` alone resumes the recorded request
         // (F-001) and does not amend the published draft.
         fix(
-          `ax triage dispatch --issue ${issue} --job refine --force --fresh --because <what moved> # redo it as a new pass, telling the child what changed`,
+          `ax ready dispatch --issue ${issue} --job refine --force --fresh --because <what moved> # redo it as a new pass, telling the child what changed`,
         );
         blocked = true;
         continue;
@@ -479,7 +635,7 @@ export function dispatch(
   if (!dry) {
     for (const result of results) {
       if (result.verdict !== 'DISPATCHED') continue;
-      result.verdict = verifyTriageRole({
+      result.verdict = verifyPassRole({
         request: result.request,
         job,
         root: paths.root,
@@ -517,26 +673,55 @@ export function dispatch(
 const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' : code === 3 ? 'CANNOT-ESTABLISH' : 'REFUSED');
 
 /**
- * State, comment count and title in one read — plus, for refine only, the labels
- * and the sub-issue parent.
+ * State, comment count and title in one read — plus, for every lane that is
+ * routed by provenance, the labels and the sub-issue parent.
+ *
+ * EVERY ROUTED LANE, and that used to be refine only. The asymmetry is what let
+ * a triage pass start on a PRD sub-issue: the lane that must refuse a spec-born
+ * ticket was the one lane that never asked what it was looking at. The routed
+ * set is derived from `LABEL_JOBS` rather than hand-kept beside it — the second
+ * list had already drifted, so `--job brief` read no labels and the gate ran on
+ * an empty set. See `provenanceVerdict`.
  *
  * The parent read is best-effort and advisory: a gh older than the sub-issues
  * API fails the WHOLE view when asked for the field (it does not answer with the
  * field missing), so the naive read would turn a capability gap into a refusal.
  * On that exact failure the read retries with the base fields and the parent
  * stays `undefined` — unknown, which is not `null`, confirmed absent (F-028).
+ *
+ * An unknown parent carries WHY it is unknown, because the three causes have
+ * three different repairs: `capability` (this gh refused the field),
+ * `absent` (the answer carried no `parent` key) and `unparseable`
+ * (`parent.number` was not a safe issue number). Only the first is repaired by
+ * upgrading gh.
  */
 function readIssue(gh, repo, issue, job = 'triage') {
-  const refine = job === 'refine';
-  const fields = refine ? 'state,title,comments,labels,parent' : 'state,title,comments';
+  const routed = LABEL_JOBS.has(job) || job === 'refine';
+  const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments';
   let out = gh(['issue', 'view', issue, '--repo', repo, '--json', fields]);
-  let parentReadable = refine;
-  if (refine && !out.error && out.status !== 0 && /unknown json field.*parent/i.test(String(out.stderr ?? ''))) {
+  let parentReadable = routed;
+  if (routed && !out.error && out.status !== 0 && /unknown json field.*parent/i.test(String(out.stderr ?? ''))) {
     parentReadable = false;
     out = gh(['issue', 'view', issue, '--repo', repo, '--json', 'state,title,comments,labels']);
   }
   if (out.error) return { ok: false, reason: `gh could not run: ${String(out.error.message ?? out.error)}` };
-  if (out.status !== 0) return { ok: false, reason: `not found in ${repo}` };
+  if (out.status !== 0) {
+    // The retry above matches ONE stderr. Every other non-zero exit used to be
+    // reported as `not found in <repo>` — a guess, and since this diff widened
+    // the parent-bearing read to every routed lane, a guess the default lane can
+    // now reach where its old `state,title,comments` read would have answered.
+    // A token, network or permission failure read as a missing issue sends the
+    // operator to look for a ticket that is sitting right there, so the exit and
+    // gh's own words travel instead.
+    const detail = String(out.stderr ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    return {
+      ok: false,
+      reason: `gh issue view failed (exit ${out.status})${detail === '' ? ' and said nothing' : `: ${detail}`} — a non-zero exit is not evidence the issue is absent`,
+    };
+  }
   let body;
   try {
     body = JSON.parse(out.stdout);
@@ -545,14 +730,23 @@ function readIssue(gh, repo, issue, job = 'triage') {
   }
   if (!Array.isArray(body.comments)) return { ok: false, reason: 'gh answered no comments array — an absent container is not an empty one' };
   const meta = { ok: true, state: String(body.state ?? ''), title: String(body.title ?? ''), comments: body.comments.length };
-  if (refine) {
+  if (routed) {
     if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
     meta.labels = body.labels.map(label => String(label?.name ?? ''));
-    if (!parentReadable || !Object.hasOwn(body, 'parent')) meta.parent = undefined;
-    else if (body.parent === null) meta.parent = null;
+    if (!parentReadable) {
+      meta.parent = undefined;
+      meta.parentCause = 'capability';
+    } else if (!Object.hasOwn(body, 'parent')) {
+      meta.parent = undefined;
+      meta.parentCause = 'absent';
+    } else if (body.parent === null) meta.parent = null;
     else {
       const parent = Number(body.parent?.number);
-      meta.parent = Number.isSafeInteger(parent) && parent > 0 ? parent : undefined;
+      if (Number.isSafeInteger(parent) && parent > 0) meta.parent = parent;
+      else {
+        meta.parent = undefined;
+        meta.parentCause = 'unparseable';
+      }
     }
   }
   return meta;

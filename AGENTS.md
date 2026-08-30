@@ -15,7 +15,7 @@ node bin/ax.mjs          # the command surface this machine can answer
 1. **Prepare the worktree** — `src/worktree/`. Probe the checkout, derive one plan, then write it.
 2. **Equip the session** — `omp/model/`, `omp/roles/`, `omp/playbooks/`. Apply the pinned role,
    model and procedure before the first turn.
-3. **Orchestrate the work** — `src/worker/`, `src/triage/`, `src/pr-gate.mjs`, plus the peer/report/
+3. **Orchestrate the work** — `src/worker/`, `src/ready/`, `src/pr-gate.mjs`, plus the peer/report/
    checkpoint extensions under `omp/`. Record mutations, route messages, verify artifacts, recover.
 
 **The plan** — `src/worktree/plan.mjs`. `planWorktree()` decides a worktree's target state once, as
@@ -49,10 +49,10 @@ them.
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |
 | `src/worker/sweep.mjs` | reclaiming processes a dead worktree left behind, by pgid and never by name |
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup — including the AX bundle a child must load before it is dispatched — tracker, placement and parent route |
-| `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
-| `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
-| `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
-| `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
+| `src/ready/dispatch.mjs`, `src/ready/ask.mjs`, `src/ready/answer.mjs`, `src/ready/publish.mjs` | one analysis session per issue, questions, corrected publication |
+| `src/ready/spec.mjs`, `src/ready/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
+| `src/ready/index.mjs`, `src/ready/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
+| `src/ready/draft.mjs`, `src/ready/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
 | `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |
 | `src/board.mjs` | the one monotonic writer of a worktree checkpoint |
 | `src/pin.mjs` | exact npm release migration, install proof and doctor; never git |
@@ -62,7 +62,7 @@ them.
 | `src/blocks.mjs`, `src/dotenv.mjs`, `src/hash.mjs`, `src/proc.mjs`, `src/supabase-guard.mjs` | managed block edits, env files, deterministic naming, pgid lookup, the shared-database guard |
 | `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
 | `omp/model/index.ts`, `omp/model/activation.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
-| `omp/roles/`, `omp/playbooks/` | coordinator, orchestrator, worker, triage-worker, refine-worker and maintainer contracts |
+| `omp/roles/`, `omp/playbooks/` | readiness, orchestrator, worker, triage-worker, refine-worker and maintainer contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
@@ -109,6 +109,12 @@ expected failure, then change production. Prefer real temp git repos over mocked
 
 **Absence is not zero** (F-028). Read receipts by named key; an absent list is unknown, not empty.
 Never `||` a missing container into a value that authorizes a mutation.
+
+**One readiness activity, two lanes by provenance.** `ax ready` turns an issue into work an agent
+can execute: `--job refine` for a spec-born ticket (a PRD sub-issue, whose categorization its PRD
+already decided), `--job triage` for an inbound one — reported, agent-found, or born as a follow-up.
+The umbrella used to be named after one of its two lanes. `ax ready dispatch` refuses a lane the
+ticket's provenance contradicts, reading the labels a project declares in `ready.provenance`.
 
 **Proof, not self-report.** Liveness is cursor movement. Completion is a merged PR or the governing
 artifact. Every merge ground runs; nothing stops after the first refusal.

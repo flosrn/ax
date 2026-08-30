@@ -4,7 +4,7 @@
 // the `subcommands` declared in src/commands.mjs, so the help — and nothing else
 // — can never advertise a verb that answers "unknown".
 //
-// Unlike `worker` and `triage`, this noun is NOT gated on Orca: `gate` reads
+// Unlike `worker` and `ready`, this noun is NOT gated on Orca: `gate` reads
 // `gh` and `git` only, so it answers on any machine that has a GitHub CLI and a
 // checkout. Gating it would hide the one verb a client repo can actually use.
 

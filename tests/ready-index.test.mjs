@@ -7,10 +7,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { subcommandNames } from '../src/commands.mjs';
-import { SUBCOMMANDS, triage } from '../src/triage/index.mjs';
+import { SUBCOMMANDS, ready } from '../src/ready/index.mjs';
 
 test('every declared triage verb has a runner, and every runner is declared', () => {
-  assert.deepEqual(subcommandNames('triage').sort(), Object.keys(SUBCOMMANDS).sort());
+  assert.deepEqual(subcommandNames('ready').sort(), Object.keys(SUBCOMMANDS).sort());
   for (const [verb, run] of Object.entries(SUBCOMMANDS)) assert.equal(typeof run, 'function', `${verb} is not callable`);
 });
 
@@ -19,8 +19,8 @@ test('an unknown or missing verb is a usage error, never a default action', () =
   const stderr = process.stderr.write;
   process.stderr.write = chunk => (written.push(String(chunk)), true);
   try {
-    assert.equal(triage(['deploy']), 2);
-    assert.equal(triage([]), 2);
+    assert.equal(ready(['deploy']), 2);
+    assert.equal(ready([]), 2);
   } finally {
     process.stderr.write = stderr;
   }

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { capOf, liveCount, passPlan } from '../src/triage/capacity.mjs';
+import { capOf, liveCount, passPlan } from '../src/ready/capacity.mjs';
 import { dispatchIndex } from '../src/worker/record.mjs';
 
 const inventoryOf = entries => ({ ok: true, byHandle: new Map(entries), omitted: false });
@@ -71,7 +71,27 @@ test('--fresh with no recorded pass is a refusal: there is nothing to redo', () 
 
 test('capOf refuses an unreadable cap instead of letting NaN erase the fence', () => {
   assert.deepEqual(capOf({}), { ok: true, cap: 3 });
-  assert.deepEqual(capOf({ ORCA_TRIAGE_SESSION_CAP: '0' }), { ok: true, cap: 0 });
-  assert.equal(capOf({ ORCA_TRIAGE_SESSION_CAP: 'many' }).ok, false);
-  assert.equal(capOf({ ORCA_TRIAGE_SESSION_CAP: '-1' }).ok, false);
+  assert.deepEqual(capOf({ ORCA_READY_SESSION_CAP: '0' }), { ok: true, cap: 0 });
+  assert.equal(capOf({ ORCA_READY_SESSION_CAP: 'many' }).ok, false);
+  assert.equal(capOf({ ORCA_READY_SESSION_CAP: '-1' }).ok, false);
+});
+
+test('capOf honours ORCA_READY_SESSION_CAP and still defaults to 3', () => {
+  assert.deepEqual(capOf({ ORCA_READY_SESSION_CAP: '0' }), { ok: true, cap: 0 });
+  assert.deepEqual(capOf({ ORCA_READY_SESSION_CAP: '5' }), { ok: true, cap: 5 });
+  assert.equal(capOf({ ORCA_READY_SESSION_CAP: 'many' }).ok, false);
+});
+
+test('capOf refuses ORCA_TRIAGE_SESSION_CAP rather than reading it', () => {
+  // A silent fallback would drop a configured cap to the default of 3.
+  const out = capOf({ ORCA_TRIAGE_SESSION_CAP: '5' });
+  assert.equal(out.ok, false);
+  assert.equal(out.from, 'ORCA_TRIAGE_SESSION_CAP');
+  assert.equal(out.to, 'ORCA_READY_SESSION_CAP');
+  assert.equal(capOf({ ORCA_TRIAGE_SESSION_CAP: '5', ORCA_READY_SESSION_CAP: '2' }).ok, false);
+});
+
+test('an empty ORCA_TRIAGE_SESSION_CAP is absence, not a refusal', () => {
+  assert.deepEqual(capOf({ ORCA_TRIAGE_SESSION_CAP: '' }), { ok: true, cap: 3 });
+  assert.deepEqual(capOf({ ORCA_TRIAGE_SESSION_CAP: '', ORCA_READY_SESSION_CAP: '7' }), { ok: true, cap: 7 });
 });

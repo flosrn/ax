@@ -165,7 +165,7 @@ export function terminalInventory(run, { environment = '' } = {}) {
  * VIVANT / MORT / INCONNU for one recorded handle.
  *
  * The one definition of "is that pane dead", read by `ls`, `gate`, `repair`,
- * `triage dispatch --fresh` and `triage publish` — a second definition is how
+ * `ready dispatch --fresh` and `ready publish` — a second definition is how
  * one of the two ends up wrong. The third value is the whole point: a handle
  * missing from a terminal list that omits hosts is UNKNOWN, never dead (F-028),
  * and a caller about to create a rival child must not round that down. What a

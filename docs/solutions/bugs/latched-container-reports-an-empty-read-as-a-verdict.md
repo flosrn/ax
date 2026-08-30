@@ -2,7 +2,7 @@
 title: A reader that answers with a container is non-null before its fields exist, so latching the container latches an absence as a verdict
 date: 2026-08-26
 category: bugs
-module: src/worker, src/triage
+module: src/worker, src/ready
 problem_type: bug
 component: verification
 severity: high
@@ -11,7 +11,7 @@ symptoms:
   - "The same receipt reported `liveness cursor 0 -> 604`, so the pane was proven live by the same loop that called the configuration unproven"
   - "Reproducible on every launch, both slugs, with a clean `ax worker start --show` receipt and a readable `ax worker tail`"
   - "The coordinator had to read the pane by hand after each launch to disbelieve the verb's own verdict"
-  - "`ax triage dispatch` exited 1 with `model omniroute/or-opus|`, `session unreadable` and `CANNOT-ESTABLISH` while `ax worker gate` reported the same child LIVE and working"
+  - "`ax ready dispatch` exited 1 with `model omniroute/or-opus|`, `session unreadable` and `CANNOT-ESTABLISH` while `ax worker gate` reported the same child LIVE and working"
   - "The same receipt, one race later and CORRECT, was disbelieved: `model omniroute/default|` and `session not written within the window` on a child that ran a whole implementation with no role, no playbook and its boot model"
 root_cause: absence_read_as_value
 resolution_type: code_fix
@@ -100,9 +100,9 @@ measurement.
 ## The second site of the same latch, one day later
 
 The fix above landed in `src/worker/verify.mjs`, with its reasoning in a twenty-line header. The
-other caller of `launchProof()` — `verifyTriageRole()` in `src/triage/dispatch.mjs` — kept the
-original loop, and on 2026-08-27 produced the identical false verdict on
-goodluckagency/ofmchat#101: `proof … model omniroute/or-opus| · session unreadable`, then
+other caller of `launchProof()` — `verifyTriageRole()`, now `verifyPassRole()`, in
+`src/ready/dispatch.mjs` — kept the original loop, and on 2026-08-27 produced the identical false
+verdict on goodluckagency/ofmchat#101: `proof … model omniroute/or-opus| · session unreadable`, then
 `model marker unproven`, `no session-role receipt`, `CANNOT-ESTABLISH`, on a child that was reading
 the issue with its role applied. `ax worker gate` refused the relaunch that verdict invited, which
 is the only reason it cost a report instead of a duplicated agent.

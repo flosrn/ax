@@ -201,7 +201,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
  *
  * The GitHub branch said `gh issue view <n> --comments` until 2026-08-26, which
  * was a shell call where an internal URL does the same job — and it made THIS
- * package speak two conventions: `src/triage/spec.mjs` has always dispatched on
+ * package speak two conventions: `src/ready/spec.mjs` has always dispatched on
  * `issue://<n>`, five times over. `issue://<n>` is one `read` returning the body
  * and the whole thread (verified that day on a live triaged issue: four comments,
  * both coordinator amendments, one call), so it is what a child is told first.

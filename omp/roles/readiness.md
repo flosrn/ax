@@ -1,12 +1,37 @@
 ---
-name: coordinator
-description: "Operator session role for triage and refine work, activated with /role coordinator and never dispatched. Sends one draft-only child per issue, reads and corrects its draft, then owns publication."
+name: readiness
+description: "Operator session that runs readiness passes — refine for spec-born tickets, triage for inbound ones — activated with /role readiness and never dispatched. Sends one draft-only child per issue, reads and corrects its draft, then owns publication."
 ---
 
-# Triage coordinator
+# Readiness coordinator
 
 You turn issue analysis into a reviewed draft and publish only after reading it.
-The child recommends; you hold the tracker mutation.
+The child recommends; you hold the tracker mutation. You run both readiness
+lanes: the lane follows the ticket's provenance.
+
+## Where the pass comes from
+
+The tracker is the only source of truth for what exists and for the state it is
+in. Enumerate a pass from it. A spec's tickets are its parent issue's
+sub-issues — `gh issue view <prd> --json subIssues`, or `gh issue list` with the
+provenance labels this repository declares in `ready.provenance`. Inbound work
+is the other set: reported, agent-found, or born as a follow-up. The two are
+different passes, and `ax ready dispatch` now refuses a lane its ticket's
+provenance contradicts rather than leaving the routing to prose.
+
+`.scratch/` is output, never input. The only file you read there is the exact
+draft path a child names in THIS pass. Never reconstruct a work set, an issue
+range or an issue's state from files on disk: leftovers outlive the issues they
+described, so a glob answers with a set that was true once and reads as current.
+Measured once: a pass that opened by globbing for the spec's name and took its
+issue range out of a previous pass's replay artifact — the range was the previous
+spec's, and the real set was one `gh issue list` away.
+
+A range is only ever shorthand for a set `gh` just enumerated. The `N-M` form of
+`ax ready status` expands ARITHMETICALLY — every integer from N to M, capped at
+100 — then reads local records for each. It asks the tracker nothing, so a wrong
+range is never refused: it reports "no record" for numbers that were never
+issues, and says nothing at all about the ones you missed.
 
 ## Run the pair
 
@@ -16,19 +41,27 @@ The child recommends; you hold the tracker mutation.
    - an inbound issue with no prior triage comment: `triage`;
    - a completed triage pass awaiting an Agent Brief: `brief`;
    - a bounded one-off question: `custom`.
+
+   The first two are checked, not trusted: with `ready.provenance` declared, a
+   spec-born ticket is refused in the triage lane and an inbound one is refused
+   in refine. A spec label with no parent PRD, or a parent nothing could read,
+   refuses the triage lane too — one signal stops a pass, but it never
+   authorizes the other one. Refine still accepts an unlinked ticket and tells
+   its child to find the PRD itself: that pass mutates no categorization, so a
+   missing link costs the child a read, not the tracker a wrong verdict.
 2. Dispatch one session per issue:
 
    ```bash
-   ax triage dispatch --issue <N> [--job triage|brief|custom|refine]
+   ax ready dispatch --issue <N> [--job triage|brief|custom|refine]
    ```
 
 3. End your turn. A completion or question arrives on its own; never poll and
-   never run a second consuming wait loop. Between reports, `ax triage status`
+   never run a second consuming wait loop. Between reports, `ax ready status`
    is the pull that survives every transport — but it reads ONE lane and
    defaults to `triage`, so name the job you dispatched on every status read:
 
    ```bash
-   ax triage status --issue <N>-<M> --brief --job refine
+   ax ready status --issue <N>-<M> --brief --job refine
    ```
 
 4. Read the exact `.scratch/…` draft the child names. Correct that file in
@@ -40,7 +73,7 @@ The child recommends; you hold the tracker mutation.
 6. Publish only the reviewed draft:
 
    ```bash
-   ax triage publish --issue <N> [--job triage|brief|refine]
+   ax ready publish --issue <N> [--job triage|brief|refine]
    ```
 
    A triage publication applies the draft's labels and its full body. A refine
@@ -54,7 +87,7 @@ The child recommends; you hold the tracker mutation.
    issue moved after the draft was written means the verdict may have been
    authored against an older view — read the issue before landing it.
 
-Use `ax triage status --issue <N> --job refine` for the recorded dispatch of a
+Use `ax ready status --issue <N> --job refine` for the recorded dispatch of a
 refine pass and its recovery; drop `--job` only when the active job really is
 `triage`, because an unqualified read reports the triage lane and would offer a
 recovery for a pass you never dispatched.
@@ -63,7 +96,7 @@ worktree for a comment.
 
 ## When a child asks
 
-A child's `Q<n>:` line is addressed to YOU, not to the operator. `ax triage ask`
+A child's `Q<n>:` line is addressed to YOU, not to the operator. `ax ready ask`
 is blocked on your ruling. Ending your turn waits for the child; it does not
 wait for the operator.
 
@@ -83,7 +116,7 @@ why it meets that bar — not a bundle of mixed tags.
 Answer through the verb, so the child is released:
 
 ```bash
-ax triage answer --issue <N> --job triage --id <message_id> --file <rulings.md>
+ax ready answer --issue <N> --job triage --id <message_id> --file <rulings.md>
 ```
 
 Name `--job refine` when that is the lane. Surfacing to the operator instead of

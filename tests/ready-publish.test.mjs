@@ -1,4 +1,4 @@
-// `ax triage status` and `ax triage publish`.
+// `ax ready status` and `ax ready publish`.
 //
 // `status` carries the three Bash propositions verbatim: it is READ-ONLY, an
 // unsettled mutation routes to `--resume` and never to a second dispatch
@@ -16,9 +16,9 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { draftPath } from '../src/triage/draft.mjs';
-import { publish } from '../src/triage/publish.mjs';
-import { status } from '../src/triage/index.mjs';
+import { draftPath } from '../src/ready/draft.mjs';
+import { publish } from '../src/ready/publish.mjs';
+import { status } from '../src/ready/index.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -486,7 +486,7 @@ test('a draft with open Q lines refuses — the child is still asking, nothing m
 
   assert.equal(r.code, 1);
   assert.match(r.out, /1 open question\(s\) — an open question is a verdict not yet rendered/);
-  assert.match(r.out, /ax triage status --issue 7/);
+  assert.match(r.out, /ax ready status --issue 7/);
   assert.deepEqual(mutations(r.calls), [], 'nothing landed mid-escalation');
 });
 
@@ -691,7 +691,7 @@ test('a corrected pass 2 still publishes over a landed pass 1 — the repair nam
   assert.match(landed.out, /publishing 2, the newest with a draft/);
   // The post-success hint is untouched by the gate: pass 2's own dispatch is
   // later than pass 1's comment, so that comment can never be pass 2's proof.
-  assert.match(landed.out, /ax triage release --issue 7 --job triage --pass 2 {3}# this comment IS the landing proof/);
+  assert.match(landed.out, /ax ready release --issue 7 --job triage --pass 2 {3}# this comment IS the landing proof/);
 });
 
 // ── publish: the history that predates the per-job wordings ──────────────────
@@ -858,7 +858,7 @@ function record(store, request, { usable = true, repaired = false, ask = null } 
       // The fact `start.mjs` persists after a CONFIRMED submission, and the only
       // thing that tells a reader a child is alive behind a `failed` Dispatch.
       ...(repaired ? { heldRepairAt: '2026-08-20T10:00:26.000Z' } : {}),
-      // The question lifecycle `ax triage ask` writes: asking → pending |
+      // The question lifecycle `ax ready ask` writes: asking → pending |
       // answered | refused, then replying → answered.
       ...(ask ? { ask } : {}),
       attempts: [
@@ -961,7 +961,7 @@ const question = (over = {}) => ({
   to_handle: 'run:run_owner',
   type: 'question',
   // A REAL `composeAsk` header: the sha is 40 hex, because that is what
-  // `askHeader` parses and what decides whether `ax triage answer` can pair
+  // `askHeader` parses and what decides whether `ax ready answer` can pair
   // this row at all. `draft abc` parsed as no header, so this fixture used to
   // stand for a raw `orca orchestration ask` while claiming to be an ax one.
   body: 'triage-acme-widgets-7 is blocked on the question(s) below, asked from draft 0123456789abcdef0123456789abcdef01234567. Each needs one ruling, paired by number.\nQ1: bug or enhancement?\nQ2: which priority?',
@@ -979,12 +979,12 @@ test('a pass whose child is blocked on questions says WAITING, names them, and n
 
   assert.equal(r.code, 0);
   assert.match(r.out, /WAITING since 2026-08-22T10:00:00Z on Q1-Q2 — message msg_q1/);
-  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1 --file/);
+  assert.match(r.out, /ax ready answer --issue 7 --job triage --id msg_q1 --file/);
   assert.doesNotMatch(r.out, /waiting state unknown/);
 });
 
 test('a draft that asks with NO answerable ask says why, and names an exit that exists', () => {
-  // Measured 2026-08-26: a child whose own `ax triage ask` failed
+  // Measured 2026-08-26: a child whose own `ax ready ask` failed
   // `dispatch_capability_invalid` asked through `orca orchestration ask`. This
   // verb printed `4 open question(s)` off the draft and nothing else; `answer`
   // refused the resulting id for carrying no ax header, and pointed back here
@@ -998,7 +998,7 @@ test('a draft that asks with NO answerable ask says why, and names an exit that 
 
   assert.equal(r.code, 0);
   assert.match(r.out, /the draft asks 2, and no answerable ask is visible/);
-  assert.match(r.out, /never asked through `ax triage ask`/);
+  assert.match(r.out, /never asked through `ax ready ask`/);
   assert.match(r.out, /rule the questions and fold them into/);
   assert.doesNotMatch(r.out, /WAITING since/);
   // The phrase that collided with the injected child contract, where the same
@@ -1010,9 +1010,9 @@ test('a draft that asks with NO answerable ask says why, and names an exit that 
 
 // ── the record is the second witness (ofmchat #87, 2026-08-27) ────────────────
 //
-// `ax triage ask` minted a question and `--resume` proved it PENDING, while this
+// `ax ready ask` minted a question and `--resume` proved it PENDING, while this
 // verb — reading the pane mailbox alone — announced "this pane has no pending
-// question — it never asked through `ax triage ask`" and told the reader to fold
+// question — it never asked through `ax ready ask`" and told the reader to fold
 // the rulings and publish. The child followed this surface and settled the pass.
 // An absence from a bounded inbox is not proof that no question exists (F-028),
 // so the pass's own record now answers alongside it.
@@ -1030,7 +1030,7 @@ test('a recorded PENDING ask is WAITING even when the mailbox shows nothing', ()
   assert.equal(r.code, 0);
   assert.match(r.out, /WAITING since 2026-08-27T02:00:00Z on message msg_recorded/);
   assert.match(r.out, /THIS PASS'S RECORD, not the mailbox/);
-  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_recorded/);
+  assert.match(r.out, /ax ready answer --issue 7 --job triage --id msg_recorded/);
   // And the advice that destroyed the pass must be absent while it is open.
   assert.doesNotMatch(r.out, /rule the questions and fold them into/);
   assert.doesNotMatch(r.out, /supervised reply is not available/);
@@ -1127,7 +1127,7 @@ test('a question threaded to ITSELF is still WAITING — a self-reference is not
 
   assert.equal(r.code, 0);
   assert.match(r.out, /WAITING since 2026-08-22T10:00:00Z on Q1-Q2 — message msg_q1/);
-  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1/);
+  assert.match(r.out, /ax ready answer --issue 7 --job triage --id msg_q1/);
 });
 
 // THE PIN OUTRANKS THE PANE, and that is the point of the header. `composeAsk`
@@ -1160,7 +1160,7 @@ test("a question the header pins to this pass is attributed however it was relay
 
   assert.equal(r.code, 0);
   assert.match(r.out, /WAITING since 2026-08-22T10:00:00Z on Q1-Q2 — message msg_q1/);
-  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_q1 --file/);
+  assert.match(r.out, /ax ready answer --issue 7 --job triage --id msg_q1 --file/);
 });
 
 test('an unreadable mailbox is NAMED, never rendered as an absence of questions', () => {
@@ -1200,7 +1200,7 @@ test('status NEVER offers the release command — the proof it needs is a publis
   const r = runStatus(['--issue', '7'], { root, store });
 
   assert.equal(r.code, 0);
-  assert.doesNotMatch(r.out, /ax triage release/);
+  assert.doesNotMatch(r.out, /ax ready release/);
 });
 
 test('a published DISPATCHED pass is offered its release — the comment that just landed IS the proof', () => {
@@ -1212,7 +1212,7 @@ test('a published DISPATCHED pass is offered its release — the comment that ju
 
   assert.equal(r.code, 0);
   assert.match(r.out, /published — 1 label\(s\) and one comment/);
-  assert.match(r.out, /ax triage release --issue 7 --job triage --pass 1   # this comment IS the landing proof/);
+  assert.match(r.out, /ax ready release --issue 7 --job triage --pass 1   # this comment IS the landing proof/);
 });
 
 test('a published HAND-WRITTEN pass gets no release offer — there is no dispatch to address', () => {
@@ -1224,7 +1224,7 @@ test('a published HAND-WRITTEN pass gets no release offer — there is no dispat
 
   assert.equal(r.code, 0);
   assert.match(r.out, /published — 1 label\(s\) and one comment/);
-  assert.doesNotMatch(r.out, /ax triage release/);
+  assert.doesNotMatch(r.out, /ax ready release/);
 });
 
 test('a refused batch offers NO release anywhere — nothing landed, so nothing is provable', () => {
@@ -1234,7 +1234,7 @@ test('a refused batch offers NO release anywhere — nothing landed, so nothing 
   const r = run(['--issue', '7', '--issue', '8'], { root });
 
   assert.equal(r.code, 1);
-  assert.doesNotMatch(r.out, /ax triage release/);
+  assert.doesNotMatch(r.out, /ax ready release/);
 });
 
 // ── status --brief: the completion view, built to be POLLED ─────────────────

@@ -326,6 +326,67 @@ test('doctor refuses a config it cannot trust instead of guessing', () => {
   writeFileSync(join(dir, 'ax.config.json'), good);
 });
 
+// The rename `ax triage` -> `ax ready` is a clean cutover: the old config key
+// simply stops existing, and the schema's `additionalProperties: false` refuses
+// it. But "unknown key" does not say where the key WENT, and a consuming repo
+// meets this line while pinning the release — so the finding names the edit.
+test('doctor names the rename when a config still carries the legacy triage key', () => {
+  const good = readFileSync(join(dir, 'ax.config.json'), 'utf8');
+  const config = JSON.parse(good);
+  const capture = fn => {
+    const written = [];
+    const stdout = process.stdout.write;
+    process.stdout.write = chunk => (written.push(String(chunk)), true);
+    try {
+      return { code: fn(), out: written.join('') };
+    } finally {
+      process.stdout.write = stdout;
+    }
+  };
+  writeFileSync(join(dir, 'ax.config.json'), `${JSON.stringify({ ...config, triage: { labels: 'docs/labels.md' } }, null, 2)}\n`);
+  const legacy = capture(() => doctor(dir));
+  assert.equal(legacy.code, 1);
+  assert.match(legacy.out, /unknown key "triage"/);
+  assert.match(legacy.out, /rename the "triage" key to "ready"/);
+
+  // And ONLY for that key. The advice is keyed on the validator's own phrasing
+  // rather than the word, so a config whose real defect merely quotes a label
+  // value containing "triage" is not sent to rename a key it does not have.
+  writeFileSync(
+    join(dir, 'ax.config.json'),
+    `${JSON.stringify({ ...config, launch: { ...(config.launch ?? {}), databaseLabels: 'needs-triage' } }, null, 2)}\n`,
+  );
+  const unrelated = capture(() => doctor(dir));
+  assert.equal(unrelated.code, 1);
+  assert.doesNotMatch(unrelated.out, /rename the "triage" key/);
+
+  // And ONLY at the ROOT. `src/schema.mjs` prints the LOCATION of the offending
+  // key, so a nested `launch.triage` typo reports `launch: unknown key "triage"`:
+  // advice to rename a root key this config does not have sends the operator to
+  // edit a line that is already correct while the nested defect stays.
+  writeFileSync(
+    join(dir, 'ax.config.json'),
+    `${JSON.stringify({ ...config, launch: { ...(config.launch ?? {}), triage: { labels: 'docs/labels.md' } } }, null, 2)}\n`,
+  );
+  const nested = capture(() => doctor(dir));
+  assert.equal(nested.code, 1);
+  assert.match(nested.out, /launch: unknown key "triage"/);
+  assert.doesNotMatch(nested.out, /rename the "triage" key/);
+
+  // init meets the same closed-schema refusal while a repo pins the release, so
+  // it names the same rename — and still leaves the file untouched, which is the
+  // rule the test above states.
+  const legacyConfig = `${JSON.stringify({ ...config, triage: { labels: 'docs/labels.md' } }, null, 2)}\n`;
+  writeFileSync(join(dir, 'ax.config.json'), legacyConfig);
+  const initLegacy = capture(() => init(dir));
+  assert.equal(initLegacy.code, 1);
+  assert.match(initLegacy.out, /rename the "triage" key to "ready"/);
+  assert.equal(readFileSync(join(dir, 'ax.config.json'), 'utf8'), legacyConfig);
+
+  writeFileSync(join(dir, 'ax.config.json'), good);
+  assert.equal(doctor(dir), 0);
+});
+
 test('outside a git repository, doctor says so instead of scanning upwards', () => {
   const orphan = mkdtempSync(join(tmpdir(), 'ax-orphan-'));
   assert.equal(doctor(orphan), 1);

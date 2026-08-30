@@ -20,9 +20,18 @@ import { passesIn, readDraft, requestFor } from './draft.mjs';
  * `live + new > NaN` is false for every input — the fence would vanish silently,
  * on the one guard whose whole job is to fail closed. Zero is legal, and means
  * "no new session on this machine right now".
+ *
+ * `ORCA_TRIAGE_SESSION_CAP` is not read as a fallback. A silent fallback would
+ * drop a still-exported cap to the default of 3; refusing and naming
+ * `ORCA_READY_SESSION_CAP` is the migration, the same way `ax doctor` refuses
+ * the legacy `triage` config key rather than reading it. Empty is absence.
  */
 export function capOf(env) {
-  const raw = env.ORCA_TRIAGE_SESSION_CAP;
+  const retired = env.ORCA_TRIAGE_SESSION_CAP;
+  if (retired !== undefined && retired !== '') {
+    return { ok: false, from: 'ORCA_TRIAGE_SESSION_CAP', to: 'ORCA_READY_SESSION_CAP' };
+  }
+  const raw = env.ORCA_READY_SESSION_CAP;
   if (raw === undefined || raw === '') return { ok: true, cap: 3 };
   const cap = Number(raw);
   if (!Number.isInteger(cap) || cap < 0) return { ok: false, raw: String(raw) };
@@ -71,7 +80,7 @@ export function passPlan({ store, root, index, inventory, issues, job, slug, fre
     if (latest === 0) {
       return refuse(
         `#${issue} has no recorded pass, so there is nothing to redo`,
-        `ax triage dispatch --issue ${issue} --job ${job}   # a first pass is an ordinary dispatch`,
+        `ax ready dispatch --issue ${issue} --job ${job}   # a first pass is an ordinary dispatch`,
       );
     }
 

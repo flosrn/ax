@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ROLE_BY_JOB, renderSpec } from '../src/triage/spec.mjs';
+import { ROLE_BY_JOB, renderSpec } from '../src/ready/spec.mjs';
 
 const base = {
   model: '@default',

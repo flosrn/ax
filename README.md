@@ -31,14 +31,16 @@ write shared local data.
 `ax init` installs a small project-scoped OMP extension. A session started in the repo receives the
 version of ax pinned by that repo — roles, playbooks and runtime hooks included.
 
-The bundle provides four session roles:
+The bundle provides six session roles:
 
 | Role | Owns |
 |---|---|
-| `coordinator` | issue triage, review of the child's draft, publication after correction |
-| `triage-worker` | one issue analysis and one draft; no tracker or repository mutation |
+| `readiness` | both readiness lanes — refine for a spec-born ticket, triage for an inbound one — review of the child's draft, and publication after correction |
+| `triage-worker` | one inbound issue's analysis and one draft; no tracker or repository mutation |
+| `refine-worker` | one spec-born ticket's Definition-of-Ready pass and one draft; no tracker or repository mutation |
 | `orchestrator` | dependency order, worker fan-out, decisions, validated merge and release |
 | `worker` | one ticket, one worktree, one branch and one pull request through decided CI |
+| `maintainer` | the ax checkout itself: frictions reported by live sessions, measured and repaired at the source |
 
 A dispatched child also receives the exact ticket brief, its git identity, a worktree-local
 watchdog and `.agent/worktree-context.local.md`. It does not have to infer which URL, database,
@@ -51,16 +53,16 @@ The implementation and triage playbooks are part of ax. They do not depend on a 
 
 ax is the control layer over OMP sessions and Orca's panes, worktrees, runs and transport.
 
-A triage flow is:
+A readiness flow — one issue becomes work an agent can execute — is:
 
 ```text
-/role coordinator
+/role readiness
         │
-        ├── ax triage dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
+        ├── ax ready dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
         │                                  │
         │                           questions return here
         │                                  ▼
-        └── review and correct ──► ax triage publish
+        └── review and correct ──► ax ready publish
 ```
 
 An implementation flow is:

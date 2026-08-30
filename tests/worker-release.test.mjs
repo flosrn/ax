@@ -244,7 +244,7 @@ test('the offered stop carries its dispatch_inactive aftermath, so a failure is 
   // which runs only after `closeTerminal` reported `ptyKilled` — so that failure
   // receipt can arrive over a pane that is already gone. Confirmed on
   // ctx_5ffd0641bcf5 (ofmchat #100, 2026-08-28): the stop answered
-  // `dispatch_inactive`, and the next `ax triage release` counted the row
+  // `dispatch_inactive`, and the next `ax ready release` counted the row
   // `1 terminal gone`. Without this clause the operator reads the error as "the
   // command did nothing" and stops re-running the one verb that would have closed
   // the record.

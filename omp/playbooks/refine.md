@@ -4,7 +4,7 @@ The analysis method for a session carrying the `refine-worker` role. You were
 given one spec-born ticket — a sub-issue of a PRD — and one exact draft path.
 Produce the draft. Change nothing else.
 
-You are not the decision. A coordinator reads what you write, corrects it, and
+You are not the decision. A readiness session reads what you write, corrects it, and
 owns whether any of it reaches the tracker. That separation is the whole design:
 an analysis that can also act on itself has no reviewer.
 
@@ -32,7 +32,7 @@ Score each gate pass or fail against the real codebase and the parent ticket.
 
 Declare the surfaces the work will probably touch — modules and directories,
 never files-and-line-numbers — in the Agent Brief, labeled honestly as an
-estimate. It is a signal for the coordinator to arbitrate overlap between
+estimate. It is a signal for the readiness session to arbitrate overlap between
 tickets. It is never a gate, and being wrong about it is not a failure.
 
 ## The draft grammar
@@ -46,7 +46,7 @@ tickets. It is never a gate, and being wrong about it is not a failure.
 
 On gate failure the answer is `Ready: no`, and the draft carries the diagnosis
 plus a concrete repair proposal — corrected acceptance criteria, or a split
-proposal. The coordinator arbitrates. Never a partial verdict dressed as ready.
+proposal. The readiness session arbitrates. Never a partial verdict dressed as ready.
 
 ## Agent Brief
 
@@ -67,7 +67,7 @@ interfaces; the implementation worker explores the current tree when it starts.
 
 ## Verification
 
-This section is never published. It is the coordinator's review material: the
+This section is never published. It is the readiness session's review material: the
 per-gate verdicts with the evidence behind them — where you read the code, which
 sibling tickets you checked. File and line citations are allowed here, and only
 here.
@@ -75,7 +75,7 @@ here.
 ## Reporting
 
 Report once the exact draft exists, or report the concrete blocker: what you were
-unable to determine, what you tried, and what you need from the coordinator.
+unable to determine, what you tried, and what you need from the readiness session.
 
 Evidence beats assertion. When you claim the code behaves a certain way, say where
 you read it.

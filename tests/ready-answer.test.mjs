@@ -1,4 +1,4 @@
-// `ax triage answer` — everything is checked BEFORE the reply leaves, because
+// `ax ready answer` — everything is checked BEFORE the reply leaves, because
 // the receiver is a live child that consumes it once.
 //
 // The proof is three-layered, outermost first: the id must name a `question`
@@ -17,8 +17,8 @@ import { test } from 'node:test';
 
 import { gitBlobSha } from '../src/hash.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
-import { answer } from '../src/triage/answer.mjs';
-import { composeAsk } from '../src/triage/rulings.mjs';
+import { answer } from '../src/ready/answer.mjs';
+import { composeAsk } from '../src/ready/rulings.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -59,7 +59,7 @@ const capture = fn => {
   }
 };
 
-/** The pending ask, byte-for-byte as `ax triage ask` would have sent it. */
+/** The pending ask, byte-for-byte as `ax ready ask` would have sent it. */
 const question = (over = {}) => ({
   id: 'msg_q1',
   from_handle: 'term_child',
@@ -98,8 +98,8 @@ function fakeOrca({ messages = [question()], reply = null, reachable = true } = 
 /**
  * The pass's dispatch record. A reply is a live mutation, so it is written
  * against a record or refused (F-001) — and in the new world a question
- * carrying a valid ax header implies `ax triage ask` ran, which implies this
- * file exists. `ask` is the lifecycle `ax triage ask` left behind.
+ * carrying a valid ax header implies `ax ready ask` ran, which implies this
+ * file exists. `ask` is the lifecycle `ax ready ask` left behind.
  */
 const record = (root, request = 'triage-acme-widgets-7', ask = { state: 'pending', messageId: 'msg_q1', at: '2026-08-22T10:00:00Z' }) => {
   const store = join(root, 'store');
@@ -344,7 +344,7 @@ test('the belt: a success receipt with no question is reported as the plain-mess
 // A reply unblocks a live child exactly once. Issuing one no record accounts for
 // is how a retry after a crash sends a second ruling to a child that already
 // consumed the first, and how a successful reply leaves a durable `pending` that
-// makes `ax triage status` report a live question over an answered one.
+// makes `ax ready status` report a live question over an answered one.
 
 test('the reply intent is written BEFORE the reply is issued', () => {
   const root = repo();

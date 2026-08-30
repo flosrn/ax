@@ -17,7 +17,7 @@ import { init } from './init.mjs';
 import { fatal } from './log.mjs';
 import { supabase } from './supabase-guard.mjs';
 import { worktree } from './worktree/index.mjs';
-import { triage } from './triage/index.mjs';
+import { ready } from './ready/index.mjs';
 import { pr } from './pr/index.mjs';
 import { pin } from './pin.mjs';
 
@@ -46,7 +46,7 @@ const runners = argv => ({
   // Verbs of one noun get the remaining argv, unparsed — same as worktree.
   worker: () => worker(argv.slice(1)),
   // Same, and its verbs each carry their own repeated --issue positionals.
-  triage: () => triage(argv.slice(1)),
+  ready: () => ready(argv.slice(1)),
   // Same again: `gate --pr <n>` carries its own flags, and none is whole-command.
   pr: () => pr(argv.slice(1)),
   // One positional version; --dry-run is whole-command but rides argv for symmetry.

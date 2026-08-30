@@ -2,14 +2,14 @@
 title: A lookup keyed on the wrong field returns empty, and an empty lookup renders as "the thing does not exist"
 date: 2026-08-28
 category: bugs
-module: src/triage
+module: src/ready
 problem_type: bug
 component: ask-channel
 severity: high
 symptoms:
-  - "`ax triage status --issue 101` printed no mailbox row for a child that was blocked on a real `type: \"question\"` message sitting in the mailbox"
-  - "The finding's own repair was `ax triage status --issue 101 --job triage`, i.e. the command that had just printed it — a loop with no exit"
-  - "`ax triage answer` was unusable because it needs `--id`, and no surface emitted one"
+  - "`ax ready status --issue 101` printed no mailbox row for a child that was blocked on a real `type: \"question\"` message sitting in the mailbox"
+  - "The finding's own repair was `ax ready status --issue 101 --job triage`, i.e. the command that had just printed it — a loop with no exit"
+  - "`ax ready answer` was unusable because it needs `--id`, and no surface emitted one"
   - "The operator unblocked the child with `peer_send` out of band, outside the ask/answer lifecycle entirely"
   - "Measured across the machine's mailbox: 12 of 24 open question rows were unreachable by this verb"
 root_cause: wrong_join_key
@@ -29,14 +29,14 @@ tags:
 
 ## Problem
 
-`ax triage status` reads Orca's mailbox, keeps the rows that are `type: "question"` with no reply
+`ax ready status` reads Orca's mailbox, keeps the rows that are `type: "question"` with no reply
 threaded to them, and keys them by `from_handle`. Each pass then looked itself up like this:
 
 ```js
 pending = mailbox.pending.get(handle) ?? [];   // handle = the record's terminal effect
 ```
 
-`ax triage ask` sends from the child's **Dispatch**, not from its pane. Orca stamps those rows
+`ax ready ask` sends from the child's **Dispatch**, not from its pane. Orca stamps those rows
 `from_handle: "dispatch:ctx_ff9aa6dce051"`. The dispatch record stores the child's **terminal**
 (`term_d599b612-…`). The two keys never meet, so `.get(handle)` returned nothing for every ask ax
 sends itself.
@@ -48,16 +48,16 @@ Half of the machine's live questions were invisible to the verb documented as th
 
 goodluckagency/ofmchat#101. A triage child asked a legitimate question; `msg_bf6613d0ee33`
 (`type: "question"`, `from_handle: "dispatch:ctx_ff9aa6dce051"`) was in the mailbox the whole time.
-`ax triage status` printed no row, and then printed this:
+`ax ready status` printed no row, and then printed this:
 
 ```
 X an ask was ISSUED for this pass and its outcome was never recorded …
-   -> ax triage status --issue 101 --job triage   # the mailbox row above, if any, is the authority
+   -> ax ready status --issue 101 --job triage   # the mailbox row above, if any, is the authority
 ```
 
 The repair named the command the reader had just run, and the row it called the authority was the
 one the join could not find. Three exits, all closed: the relayed peer copy carried
-`[NO REPLY ROUTE]` so `peer_reply` refused it by construction; `ax triage answer` requires `--id` and
+`[NO REPLY ROUTE]` so `peer_reply` refused it by construction; `ax ready answer` requires `--id` and
 no surface emitted one; `status` documented itself as the source of that id and emitted none. The
 operator unblocked the child with a `peer_send` to its registry name — outside the lifecycle, so the
 record still shows an unrecorded ask.
@@ -85,9 +85,9 @@ that produce something the reader did not already have.
 ## The near-miss the fix itself carried, caught in review
 
 The first version of this fix widened the keys without splitting the verdict, and a P1 review caught
-what that produced. A child whose own `ax triage ask` fails falls back to raw
+what that produced. A child whose own `ax ready ask` fails falls back to raw
 `orca orchestration ask`: that row is dispatch-keyed but carries **no ax header**. The wider lookup
-admitted it, so `status` printed `ax triage answer --id <id>` for a row `answer()` refuses
+admitted it, so `status` printed `ax ready answer --id <id>` for a row `answer()` refuses
 unconditionally (nothing proves which draft it asked from) — and, worse, the non-empty list
 suppressed the fold-and-publish escape below it. The repair for a loop with no exit had rebuilt that
 loop one layer up.
@@ -111,9 +111,9 @@ instruction that cannot succeed**:
 
 |When|The authority said|Why it could not succeed|
 |---|---|---|
-|2026-08-26|`ax triage status` prints the pending question's real id|the child asked through a channel that mints no ax header, so no id was pairable|
+|2026-08-26|`ax ready status` prints the pending question's real id|the child asked through a channel that mints no ax header, so no id was pairable|
 |2026-08-28|the mailbox row above is the authority — answer THAT id|the row was keyed by dispatch and this verb only read panes, so no row was rendered|
-|2026-08-28 (caught in review)|`ax triage answer --id <id>`|the row carried no ax header, so `answer` refuses it unconditionally|
+|2026-08-28 (caught in review)|`ax ready answer --id <id>`|the row carried no ax header, so `answer` refuses it unconditionally|
 
 The failure is never the refusal — each refusal was individually correct. It is that the surface
 *routing* the reader is not answerable to the same evidence the surface *refusing* them uses. Two
@@ -128,11 +128,11 @@ requirement, say the state is blocked, name the reason, and route to something t
 
 ## Why it survived
 
-`ax triage status` had **no behavioral test file**. `tests/triage-index.test.mjs` covered the verb
+`ax ready status` had **no behavioral test file**. `tests/ready-index.test.mjs` covered the verb
 table and the help text; the mailbox rows it renders had only incidental coverage from
-`triage-publish`, whose fixtures use pane-keyed questions exclusively — the half that worked.
+`ready-publish`, whose fixtures use pane-keyed questions exclusively — the half that worked.
 
-The new `tests/triage-status.test.mjs` fixtures are the three keys a real row can carry. Five of its
+The new `tests/ready-status.test.mjs` fixtures are the three keys a real row can carry. Five of its
 nine cases fail on the old code.
 
 ## The rule for this bug

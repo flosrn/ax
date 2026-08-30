@@ -280,50 +280,50 @@ test('/role orchestrator activates the BUNDLED operator role without touching th
   expect(await turn(installed, BASE)).toBeUndefined();
 });
 
-test('/role coordinator resolves too, so both operator roles ship live', async () => {
+test('/role readiness resolves too, so both operator roles ship live', async () => {
   const installed = install('[omp model=@task]');
-  await installed.commands.get('role')?.handler('coordinator', installed.ctx);
+  await installed.commands.get('role')?.handler('readiness', installed.ctx);
   const out = await turn(installed, BASE);
   expect(out?.systemPrompt?.[2]).toContain('<!-- omp:role -->');
-  expect(installed.notices.at(-1)).toContain('role coordinator applied');
+  expect(installed.notices.at(-1)).toContain('role readiness applied');
 });
 
-// `ax triage status` defaults its lane to `triage` (src/triage/index.mjs), so a
-// coordinator running a refine pass who copies an unqualified example polls the
+// `ax ready status` defaults its lane to `triage` (src/ready/index.mjs), so a
+// readiness session running a refine pass who copies an unqualified example polls the
 // wrong lane and is offered a recovery for a dispatch that never happened. The
 // bundled role must therefore carry the job on every refine status/recovery
 // example — this is a contract on the shipped prose, not on the CLI.
-test('the bundled coordinator role names the refine lane on every status read', async () => {
+test('the bundled readiness role names the refine lane on every status read', async () => {
   const installed = install('[omp model=@task]');
-  await installed.commands.get('role')?.handler('coordinator', installed.ctx);
+  await installed.commands.get('role')?.handler('readiness', installed.ctx);
   const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
 
-  expect(role).toContain('ax triage status --issue <N>-<M> --brief --job refine');
-  expect(role).toContain('ax triage status --issue <N> --job refine');
+  expect(role).toContain('ax ready status --issue <N>-<M> --brief --job refine');
+  expect(role).toContain('ax ready status --issue <N> --job refine');
   // A copyable example is one that names an issue; every one of those must say
   // which lane it inspects. A bare mention of the verb carries no lane to get
   // wrong.
-  const unqualified = [...role.matchAll(/ax triage status +--issue[^`\n]*/g)]
+  const unqualified = [...role.matchAll(/ax ready status +--issue[^`\n]*/g)]
     .map(match => match[0])
     .filter(example => !example.includes('--job'));
   expect(unqualified).toEqual([]);
 });
 
-// A child tags `[technical]` / `[product]` so the coordinator can route. The
-// coordinator role used to say "answer when the operator has decided it;
+// A child tags `[technical]` / `[product]` so the readiness session can route. The
+// readiness role used to say "answer when the operator has decided it;
 // otherwise surface the question", so every ask landed on the human and the
-// child sat PENDING. The tags are advisory; the coordinator rules; only a
-// high-stakes product bar goes up. And the role must name `ax triage answer`,
+// child sat PENDING. The tags are advisory; the readiness session rules; only a
+// high-stakes product bar goes up. And the role must name `ax ready answer`,
 // because the child is taught `ask` and a parent that cannot name the reply
 // improvises by asking the operator.
-test('the bundled coordinator role rules child questions itself', async () => {
+test('the bundled readiness role rules child questions itself', async () => {
   const installed = install('[omp model=@task]');
-  await installed.commands.get('role')?.handler('coordinator', installed.ctx);
+  await installed.commands.get('role')?.handler('readiness', installed.ctx);
   const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
 
   expect(role).not.toMatch(/Answer a child's question when the operator has decided it/);
   expect(role).not.toMatch(/otherwise surface the question/);
-  expect(role).toContain('ax triage answer --issue <N>');
+  expect(role).toContain('ax ready answer --issue <N>');
   expect(role).toMatch(/routing tags are advisory/i);
   expect(role).toMatch(/\[technical\]/);
   expect(role).toMatch(/\[product\]/);
@@ -336,7 +336,7 @@ test('the bundled coordinator role rules child questions itself', async () => {
   expect(role).toMatch(/personal data/);
   expect(role).toMatch(/intention the\s+operator has already expressed/);
   expect(role).toMatch(/hint, not a\s+handoff/);
-  const unqualifiedAnswer = [...role.matchAll(/ax triage answer +--issue[^`\n]*/g)]
+  const unqualifiedAnswer = [...role.matchAll(/ax ready answer +--issue[^`\n]*/g)]
     .map(match => match[0])
     .filter(example => !example.includes('--job'));
   expect(unqualifiedAnswer).toEqual([]);
@@ -344,11 +344,11 @@ test('the bundled coordinator role rules child questions itself', async () => {
 
 // THE SAME CONTRACT, THE OTHER ROLE. `orchestrator` is told to run a triage wave
 // itself — sweeping the `needs-triage` follow-ups its own workers opened, and
-// clearing the parked pile before the next PRD — and `ax triage dispatch` takes
+// clearing the parked pile before the next PRD — and `ax ready dispatch` takes
 // its Run from the dispatching pane, so those children's questions arrive on the
-// ORCHESTRATOR's mailbox, not on any coordinator's. Yet this role said nothing
+// ORCHESTRATOR's mailbox, not on any readiness session's. Yet this role said nothing
 // about ruling them: no verb, no routing bar, no tags. That is the same defect
-// repaired in `coordinator` on 2026-08-27, left standing in the role that also
+// repaired in `readiness` on 2026-08-27, left standing in the role that also
 // dispatches triage.
 test('the bundled orchestrator role rules the triage questions it dispatches', async () => {
   const installed = install('[omp model=@task]');
@@ -357,14 +357,14 @@ test('the bundled orchestrator role rules the triage questions it dispatches', a
 
   // It already tells the operator to run triage waves, so it owes the answer.
   expect(role).toMatch(/triage wave/);
-  expect(role).toContain('ax triage answer --issue <N>');
+  expect(role).toContain('ax ready answer --issue <N>');
   expect(role).toMatch(/\[technical\]/);
   expect(role).toMatch(/\[product\]/);
   expect(role).toMatch(/change what users see/);
-  // Same lane discipline the coordinator carries: an unqualified example polls
+  // Same lane discipline the readiness role carries: an unqualified example polls
   // or answers the wrong job.
   for (const verb of ['answer', 'status']) {
-    const unqualified = [...role.matchAll(new RegExp(`ax triage ${verb} +--issue[^\`\\n]*`, 'g'))]
+    const unqualified = [...role.matchAll(new RegExp(`ax ready ${verb} +--issue[^\`\\n]*`, 'g'))]
       .map(match => match[0])
       .filter(example => !example.includes('--job'));
     expect(unqualified).toEqual([]);
@@ -387,7 +387,7 @@ test('an unknown dispatched role locks the session before its first turn', async
   });
   // The refusal names what this package does ship, because the operator cannot
   // see the directory the marker was written against.
-  expect(String(out?.message?.content)).toContain('coordinator');
+  expect(String(out?.message?.content)).toContain('readiness');
 
   // `setActiveTools([])` is cosmetic; the fence is the hard boundary.
   const fence = installed.handlers.get('tool_call')?.[0];
@@ -399,7 +399,7 @@ test('/role on an unknown name refuses out loud and leaves the session alone', a
   await installed.commands.get('role')?.handler('ghost', installed.ctx);
 
   expect(installed.notices.at(-1)).toContain('role ghost unavailable');
-  expect(installed.notices.at(-1)).toContain('coordinator');
+  expect(installed.notices.at(-1)).toContain('readiness');
   // An operator's session is not locked by a name they mistyped — nothing was
   // activated, so the next turn is an ordinary one.
   expect(await turn(installed, BASE)).toBeUndefined();

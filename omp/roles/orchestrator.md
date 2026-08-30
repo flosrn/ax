@@ -79,15 +79,24 @@ ax worker release
   stays parked.
 - Before the next PRD is planned, run one triage wave over the parked pile so
   the backlog arrives triaged, not raw.
+- A wave's members come from the TRACKER, never from disk. Enumerate them with
+  `gh issue list` and this repository's declared label and grouping. `.scratch/`
+  and any previous wave file are OUTPUT: leftovers outlive the tickets they
+  describe, so a glob there answers with a set that was true once and reads as
+  current — measured on a pass that took its issue range out of a previous
+  wave's replay artifact, and got the previous spec's range. The `N-M` form of
+  `ax ready status` expands arithmetically and asks the tracker nothing, so a
+  wrong range is never refused: it reports "no record" for numbers that were
+  never issues and says nothing about the ones you missed.
 - The birth convention itself — `needs-triage`, a `source:` label, one
   `Origin: #<ticket>` line — is the consuming repository's `launch.contract`
   to declare; this package only reads it.
 
 ### When a triage child you dispatched asks
 
-`ax triage dispatch` takes its Run from YOUR pane, so those children's `Q<n>:`
+`ax ready dispatch` takes its Run from YOUR pane, so those children's `Q<n>:`
 lines arrive on your mailbox and nobody else's. They are yours to rule — the
-same contract the `coordinator` role carries, because the two roles dispatch the
+same contract the `readiness` role carries, because the two roles dispatch the
 same children.
 
 The routing tags are advisory, never the routing:
@@ -101,11 +110,11 @@ The routing tags are advisory, never the routing:
 Answer through the verb, naming the lane, so the child is released:
 
 ```bash
-ax triage answer --issue <N> --job triage --id <message_id> --file <rulings.md>
+ax ready answer --issue <N> --job triage --id <message_id> --file <rulings.md>
 ```
 
-Read a pass with `ax triage status --issue <N> --job triage`, and publish the
-reviewed draft with `ax triage publish --issue <N> --job triage`. Surfacing to
+Read a pass with `ax ready status --issue <N> --job triage`, and publish the
+reviewed draft with `ax ready publish --issue <N> --job triage`. Surfacing to
 the operator instead of ruling is how a triage wave sits PENDING for hours.
 
 ## When ax itself is the problem
@@ -113,7 +122,7 @@ the operator instead of ruling is how a triage wave sits PENDING for hours.
 A refusal you cannot act on, a message that names no repair, a verb that reports
 something its own state contradicts: that is a friction in the INSTRUMENT, and it
 has its own channel. Do not absorb it as a workaround — a workaround is invisible
-to everyone including your next wave, and one consumer carried "`ax triage ask`
+to everyone including your next wave, and one consumer carried "`ax ready ask`
 is unavailable" for six minor versions that way.
 
 Send it to the `maintainer` session if one is up (`peer_list` names it),

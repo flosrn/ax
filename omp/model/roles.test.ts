@@ -47,7 +47,7 @@ test('the six session roles load from the package, with no host discovery at all
   // The whole point of the migration: these resolve from files inside the
   // package, so an installed copy under node_modules and a fresh checkout answer
   // identically, and a role on a branch is visible to the session on that branch.
-  for (const name of ['coordinator', 'maintainer', 'orchestrator', 'worker', 'triage-worker', 'refine-worker']) {
+  for (const name of ['readiness', 'maintainer', 'orchestrator', 'worker', 'triage-worker', 'refine-worker']) {
     const found = await loadRole(name);
     expect(found.reason).toBe('ok');
     expect(found.role?.name).toBe(name);
@@ -62,9 +62,9 @@ test('the shipped roles are exactly the six, so a stray file cannot become a ses
   // reporting, which had no role and therefore turned tool defects into silent
   // workarounds carried in one consumer's memory for six minor versions.
   expect(await listRoles()).toEqual([
-    'coordinator',
     'maintainer',
     'orchestrator',
+    'readiness',
     'refine-worker',
     'triage-worker',
     'worker',
@@ -85,7 +85,7 @@ test('each declared playbook is one this package ships - there is no host fallba
 });
 
 test('the operator roles declare no playbook, so activating one costs no file read', async () => {
-  for (const name of ['coordinator', 'orchestrator']) {
+  for (const name of ['readiness', 'orchestrator']) {
     expect((await loadRole(name)).role?.autoloadSkills).toBeUndefined();
   }
 });

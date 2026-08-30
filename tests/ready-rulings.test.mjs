@@ -8,8 +8,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { questionProblem, questionsIn } from '../src/triage/draft.mjs';
-import { composeAsk, composeReply, pairRulings, parseRulings, questionSpan } from '../src/triage/rulings.mjs';
+import { questionProblem, questionsIn } from '../src/ready/draft.mjs';
+import { composeAsk, composeReply, pairRulings, parseRulings, questionSpan } from '../src/ready/rulings.mjs';
 
 const QUESTIONS = [
   { n: 1, text: 'bug or enhancement?' },
@@ -33,7 +33,7 @@ test('the composed ask parses back to the same questions — the wire and the re
 
 test('CRLF Q lines parse the same as LF — a Windows-saved draft is not an empty ask', () => {
   // Measured 2026-08-27 on ofmchat #81: three `Q<n>: [technical] …` openings at
-  // column 0, legal shape, `ax triage ask` refused `carries no Q<n>: line`.
+  // column 0, legal shape, `ax ready ask` refused `carries no Q<n>: line`.
   // `questionsIn` splits on `\n` and anchors `$`, so a trailing `\r` makes the
   // line miss. Same three lines on LF parse; on CRLF they vanish.
   const lf = 'Q1: [technical] which side of the fork?\nQ2: [technical] who supplies the value?\n';

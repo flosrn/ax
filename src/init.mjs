@@ -176,6 +176,30 @@ function wireOmp(root, { dryRun }) {
 const report = (label, state) => (state === 'unchanged' ? note(`${label} — unchanged`) : ok(`${label} — ${state}`));
 
 /**
+ * The one config violation with a mechanical repair rather than a decision, and
+ * the reason it is a function instead of a literal in two files: `triage` was
+ * the umbrella name for the readiness surface until it was renamed to `ready`,
+ * so a config written for an older ax fails on that key first — and "unknown
+ * key" alone does not say where the key WENT. Both `ax init` and `ax doctor`
+ * meet that refusal while a consuming repo pins the release; a repair only one
+ * of them names is a repair half the operators never see.
+ *
+ * ROOT LEVEL ONLY, matched as the validator's own whole line rather than as a
+ * substring. Two looser readings were both wrong. A substring of the WORD sends
+ * a config whose real defect merely QUOTES a value like `needs-triage` — a
+ * mistyped `launch.databaseLabels`, say — to rename a key it does not have. And
+ * a substring of `unknown key "triage"` matches ANY nesting level, because
+ * ./schema.mjs prints the location (`${where}: unknown key "${key}"`): a nested
+ * `launch.triage` reports `launch: unknown key "triage"` and would earn advice
+ * to rename a root key the config never carried, sending the operator to edit a
+ * line that is already correct while the real nested defect stays.
+ */
+export const namesLegacyReadyKey = errors => errors.some(error => error === 'root: unknown key "triage"');
+
+/** One sentence, printed by both verbs, so the two can never drift apart. */
+export const LEGACY_READY_KEY_FIX = `rename the "triage" key to "ready" in ${CONFIG_FILE} — the noun is \`ax ready\` now; the two lanes stayed jobs (--job refine for a spec-born ticket, --job triage for an inbound one)`;
+
+/**
  * Make a project ax-ready: the config, the committed bootstrap, and the managed
  * touchpoints in files the vendor also owns. Safe to re-run — that is how a
  * block survives a merge that took "theirs".
@@ -206,6 +230,10 @@ export function init(root, { dryRun = false, vendor } = {}) {
   if (existing.exists && existing.errors.length > 0) {
     bad(`${CONFIG_FILE} — invalid, leaving it untouched`);
     for (const error of existing.errors) note(error);
+    // Named, never rewritten: the file is the user's, and the refusal above is
+    // the rule. Saying where the key went costs nothing and is the whole
+    // difference between a closed schema and a dead end.
+    if (namesLegacyReadyKey(existing.errors)) fix(LEGACY_READY_KEY_FIX);
     return 1;
   }
   if (!existing.exists) {
