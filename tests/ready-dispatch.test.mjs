@@ -1170,7 +1170,15 @@ test('one ticket carrying both vocabularies is refused without picking a side', 
   assert.equal(r.code, 1);
   assert.match(r.out, /source:roadmap/);
   assert.match(r.out, /source:user-report/);
-  assert.doesNotMatch(r.out, /--job refine/, 'the tool does not choose between two declarations');
+  // The negative assertion has to name something the OTHER branches would print,
+  // or it asserts nothing. It used to read `--job refine`, which stopped existing
+  // with that lane — leaving the test green against a gate that had started
+  // picking a side. If the contradiction branch fell through, this ticket (spec
+  // label + numeric parent) would land in the spec branch, whose repair offers
+  // `--add-label ready-for-agent`: choosing the spec reading of a ticket that
+  // declares both.
+  assert.doesNotMatch(r.out, /--add-label ready-for-agent/, 'the tool does not choose between two declarations');
+  assert.match(r.out, /remove whichever of the two is wrong/, 'the repair is to fix the contradiction, not to resolve it here');
 });
 
 test('a repository that declares no provenance keeps dispatching exactly as before', () => {
