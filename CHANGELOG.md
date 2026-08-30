@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.15.1](https://github.com/flosrn/ax/compare/v0.15.0...v0.15.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **roles:** a spec-born ticket carries its assignment in the body, not in a Brief comment ([b3aaab4](https://github.com/flosrn/ax/commit/b3aaab4e06dd7112cfdb473a4ba501a5be44d6ef))
+
 ## [0.15.0](https://github.com/flosrn/ax/compare/v0.14.6...v0.15.0) (2026-08-30)
 
 

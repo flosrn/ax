@@ -1,6 +1,6 @@
 {
   "name": "@flosrn/ax",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "Agent Experience for a repository: worktrees, sessions, and multi-agent orchestration.",
   "type": "module",
   "license": "Apache-2.0",
