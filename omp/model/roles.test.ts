@@ -118,11 +118,30 @@ const SPEC_FLOW = /to-tickets|to-spec|spec flow|spec-born/;
 const BRIEF_CARRIED = /Agent Brief|with a brief|brief on (?:it|them)/;
 const ATTRIBUTED = /posts no comment|no Agent Brief step|zero comments is normal|absent Brief on a spec-born|assignment (?:already )?in the (?:ticket )?body|its assignment in the body/;
 
-/** The unattributed shape: both subjects named, neither one's brief accounted for. */
-const unattributed = (body: string): boolean =>
-  SPEC_FLOW.test(body) && BRIEF_CARRIED.test(body) && !ATTRIBUTED.test(body);
+/**
+ * The units a reader treats as one claim: blank-line blocks, split again at
+ * top-level bullets.
+ *
+ * WHY NOT PER FILE, which is what the first two versions of this test asked:
+ * every file that ever carried the defect now also carries a correct
+ * attribution somewhere in it, so a file-level question answers "fine" for all
+ * five of them FOREVER — the announced regression could land in `readiness.md`
+ * under a true sentence three paragraphs away and the suite would not move.
+ * That bypass is not argued below, it is executed against the real body.
+ */
+const claims = (body: string): string[] =>
+  body
+    .split(/\n\s*\n/)
+    .flatMap(block => block.split(/\n(?=- )/))
+    .map(claim => claim.trim())
+    .filter(claim => claim !== '');
 
-test('a surface naming both the spec flow and a brief says which lane the brief belongs to', async () => {
+/** Every claim naming both subjects while accounting for neither one's brief. */
+const unattributed = (body: string): string[] =>
+  claims(body).filter(claim => SPEC_FLOW.test(claim) && BRIEF_CARRIED.test(claim) && !ATTRIBUTED.test(claim));
+
+/** The shipped prose a session obeys, plus the standards file its editor reads. */
+async function shippedProse(): Promise<Map<string, string>> {
   const bodies = new Map<string, string>();
   for (const name of await listRoles()) {
     bodies.set(`roles/${name}.md`, (await loadRole(name)).role?.systemPrompt ?? '');
@@ -130,11 +149,32 @@ test('a surface naming both the spec flow and a brief says which lane the brief 
   for (const file of readdirSync(playbooksDir()).filter(name => name.endsWith('.md'))) {
     bodies.set(`playbooks/${file}`, readFileSync(join(playbooksDir(), file), 'utf8'));
   }
-  // The repo's own standards file carried the same sentence, and it is the one an
-  // agent reads before editing any of the above.
   bodies.set('AGENTS.md', readFileSync(join(import.meta.dir, '..', '..', 'AGENTS.md'), 'utf8'));
+  return bodies;
+}
 
-  expect([...bodies].filter(([, body]) => unattributed(body)).map(([where]) => where)).toEqual([]);
+test('no claim names the spec flow and a brief without saying which lane the brief belongs to', async () => {
+  const found: string[] = [];
+  for (const [where, body] of await shippedProse()) {
+    for (const claim of unattributed(body)) found.push(`${where}: ${claim.replace(/\s+/g, ' ').slice(0, 72)}`);
+  }
+  expect(found).toEqual([]);
+});
+
+test('the retired claim is caught inside a file whose other paragraphs are correct', async () => {
+  // The bypass the per-file version left open, run rather than reasoned about:
+  // `readiness.md` is the most attributed file in the bundle, so if a false
+  // sentence can hide anywhere, it can hide here.
+  const body = (await loadRole('readiness')).role?.systemPrompt ?? '';
+  const retired = 'Tickets the spec flow produced are `ready-for-agent` with a brief by construction.';
+  const poisoned = `${body}\n\n${retired}\n`;
+
+  expect(unattributed(body)).toEqual([]);
+  expect(unattributed(poisoned)).toEqual([retired]);
+  // And the question the earlier version asked still answers "fine" on the same
+  // input — which is why it moved rather than being tightened in place.
+  const perFile = SPEC_FLOW.test(poisoned) && BRIEF_CARRIED.test(poisoned) && !ATTRIBUTED.test(poisoned);
+  expect(perFile).toBe(false);
 });
 
 test('the contract fires on the retired claim and leaves inbound prose alone', () => {
@@ -142,11 +182,11 @@ test('the contract fires on the retired claim and leaves inbound prose alone', (
   // the second is the shape `readiness` legitimately uses for its own lane. A
   // contract that cannot tell them apart is worth less than none, so the
   // discrimination is asserted rather than assumed.
-  expect(unattributed('Tickets the spec flow produced are `ready-for-agent` with a brief by construction.')).toBe(true);
-  expect(unattributed('A `brief` publication posts the Agent Brief alone, then `ready-for-agent`.')).toBe(false);
-  expect(unattributed('The on-ramp converges on an issue labelled `ready-for-agent` with an Agent Brief on it.')).toBe(false);
+  expect(unattributed('Tickets the spec flow produced are `ready-for-agent` with a brief by construction.')).toHaveLength(1);
+  expect(unattributed('A `brief` publication posts the Agent Brief alone, then `ready-for-agent`.')).toHaveLength(0);
+  expect(unattributed('The on-ramp converges on an issue labelled `ready-for-agent` with an Agent Brief on it.')).toHaveLength(0);
   // Naming both lanes is fine once the brief is attributed — this is the fix.
-  expect(unattributed('`to-tickets` posts no comment; the on-ramp posts it as an Agent Brief.')).toBe(false);
+  expect(unattributed('`to-tickets` posts no comment; the on-ramp posts it as an Agent Brief.')).toHaveLength(0);
 });
 
 test('the dispatch precondition says a spec-born ticket without comments is normal', async () => {
