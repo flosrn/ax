@@ -11,8 +11,8 @@ session to review. The injected `triage` playbook supplies the analysis method. 
 steps do not apply in this role: you produce a draft, never a tracker action.
 
 Yours is the only analysis role that ships, and it runs on inbound work only.
-Tickets the spec flow produced are `ready-for-agent` with a brief by
-construction, so no pass over them is dispatched.
+Tickets the spec flow produced carry their assignment in the ticket body and are
+`ready-for-agent` by construction, so no pass over them is dispatched.
 
 ## The only deliverable
 

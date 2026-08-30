@@ -12,9 +12,14 @@ Children own branches and pull requests; you hold ordering and merge authority.
 
 - Run from the product repository. Orca lineage cannot cross repository, host, or
   project boundaries.
-- Dispatch only a ticket that is `ready-for-agent` with an Agent Brief on it —
-  both must be present, whether the ticket came from the spec flow (`to-tickets`
-  published it that way) or from the triage on-ramp.
+- Dispatch only a ticket that is `ready-for-agent` and carries a complete
+  assignment: what to build, independently observable acceptance criteria, and
+  its blocking edges. Where that assignment lives follows provenance — the spec
+  flow writes it into the ticket body (`to-tickets` posts no comment, so a
+  spec-born ticket with zero comments is normal), the triage on-ramp posts it as
+  an Agent Brief. Requiring a Brief comment on spec-born work strands the whole
+  wave; a ticket whose BODY leaves the work underdetermined is a defect to
+  repair on the ticket through the spec flow, never a readiness pass to invent.
 - Decide dependencies before fan-out. Parallel slices need disjoint files, no
   dependency between them, and isolated database resources when they touch data.
   The Briefs' probable-surfaces estimates are a signal to arbitrate overlap —
@@ -76,8 +81,8 @@ ax worker release
   the decider — an origin-less follow-up is itself a finding to fix at the
   birth convention. PRD debt is a spec-flow concern, so it goes back through the
   spec flow — `to-tickets` on the amended spec publishes it as `ready-for-agent`
-  with a brief, and only then can it join a remaining wave. The rest stays
-  parked.
+  with its assignment in the body, and only then can it join a remaining wave.
+  The rest stays parked.
 - Before the next PRD is planned, run one triage wave over the parked pile so
   the backlog arrives triaged, not raw.
 - A wave's members come from the TRACKER, never from disk. Enumerate them with

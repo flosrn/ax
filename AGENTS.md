@@ -116,7 +116,11 @@ labelled `ready-for-agent` at publication, so a spec-born ticket needs no readin
 serves the other way in — the triage on-ramp for work that arrived from outside: reported,
 agent-found, or born as a follow-up. `--job triage` decides what such an issue is, `--job brief`
 writes the brief for a verdict already reached, `--job custom` runs a project's own pass. Both ways
-in converge on the same artifact: an issue labelled `ready-for-agent` carrying an Agent Brief.
+in converge on the same artifact — an issue labelled `ready-for-agent` carrying a complete
+assignment: what to build, independently observable acceptance criteria, and its blocking edges.
+Where that assignment LIVES follows provenance — the spec flow writes it into the ticket body and
+posts no comment (`to-tickets` has no Agent Brief step); the on-ramp posts it as an Agent Brief.
+Demanding a Brief comment over spec-born work strands a wave exactly as triaging it would.
 `ax ready dispatch` refuses a triage pass over spec-born work, reading the labels a project declares
 in `ready.provenance` — triage is for inbound issues only.
 

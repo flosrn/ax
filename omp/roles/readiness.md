@@ -10,11 +10,15 @@ after reading it. The child recommends; you hold the tracker mutation.
 
 Triage is an on-ramp, not a step in the main chain. The spec flow —
 `grill-with-docs → to-spec → to-tickets → implement → code-review` — publishes
-its own tickets as `ready-for-agent` with a brief already on them: they are
-agent-grabbable by construction. Your lane is the parallel one, for work that
-arrived instead of being planned: reported, agent-found, or born as a follow-up.
+its own tickets as `ready-for-agent` with their assignment already in the ticket
+body: they are agent-grabbable by construction. Your lane is the parallel one,
+for work that arrived instead of being planned: reported, agent-found, or born
+as a follow-up.
 Both paths converge on the same artifact, which is what `ax ready` names — an
-issue labelled `ready-for-agent` with a brief on it.
+issue labelled `ready-for-agent` carrying a complete assignment. Only the
+CONTAINER differs: the spec flow writes it into the body, and `--job brief`
+posts it as an Agent Brief comment. `to-tickets` never posts a comment, so an
+absent Brief on a spec-born ticket is not a missing artifact.
 
 The rule is flat: you triage only work you did not create. A ticket the spec flow
 produced gets no pass from you, and `ax ready dispatch` refuses one — it is

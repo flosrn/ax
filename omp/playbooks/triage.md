@@ -9,8 +9,8 @@ an analysis that can also act on itself has no reviewer.
 
 This is the only analysis pass there is. It runs on INBOUND work — an issue
 reported, agent-found, or born as a follow-up. Tickets the spec flow produced
-arrive `ready-for-agent` with a brief already on them and get no pass at all, so
-if your assignment names one, say so rather than analysing it.
+arrive `ready-for-agent` with their assignment already in the ticket body and get
+no pass at all, so if your assignment names one, say so rather than analysing it.
 
 ## The job
 
