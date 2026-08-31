@@ -51,31 +51,31 @@ The implementation and triage playbooks are part of ax. They do not depend on a 
 
 ax is the control layer over OMP sessions and Orca's panes, worktrees, runs and transport.
 
-One operator session carries both dispatch lanes. The triage lane — one issue that arrived from
-outside becomes work an agent can execute — is:
+One operator session dispatches both lanes. The triage lane turns an issue that arrived from
+outside into work an agent can execute; the implementation lane turns a ticket into a merged pull
+request. It is one session, one root:
 
 ```text
 /role orchestrator
-        │
-        ├── ax triage dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
-        │                                  │
-        │                           questions return here
-        │                                  ▼
-        └── review and correct ──► ax triage publish
+   │
+   ├── triage lane ── an inbound issue becomes a ticket
+   │      ├── ax triage dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
+   │      │                                 │
+   │      │                          questions return here
+   │      │                                 ▼
+   │      └── review and correct ──► ax triage publish
+   │
+   └── implementation lane ── a ticket becomes a merged pull request
+          ├── order independent tickets
+          ├── ax worker dispatch ──► isolated worktree ──► worker ──► PR + decided CI
+          │                              ▲                  │
+          │                       questions and rulings     │
+          ├── ax pr gate --merge ◄──────── proof ───────────┘
+          └── ax worker release
 ```
 
-The implementation lane, in the same session, is:
-
-```text
-/role orchestrator
-        │
-        ├── order independent tickets
-        ├── ax worker dispatch ──► isolated worktree ──► worker ──► PR + decided CI
-        │                              ▲                  │
-        │                         messages and decisions  │
-        ├── ax pr gate --merge ◄──────── proof ──────────┘
-        └── ax worker release
-```
+Both lanes rule their children's questions on the same mailbox, and the merge stays with the
+orchestrator: a worker takes its own pull request to decided CI and stops there.
 
 The safety properties live in executable commands rather than operator prose:
 

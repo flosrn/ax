@@ -12,6 +12,8 @@ import { test } from 'node:test';
 import {
   COMMANDS,
   RETIRED_COMMANDS,
+  SECTIONS,
+  WIDTH,
   commandNames,
   plumbingSubcommand,
   plumbingSubcommands,
@@ -19,6 +21,7 @@ import {
   retiredCommand,
   retiredSubcommand,
   subcommandNames,
+  visibleCommands,
 } from '../src/commands.mjs';
 import { agentsBody } from '../src/init.mjs';
 
@@ -42,6 +45,9 @@ const run = (args, env = {}) => {
  */
 const NO_ORCA = { ORCA_BIN: '/nonexistent/orca', ORCA_CLI_COMMAND: '', ORCA_DEV_REPO_ROOT: '' };
 const HAS_ORCA = { ORCA_BIN: '/bin/sh', ORCA_CLI_COMMAND: '', ORCA_DEV_REPO_ROOT: '' };
+
+/** Help rendered in-process may carry colour when the runner owns a TTY. */
+const plain = text => text.replace(/\u001B\[[0-9;]*m/g, '');
 
 /**
  * The commands the AGENTS.md block tells an agent to type, verb and all.
@@ -92,6 +98,72 @@ test('the help text lists exactly the registry, and no line wraps a narrow termi
   assert.ok(widest <= 96, `help wraps at 96 columns: longest line is ${widest}`);
 });
 
+// ── help sections ────────────────────────────────────────────────────────────
+// ax stays flat at the CLI (`docs/adr/0001`): a future domain — automated
+// checks, architecture rules, context rules — arrives as its own NOUN inside a
+// section, never as a nesting prefix. That makes the section the thing a new
+// command declares, so it is registry data and it is graded as registry data:
+// the mapping is asserted on the FULL table, never on `visibleCommands`. A
+// machine that resolves no Orca would otherwise pass this by having nothing
+// left to check, which is exactly how the previous ticket's CI failed.
+
+test('every command declares one of the declared sections, and no section is empty', () => {
+  assert.deepEqual(SECTIONS, ['PROJECT', 'WORKTREE', 'ORCHESTRATION']);
+
+  for (const command of COMMANDS) {
+    assert.ok(SECTIONS.includes(command.section), `${command.name} declares no section, so the help has nowhere to print it`);
+  }
+  // A declared section nothing lands in is a promise of a domain that does not
+  // exist yet — the help would print a heading over blank space.
+  for (const section of SECTIONS) {
+    assert.ok(COMMANDS.some(command => command.section === section), `the section ${section} is declared and empty`);
+  }
+});
+
+/**
+ * The rendered help as `{ SECTION: [command, …] }`, read off the output the way
+ * an agent reads it: a heading is a bare capitalised line, a command is the
+ * only thing indented by exactly two columns.
+ */
+const sectionsOf = usage => {
+  const rendered = {};
+  let current = null;
+  for (const line of plain(usage).split('\n')) {
+    const heading = line.match(/^([A-Z][A-Z ]*)$/);
+    if (heading !== null) {
+      current = heading[1];
+      rendered[current] = [];
+      continue;
+    }
+    const command = line.match(/^ {2}(\S+) {2,}\S/);
+    if (command !== null && current !== null) rendered[current].push(command[1]);
+  }
+  return rendered;
+};
+
+test('ax --help groups every visible command under exactly one section, on ANY machine', () => {
+  // Both machine states FORCED. The gate empties most of ORCHESTRATION where no
+  // Orca resolves, and the section structure has to survive that: a heading is
+  // printed because commands landed under it, never because it was declared.
+  for (const [state, env, orca] of [
+    ['with Orca', HAS_ORCA, true],
+    ['without Orca', NO_ORCA, false],
+  ]) {
+    const usage = run(['--help'], env).out;
+    const rendered = sectionsOf(usage);
+    const expected = Object.fromEntries(
+      SECTIONS.map(section => [section, visibleCommands({ orca }).filter(command => command.section === section).map(command => command.name)]),
+    );
+
+    assert.deepEqual(Object.keys(rendered), SECTIONS, `${state}: the help renders sections out of their declared order`);
+    assert.deepEqual(rendered, expected, `${state}: a visible command is missing from its section, or printed under another one`);
+    for (const section of SECTIONS) assert.ok(rendered[section].length > 0, `${state}: the section ${section} is printed with nothing under it`);
+
+    const widest = Math.max(...plain(usage).split('\n').map(line => line.length));
+    assert.ok(widest <= WIDTH, `${state}: the sectioned help wraps at ${WIDTH} columns: longest line is ${widest}`);
+  }
+});
+
 test('only commands meant for agents reach the AGENTS block', () => {
   // An explicit allow-list, not a count: `init` is a human's setup step, and
   // advertising it invites an agent to rewrite the project's managed files
@@ -110,9 +182,6 @@ test('only commands meant for agents reach the AGENTS block', () => {
 // absence from `subcommandNames` would drop the verb out of the registry ↔
 // dispatch-table equality contract, and the first thing to notice would be the
 // recovery path answering "unknown verb".
-
-/** Help rendered in-process may carry colour when the runner owns a TTY. */
-const plain = text => text.replace(/\u001B\[[0-9;]*m/g, '');
 
 test('a plumbing verb is declared and dispatchable, and never advertised', () => {
   const plumbing = COMMANDS.flatMap(command => plumbingSubcommands(command.name).map(verb => [command.name, verb]));

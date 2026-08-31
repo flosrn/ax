@@ -90,6 +90,42 @@ test('the help and the manifest describe the same tool', () => {
   assert.ok(renderUsage('0.0.0', { orca: true }).includes(description), 'the help renders a tagline the manifest does not carry');
 });
 
+// ── the ratified vocabulary, which shipped prose is an interface for ─────────
+//
+// Every test above grades what a reader would COPY. This one grades the prose
+// itself, because here the words ARE the interface: an agent reading
+// `coordinator` in AGENTS.md and `orchestrator` in its own role prompt cannot
+// tell whether it is being told about one session or two, and it has no way to
+// find out (spec #39, `docs/adr/0001`).
+//
+// The list is not this test's invention. Each retired word must be one
+// CONTEXT.md retires on an `_Avoid_` line, and each replacement must be a term
+// that glossary DEFINES — so the authority stays the dictionary and a test can
+// never outlaw a word nobody ruled on. What the test adds is the direction no
+// glossary can hold by itself: absence from the docs it governs.
+const RETIRED_WORDS = [
+  ['PRD', 'Spec'],
+  ['coordinator', 'Orchestrator'],
+  ['readiness', 'Triage'],
+  ['refinement', 'Triage'],
+  ['Definition-of-Ready', 'Triage'],
+];
+
+test('the docs speak the ratified glossary, and CONTEXT.md is what ratified it', () => {
+  const glossary = read('CONTEXT.md');
+  const avoided = [...glossary.matchAll(/^_Avoid_: (.+)$/gm)].map(match => match[1]).join(' ');
+  assert.ok(avoided.length > 0, 'CONTEXT.md retires nothing — the avoid lines are what this test reads');
+
+  for (const [retired, replacement] of RETIRED_WORDS) {
+    assert.ok(avoided.includes(retired), `CONTEXT.md retires no word "${retired}": this list enforces the glossary, it may not extend it`);
+    assert.match(glossary, new RegExp(`^\\*\\*${replacement}\\*\\*:`, 'm'), `CONTEXT.md defines no term "${replacement}", so the repair names a word of nobody's`);
+
+    for (const file of DOCS) {
+      assert.doesNotMatch(read(file), new RegExp(`\\b${retired}\\b`, 'i'), `${file} still says "${retired}" — the ratified term is "${replacement}"`);
+    }
+  }
+});
+
 // ── the routing table's completeness, which is the half a machine can hold ────
 //
 // Measured 2026-08-26: `src/worker/capability.mjs` was added — a module owning a

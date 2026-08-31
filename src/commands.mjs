@@ -34,16 +34,36 @@ import { orcaAvailable } from './orca-bin.mjs';
  * `plumbing` names the verbs of one noun that are DECLARED and dispatchable but
  * deliberately absent from every surface an agent reads. See
  * `plumbingSubcommands`.
+ *
+ * `section` is the help heading the command is printed under, and every entry
+ * declares one. See `SECTIONS`.
  */
+
+/**
+ * The help's domain sections, in the order they are printed — the `gh` shape,
+ * where a reader finds a verb by the job it serves rather than by reading the
+ * whole list (`docs/adr/0001`).
+ *
+ * ax stays FLAT at the CLI, and this is what pays for that: the room a future
+ * domain needs — automated checks, architecture rules, context rules — is a
+ * section it gets listed in, never an `ax checks <verb>` prefix nested under a
+ * noun. A new domain is one registry entry plus the section it belongs to.
+ *
+ * `help` sits in PROJECT next to `init`, `pin` and `doctor`: what you type
+ * about the checkout itself, as opposed to about one worktree or one wave.
+ */
+export const SECTIONS = ['PROJECT', 'WORKTREE', 'ORCHESTRATION'];
 
 export const COMMANDS = [
   {
     name: 'doctor',
+    section: 'PROJECT',
     summary: 'is this checkout coherent? exit 0 when it is',
     agentLine: "`ax doctor` — check this checkout's config, project wiring and recorded worktree state.",
   },
   {
     name: 'worktree',
+    section: 'WORKTREE',
     summary: 'provision, inspect and reclaim isolated checkouts',
     subcommands: [
       ['setup', 'make this checkout runnable — own port, own env, own database'],
@@ -55,6 +75,7 @@ export const COMMANDS = [
   },
   {
     name: 'supabase',
+    section: 'WORKTREE',
     summary: 'run the Supabase CLI against THIS checkout’s database',
     // Environment, not flags: every argument after the command name belongs to
     // the Supabase CLI, so `ax` claims none of them. They are listed here all
@@ -67,6 +88,7 @@ export const COMMANDS = [
   },
   {
     name: 'worker',
+    section: 'ORCHESTRATION',
     summary: 'dispatch agents and inspect them — liveness, gates and transcripts',
     // Gated like board: exists only where the machine resolves an Orca CLI.
     gated: 'orca',
@@ -97,6 +119,7 @@ export const COMMANDS = [
   },
   {
     name: 'board',
+    section: 'ORCHESTRATION',
     summary: 'write this worktree’s sidebar checkpoint — comment and status, never backwards',
     // Gated: this entry exists only where the machine resolves an Orca CLI. A
     // client repo installing ax never sees it — not in the help, not at the
@@ -112,6 +135,7 @@ export const COMMANDS = [
   },
   {
     name: 'triage',
+    section: 'ORCHESTRATION',
     summary: 'the on-ramp: turn an issue that ARRIVED into work an agent can execute',
     // Gated on the same predicate as `worker`: the dispatch needs an Orca CLI.
     // `publish` needs only `gh`, but it publishes what a dispatched session
@@ -128,6 +152,7 @@ export const COMMANDS = [
   },
   {
     name: 'pr',
+    section: 'ORCHESTRATION',
     summary: 'decide whether a pull request may merge, and merge it',
     // The one verb here reads `gh` and `git` only, so unlike `worker` and
     // `triage` this noun carries no `gated` key: it answers wherever ax is
@@ -136,6 +161,7 @@ export const COMMANDS = [
   },
   {
     name: 'pin',
+    section: 'PROJECT',
     summary: 'move this project onto an ax release — edit, install, prove, doctor',
     options: [
       ['<version>', 'the release to pin, e.g. 0.6.6 or v0.6.6 — the git gesture stays yours'],
@@ -144,13 +170,14 @@ export const COMMANDS = [
   },
   {
     name: 'init',
+    section: 'PROJECT',
     summary: 'write config, bootstrap, OMP package root and managed blocks',
     options: [
       ['--vendor <owner>/<repo>', 'upstream kit, when no remote names it'],
       ['--dry-run', 'report what would change, write nothing'],
     ],
   },
-  { name: 'help', summary: 'this text', runnerless: true },
+  { name: 'help', section: 'PROJECT', summary: 'this text', runnerless: true },
 ];
 
 export const commandNames = COMMANDS.map(command => command.name);
@@ -278,7 +305,6 @@ export function renderUsage(version, availability = {}) {
   // The help renders what THIS machine can answer — the gate is applied here
   // and at the dispatch from the same predicate, injectable for tests.
   const visible = visibleCommands(availability);
-  const width = Math.max(...visible.map(command => command.name.length));
 
   // The banner is a name, a version and the one sentence that says what ax is.
   // That sentence is the package description, so it grows when the product's
@@ -291,29 +317,46 @@ export function renderUsage(version, availability = {}) {
     '',
     bold('Usage'),
     '  ax <command> [options]',
-    '',
-    bold('Commands'),
   ];
 
-  for (const command of visible) {
-    lines.push(`  ${command.name.padEnd(width)}  ${command.summary}`);
+  for (const section of SECTIONS) {
+    const members = visible.filter(command => command.section === section);
 
-    // Each command's verbs and flags align among THEMSELVES, not against every
-    // other command's. One global column let the widest flag in the registry
-    // (`--vendor <owner>/<repo>`) push unrelated descriptions past 96 columns,
-    // where they wrap in a split pane — the exact laddering this help was
-    // rewritten to avoid.
-    //
-    // A PLUMBING verb is skipped here and nowhere else (`plumbingSubcommands`):
-    // it is still declared, still dispatched, and still the only recovery there
-    // is — it just stops competing for a gesture the help offers once.
-    const hidden = plumbingSubcommands(command.name);
-    const declared = (command.subcommands ?? []).filter(([usage]) => !hidden.includes(usage.split(' ')[0]));
-    const inner = [...declared, ...(command.options ?? [])];
-    const innerWidth = Math.max(...inner.map(([name]) => name.length), 0);
+    // A heading is printed because commands landed under it, never because it
+    // was declared: the Orca gate empties most of ORCHESTRATION on a machine
+    // that resolves no runtime, and a heading over blank space reads as a
+    // domain that exists and answers nothing.
+    if (members.length === 0) continue;
+    lines.push('', bold(section));
 
-    for (const [name, description] of inner) {
-      lines.push(`  ${' '.repeat(width)}  ${dim(`${name.padEnd(innerWidth)}  ${description}`)}`);
+    // The left column is measured inside the SECTION, for the same reason each
+    // command's verbs align among themselves: `worktree` and `supabase` are the
+    // two longest names in the registry, and one global column indented every
+    // description under `pr`, `pin` and `doctor` to clear names printed in a
+    // different section, which is width spent on nothing a reader is comparing.
+    const width = Math.max(...members.map(command => command.name.length));
+
+    for (const command of members) {
+      lines.push(`  ${command.name.padEnd(width)}  ${command.summary}`);
+
+      // Each command's verbs and flags align among THEMSELVES, not against
+      // every other command's. One global column let the widest flag in the
+      // registry (`--vendor <owner>/<repo>`) push unrelated descriptions past
+      // 96 columns, where they wrap in a split pane — the exact laddering this
+      // help was rewritten to avoid.
+      //
+      // A PLUMBING verb is skipped here and nowhere else
+      // (`plumbingSubcommands`): it is still declared, still dispatched, and
+      // still the only recovery there is — it just stops competing for a
+      // gesture the help offers once.
+      const hidden = plumbingSubcommands(command.name);
+      const declared = (command.subcommands ?? []).filter(([usage]) => !hidden.includes(usage.split(' ')[0]));
+      const inner = [...declared, ...(command.options ?? [])];
+      const innerWidth = Math.max(...inner.map(([name]) => name.length), 0);
+
+      for (const [name, description] of inner) {
+        lines.push(`  ${' '.repeat(width)}  ${dim(`${name.padEnd(innerWidth)}  ${description}`)}`);
+      }
     }
   }
 
