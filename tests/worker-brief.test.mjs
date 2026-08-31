@@ -64,7 +64,7 @@ test('the address line is the handle the child ACTS on, not a link it cannot rea
   assert.match(brief(), /^https:\/\/tracker\.test\/issue\/T-353$/m);
 });
 
-test('a launch with NO ticket never tells the child to read one', () => {
+test('a dispatch with NO ticket never tells the child to read one', () => {
   // `--name` dispatches work no tracker owns. The tracked shape says "read the
   // ticket, it is canonical" — rendered against nothing, that is the 2026-08-01
   // failure written into the brief itself: a child sent to improvise by a
@@ -99,7 +99,7 @@ test('a ticketless brief drops the keep-the-ticket-current bullet, and only that
   }
 });
 
-test('a ticketless launch still gets the mechanics, and a project contract still replaces them', () => {
+test('a ticketless dispatch still gets the mechanics, and a project contract still replaces them', () => {
   const text = brief({ ticket: null, name: 'loading-states' });
   assert.match(text, /There is NO ticket for this work/);
   const owned = brief({ ticket: null, name: 'loading-states', contract: 'OUR RULES' });
@@ -193,7 +193,7 @@ test('MECHANICS names no skill, no repository and no ticket', () => {
   // One bullet per proposition, and no eighth bullet nobody asked for.
   assert.equal(MECHANICS.split('\n').filter(line => line.startsWith('- ')).length, propositions.length);
   // The worktree describes itself, and until 2026-08-26 nothing told the child so.
-  // `ax worker launch` REFUSES to dispatch into a tree without this file — "the
+  // `ax worker dispatch` REFUSES to place a child in a tree without this file — "the
   // child would have no URL to test against" — and then never named it, so the
   // one artifact written to answer "which port, which database, which branch"
   // was read by the dispatching session and not by its reader. It rides bullet 1: same
@@ -230,19 +230,23 @@ test("the remote addendum's DECISION grammar is the one progressOnly() implement
   assert.equal(progressOnly('3/7 · implement · loading states'), true);
 });
 
-test('the operator brief is last, verbatim, under a heading naming its file', () => {
+test('the operator notes are last, verbatim, under a heading naming their file', () => {
   // An operator's words are never paraphrased by ax, and never allowed to
-  // displace the contract above them.
-  const text = brief({ operator: { name: 'brief.md', text: 'Do not touch the billing module.\n' } });
-  assert.ok(text.includes('OPERATOR BRIEF (brief.md)'));
+  // displace the contract above them. NOTES, not BRIEF: the flag that carries
+  // this file is `--notes`, and `Brief` names the Agent Brief comment alone —
+  // one word for two artifacts is how a child reads wave memory as its
+  // assignment.
+  const text = brief({ operator: { name: 'wave-39-memory.md', text: 'Do not touch the billing module.\n' } });
+  assert.ok(text.includes('OPERATOR NOTES (wave-39-memory.md)'));
   assert.ok(text.includes('Do not touch the billing module.'));
-  assert.ok(text.indexOf('OPERATOR BRIEF') > text.indexOf('PILOT CONTRACT'));
-  assert.ok(!brief().includes('OPERATOR BRIEF'));
+  assert.ok(text.indexOf('OPERATOR NOTES') > text.indexOf('PILOT CONTRACT'));
+  assert.ok(!brief().includes('OPERATOR NOTES'));
+  assert.ok(!text.includes('OPERATOR BRIEF'), 'the retired heading is gone, not aliased');
 });
 
-test('the operator brief follows the remote addendum, not the other way round', () => {
+test('the operator notes follow the remote addendum, not the other way round', () => {
   // Order is load-bearing: the mechanics a child cannot derive come before the
   // instructions it is asked to apply.
-  const text = brief({ host: 'other-host', operator: { name: 'brief.md', text: 'Ping me when CI is decided.' } });
-  assert.ok(text.indexOf('OPERATOR BRIEF') > text.indexOf('BOARD CARD'));
+  const text = brief({ host: 'other-host', operator: { name: 'notes.md', text: 'Ping me when CI is decided.' } });
+  assert.ok(text.indexOf('OPERATOR NOTES') > text.indexOf('BOARD CARD'));
 });

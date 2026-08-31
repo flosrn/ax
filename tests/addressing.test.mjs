@@ -72,7 +72,7 @@ test('the served URL is asked of the proxy, never composed, and asked IN the wor
   );
   // The directory is part of the QUESTION: the proxy resolves the branch from
   // the caller's cwd, so the same name asked elsewhere answers another route.
-  // `ax worker launch` provisions worktrees it never chdirs into, so an
+  // `ax worker dispatch` provisions worktrees it never chdirs into, so an
   // unthreaded probe hands every one of them the primary checkout's URL.
   assert.deepEqual(calls, [['proxy-bin', 'get', 'demo', '/repo/.worktrees/feat-x']]);
 });

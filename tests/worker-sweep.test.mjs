@@ -1,5 +1,5 @@
 // The port of `orca-coordinator.sh reap` — renamed `sweep`, because that is the
-// word `ax.schema.json` already uses for this gesture (`launch.hosts.<h>.sweep`)
+// word `ax.schema.json` already uses for this gesture (`dispatch.hosts.<h>.sweep`)
 // and that key pointed at the Bash. One word for one gesture, on both sides of
 // the ssh boundary.
 //
@@ -223,7 +223,7 @@ test('with no --under nothing is a candidate, and the refusal names the flag', (
 });
 
 test('a path that claims a whole machine or a whole home is refused', () => {
-  // `launch.hosts.*.sweep` is argv from a config file, which is PR-editable: a
+  // `dispatch.hosts.*.sweep` is argv from a config file, which is PR-editable: a
   // permissive value turns a host-scoped verb into a sweep of someone's tabs.
   for (const path of ['/', '/home', HOME, `${HOME}/`, 'relative/chrome', `${HOME}/../orca/.cache`, `${HOME}/.cache/../../orca`]) {
     const r = run(['--under', path]);

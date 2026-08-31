@@ -255,20 +255,20 @@ test('a github ref is not probed on the host at all', () => {
 
 // Dispatching to an undeclared host is how a floor goes unmeasured.
 test('an environment the project never declared is refused, naming what to declare', () => {
-  const config = { launch: { hosts: { built: { ssh: 'ground' } } } };
+  const config = { dispatch: { hosts: { built: { ssh: 'ground' } } } };
   const refusal = hostFor(config, 'elsewhere');
   assert.equal(refusal.ok, false);
-  assert.match(refusal.reason, /launch\.hosts\.elsewhere/);
+  assert.match(refusal.reason, /dispatch\.hosts\.elsewhere/);
   assert.match(refusal.reason, /'built'/);
 });
 
 test('a declared host comes back exactly as declared, with nothing invented', () => {
   const host = { ssh: 'ground', diskPath: '/data', diskFloorGb: 10 };
-  assert.deepEqual(hostFor({ launch: { hosts: { built: host } } }, 'built'), { ok: true, host });
+  assert.deepEqual(hostFor({ dispatch: { hosts: { built: host } } }, 'built'), { ok: true, host });
 });
 
 test('a host declared without an ssh target is refused: every ground is read over ssh', () => {
-  const refusal = hostFor({ launch: { hosts: { built: { diskPath: '/data' } } } }, 'built');
+  const refusal = hostFor({ dispatch: { hosts: { built: { diskPath: '/data' } } } }, 'built');
   assert.equal(refusal.ok, false);
   assert.match(refusal.reason, /declares no ssh target/);
 });

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
-import { COMMANDS, commandNames, renderUsage, subcommandNames } from '../src/commands.mjs';
+import { COMMANDS, commandNames, renderUsage, retiredSubcommand, subcommandNames } from '../src/commands.mjs';
 import { agentsBody } from '../src/init.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
@@ -76,6 +76,27 @@ test('only commands meant for agents reach the AGENTS block', () => {
   // mid-task. Adding a command here is a decision, so it belongs in a diff.
   assert.deepEqual(advertisedCommands().sort(), ['doctor', 'worktree ls', 'worktree setup']);
   assert.doesNotMatch(agentsBody(), /`ax init/);
+});
+
+// ── retired verbs ────────────────────────────────────────────────────────────
+// A renamed verb is owed its replacement, and the help is owed silence about it.
+// Both halves are one declaration, so neither can be added without the other.
+test('a retired verb names a declared replacement, and is never itself declared', () => {
+  const retirements = COMMANDS.flatMap(command => Object.keys(command.retired ?? {}).map(verb => [command.name, verb]));
+  assert.ok(retirements.length > 0, 'the table is read by every noun dispatcher; an empty one means it stopped being read');
+
+  for (const [name, verb] of retirements) {
+    const retired = retiredSubcommand(name, verb);
+    assert.ok(retired, `${name} ${verb} is declared retired and reads back as nothing`);
+    assert.ok(subcommandNames(name).includes(retired.to), `${name} ${verb} points at "${retired.to}", which is not a declared verb`);
+    assert.ok(!subcommandNames(name).includes(verb), `${name} ${verb} is retired AND declared — the help would advertise both names`);
+    assert.doesNotMatch(renderUsage('0.0.0', { orca: true }), new RegExp(`^ +${verb}\\b`, 'm'), `the help still lists the retired ${verb}`);
+    assert.match(retired.fix, new RegExp(`^ax ${name} ${retired.to}\\b`), 'the repair is a command an operator can type');
+    assert.ok(retired.why.length > 0, `${name} ${verb} retires without saying why`);
+  }
+
+  assert.equal(retiredSubcommand('worker', 'dispatch'), null, 'a live verb is not retired');
+  assert.equal(retiredSubcommand('worktree', 'launch'), null, 'retirements are per noun');
 });
 
 test('an unknown command exits 2 and prints the help', () => {

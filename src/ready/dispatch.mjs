@@ -366,7 +366,7 @@ export function dispatch(
   if (slug === '') return refuse('could not resolve the current repository', 'ax ready dispatch --repo <owner>/<repo>');
 
   // ── 3. the vocabulary the child is answerable to ──────────────────────────
-  // Declared and unreadable is a refusal, exactly like `launch.contract`: a spec
+  // Declared and unreadable is a refusal, exactly like `dispatch.contract`: a spec
   // pointing at nothing sends a child to improvise, and improvising here means
   // recommending in prose and stopping.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });

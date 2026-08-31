@@ -1,8 +1,8 @@
 // Placement: a ticket's worktree on THIS host — reuse, the repo's own tool, or
 // Orca — then provisioning through `ax worktree setup`, then proof that the
-// selector a dispatch will use actually resolves. Extracted from launch.mjs so
+// selector a dispatch will use actually resolves. Extracted from dispatch.mjs so
 // the placement rules answer through their own interface instead of only
-// through the whole launch pipeline; every machine answer (`exec`, `run`,
+// through the whole dispatch pipeline; every machine answer (`exec`, `run`,
 // `setupFn`, `now`, `sleep`) stays injected, so the tests need no Orca.
 
 import { existsSync, readdirSync } from 'node:fs';
@@ -35,11 +35,11 @@ const lastLine = text =>
  * worktree's `config.toml` is byte-identical to the primary's.
  *
  * The labels that mean "database" are the project's to declare
- * (`launch.databaseLabels`): a label vocabulary measured for one fleet and
+ * (`dispatch.databaseLabels`): a label vocabulary measured for one fleet and
  * inherited by a repo that never declared it is this file's own named mistake.
  */
-export function databaseArgs(launchConfig, ticket) {
-  const declared = Array.isArray(launchConfig.databaseLabels) ? launchConfig.databaseLabels : [];
+export function databaseArgs(dispatchConfig, ticket) {
+  const declared = Array.isArray(dispatchConfig.databaseLabels) ? dispatchConfig.databaseLabels : [];
   if (declared.length === 0 || ticket === null) return { argv: [], notes: [] };
   const carried = Array.isArray(ticket.labels) ? ticket.labels : [];
   const matched = declared.filter(label => carried.includes(label));
@@ -51,24 +51,24 @@ export function databaseArgs(launchConfig, ticket) {
 }
 
 /** Place the worktree on THIS host: reuse, the repo's own tool, or Orca. */
-export function placeLocal({ request, issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn }) {
+export function placeLocal({ request, issue, slug, named, paths, dispatchConfig, ticket, exec, run, cwd, dry, probe, setupFn }) {
   const notes = [];
   const base = join(paths.root, '.worktrees');
   // What this placement is FOR, in one word, for every line below. `issue` is ''
-  // on a named launch, and a message naming nothing sends an operator grepping
+  // on a named dispatch, and a message naming nothing sends an operator grepping
   // for a tree that was reported without a name.
   const subject = named ? request : issue;
 
   // Idempotence first, and it is the only countermeasure available: `worktree
   // create` carries no `--retry-request` (PORT invariant 2), so a create that
   // strands cannot be replayed and the claim is bounded to THIS host. A second
-  // launch for the same ticket finds the first tree — and still proves it
-  // habitable below, because the launch that made it may be exactly the one that
+  // dispatch for the same ticket finds the first tree — and still proves it
+  // habitable below, because the dispatch that made it may be exactly the one that
   // died before provisioning it.
   const existing = existingFor(base, subject, { exact: named });
   let created = false;
 
-  const tool = launchConfig.worktreeTool ?? '';
+  const tool = dispatchConfig.worktreeTool ?? '';
   if (dry) {
     // A prediction, and it is labelled as one: the placement is the step a dry
     // run cannot perform, so the preview shows the selector it WOULD carry
@@ -113,7 +113,7 @@ export function placeLocal({ request, issue, slug, named, paths, launchConfig, t
 
   // Provisioning is `ax worktree setup`'s job, and asking it here is what
   // replaced this verb's own copy of it. A `--probe` session is throwaway and
-  // says so; every other launch refuses a tree with no agent context file,
+  // says so; every other dispatch refuses a tree with no agent context file,
   // because a child with no URL to test against is what --setup skip produced.
   if (probe) {
     notes.push('--probe: no provisioning and no habitability proof — never for real work');
@@ -122,28 +122,28 @@ export function placeLocal({ request, issue, slug, named, paths, launchConfig, t
 
   // Once a tree EXISTS, a provisioning failure is no longer "nothing was
   // created": exit 1 promises that, so these answer cannot-establish and name
-  // the tree, which is also what a second launch will reuse.
+  // the tree, which is also what a second dispatch will reuse.
   //
   // `cwd` is the whole contract with setup: it never chdirs, and it passes that
   // path down to every probe that answers per directory (the proxy route in
   // particular). This call used to add `env: { …env, PWD: worktree }`, which
   // `setup` does not read and which `child_process` ignores anyway — a
   // directory override that overrode nothing.
-  const database = databaseArgs(launchConfig, ticket);
+  const database = databaseArgs(dispatchConfig, ticket);
   notes.push(...database.notes);
   const setupCode = setupFn(database.argv, { cwd: worktree });
   if (setupCode !== 0) {
     return {
       notes,
-      cannot: `ax worktree setup did not finish in ${worktree}${created ? ' (which this launch just created)' : ''}, so the child would start in a tree nobody prepared`,
-      repair: `cd ${worktree} && ax worktree setup   # then re-run this launch; it reuses that tree`,
+      cannot: `ax worktree setup did not finish in ${worktree}${created ? ' (which this dispatch just created)' : ''}, so the child would start in a tree nobody prepared`,
+      repair: `cd ${worktree} && ax worktree setup   # then re-run this dispatch; it reuses that tree`,
     };
   }
   if (!existsSync(join(worktree, CONTEXT_PATH))) {
     return {
       notes,
       cannot: `${worktree} has no ${CONTEXT_PATH}, so the child would have no URL to test against`,
-      repair: `cd ${worktree} && ax worktree setup   # then re-run this launch; it reuses that tree`,
+      repair: `cd ${worktree} && ax worktree setup   # then re-run this dispatch; it reuses that tree`,
     };
   }
   notes.push(`provisioned: ${join(worktree, CONTEXT_PATH)} describes this worktree's own port and database`);
@@ -156,8 +156,8 @@ export function placeLocal({ request, issue, slug, named, paths, launchConfig, t
  * With a ticket the match is the request's OWN name plus the ticket segment
  * followed by a separator: `GAP-35` inside `gap-357-…` is a different ticket, and
  * reusing another ticket's tree dispatches a child into a branch that is not its
- * own, while a differently-slugged earlier launch of the SAME ticket is the tree
- * this launch must reuse.
+ * own, while a differently-slugged earlier dispatch of the SAME ticket is the tree
+ * this dispatch must reuse.
  *
  * `exact` turns that prefix rule off, and `--name` needs it off. A name is not a
  * ticket segment with slugs hanging from it — it is the whole identity, so the

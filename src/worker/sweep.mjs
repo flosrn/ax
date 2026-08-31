@@ -25,14 +25,14 @@
 // bookkeeping the harness lacks, and the cost of a wrong verdict is that an agent
 // relaunches a browser. Nothing is lost. The real false positive is a session
 // deliberately driving one browser past the floor (a human clicking through a
-// live debug), which is why `--apply` is explicit and why `launch` only ever
+// live debug), which is why `--apply` is explicit and why `dispatch` only ever
 // sweeps the host it is about to place on.
 //
 // OWNERSHIP IS DECLARED, NEVER ASSUMED. There is no built-in path list, on the
 // precedent `src/proc.mjs` already states beside its own reaper: a hardcoded list
 // is project policy living in a library, and it can only ever be wrong for the
 // next machine. `--under` is required, must be absolute and unambiguous, and must
-// name something inside the caller's own home — `launch.hosts.*.sweep` is argv
+// name something inside the caller's own home — `dispatch.hosts.*.sweep` is argv
 // from a config file, so it is PR-editable, and a permissive value would turn a
 // host-scoped verb into a sweep of someone else's tabs.
 //

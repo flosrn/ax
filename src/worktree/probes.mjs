@@ -91,8 +91,8 @@ export function probeProxy({ worktreePath, config, recorded }) {
   // ASKED FROM INSIDE THE WORKTREE. The proxy resolves the branch from the
   // directory it is asked in, so the name alone does not identify a route: a
   // probe run in the ax process's cwd answers for whatever tree that process
-  // sits in. `ax worker launch` provisions a worktree it never chdirs into,
-  // which is exactly how every tree placed by one launch would inherit the
+  // sits in. `ax worker dispatch` provisions a worktree it never chdirs into,
+  // which is exactly how every tree placed by one dispatch would inherit the
   // primary checkout's URL.
   const servedUrl = proxyServedUrl({ name, cwd: worktreePath });
 

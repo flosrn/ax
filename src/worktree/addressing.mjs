@@ -42,8 +42,8 @@ import { baseUrlForPort } from './ports.mjs';
  * `cwd` matters to any probe that answers PER DIRECTORY. The proxy is one: it
  * infers the branch from the caller's directory, so a probe run in the ax
  * process's own cwd answers for whatever tree that process happens to sit in.
- * Measured 2026-08-25: `ax worker launch` provisions a worktree it does not
- * chdir into, so every worktree placed by one launch would be told the primary
+ * Measured 2026-08-25: `ax worker dispatch` provisions a worktree it does not
+ * chdir into, so every worktree placed by one dispatch would be told the primary
  * checkout's route — the same class of incident this module's header records,
  * "one worktree announcing a dev host nothing served".
  *

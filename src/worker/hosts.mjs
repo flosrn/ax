@@ -87,18 +87,18 @@ const lastSegment = value =>
  * unmeasured floor is indistinguishable from a floor that passed.
  */
 export function hostFor(config, env) {
-  const hosts = config?.launch?.hosts ?? {};
+  const hosts = config?.dispatch?.hosts ?? {};
   const declared = Object.keys(hosts);
   const host = env ? hosts[env] : undefined;
   if (!host || typeof host !== 'object')
     return {
       ok: false,
-      reason: `'${env}' is not a host this project declared${declared.length ? ` (it declares ${declared.map(name => `'${name}'`).join(', ')})` : ''}. Declare it under launch.hosts.${env} in ax.config.json with at least its ssh target, plus the diskPath/diskFloorGb and cgroup/memFreeFloorMb pairs you want measured — a host reached without those floors is dispatched to blind.`,
+      reason: `'${env}' is not a host this project declared${declared.length ? ` (it declares ${declared.map(name => `'${name}'`).join(', ')})` : ''}. Declare it under dispatch.hosts.${env} in ax.config.json with at least its ssh target, plus the diskPath/diskFloorGb and cgroup/memFreeFloorMb pairs you want measured — a host reached without those floors is dispatched to blind.`,
     };
   if (!host.ssh)
     return {
       ok: false,
-      reason: `launch.hosts.${env} declares no ssh target, and every ground on a remote host is read over ssh. Add "ssh" to launch.hosts.${env} in ax.config.json.`,
+      reason: `dispatch.hosts.${env} declares no ssh target, and every ground on a remote host is read over ssh. Add "ssh" to dispatch.hosts.${env} in ax.config.json.`,
     };
   return { ok: true, host };
 }
@@ -110,13 +110,13 @@ export function hostFor(config, env) {
  *   work = current - inactive_file - active_file - slab_reclaimable + shmem
  *   free = max - work
  *
- * The number that decides a launch is NOT `memory.current`. Measured on the real
+ * The number that decides a dispatch is NOT `memory.current`. Measured on the real
  * host 2026-08-14 16:05, 40 minutes after a sweep:
  *     memory.current  10 909 MB = 88 %   ← what a naive reading refuses on
  *     unreclaimable    1 814 MB = 14 %   ← what the OOM-killer has to work with
  *     reclaimable cache 9 095 MB
  * `memory.current` counts page cache, which the kernel drops under pressure. A
- * guard on it refuses every launch onto a host that has merely READ a lot of
+ * guard on it refuses every dispatch onto a host that has merely READ a lot of
  * files — a git clone and a pnpm install do exactly that.
  *
  * The formula is the fleet's own, not one invented here: `mem-watch.sh` sources
@@ -170,7 +170,7 @@ export function unreclaimableMb(statText, { current, max } = {}) {
  * declaration, or could not be read.
  *
  * Order is load-bearing: the sweep runs BEFORE memory is measured, because a
- * browser an earlier stage left open is not a tenant and refusing a launch over
+ * browser an earlier stage left open is not a tenant and refusing a dispatch over
  * 825 MB of dead renderers would be a refusal about garbage.
  *
  * A refusal carries the notes taken before it: the grounds already proven are
@@ -207,19 +207,19 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
     if (digits !== undefined) {
       if (availGb < host.diskFloorGb)
         return refuse(
-          `only ${availGb}G free on ${host.diskPath} at '${at}', and every worktree placed there installs its own dependencies (floor ${host.diskFloorGb}G). Free space on that mount, or lower launch.hosts.*.diskFloorGb once you have measured that the smaller floor still fits an install.`,
+          `only ${availGb}G free on ${host.diskPath} at '${at}', and every worktree placed there installs its own dependencies (floor ${host.diskFloorGb}G). Free space on that mount, or lower dispatch.hosts.*.diskFloorGb once you have measured that the smaller floor still fits an install.`,
         );
       notes.push(`free disk on '${at}': ${availGb}G on ${host.diskPath}, over the ${host.diskFloorGb}G floor`);
     } else {
       unproven += 1;
       notes.push(
-        `free disk on '${at}' could not be read over ssh — that ground is unproven, not passed${read.error ? ` (${String(read.error.message ?? read.error)})` : ''}. Check launch.hosts.*.diskPath exists there, or run df yourself before dispatching.`,
+        `free disk on '${at}' could not be read over ssh — that ground is unproven, not passed${read.error ? ` (${String(read.error.message ?? read.error)})` : ''}. Check dispatch.hosts.*.diskPath exists there, or run df yourself before dispatching.`,
       );
     }
   } else {
     unproven += 1;
     notes.push(
-      `free disk on '${at}' was NOT MEASURED: it needs both diskPath and diskFloorGb under launch.hosts in ax.config.json. Declare the pair to have it measured.`,
+      `free disk on '${at}' was NOT MEASURED: it needs both diskPath and diskFloorGb under dispatch.hosts in ax.config.json. Declare the pair to have it measured.`,
     );
   }
 
@@ -234,12 +234,12 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
       if (swept.status === 0) notes.push(`swept stale browsers on '${at}' before measuring memory`);
       else
         notes.push(
-          `the browser sweep on '${at}' did not run, so memory is measured with whatever an earlier stage left open — this never blocks a dispatch. Run launch.hosts.*.sweep there by hand if the memory ground below refuses.`,
+          `the browser sweep on '${at}' did not run, so memory is measured with whatever an earlier stage left open — this never blocks a dispatch. Run dispatch.hosts.*.sweep there by hand if the memory ground below refuses.`,
         );
     }
   } else {
     notes.push(
-      `no browser sweep declared for '${at}', so memory is measured with whatever is still running. Declare launch.hosts.*.sweep to reclaim dead renderers before the measurement.`,
+      `no browser sweep declared for '${at}', so memory is measured with whatever is still running. Declare dispatch.hosts.*.sweep to reclaim dead renderers before the measurement.`,
     );
   }
 
@@ -254,7 +254,7 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
     if (verdict === null) {
       unproven += 1;
       notes.push(
-        `cgroup memory on '${at}' could not be read as a measurement — that ground is unproven, not passed (an uncapped memory.max reads this way too, and an uncapped cgroup has no ceiling to be near). Check launch.hosts.*.cgroup still names the unit every session there shares.`,
+        `cgroup memory on '${at}' could not be read as a measurement — that ground is unproven, not passed (an uncapped memory.max reads this way too, and an uncapped cgroup has no ceiling to be near). Check dispatch.hosts.*.cgroup still names the unit every session there shares.`,
       );
     } else if (verdict.freeMb < host.memFreeFloorMb) {
       // No apostrophe in a refusal: this text crosses shells, and a refusal
@@ -270,7 +270,7 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
   } else {
     unproven += 1;
     notes.push(
-      `cgroup memory on '${at}' was NOT MEASURED: it needs both cgroup and memFreeFloorMb under launch.hosts in ax.config.json. Declare the pair to have it measured.`,
+      `cgroup memory on '${at}' was NOT MEASURED: it needs both cgroup and memFreeFloorMb under dispatch.hosts in ax.config.json. Declare the pair to have it measured.`,
     );
   }
 
@@ -334,10 +334,10 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
       }
     }
   } else if (kind === null) {
-    // A `--name` launch owns no ticket, so there is no tracker ground to prove.
+    // A `--name` dispatch owns no ticket, so there is no tracker ground to prove.
     // Said rather than skipped: every other absence in this file is announced,
     // and a silent one reads as "the tracker was checked".
-    notes.push(`no ticket for this launch, so no tracker ground applies on '${at}' — the brief is the whole definition of the work`);
+    notes.push(`no ticket for this dispatch, so no tracker ground applies on '${at}' — the brief is the whole definition of the work`);
   }
 
   // `unproven` is what keeps an absence from reading like a pass: the caller
@@ -360,7 +360,7 @@ export function proveHost(host, { ssh = defaultSsh, kind, ref, sweep = true } = 
 export function repoIdFor(base, { run, env } = {}) {
   const want = lastSegment(base);
   const listing = `orca repo list --environment ${env} --json`;
-  if (!want) return { ok: false, reason: `no repository name to match on '${env}'. Pass --repo-id, or launch from inside a git checkout whose directory name matches the repository there.` };
+  if (!want) return { ok: false, reason: `no repository name to match on '${env}'. Pass --repo-id, or dispatch from inside a git checkout whose directory name matches the repository there.` };
 
   const out = run(['repo', 'list', '--environment', env, '--json']);
   const repos = out?.receipt?.result?.repos;

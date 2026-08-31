@@ -70,7 +70,7 @@ The implementation lane, in the same session, is:
 /role orchestrator
         │
         ├── order independent tickets
-        ├── ax worker launch ──► isolated worktree ──► worker ──► PR + decided CI
+        ├── ax worker dispatch ──► isolated worktree ──► worker ──► PR + decided CI
         │                              ▲                  │
         │                         messages and decisions  │
         ├── ax pr gate --merge ◄──────── proof ──────────┘
