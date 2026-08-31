@@ -20,7 +20,7 @@ export type MessageType = 'status' | 'question' | 'handoff';
  * Instead of failing, route through the shared parent: the parent's receiver
  * verifies the sender's attribution, re-posts to the target with the VERIFIED
  * origin stamped, and logs the relay. Children get lateral messaging, the
- * coordinator gets the audit trail for free.
+ * orchestrator gets the audit trail for free.
  */
 export function sendToPeer(o: {
   target: string;
@@ -42,13 +42,13 @@ export function sendToPeer(o: {
   const me = selfPeer();
   // A SELF-ADDRESSED SEND IS NEVER THE INTENT, and it is the one failure that
   // cannot be seen from either end: Orca accepts it and delivers the message to
-  // this very session, so a report that never reached its coordinator reads
+  // this very session, so a report that never reached its orchestrator reads
   // exactly like one that arrived. Measured 2026-08-15: a dispatched child on
-  // another host answered its coordinator for five hours and every answer came
+  // another host answered its orchestrator for five hours and every answer came
   // home to itself — on that host the registry can only see local panes, so the
-  // coordinator's name resolved to the only peer there was, the child. Its own
+  // orchestrator's name resolved to the only peer there was, the child. Its own
   // transcript said `my own report echoed back through the relay`; nothing on
-  // the coordinator's side said anything at all.
+  // the orchestrator's side said anything at all.
   const selfAddress =
     me !== null && (resolved.address === `run:${me.run}` || resolved.address === me.handle);
   if (selfAddress || (me !== null && resolved.handle !== undefined && resolved.handle === me.handle))

@@ -143,12 +143,12 @@ test('session shutdown retries a completion whose turn-end delivery failed', asy
  *
  * Measured 2026-08-25 on ofmchat. Child `57-policy-offer-engine` (session
  * 01a0387b) marked its 19 todo tasks complete at 11:30, and its completion
- * reached the coordinator at 11:32:41 — `handoff`, sequence 1, in Orca's own
+ * reached the orchestrator at 11:32:41 — `handoff`, sequence 1, in Orca's own
  * ledger. At 11:40:59 the operator relayed a second assignment onto its pane; it
  * ran 19 tool calls, edited two files, committed `b8870ef2` and opened PR #76,
  * and its run ended at 11:47:40. Nothing was sent: `current` was still `done` and
  * `lastReported` was `done`, so `agent_end` returned before the send. Orca's
- * ledger holds no message from that pane after 11:32:28, and the coordinator sat
+ * ledger holds no message from that pane after 11:32:28, and the orchestrator sat
  * idle from 11:42 onwards waiting for one.
  *
  * THE RE-ARM IS THE WORK CYCLE, NOT THE TODO LIST AND NOT THE ARTIFACT. The todo
@@ -190,9 +190,9 @@ test('a finished worker handed more work reports again when that run ends', asyn
 test('one report per work cycle, however many times the run ends inside it', async () => {
   // Pi ends an agent run and may still auto-retry, auto-compact and retry, or
   // pick up a queued follow-up message — several `agent_end` events for one thing
-  // the operator asked. The mirror error costs as much as the silence: a
-  // coordinator that gets "finished its work" three times for one finish learns to
-  // ignore the signal.
+  // the operator asked. The mirror error costs as much as the silence: an
+  // orchestrator that gets "finished its work" three times for one finish learns
+  // to ignore the signal.
   const sent: string[] = [];
   const lead = ctx('retry-session');
   const h = harness((state) => (sent.push(state), { sent: true }));
@@ -259,9 +259,9 @@ test('a no-todo session still reports its turn once per session, not once per cy
  * The re-arm above creates this case, and it is the more expensive of the two
  * errors it sits between. `current` still reads `done` from the cycle that
  * finished, so a session killed inside the NEXT one would announce "finished its
- * work" for work that stopped halfway — a false completion a coordinator acts on,
- * where the pre-re-arm behaviour was merely silent. The todo list describes the
- * cycle that wrote it; only the cycle boundary knows whether this one ended.
+ * work" for work that stopped halfway — a false completion an orchestrator acts
+ * on, where the pre-re-arm behaviour was merely silent. The todo list describes
+ * the cycle that wrote it; only the cycle boundary knows whether this one ended.
  */
 test('a session killed inside a second cycle says it stopped, not that it finished', async () => {
   const sent: string[] = [];
@@ -329,7 +329,7 @@ test('a run that ended without reporting is still a cycle that ended', async () 
  *
  * `report()` answers `{sent, reason}` and this extension threw the reason away,
  * so every undeliverable finish was indistinguishable from a delivered one — from
- * inside the child, from the coordinator's side, and from the transcript.
+ * inside the child, from the orchestrator's side, and from the transcript.
  *
  * The reason is rarely exotic. Measured 2026-08-25 while probing this very fix: a
  * child whose parent worktree ran two registered panes got
@@ -337,7 +337,7 @@ test('a run that ended without reporting is still a cycle that ended', async () 
  * dispatcher` — the deliberate fail-closed refusal in `parentPeer()`, since Orca's
  * lineage is worktree-level and no pane-level discriminator exists there. It is
  * the right refusal and it was completely silent, which is the defect: open a
- * second session in a coordinator's worktree and every child of it goes mute.
+ * second session in an orchestrator's worktree and every child of it goes mute.
  *
  * Said once per distinct reason, in the child's own session, because that is the
  * one place an operator can act on it.

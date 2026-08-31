@@ -251,7 +251,7 @@ const PEER_RUN_TAG = 'peer session: ';
  * Adopting *any* current non-legacy Run was wrong: restart the `/epic`
  * planning session after it created the epic Run and this receiver inherits
  * that binding, then starts consuming and acknowledging the epic's worker
- * questions, escalations and completions before the coordinator ever sees
+ * questions, escalations and completions before the orchestrator ever sees
  * them. The tag distinguishes "a Run I made for peer traffic" from "a Run some
  * other workflow is using".
  */
@@ -507,8 +507,8 @@ export default function (pi): void {
       // alias above only removed half the collision. `orca orchestration send`
       // and `reply` both take `--body`, and this tool's own execute below
       // spawns `reply --body`. So an agent that has just written the CLI form,
-      // or read this file, reaches for `body` — measured 2026-08-15, on a
-      // coordinator that had run `orchestration send --body` minutes earlier.
+      // or read this file, reaches for `body` — measured 2026-08-15, on an
+      // orchestrator that had run `orchestration send --body` minutes earlier.
       // Rejecting the name your own implementation uses protects nothing.
       body: pi.zod.string().optional().describe('Alias of `text`.'),
     }),

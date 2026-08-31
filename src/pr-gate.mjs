@@ -1,7 +1,7 @@
 // `ax pr gate` — decides whether a pull request may merge, and merges it.
 //
-// WHY THIS VERB EXISTS (measured 2026-08-09). The gate a coordinator carried in
-// prose read `gh pr checks` and `gh pr view --json`. On `gapila` #1845 that
+// WHY THIS VERB EXISTS (measured 2026-08-09). The gate an orchestrator carried
+// in prose read `gh pr checks` and `gh pr view --json`. On `gapila` #1845 that
 // dashboard showed 21 green checks on the exact head SHA, a green aggregate
 // verdict and `mergeStateStatus: CLEAN` — while a P1 review comment sat unread
 // in the thread. Its author posts a REVIEW, not a check: it has no row in

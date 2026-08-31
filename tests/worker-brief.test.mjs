@@ -31,7 +31,7 @@ test('the worker role, model marker and instruction are on ONE first line', () =
 
 test('the contract ax owns names no session role, so it stays true of any parent', () => {
   // The header's own rule — MECHANICS names no skill, no repository, no ticket —
-  // never covered ROLES, and the omission cost the sentence `coordinator` in
+  // never covered ROLES, and the omission cost the retired role name in
   // child-facing text for the two releases after that role was deleted (0.15.0).
   // The repair was not the newer name: `orchestrator` is one role that dispatches
   // an implementation child, `omp/roles/worker.md` names it because a role file
@@ -74,7 +74,7 @@ test('a dispatch with NO ticket never tells the child to read one', () => {
   assert.doesNotMatch(text, /Read the ticket/);
   assert.doesNotMatch(text, /It is canonical/);
   assert.doesNotMatch(text, /^# $/m);
-  // The name the coordinator dispatched is the heading, because it is the only
+  // The name the orchestrator dispatched is the heading, because it is the only
   // handle they will later search for.
   assert.match(text, /^# loading-states$/m);
   assert.match(text, /carries NO ticket/);
@@ -221,7 +221,7 @@ test('the remote addendum appears only when the child runs on another host', () 
 test("the remote addendum's DECISION grammar is the one progressOnly() implements", () => {
   // The brief teaches a sentinel the watcher must honour. Two copies of one
   // grammar drift, and the drift is silent: the child writes a card it believes
-  // wakes the coordinator and nothing does.
+  // wakes the orchestrator and nothing does.
   const remote = brief({ host: 'other-host' });
   assert.ok(remote.includes('DECISION:'));
   assert.equal(progressOnly('DECISION: the migration needs a call'), false);

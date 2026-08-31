@@ -25,7 +25,7 @@
 // Exit codes are per-verb (ADR 0003), and this verb is FAIL-CLOSED — the
 // opposite of `ax board`, because the act it authorises is irreversible:
 //   0  safe: no live agent to duplicate
-//   1  one live agent — do NOT relaunch
+//   1  one live agent — do NOT re-dispatch
 //   2  duplicate: two or more live agents on one task
 //   3  cannot establish — never a permission
 //
@@ -47,10 +47,10 @@ import { defaultStore, taskIdScan } from './record.mjs';
  *
  * A REQUEST ID IS NOT A TASK ID, and until 2026-08-26 this verb was the only one
  * in the family that said so by refusing. Measured that day on a live wave: the
- * coordinator typed the id `worker launch` had just printed as `· request
+ * orchestrator typed the id `worker launch` had just printed as `· request
  * 60-work` — the same id `worker tail`, `worker transcript` and `worker start
  * --show` all accept, and the leading column of `worker ls` — and the one verb
- * whose entire job is "can this be relaunched without duplicating an agent?"
+ * whose entire job is "can this be re-dispatched without duplicating an agent?"
  * answered CANNOT ESTABLISH, offering two causes that were both false: the
  * dispatch existed, on this host, in the Run consulted. An anti-duplication gate
  * that refuses the most natural identifier for its subject is a gate that gets
@@ -128,7 +128,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   const bin = runner ? 'injected' : resolve({ env });
   if (!bin) {
     bad('CANNOT ESTABLISH — no Orca CLI on this machine, so no dispatch can be counted');
-    note('Count the worktree\'s agent processes from the system side before any relaunch.');
+    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
     fix('orca open   # bring up the Orca runtime, then re-run this gate');
     return 3;
   }
@@ -139,7 +139,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   const ready = runtimeReady(run);
   if (!ready.ready) {
     bad(`CANNOT ESTABLISH — ${ready.reason}`);
-    note('Count the worktree\'s agent processes from the system side before any relaunch.');
+    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
     fix('orca open   # bring up the Orca runtime, then re-run this gate');
     return 3;
   }
@@ -147,11 +147,11 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   // Read 1: the dispatches. Its absence is the one that must never be silent —
   // on a host where `orchestration worker-list` does not exist (the VPS ships a
   // different command set; the 2026-08-09 duplicate was born there) an empty
-  // read would authorise the relaunch it exists to forbid.
+  // read would authorise the re-dispatch it exists to forbid.
   const workers = namedList(run(['orchestration', 'worker-list', '--json']), 'workers', 'orca orchestration worker-list');
   if (!workers.ok) {
     bad(`CANNOT ESTABLISH — ${workers.reason} (absent on this host?)`);
-    note('Count the worktree\'s agent processes from the system side before any relaunch.');
+    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
     fix('orca open   # then re-run; if worker-list is missing here, gate from the host that has it');
     return 3;
   }
@@ -196,7 +196,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     // operator hunting a Run failure that did not exist.
     bad(`CANNOT ESTABLISH — no Dispatch for ${task}, and ${listed ? 'it is in no task of the Run consulted' : "'task-list' did not answer"}.`);
     note('Three causes are indistinguishable from here: the id is wrong; it is a REQUEST id whose record this store does not hold; or the task lives in another Run or on another host.');
-    note('Do not relaunch on this result.');
+    note('Do not re-dispatch on this result.');
     fix('ax worker ls   # the request -> task column, if what you typed was a request id');
     fix(`ax worker gate ${task} --run <run_id>   # name the Run to decide`);
     return 3;
@@ -224,22 +224,23 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     // `terminal list` omits hosts on this very Mac (measured 2026-08-22: one
     // stale runtime, and 155 of 218 dispatch panes absent because of it). So the
     // absence is DISCLOSED rather than either hidden or turned into a refusal:
-    // refusing here answered 3 for every ordinary relaunch on this machine, and
-    // "answered 3 for a day" is the bug this verb was written to stop repeating.
-    // The gate's scope is this host, as its header says, and a pane on another
-    // one is `--on <host>`'s business, not a duplicate this host can create.
+    // refusing here answered 3 for every ordinary re-dispatch on this machine,
+    // and "answered 3 for a day" is the bug this verb was written to stop
+    // repeating. The gate's scope is this host, as its header says, and a pane
+    // on another one is `--on <host>`'s business, not a duplicate this host can
+    // create.
     if (terminals.omitted && unproven.length > 0) {
       note(`${unproven.length} of these panes are absent from a terminal list that omits ${terminals.omittedHosts.join(', ')}.`);
-      note('On this host they are down. If this task was dispatched with `--on <host>`, establish them there before relaunching.');
+      note('On this host they are down. If this task was dispatched with `--on <host>`, establish them there before re-dispatching.');
     }
-    ok('no live agent. Safe to relaunch (return the task to `ready` first).');
+    ok('no live agent. Safe to re-dispatch (return the task to `ready` first).');
     return 0;
   }
 
   if (live.length === 1) {
-    bad(`STOP — one live agent (${live[0].dispatchId}). DO NOT relaunch: it is working.`);
+    bad(`STOP — one live agent (${live[0].dispatchId}). DO NOT re-dispatch: it is working.`);
     note('A `failed` Dispatch describes the receipt, never the process.');
-    fix(`ax worker tail ${live[0].agentTerminalHandle}   # read it instead of relaunching`);
+    fix(`ax worker tail ${live[0].agentTerminalHandle}   # read it instead of re-dispatching`);
     return 1;
   }
 

@@ -19,7 +19,7 @@ import { orcaAvailable } from './orca-bin.mjs';
  * `agentLine` is what the AGENTS.md block says about the command — set it only
  * when an agent should reach for it. Commands without one still work; they just
  * do not belong in a repo's onboarding surface.
- * `runnerless` marks a command the dispatcher answers itself (help), so the
+ * `runnerless` marks a command the CLI's own router answers (help), so the
  * startup check does not demand a runner for it.
  *
  * `subcommands` are verbs of one noun, and they exist for the same reason the
@@ -98,7 +98,7 @@ export const COMMANDS = [
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
-      ['gate <task|request>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
+      ['gate <task|request>', 'can this be re-dispatched without a duplicate agent? 0/1/2/3'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
@@ -237,7 +237,7 @@ export const plumbingSubcommand = (name, verb) => COMMANDS.find(command => comma
  * their shell history, or an agent that learned the old name from a doc written
  * before the rename, is owed the replacement — the same debt `ax triage --job
  * refine` pays by name. The mapping lives beside the `subcommands` it was
- * renamed out of, so one noun's dispatcher and the help can never disagree
+ * renamed out of, so one noun's router and the help can never disagree
  * about which names exist, and `tests/commands.test.mjs` refuses a name that is
  * declared and retired at once.
  *
@@ -257,7 +257,7 @@ export function retiredSubcommand(name, verb) {
  *
  * `retiredSubcommand` covers a verb renamed inside its noun. A whole noun can
  * be renamed too, and then nothing in the registry answers at all: the name is
- * simply absent, so the dispatcher falls through to "unknown command" and every
+ * simply absent, so the router falls through to "unknown command" and every
  * line in every shell history, every doc written before the rename and every
  * agent that learned the old name gets a help page instead of the one word it
  * needed. `ready` served the on-ramp from 0.15 to 0.16 (`docs/adr/0001`: the

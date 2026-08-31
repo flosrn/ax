@@ -146,7 +146,7 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
     arm({ request, bin: bin ?? 'injected', env });
     bad('NOT A SUPERVISED WORKER — this Dispatch settled `failed`, so its capability is revoked and any worker_done it sends will be rejected.');
     note('The child is running: its own peer report, and the watcher armed above, are the channels that still reach you.');
-    fix(redactSecrets(`ax worker transcript ${request}   # what it is doing. Do NOT relaunch: that is a second agent in one worktree.`));
+    fix(redactSecrets(`ax worker transcript ${request}   # what it is doing. Do NOT re-dispatch: that is a second agent in one worktree.`));
     return 3;
   };
 

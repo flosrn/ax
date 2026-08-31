@@ -230,10 +230,11 @@ test('an ambiguous prefix is an error, never a pick', async () => {
 });
 
 test('the id Orca shows on a card resolves, because that is what an operator relays', async () => {
-  // Measured 2026-08-25: a coordinator was told to answer "terminal 01a036ee",
-  // which is a session-id prefix. `peer_send 01a036ee` answered `unknown peer`
-  // while that session sat in `peer_list` under its worktree name, so the
-  // operator had to cross-reference `orca terminal list --json` by hand.
+  // Measured 2026-08-25: an orchestrator was told to answer "terminal
+  // 01a036ee", which is a session-id prefix. `peer_send 01a036ee` answered
+  // `unknown peer` while that session sat in `peer_list` under its worktree
+  // name, so the operator had to cross-reference `orca terminal list --json` by
+  // hand.
   setTerminals([
     { handle: 'term_aaaa1111', worktreePath: WT_A },
     { handle: 'term_bbbb2222', worktreePath: WT_B },
@@ -304,12 +305,12 @@ test('one corrupt registry file costs one peer, not the fleet', async () => {
 // --------------------------------------------------------------- self-send --
 
 test('a session refuses to send to itself, even when its own name resolves', async () => {
-  // Measured 2026-08-15. On a host that cannot see the coordinator, the only
+  // Measured 2026-08-15. On a host that cannot see the orchestrator, the only
   // resolvable peer IS the child, so "report home" addressed the child. Orca
   // accepts such a send, so five hours of reports read as delivered from the
-  // child's side and did not exist from the coordinator's. The fake `orca` here
-  // answers `ok: true` to any send, which is exactly the behaviour that made
-  // this invisible — so this test fails without the guard.
+  // child's side and did not exist from the orchestrator's. The fake `orca`
+  // here answers `ok: true` to any send, which is exactly the behaviour that
+  // made this invisible — so this test fails without the guard.
   setTerminals([{ handle: 'term_aaaa1111', worktreePath: WT_A }]);
   publishEntry('term_aaaa1111', 'run_a');
   const { sendToPeer } = await load();

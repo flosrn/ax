@@ -161,7 +161,7 @@ function questionsForPass({ mailbox, request, handle = '', dispatchId = '' }) {
  *
  * EXCEPT over a repaired held composer, and that exception is the whole reason
  * this comment is longer than the loop. Measured 2026-08-22 on the first real
- * coordinator campaign: #50 and #51 both read `RAN · failed · <handle> —
+ * orchestrator campaign: #50 and #51 both read `RAN · failed · <handle> —
  * UNSETTLED` and both were offered a `--resume`, while their panes answered
  * `status: running` and their children were mid-analysis. An operator who
  * followed that line would have put a SECOND agent into a session that was
@@ -501,7 +501,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         }
       }
 
-      // The draft's IDENTITY, not merely its existence. A coordinator reads a
+      // The draft's IDENTITY, not merely its existence. An orchestrator reads a
       // draft, decides against it, and in between the child that owns it may
       // rewrite it. Measured 2026-08-22: #54 went from 106 to 117 lines after
       // its own peer report, with no signal, so every anchor a human had taken

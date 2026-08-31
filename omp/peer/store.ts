@@ -90,7 +90,7 @@ export function allEntries(): Partial<Entry>[] {
  * `worker_done` and therefore the majority of real traffic, carries no
  * `payload.replyTo`. It arrives attributed and unanswerable: measured 2026-08-25
  * on ofmchat, `msg_0c83c5b494db` from `57-policy-offer-engine` invited a reply
- * and then refused it, and the coordinator answered by typing into the child's
+ * and then refused it, and the orchestrator answered by typing into the child's
  * pane instead. The pane's own published Run is the return address that child
  * would have written itself, so reading it is a repair, not a guess.
  *

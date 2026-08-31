@@ -191,7 +191,7 @@ export function roleWaitOf(env) {
  * loop that stopped reading at the first non-null object printed
  * `model omniroute/or-opus|` and `session unreadable`, exit 1, on a child that
  * was reading the issue with its role applied — and `ax worker gate` was the
- * only thing standing between that verdict and the relaunch of a live agent
+ * only thing standing between that verdict and the re-dispatch of a live agent
  * (F-001). An absent receipt is not a refused receipt (F-028).
  */
 function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proofFn, now, sleep }) {
@@ -226,7 +226,7 @@ function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proo
 
   if (model === null && role === null) {
     bad(`CANNOT ESTABLISH — ${request}: no child-side role receipt appeared within ${wait}s`);
-    note('The dispatch DID happen. Do NOT relaunch; inspect its recorded pane with `ax worker ls`.');
+    note('The dispatch DID happen. Do NOT re-dispatch; inspect its recorded pane with `ax worker ls`.');
     return 'CANNOT-ESTABLISH';
   }
 
@@ -270,7 +270,7 @@ function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proo
     bad(`${request}: role ${role.role} refused — ${role.reason}${missing}`);
   } else if (role.role !== expected.role) bad(`${request}: expected ${expected.role}, got ${role.role}`);
   else if (!skills.includes(expected.skill)) bad(`${request}: the ${expected.skill} playbook was not applied`);
-  fix('ax worker ls   # inspect the recorded pane and role receipt; do not relaunch');
+  fix('ax worker ls   # inspect the recorded pane and role receipt; do not re-dispatch');
   return 'CANNOT-ESTABLISH';
 }
 

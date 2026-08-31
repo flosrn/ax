@@ -85,7 +85,7 @@ const FIXTURE = [
           type: 'toolCall',
           id: 't1',
           name: 'bash',
-          intent: 'Report to coordinator',
+          intent: 'Report to orchestrator',
           arguments: { command: `orca orchestration send --dispatch-capability ${DCAP} --type worker_done`, i: 'Report' },
         },
         { type: 'toolCall', id: 't2', name: 'read', arguments: { path: 'PORT.md', i: 'Reading the plan' } },
@@ -98,7 +98,7 @@ const FIXTURE = [
   JSON.stringify({
     type: 'custom',
     customType: 'tool_execution_start',
-    data: { toolCallId: 't1', toolName: 'bash', intent: 'Report to coordinator', args: { command: `orca orchestration send --dispatch-capability ${DCAP}` } },
+    data: { toolCallId: 't1', toolName: 'bash', intent: 'Report to orchestrator', args: { command: `orca orchestration send --dispatch-capability ${DCAP}` } },
   }),
   '',
 ].join('\n');

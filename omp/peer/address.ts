@@ -190,7 +190,7 @@ const SHORT_ID = /^[0-9a-f][0-9a-f-]{5,}$/i;
  * relaying "answer terminal 01a036ee" is reading a session-id prefix, and this
  * resolver used to match only derived names and worktree basenames. Measured
  * 2026-08-25: `peer_send 01a036ee` answered `unknown peer` while the session was
- * in `peer_list` under another name, and the coordinator had to cross-reference
+ * in `peer_list` under another name, and the orchestrator had to cross-reference
  * `orca terminal list --json` by hand to find it. The id is matched by prefix
  * over `sessionId`, which the registry already carries, and it is hex so it can
  * never collide with the worktree-derived names above.

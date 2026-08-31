@@ -1,7 +1,7 @@
-// The port of `orca-coordinator.sh reap` — renamed `sweep`, because that is the
-// word `ax.schema.json` already uses for this gesture (`dispatch.hosts.<h>.sweep`)
-// and that key pointed at the Bash. One word for one gesture, on both sides of
-// the ssh boundary.
+// The port of the bash orchestrator's `reap` — renamed `sweep`, because that is
+// the word `ax.schema.json` already uses for this gesture
+// (`dispatch.hosts.<h>.sweep`) and that key pointed at the Bash. One word for
+// one gesture, on both sides of the ssh boundary.
 //
 // This verb signals a browser that a live session may still be driving, so the
 // predicate IS the risk and these tests are about the predicate alone. The

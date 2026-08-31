@@ -1,5 +1,5 @@
 // The record store is the F-001 countermeasure: every proposition here is the
-// one an incident proved, ported from coordinator/record.test.ts — not a
+// one an incident proved, ported from the bash-era `record.test.ts` — not a
 // neighbour of it (F-027). Real filesystem, real O_EXCL, no mocks: the defects
 // that reached users were all invisible to mocked filesystems.
 import assert from 'node:assert/strict';

@@ -1,10 +1,11 @@
 // What is prepared INSIDE a dispatched child's worktree, before it is dispatched.
 //
 // Three things, and all of them are about a failure that is invisible from the
-// coordinator's side until it is expensive: a child whose todo list never moves
-// is never reported home, a child that inherits a shared git identity gets its
-// commits signed by a sibling's babysitter, and a child that boots before its
-// OMP bundle is installed runs with no role, no playbook and its boot model.
+// orchestrator's side until it is expensive: a child whose todo list never
+// moves is never reported home, a child that inherits a shared git identity
+// gets its commits signed by a sibling's babysitter, and a child that boots
+// before its OMP bundle is installed runs with no role, no playbook and its
+// boot model.
 //
 // Only `equipment` refuses anything. The other two ANNOUNCE, because neither
 // degrades the work itself. An unequipped child does: it is a different agent
@@ -35,7 +36,7 @@ const MANDATE_REL = '.omp/WATCHDOG.yml';
  * An advisor is ALREADY attached to every child — measured 2026-08-15, a 930 KB
  * advisor transcript beside a child's own. What it lacked was a mandate: the
  * user-level roster talks about type errors, so nothing was watching the one
- * signal a coordinator depends on.
+ * signal an orchestrator depends on.
  *
  * WHY A ROSTER FILE AND NOT A PARAGRAPH IN THE BRIEF. The brief is read once at
  * boot and decays over hours; that is a discipline-shaped signal, and those go
@@ -60,9 +61,9 @@ advisors:
     tools: [read, grep, glob]
     instructions: |
       You watch ONE thing beyond your normal review: whether this session's todo list
-      still describes reality. It is not housekeeping. The coordinator's wake-up is
+      still describes reality. It is not housekeeping. The orchestrator's wake-up is
       DERIVED from that list - the harness reports home when every remaining task is
-      done or blocked - so a list frozen at its init means the coordinator is never told
+      done or blocked - so a list frozen at its init means the orchestrator is never told
       the work finished. Measured 2026-08-15: a child ran 299 turns, resolved 28 merge
       conflicts and called the todo tool exactly once.
 
@@ -74,7 +75,7 @@ advisors:
       Raise a blocker, and only here, when the session is about to end - a terminal
       answer, a final report, a handoff - with open tasks the transcript shows as done.
       That is the one severity that still triggers a turn after a terminal answer, and
-      that moment is exactly when the coordinator loses the child.
+      that moment is exactly when the orchestrator loses the child.
 
       Say nothing about heartbeats. The spec asks for one every five minutes; nothing
       consumes them here and liveness is covered by a stall watcher that needs no

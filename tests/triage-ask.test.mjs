@@ -215,7 +215,7 @@ test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', (
   assert.equal(r.code, 4);
   assert.match(r.out, /PENDING, not dead/);
   assert.match(r.out, /do not report, do not end your turn/);
-  assert.match(r.out, /ax triage ask --resume msg_q9 --timeout-ms 5000/, 'copied verbatim by a parked child, so it must use the global dispatcher');
+  assert.match(r.out, /ax triage ask --resume msg_q9 --timeout-ms 5000/, 'copied verbatim by a parked child, so it must be the global command that delegates');
 });
 
 test('a cut connection is CANNOT ESTABLISH, and the question is not declared dead', () => {
@@ -426,9 +426,10 @@ test('dispatch_capability_invalid WITH a read token blames the Dispatch, not the
 test('a token mentioned LATE is not this session grant, and is not taken', () => {
   // Measured over 227 session files carrying a raw token: the preamble cluster
   // ends at line ~8, and every outlier past line 40 is a session that was never
-  // handed a capability but mentions one later — a coordinator quoting a child's
-  // command, or a session reasoning about this code. Taking it would hand one
-  // dispatch's grant to another caller, so the scan is bounded on purpose.
+  // handed a capability but mentions one later — an orchestrator quoting a
+  // child's command, or a session reasoning about this code. Taking it would
+  // hand one dispatch's grant to another caller, so the scan is bounded on
+  // purpose.
   const root = repo();
   record(join(root, 'store'), 'triage-acme-widgets-7');
   draft(root, 'triage-acme-widgets-7', 'Labels: x\n\nQ1: bug or enhancement?\n');
@@ -454,8 +455,8 @@ test('the PARENT session sharing the checkout does not make the capability ambig
   // triage-goodluckagency-ofmchat-87" inside a genuine dispatched child.
   //
   // The cause is structural, not a coincidence of that machine: triage puts the
-  // child in the CURRENT checkout, so the coordinator's own session file lives
-  // in the same slug directory — and the coordinator typed the request id when
+  // child in the CURRENT checkout, so the orchestrator's own session file lives
+  // in the same slug directory — and the orchestrator typed the request id when
   // it dispatched, so a whole-file `includes(request)` matches it too. Two
   // matches read as ambiguity, and the child was told it might not be a
   // dispatched session at all.
@@ -471,7 +472,7 @@ test('the PARENT session sharing the checkout does not make the capability ambig
   const dir = join(sessionsRoot, `-Users-someone-${basename(root)}`);
   mkdirSync(dir, { recursive: true });
 
-  // The coordinator: no capability in its preamble, and it names the request
+  // The orchestrator: no capability in its preamble, and it names the request
   // deep in the transcript, exactly where it ran the dispatch.
   const parentTail = Array.from({ length: 30 }, (_, n) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `turn ${n}` }] } }));
   writeFileSync(

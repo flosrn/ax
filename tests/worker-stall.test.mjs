@@ -450,7 +450,7 @@ test('a card change feeds the silence clock, so one child is never woken twice',
   // Measured 2026-08-22: `comm-ax-card` published `DECISION: …`, its parent was
   // woken, and 58 seconds later the SAME watcher sent a silence alert about the
   // same child. Only cursor movement fed the clock, so the one channel that
-  // crosses hosts did not count as being alive — and a coordinator was woken
+  // crosses hosts did not count as being alive — and an orchestrator was woken
   // twice about a worker that had just spoken to it.
   const runner = fakeRunner({
     cursors: [7],
@@ -483,8 +483,8 @@ test('a pane proven gone on an unsettled dispatch is reported once, and named as
 test('an inventory that omits a host never claims a death', () => {
   // Absence is only proof on a list that could account for every host, which is
   // `terminalInventory`'s own contract. A paired remote runtime makes the local
-  // list partial, and a watcher that read that as a corpse would send a
-  // coordinator to bury a worker that is still building.
+  // list partial, and a watcher that read that as a corpse would send an
+  // orchestrator to bury a worker that is still building.
   const runner = fakeRunner({ cursors: [null], worktrees: [''], omittedHosts: ['runtime:elsewhere'] });
   const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '6' } });
   assert.equal(r.code, 0);

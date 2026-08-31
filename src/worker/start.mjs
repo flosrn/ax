@@ -287,8 +287,8 @@ function finishUsable(path, context) {
  *
  * Two different failures wear this receipt, and the entry condition stays as
  * broad as the receipt allows because the recovery is the same shape for both —
- * measure whether the child has the brief, never relaunch. `repairHeld` names
- * which one it found.
+ * measure whether the child has the brief, never re-dispatch. `repairHeld`
+ * names which one it found.
  *
  * A HELD COMPOSER: the brief typed, the Enter missing. Measured 2026-08-22,
  * three launches on this Mac, each rescued by one Enter typed by hand. It is NOT
@@ -313,18 +313,18 @@ const heldComposer = summary =>
  * The child runs. It is not a supervised worker: its Dispatch already settled
  * `failed`, so its capability is revoked and every lifecycle message it sends is
  * rejected — measured 2026-08-22, `Orca rejected this worker_done: Dispatch …
- * capability is revoked`. What still reaches the coordinator is the child's own
+ * capability is revoked`. What still reaches the orchestrator is the child's own
  * peer report and this watcher, which sends from the PARENT's pane and needs no
  * capability of the child's.
  *
  * So this is exit 3, never 0: claiming USABLE would promise a `worker_done` that
- * cannot arrive. And it never offers a relaunch — a second dispatch into that
+ * cannot arrive. And it never offers a re-dispatch — a second dispatch into that
  * worktree is the duplicate agent F-001 is about, and the pane it would race is
  * the one this just measured.
  */
 function repairHeld(path, context) {
   // The cause line follows the evidence instead of preceding it. Announcing "the
-  // brief never left the composer" before looking is how a coordinator came to
+  // brief never left the composer" before looking is how an orchestrator came to
   // relay a phantom Enter as the rescue of three children that had each been
   // working for eight seconds already.
   const outcome = briefWitness(path, context);
@@ -351,7 +351,7 @@ function repairHeld(path, context) {
   }
   note('No repair is recorded, so the watcher above keeps its right to report this pane as a death.');
   fix(redactSecrets(`ax worker repair --request ${context.request}   # measure the pane: it owns the Enter, and records a repair on live evidence`));
-  fix(redactSecrets(`ax worker transcript ${context.request}   # what it is doing. Do NOT relaunch: that is a second agent in one worktree.`));
+  fix(redactSecrets(`ax worker transcript ${context.request}   # what it is doing. Do NOT re-dispatch: that is a second agent in one worktree.`));
   return 3;
 }
 

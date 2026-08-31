@@ -52,7 +52,7 @@ export const draftDirFor = root => join(root, DRAFT_DIR);
  *
  * PASSES ARE APPEND-ONLY, AND PASS 1 IS UNSUFFIXED
  *
- * A second pass on one issue is a real need — the coordinator's understanding
+ * A second pass on one issue is a real need — the orchestrator's understanding
  * moved, a sibling ticket moved, or the first pass was wrong — and on
  * 2026-08-22 it had no verb at all: the operator went around `dispatch`
  * entirely, hand-editing the child's draft with string replacements.

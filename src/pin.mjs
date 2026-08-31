@@ -17,7 +17,7 @@
 // two-file staging rule prevents that; the checkout this runs in is shared with
 // dispatched children by design. So the boundary is: ax mutates package.json
 // and node_modules (which an install mutates anyway), and the git gesture stays
-// a human-or-coordinator decision, with its message already written.
+// a human-or-orchestrator decision, with its message already written.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

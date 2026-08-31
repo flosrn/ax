@@ -192,7 +192,7 @@ test('a draft is read with its own path attached, so a refusal can name the file
 });
 
 test('a draft carries git’s own fingerprint, so an operator can re-check the version they hold', () => {
-  // `git hash-object`, not an invented digest: a coordinator reads a draft,
+  // `git hash-object`, not an invented digest: an orchestrator reads a draft,
   // decides against it, and the child that owns it may rewrite it meanwhile.
   // Measured 2026-08-22: #54 went from 106 to 117 lines after its own peer
   // report, with no signal, and every anchor taken against it was stale. A
