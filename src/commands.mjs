@@ -30,6 +30,10 @@ import { orcaAvailable } from './orca-bin.mjs';
  *
  * `retired` names where a verb WENT, and is read by that noun's unknown-verb
  * path. See `retiredSubcommand`.
+ *
+ * `plumbing` names the verbs of one noun that are DECLARED and dispatchable but
+ * deliberately absent from every surface an agent reads. See
+ * `plumbingSubcommands`.
  */
 
 export const COMMANDS = [
@@ -63,7 +67,7 @@ export const COMMANDS = [
   },
   {
     name: 'worker',
-    summary: 'start dispatched agents and inspect them — liveness, gates and transcripts',
+    summary: 'dispatch agents and inspect them — liveness, gates and transcripts',
     // Gated like board: exists only where the machine resolves an Orca CLI.
     gated: 'orca',
     subcommands: [
@@ -82,6 +86,13 @@ export const COMMANDS = [
     // `dispatch` config block — already called it a dispatch.
     retired: {
       launch: { to: 'dispatch', why: 'one verb creates implementation work, and the record, the receipt and the config block all call it a dispatch' },
+    },
+    // `start` is the OTHER half of that decision (`docs/adr/0001`): the agent-
+    // facing surface offers exactly one way to create a child, so the verb that
+    // `dispatch` itself issues and replays stops competing with it for the
+    // gesture. Declared, dispatchable, unadvertised — plumbing, in git's sense.
+    plumbing: {
+      start: 'the write-ahead half of a dispatch — `worker dispatch` issues it, and replays it byte for byte on recovery',
     },
   },
   {
@@ -163,6 +174,34 @@ export const agentLines = () => COMMANDS.filter(command => command.agentLine).ma
  */
 export const subcommandNames = name =>
   (COMMANDS.find(command => command.name === name)?.subcommands ?? []).map(([verb]) => verb.split(' ')[0]);
+
+/**
+ * The verbs of one command that are PLUMBING: declared, dispatchable, and
+ * deliberately absent from every surface an agent reads.
+ *
+ * `worker start` is the case this exists for (`docs/adr/0001`). It is not
+ * retired and it is not gated — it runs, it is the write-ahead record and the
+ * `--resume` replay `worker dispatch` issues, and removing it would take the
+ * recovery path with it. What it must not do is offer a SECOND way to create a
+ * child: an agent that reads two creation gestures out of one help picks one,
+ * and the one that skips placement, setup and the role/model proof looks like
+ * it worked.
+ *
+ * SO THE MARKER HIDES, IT NEVER UNDECLARES. `subcommandNames` above still
+ * reports a plumbing verb, which keeps it inside the registry ↔ dispatch-table
+ * equality contract every noun's test asserts — a plumbing verb that lost its
+ * runner fails there instead of answering "unknown" to the one caller that
+ * still needs it. Only the surfaces read the marker: the help skips the line,
+ * and the noun's own verb list skips the name.
+ *
+ * Marker data, never machine state: like retirement, this is a naming fact the
+ * registry decides, so a machine that resolves no Orca hides exactly what a
+ * machine that resolves one hides.
+ */
+export const plumbingSubcommands = name => Object.keys(COMMANDS.find(command => command.name === name)?.plumbing ?? {});
+
+/** Why one verb is plumbing, or null when it is not. */
+export const plumbingSubcommand = (name, verb) => COMMANDS.find(command => command.name === name)?.plumbing?.[verb] ?? null;
 
 /**
  * Where a retired verb WENT, and the command that replaces it.
@@ -264,7 +303,13 @@ export function renderUsage(version, availability = {}) {
     // (`--vendor <owner>/<repo>`) push unrelated descriptions past 96 columns,
     // where they wrap in a split pane — the exact laddering this help was
     // rewritten to avoid.
-    const inner = [...(command.subcommands ?? []), ...(command.options ?? [])];
+    //
+    // A PLUMBING verb is skipped here and nowhere else (`plumbingSubcommands`):
+    // it is still declared, still dispatched, and still the only recovery there
+    // is — it just stops competing for a gesture the help offers once.
+    const hidden = plumbingSubcommands(command.name);
+    const declared = (command.subcommands ?? []).filter(([usage]) => !hidden.includes(usage.split(' ')[0]));
+    const inner = [...declared, ...(command.options ?? [])];
     const innerWidth = Math.max(...inner.map(([name]) => name.length), 0);
 
     for (const [name, description] of inner) {

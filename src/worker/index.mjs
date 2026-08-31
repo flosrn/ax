@@ -6,8 +6,11 @@
 // gated on Orca resolution at the registry (a client repo without Orca never
 // sees `worker` at all), so the verbs themselves assume a machine that HAS an
 // Orca CLI and fail closed on a runtime that does not answer.
+//
+// Equal, but not equally OFFERED: a verb the registry marks plumbing dispatches
+// from this table and appears in neither the help nor the list below.
 
-import { retiredSubcommand } from '../commands.mjs';
+import { plumbingSubcommands, retiredSubcommand } from '../commands.mjs';
 import { bad, fix, note } from '../log.mjs';
 import { start } from './start.mjs';
 import { repair } from './repair.mjs';
@@ -46,7 +49,15 @@ export function worker(argv = []) {
       return 2;
     }
 
-    const known = Object.keys(SUBCOMMANDS).join(', ');
+    // The list is what the caller is OFFERED, so a plumbing verb leaves it —
+    // `start` is issued and replayed by `dispatch`, and an agent handed both
+    // names picks one, half the time the one that skips placement, setup and
+    // the role/model proof (`docs/adr/0001`). It still dispatches above; only
+    // this offer is withdrawn.
+    const hidden = plumbingSubcommands('worker');
+    const known = Object.keys(SUBCOMMANDS)
+      .filter(name => !hidden.includes(name))
+      .join(', ');
     process.stderr.write(verb ? `ax worker: unknown verb "${verb}" (${known})\n` : `ax worker: which one? (${known})\n`);
     return 2;
   }

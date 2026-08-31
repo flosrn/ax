@@ -83,6 +83,9 @@ Orca or OMP sessions.
 **Declare before implementing.** Commands start in `src/commands.mjs`; noun verbs also have one
 `SUBCOMMANDS` table asserted equal to the registry. `src/cli.mjs` throws at startup when a declared
 command has no runner. Give a command an `agentLine` only when every consuming repo should teach it.
+A verb that must keep running but must not be offered is marked `plumbing` (`worker start`,
+`docs/adr/0001`): the marker hides it from the help and from its noun's verb list and changes
+nothing else, because undeclaring it would drop it out of that equality contract.
 
 **Project version is authority.** The global bin only finds the local package. An exact declaration
 with no matching install is a refusal, including for `init`; otherwise the global copy could rewrite

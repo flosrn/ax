@@ -9,7 +9,17 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
-import { COMMANDS, RETIRED_COMMANDS, commandNames, renderUsage, retiredCommand, retiredSubcommand, subcommandNames } from '../src/commands.mjs';
+import {
+  COMMANDS,
+  RETIRED_COMMANDS,
+  commandNames,
+  plumbingSubcommand,
+  plumbingSubcommands,
+  renderUsage,
+  retiredCommand,
+  retiredSubcommand,
+  subcommandNames,
+} from '../src/commands.mjs';
 import { agentsBody } from '../src/init.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
@@ -88,6 +98,74 @@ test('only commands meant for agents reach the AGENTS block', () => {
   // mid-task. Adding a command here is a decision, so it belongs in a diff.
   assert.deepEqual(advertisedCommands().sort(), ['doctor', 'worktree ls', 'worktree setup']);
   assert.doesNotMatch(agentsBody(), /`ax init/);
+});
+
+// ── plumbing verbs ───────────────────────────────────────────────────────────
+// `worker start` is declared, dispatchable and unadvertised (`docs/adr/0001`):
+// the agent-facing surface offers exactly ONE way to create a child, because an
+// agent that reads two creation gestures out of one help picks one — and the one
+// that skips placement, setup and the role/model proof looks like it worked.
+//
+// The marker HIDES, it never undeclares. Absence from the help is the point;
+// absence from `subcommandNames` would drop the verb out of the registry ↔
+// dispatch-table equality contract, and the first thing to notice would be the
+// recovery path answering "unknown verb".
+
+/** Help rendered in-process may carry colour when the runner owns a TTY. */
+const plain = text => text.replace(/\u001B\[[0-9;]*m/g, '');
+
+test('a plumbing verb is declared and dispatchable, and never advertised', () => {
+  const plumbing = COMMANDS.flatMap(command => plumbingSubcommands(command.name).map(verb => [command.name, verb]));
+  assert.ok(plumbing.length > 0, 'the marker is read by the help and by the noun dispatcher; an empty table means it stopped being read');
+
+  for (const [name, verb] of plumbing) {
+    assert.ok(subcommandNames(name).includes(verb), `${name} ${verb} is marked plumbing but is not a declared verb — nothing holds its runner to the dispatch table`);
+    // Plumbing and retirement are opposite claims about one name: one hides a
+    // verb that still runs, the other explains a verb that no longer exists.
+    assert.equal(retiredSubcommand(name, verb), null, `${name} ${verb} is plumbing AND retired — the noun would both dispatch it and call it gone`);
+    assert.ok(plumbingSubcommand(name, verb).length > 0, `${name} ${verb} is plumbing without saying why`);
+    assert.doesNotMatch(plain(renderUsage('0.0.0', { orca: true })), new RegExp(`^ +${verb}\\b`, 'm'), `the help still lists the plumbing ${verb}`);
+  }
+
+  assert.deepEqual(plumbingSubcommands('worker'), ['start']);
+  assert.equal(plumbingSubcommand('worker', 'dispatch'), null, 'the one creation verb is not plumbing');
+  assert.equal(plumbingSubcommand('worktree', 'setup'), null, 'the marker is per noun');
+});
+
+test('ax --help hides the plumbing verb on ANY machine', () => {
+  // Both machine states FORCED, never inherited. The marker is registry data,
+  // so a verb hidden where Orca resolves must stay hidden where it does not —
+  // and the absence has to be the marker's rather than the gate's, which is why
+  // the noun and a sibling verb are asserted PRESENT in the same output.
+  const withOrca = run(['--help'], HAS_ORCA).out;
+  assert.match(withOrca, /^ {2}worker\b/m, 'the noun is gated off this machine, so an absent verb proves nothing');
+  assert.match(withOrca, /^ +dispatch --issue <ref>/m, 'the one creation verb is still advertised');
+  assert.doesNotMatch(withOrca, /^ +start\b/m, 'ax --help still lists the plumbing verb');
+
+  const without = run(['--help'], NO_ORCA).out;
+  assert.doesNotMatch(without, /^ {2}worker\b/m, 'the whole noun is gated where no Orca resolves');
+  assert.doesNotMatch(without, /^ +start\b/m);
+});
+
+test('the plumbing verb still answers, and says so as itself', () => {
+  // Demotion is a visibility change and nothing else: the verb must still reach
+  // its own runner. `ax worker start` with no arguments is its own caller-bug
+  // refusal (exit 1, its usage line) — an unknown verb would exit 2.
+  const result = run(['worker', 'start'], HAS_ORCA);
+  assert.equal(result.status, 1, 'the plumbing verb no longer reaches its runner');
+  assert.doesNotMatch(result.out, /unknown verb/);
+  assert.match(result.out, /ax worker start --request <id> --run <run_id>/, 'the verb answers with its own usage');
+});
+
+test('no advertised command is a plumbing verb', () => {
+  // The generated AGENTS.md block is operational instruction. A plumbing verb
+  // reaching it would tell every consuming repo to type the gesture this
+  // decision took out of the surface.
+  for (const advertised of advertisedCommands()) {
+    const [name, verb] = advertised.split(' ');
+    if (verb === undefined) continue;
+    assert.ok(!plumbingSubcommands(name).includes(verb), `AGENTS block advertises "ax ${name} ${verb}", which is declared plumbing`);
+  }
 });
 
 // ── retired verbs ────────────────────────────────────────────────────────────
