@@ -7,7 +7,7 @@
 // implementation. So the implementation is an exported function, and the bin
 // entry is the thing that decides whose implementation runs.
 
-import { COMMANDS, renderUsage, retiredCommand, visibleCommands } from './commands.mjs';
+import { COMMANDS, renderUsage, retiredCommand } from './commands.mjs';
 import { board } from './board.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 import { worker } from './worker/index.mjs';
@@ -96,13 +96,20 @@ export function runCli(argv = []) {
   // A RETIRED NOUN IS UNKNOWN TOO — the exit code and the help are the same —
   // but it is unknown for a reason the caller can act on, so it earns one line
   // naming the replacement, composed from that command's own declared verb
-  // (../commands.mjs). Only when the replacement is answerable HERE: naming
-  // `ax triage status` on a machine whose help does not list `triage` trades
-  // one dead end for two.
+  // (./commands.mjs).
+  //
+  // UNCONDITIONALLY, and the first cut of this had it wrong: it named the
+  // replacement only where `visibleCommands` listed it, so on a machine that
+  // resolves no Orca — every CI runner, and any machine whose PATH or runtime
+  // is momentarily off — `ax ready` fell back to a bare "unknown command" and
+  // the rename went unmentioned. Retirement is REGISTRY DATA, not machine
+  // state; gating a naming fact on a probe makes one command explain itself
+  // differently on Tuesday and Wednesday. That the replacement is itself gated
+  // here is the help's own separate statement, made the same way for `worker`
+  // and `board`.
   const retired = retiredCommand(command, argv[1] ?? '');
-  const replaces = retired !== null && visibleCommands({ orca: orcaAvailable() }).some(entry => entry.name === retired.to);
   process.stderr.write(
-    `ax: unknown command "${command}"${replaces ? ` — it is \`ax ${retired.to}\` now: ${retired.why}\n\n  ${retired.fix}\n` : ''}\n\n${renderUsage(version)}`,
+    `ax: unknown command "${command}"${retired ? ` — it is \`ax ${retired.to}\` now: ${retired.why}\n\n  ${retired.fix}\n` : ''}\n\n${renderUsage(version)}`,
   );
   return 2;
 }

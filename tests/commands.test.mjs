@@ -13,13 +13,25 @@ import { COMMANDS, RETIRED_COMMANDS, commandNames, renderUsage, retiredCommand, 
 import { agentsBody } from '../src/init.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
-const run = args => {
+const run = (args, env = {}) => {
   try {
-    return { status: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8' }) };
+    return { status: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, ...env } }) };
   } catch (error) {
     return { status: error.status, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
   }
 };
+
+/**
+ * The two machine states the Orca gate answers, forced rather than inherited.
+ *
+ * `resolveOrca` reads `ORCA_BIN` first and checks it is executable, so an
+ * absolute path that is not one resolves to null — a machine with no Orca. This
+ * suite has to answer the same on a developer's laptop and on a CI runner, and
+ * the assertion below was written the other way once: it inherited the ambient
+ * state, passed locally, and failed on the runner where nothing resolves.
+ */
+const NO_ORCA = { ORCA_BIN: '/nonexistent/orca', ORCA_CLI_COMMAND: '', ORCA_DEV_REPO_ROOT: '' };
+const HAS_ORCA = { ORCA_BIN: '/bin/sh', ORCA_CLI_COMMAND: '', ORCA_DEV_REPO_ROOT: '' };
 
 /**
  * The commands the AGENTS.md block tells an agent to type, verb and all.
@@ -130,15 +142,26 @@ test('the retired noun composes its repair from the verb the operator typed', ()
   assert.equal(retiredCommand('ready').fix, 'ax triage');
 });
 
-test('ax ready answers unknown, and the error names ax triage', () => {
-  const result = run(['ready', 'status', '--issue', '7']);
-  assert.equal(result.status, 2, 'a retired noun runs nothing');
-  assert.match(result.out, /unknown command "ready"/);
-  assert.match(result.out, /ax triage status/, 'the repair is the command an operator can type');
+test('ax ready answers unknown, and the error names ax triage on ANY machine', () => {
+  // Both states, because the retirement is registry data and not machine state:
+  // a naming fact gated on a binary probe explains the same command differently
+  // from one host to the next — and on the host where nothing resolves, which
+  // is every CI runner, it would not explain it at all.
+  for (const [label, env] of [['with Orca', HAS_ORCA], ['without Orca', NO_ORCA]]) {
+    const result = run(['ready', 'status', '--issue', '7'], env);
+    assert.equal(result.status, 2, `${label}: a retired noun runs nothing`);
+    assert.match(result.out, /unknown command "ready"/, label);
+    assert.match(result.out, /ax triage status/, `${label}: the repair is the command an operator can type`);
 
-  const bare = run(['ready']);
-  assert.equal(bare.status, 2);
-  assert.match(bare.out, /ax triage/);
+    const bare = run(['ready'], env);
+    assert.equal(bare.status, 2, label);
+    assert.match(bare.out, /ax triage/, label);
+  }
+
+  // The gate is still the help's, and it still answers: `triage` is listed only
+  // where Orca resolves. Naming the replacement does not smuggle it back in.
+  assert.match(run(['--help'], HAS_ORCA).out, /^ {2}triage\b/m);
+  assert.doesNotMatch(run(['--help'], NO_ORCA).out, /^ {2}triage\b/m);
 });
 
 test('an unknown command exits 2 and prints the help', () => {
