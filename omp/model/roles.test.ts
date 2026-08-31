@@ -42,11 +42,11 @@ function role(name: string, body: string): void {
 }
 
 // ── the roles this package actually ships ────────────────────────────────────
-test('the five session roles load from the package, with no host discovery at all', async () => {
+test('the four session roles load from the package, with no host discovery at all', async () => {
   // The whole point of the migration: these resolve from files inside the
   // package, so an installed copy under node_modules and a fresh checkout answer
   // identically, and a role on a branch is visible to the session on that branch.
-  for (const name of ['readiness', 'maintainer', 'orchestrator', 'worker', 'triage-worker']) {
+  for (const name of ['maintainer', 'orchestrator', 'worker', 'triage-worker']) {
     const found = await loadRole(name);
     expect(found.reason).toBe('ok');
     expect(found.role?.name).toBe(name);
@@ -54,21 +54,34 @@ test('the five session roles load from the package, with no host discovery at al
   }
 });
 
-test('the shipped roles are exactly the five, so a stray file cannot become a session identity', async () => {
+test('the shipped roles are exactly the four, so a stray file cannot become a session identity', async () => {
   // `maintainer` was admitted on 2026-08-26, and admitting it meant editing this
   // list on purpose — which is the whole value of a closed set. It owns the
   // INSTRUMENT rather than any work done with it: the sideways direction of
   // reporting, which had no role and therefore turned tool defects into silent
   // workarounds carried in one consumer's memory for six minor versions.
   // `refine-worker` was removed the same way, on purpose: `to-tickets` publishes
-  // `ready-for-agent` itself, so a spec-born ticket needs no readiness pass.
+  // `ready-for-agent` itself, so a spec-born ticket needs no triage pass.
+  // `readiness` went on 2026-08-31 (`docs/adr/0001`): both operator roles
+  // dispatched the same children, so the ruling contract had to be duplicated in
+  // `orchestrator.md` verbatim — and running the two side by side made the
+  // parent worktree multi-pane, which is what left every finished child of that
+  // shape undeliverable. Triage is a LANE the one orchestrator carries.
   expect(await listRoles()).toEqual([
     'maintainer',
     'orchestrator',
-    'readiness',
     'triage-worker',
     'worker',
   ]);
+});
+
+test('the retired readiness role resolves to nothing, so `/role readiness` cannot come back by file', async () => {
+  // A deleted operator role must refuse by NAME rather than fall through to a
+  // generic session: the role is the authority boundary that says whether this
+  // session may publish, and half of one is worse than none.
+  const found = await loadRole('readiness');
+  expect(found.reason).toBe('role-not-found');
+  expect(found.role).toBeNull();
 });
 
 test('each declared playbook is one this package ships - there is no host fallback to cover a miss', async () => {
@@ -85,7 +98,7 @@ test('each declared playbook is one this package ships - there is no host fallba
 });
 
 test('the operator roles declare no playbook, so activating one costs no file read', async () => {
-  for (const name of ['readiness', 'orchestrator']) {
+  for (const name of ['maintainer', 'orchestrator']) {
     expect((await loadRole(name)).role?.autoloadSkills).toBeUndefined();
   }
 });
@@ -163,9 +176,10 @@ test('no claim names the spec flow and a brief without saying which lane the bri
 
 test('the retired claim is caught inside a file whose other paragraphs are correct', async () => {
   // The bypass the per-file version left open, run rather than reasoned about:
-  // `readiness.md` is the most attributed file in the bundle, so if a false
-  // sentence can hide anywhere, it can hide here.
-  const body = (await loadRole('readiness')).role?.systemPrompt ?? '';
+  // `orchestrator.md` is the most attributed file in the bundle — it absorbed the
+  // triage lane's own prose on 2026-08-31 — so if a false sentence can hide
+  // anywhere, it can hide here.
+  const body = (await loadRole('orchestrator')).role?.systemPrompt ?? '';
   const retired = 'Tickets the spec flow produced are `ready-for-agent` with a brief by construction.';
   const poisoned = `${body}\n\n${retired}\n`;
 
@@ -177,9 +191,40 @@ test('the retired claim is caught inside a file whose other paragraphs are corre
   expect(perFile).toBe(false);
 });
 
+// ── the retired role cannot be addressed by prose either ─────────────────────
+//
+// Deleting `readiness.md` retires the ROLE; it does not retire the sentences
+// that told a child, a playbook or a peer to go ask "the readiness session".
+// That is the more expensive half: a triage worker obeying such a sentence
+// addresses a session nobody activates, and its question is delivered to no
+// mailbox at all. `docs/adr/0001` deletes the role and CONTEXT.md retires the
+// word, so the bundled surfaces name the one operator session instead.
+//
+// Scoped to what a session OBEYS — the roles and the playbooks this package
+// ships. AGENTS.md is graded by `tests/docs.test.mjs` and swept by its own
+// ticket; a session is never handed it.
+const RETIRED_ADDRESSEE = /readiness/i;
+
+test('no bundled role or playbook addresses a readiness session', async () => {
+  const found: string[] = [];
+  for (const name of await listRoles()) {
+    const body = (await loadRole(name)).role?.systemPrompt ?? '';
+    for (const claim of claims(body)) {
+      if (RETIRED_ADDRESSEE.test(claim)) found.push(`roles/${name}.md: ${claim.replace(/\s+/g, ' ').slice(0, 72)}`);
+    }
+  }
+  for (const file of readdirSync(playbooksDir()).filter(name => name.endsWith('.md'))) {
+    const body = readFileSync(join(playbooksDir(), file), 'utf8');
+    for (const claim of claims(body)) {
+      if (RETIRED_ADDRESSEE.test(claim)) found.push(`playbooks/${file}: ${claim.replace(/\s+/g, ' ').slice(0, 72)}`);
+    }
+  }
+  expect(found).toEqual([]);
+});
+
 test('the contract fires on the retired claim and leaves inbound prose alone', () => {
   // Both strings are real: the first is `omp/roles/triage-worker.md` at b3aaab4~1,
-  // the second is the shape `readiness` legitimately uses for its own lane. A
+  // the second is the shape the orchestrator's triage lane legitimately uses. A
   // contract that cannot tell them apart is worth less than none, so the
   // discrimination is asserted rather than assumed.
   expect(unattributed('Tickets the spec flow produced are `ready-for-agent` with a brief by construction.')).toHaveLength(1);
