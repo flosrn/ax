@@ -1,10 +1,10 @@
-// The verbs of `ax ready`, and nothing else.
+// The verbs of `ax triage`, and nothing else.
 //
 // This table is asserted equal to the `subcommands` declared in
 // src/commands.mjs, which is what stops the help — and the AGENTS.md block
 // generated from it — from advertising a verb that answers "unknown command".
 //
-// There is no default verb, on purpose. `ax ready --issue 7` could mean "put a
+// There is no default verb, on purpose. `ax triage --issue 7` could mean "put a
 // session in front of it" or "publish what one already wrote", and guessing
 // between a dispatch and a tracker mutation is not a guess worth making.
 
@@ -23,11 +23,11 @@ import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
 import { draftDirFor, passesIn, passesOf, questionsIn, readDraft, requestFor } from './draft.mjs';
 import { publish } from './publish.mjs';
-import { readyRelease } from './release.mjs';
+import { triageRelease } from './release.mjs';
 import { REFINE_REMOVED } from './spec.mjs';
 import { INBOX_WINDOW, askHeader, questionSpan } from './rulings.mjs';
 
-const USAGE = 'ax ready status --issue N|N-M [--issue …] [--brief] [--job triage|brief|custom] [--repo <owner/repo>]';
+const USAGE = 'ax triage status --issue N|N-M [--issue …] [--oneline] [--job triage|brief|custom] [--repo <owner/repo>]';
 
 /** The widest --issue range status will expand — see the refusal for why. */
 const RANGE_MAX = 100;
@@ -101,7 +101,7 @@ function readMailbox({ resolve, runner, env }) {
  * message id.
  *
  * THE PANE HANDLE IS NOT THE KEY A QUESTION CARRIES, and reading only that key
- * is what made this verb blind to the asks it sends itself. `ax ready ask`
+ * is what made this verb blind to the asks it sends itself. `ax triage ask`
  * sends from the child's DISPATCH, so Orca stamps
  * `from_handle: "dispatch:ctx_…"`, while the dispatch record names the child's
  * TERMINAL (`term_…`). Measured 2026-08-28 across this machine's mailbox: 12 of
@@ -110,7 +110,7 @@ function readMailbox({ resolve, runner, env }) {
  *
  * goodluckagency/ofmchat#101 is what that cost. `msg_bf6613d0ee33`, a real
  * `type: "question"` from `dispatch:ctx_ff9aa6dce051`, sat in the mailbox while
- * `ax ready status` printed no row for it and its own repair line pointed back
+ * `ax triage status` printed no row for it and its own repair line pointed back
  * at itself — so a child blocked on a legitimate question had no sanctioned way
  * to be answered, and the operator unblocked it out of band.
  *
@@ -120,7 +120,7 @@ function readMailbox({ resolve, runner, env }) {
  * only evidence there is.
  *
  * SO THE RESULT IS TWO LISTS, NOT ONE, and that split is the whole reason this
- * returns an object. `ax ready answer` refuses any id whose body carries no ax
+ * returns an object. `ax triage answer` refuses any id whose body carries no ax
  * header (`answer.mjs`: nothing proves which draft it asked from) and any id
  * whose header names another pass. Rendering a headerless row as answerable
  * would print a repair that is guaranteed to be refused AND suppress the manual
@@ -179,7 +179,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   const issues = [];
   let job = 'triage';
   let repo = '';
-  let brief = false;
+  let oneline = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -187,19 +187,19 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     if (arg === '--issue') issues.push(value());
     else if (arg === '--job') job = value();
     else if (arg === '--repo') repo = value();
-    else if (arg === '--brief') brief = true;
+    else if (arg === '--oneline') oneline = true;
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else {
-      process.stderr.write(`ax ready status: unknown argument "${arg}"\n${USAGE}\n`);
+      process.stderr.write(`ax triage status: unknown argument "${arg}"\n${USAGE}\n`);
       return 2;
     }
   }
   if (job === 'refine') {
-    process.stderr.write(`ax ready status: ${REFINE_REMOVED}\n${USAGE}\n`);
+    process.stderr.write(`ax triage status: ${REFINE_REMOVED}\n${USAGE}\n`);
     return 2;
   }
   if (issues.length === 0) {
-    process.stderr.write(`ax ready status: no --issue given\n${USAGE}\n`);
+    process.stderr.write(`ax triage status: no --issue given\n${USAGE}\n`);
     return 2;
   }
   // A wave is a RANGE, and typing seven --issue flags to poll one is the
@@ -212,7 +212,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     if (range !== null) {
       const [from, to] = [Number(range[1]), Number(range[2])];
       if (from >= to) {
-        process.stderr.write(`ax ready status: --issue ${issue} is not a range — N-M needs N < M\n${USAGE}\n`);
+        process.stderr.write(`ax triage status: --issue ${issue} is not a range — N-M needs N < M\n${USAGE}\n`);
         return 2;
       }
       // Bounded, because expansion is EAGER and every issue below pays real
@@ -220,14 +220,14 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // would hang the verb allocating six hundred million rows. A wave is
       // seven tickets today; a hundred is headroom, not a policy.
       if (to - from + 1 > RANGE_MAX) {
-        process.stderr.write(`ax ready status: --issue ${issue} spans ${to - from + 1} issues — more than ${RANGE_MAX} is a typo, not a wave; split the range\n${USAGE}\n`);
+        process.stderr.write(`ax triage status: --issue ${issue} spans ${to - from + 1} issues — more than ${RANGE_MAX} is a typo, not a wave; split the range\n${USAGE}\n`);
         return 2;
       }
       for (let n = from; n <= to; n += 1) expanded.push(String(n));
       continue;
     }
     if (!/^[1-9][0-9]*$/.test(issue)) {
-      process.stderr.write(`ax ready status: --issue expects a number or a range N-M, got "${issue}"\n${USAGE}\n`);
+      process.stderr.write(`ax triage status: --issue expects a number or a range N-M, got "${issue}"\n${USAGE}\n`);
       return 2;
     }
     expanded.push(issue);
@@ -238,7 +238,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   const slug = repo === '' ? repoSlug(args => exec('gh', args, root)) : repo;
   if (slug === '') {
     bad('could not resolve the current repository');
-    fix('ax ready status --repo <owner>/<repo> --issue N');
+    fix('ax triage status --repo <owner>/<repo> --issue N');
     return 1;
   }
 
@@ -286,8 +286,18 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   // on 2026-08-23, one of them a final report — the wave stalled on finished
   // work until a human noticed). A cheap pull is the floor that survives every
   // transport, so this renders the NEWEST pass of each issue as one greppable
-  // line: what the coordinator polls between reports it may never receive.
-  if (brief) {
+  // line: what the orchestrator polls between reports it may never receive.
+  //
+  // THE FLAG IS `--oneline`, and the name is the whole point of it: Brief has
+  // one meaning in this vocabulary — the Agent Brief comment that carries an
+  // inbound issue's assignment — and `--job brief` is the pass that writes it.
+  // `--brief` on the verb that READS passes therefore collided with the lane
+  // beside it on the same command line (`--brief --job triage` asked nothing
+  // about briefs), the same collision `ax worker dispatch --notes` was renamed
+  // out of. `--oneline` says what it renders and claims no vocabulary. The old
+  // name is not aliased: it lands on the unknown-argument refusal above, which
+  // prints the usage naming this one.
+  if (oneline) {
     const rows = [];
     for (const issue of expanded) {
       const base = { job, repo: slug, issue };
@@ -329,7 +339,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
             : `NOT-PUBLISHABLE ${draft.sha.slice(0, 12)}`;
       const pending = questionsForPass({ mailbox, request: requestFor(identity), handle, dispatchId });
       // A polled row says WAITING either way — a blocked child is the fact an
-      // operator scans for — but only an ax-sent ask is one `ax ready answer`
+      // operator scans for — but only an ax-sent ask is one `ax triage answer`
       // can pair, so the unpairable case says so instead of naming an id that
       // would be refused.
       const waiting = pending.answerable.length > 0
@@ -401,7 +411,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // from the mailbox. THE MAILBOX IS NOT THE ONLY WITNESS: measured
       // 2026-08-27 on ofmchat #87, a question that `--resume` proved PENDING was
       // absent from its pane's rows here, and this verb reported "it never asked
-      // through `ax ready ask`" about it. Two surfaces of one tool, opposite
+      // through `ax triage ask`" about it. Two surfaces of one tool, opposite
       // instructions, and the child believed this one and settled its pass.
       let recorded = null;
       if (!existsSync(path)) note(dim('  no dispatch record'));
@@ -442,16 +452,16 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         for (const question of pending.answerable) {
           const numbers = questionsIn(question.body).map(entry => entry.n);
           note(`  WAITING since ${question.created_at ?? 'an unrecorded time'} on ${numbers.length > 0 ? questionSpan(numbers) : 'its question'} — message ${question.id}`);
-          fix(`ax ready answer --issue ${issue} --job ${job} --id ${question.id} --file <rulings.md>   # one A<n>: line per question`);
+          fix(`ax triage answer --issue ${issue} --job ${job} --id ${question.id} --file <rulings.md>   # one A<n>: line per question`);
         }
-        // A row this pass's child is blocked on that `ax ready answer` cannot
+        // A row this pass's child is blocked on that `ax triage answer` cannot
         // pair. Reported, because a blocked child is the fact that matters —
         // but never with the answer command, which `answer` would refuse, and
         // never in a way that hides the fold-and-publish exit below.
         for (const { row, why } of pending.unpairable) {
           const numbers = questionsIn(row.body).map(entry => entry.n);
           note(`  WAITING since ${row.created_at ?? 'an unrecorded time'} on ${numbers.length > 0 ? questionSpan(numbers) : 'its question'} — message ${row.id}`);
-          bad(`  ^ UNPAIRABLE (${why}) — \`ax ready answer\` refuses an id it cannot prove asked from this draft, so that command is not the exit here`);
+          bad(`  ^ UNPAIRABLE (${why}) — \`ax triage answer\` refuses an id it cannot prove asked from this draft, so that command is not the exit here`);
         }
       }
 
@@ -468,7 +478,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       if (openRecorded && (pending === null || pending.answerable.length === 0)) {
         note(`  WAITING since ${recorded.at ?? 'an unrecorded time'} on message ${recorded.messageId} — from THIS PASS'S RECORD, not the mailbox`);
         note(dim(`  the mailbox shows no such row${mailbox.ok ? '' : ' (and could not be read)'} — an inbox absence does not close a question the record says is open`));
-        fix(`ax ready answer --issue ${issue} --job ${job} --id ${recorded.messageId} --file <rulings.md>   # one A<n>: line per question`);
+        fix(`ax triage answer --issue ${issue} --job ${job} --id ${recorded.messageId} --file <rulings.md>   # one A<n>: line per question`);
       }
       // Issued, outcome never written: the state a process killed between the
       // send and the write leaves behind. It must never read as "no question".
@@ -485,7 +495,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
         if (pending !== null && pending.answerable.length > 0) {
           note(`  the WAITING row above IS that ask (its ax header names ${request}) — the record never learned it landed, the mailbox proves it did`);
         } else {
-          note(dim(`  no ax-sent row for this pass is visible here${mailbox.ok ? '' : ' (the mailbox could not be read)'}, so there is no id \`ax ready answer\` can pair`));
+          note(dim(`  no ax-sent row for this pass is visible here${mailbox.ok ? '' : ' (the mailbox could not be read)'}, so there is no id \`ax triage answer\` can pair`));
           fix(`orca orchestration inbox --limit ${INBOX_WINDOW} --full --json   # find the question row by hand: it is the one whose body opens with ${request}`);
           fix(`ax worker tail ${handle || '<pane>'}   # what the child is blocked on, if the row cannot be found`);
         }
@@ -505,7 +515,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       }
 
       // A COUNT IS NOT AN ID, and five refusals in ./answer.mjs send the caller
-      // here for one. Measured 2026-08-26 on a child whose own `ax ready ask`
+      // here for one. Measured 2026-08-26 on a child whose own `ax triage ask`
       // had failed `dispatch_capability_invalid`, so it asked through
       // `orca orchestration ask` instead: this verb printed `4 open question(s)`
       // off the draft and nothing else, `answer` refused the resulting id for
@@ -513,7 +523,7 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
       // refusals closing a loop with no exit.
       //
       // So when the draft asks and no answerable ask is visible, the reason is
-      // named and the way out is the one that exists. `ax ready answer` pairs
+      // named and the way out is the one that exists. `ax triage answer` pairs
       // rulings to an ask THIS tool sent; nothing else can be paired, and no
       // amount of re-reading status will produce an id that was never minted.
       //
@@ -544,23 +554,23 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
               : handle === '' && dispatchId === ''
                 ? 'this pass records neither a pane nor a dispatch, so no ask can be matched to it'
                 : recorded === null
-                  ? 'this pass never asked through `ax ready ask`, and no question is keyed to its request, its pane or its dispatch'
+                  ? 'this pass never asked through `ax triage ask`, and no question is keyed to its request, its pane or its dispatch'
                   : `this pass's ask is recorded ${recorded.state}${recorded.code ? ` (${recorded.code})` : ''}, and no question is keyed to its request, its pane or its dispatch`
         }`);
-        note('  `ax ready answer` pairs rulings to an ask THIS tool sent; a child that asked another way cannot be answered by it');
+        note('  `ax triage answer` pairs rulings to an ask THIS tool sent; a child that asked another way cannot be answered by it');
 
         // THE FINDING IS A FACT; THE REPAIR IS A WRITE, and a write needs to know
         // who else holds that file. See `paneStanding` above for what this cost.
         const standing = paneStanding(handle, paneEnv, 'this pass records no pane, so nothing here can say whether a child still holds that draft');
         if (standing.pane === 'VIVANT') {
           bad(`  and this pass's pane is LIVE (${standing.detail}) — folding rulings into a draft its child is still writing loses one of the two writes, whichever lands second`);
-          note('  it may already have absorbed them: a child that asked outside `ax ready ask` reads its own answers however it asked for them');
+          note('  it may already have absorbed them: a child that asked outside `ax triage ask` reads its own answers however it asked for them');
           fix(`  ax worker tail ${handle}   # what it is doing before you touch its draft`);
         } else {
           if (standing.pane === 'INCONNU') {
             note(dim(`  this pass's pane could not be established (${standing.detail}), so the write below is not proven unopposed — \`ax worker gate ${request}\` is the authority, never this line`));
           }
-          fix(`  rule the questions and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — there is no ask here for \`ax ready answer\` to pair`);
+          fix(`  rule the questions and fold them into ${draft.sha === '' ? 'the draft' : draft.path} yourself, then publish — there is no ask here for \`ax triage answer\` to pair`);
         }
       }
     }
@@ -568,16 +578,16 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   return 0;
 }
 
-export const SUBCOMMANDS = { dispatch, ask, status, answer, publish, release: readyRelease };
+export const SUBCOMMANDS = { dispatch, ask, status, answer, publish, release: triageRelease };
 
-/** `ax ready <verb> [args]`. */
-export function ready(argv = []) {
+/** `ax triage <verb> [args]`. */
+export function triage(argv = []) {
   const [verb, ...rest] = argv;
   const run = SUBCOMMANDS[verb];
 
   if (!run) {
     const known = Object.keys(SUBCOMMANDS).join(', ');
-    process.stderr.write(verb ? `ax ready: unknown verb "${verb}" (${known})\n` : `ax ready: which one? (${known})\n`);
+    process.stderr.write(verb ? `ax triage: unknown verb "${verb}" (${known})\n` : `ax triage: which one? (${known})\n`);
     return 2;
   }
 

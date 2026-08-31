@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
-import { launchProof, slugOf, stampOf, transcript } from '../src/worker/transcript.mjs';
+import { dispatchProof, slugOf, stampOf, transcript } from '../src/worker/transcript.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-transcript-'));
 
@@ -185,7 +185,7 @@ test('model_change keeps WHO moved the model — boot, adapter and quota are thr
   assert.match(out, /role=fallback \(quota chain\)/);
 });
 
-test('launch proof keeps model selection separate from role and skill application', () => {
+test('dispatch proof keeps model selection separate from role and skill application', () => {
   const root = scratch();
   const dir = join(root, '-repo-gap-353');
   mkdirSync(dir, { recursive: true });
@@ -201,7 +201,7 @@ test('launch proof keeps model selection separate from role and skill applicatio
     ].join('\n'),
   );
 
-  assert.deepEqual(launchProof({ needle: 'gap-353', sessionsRoot: root }), {
+  assert.deepEqual(dispatchProof({ needle: 'gap-353', sessionsRoot: root }), {
     model: { model: 'anthropic/claude-sonnet-5', role: 'default' },
     sessionRole: { status: 'applied', role: 'worker', skills: ['implementation'] },
   });
@@ -210,10 +210,10 @@ test('launch proof keeps model selection separate from role and skill applicatio
     transcript(['--launch-proof', 'gap-353', '--sessions', root], { env: { HOME: root } }),
   );
   assert.equal(code, 0);
-  assert.deepEqual(JSON.parse(out), launchProof({ needle: 'gap-353', sessionsRoot: root }));
+  assert.deepEqual(JSON.parse(out), dispatchProof({ needle: 'gap-353', sessionsRoot: root }));
 });
 
-test('launch proof carries the exact pre-turn role refusal', () => {
+test('dispatch proof carries the exact pre-turn role refusal', () => {
   const root = scratch();
   const dir = join(root, '-repo-gap-353');
   mkdirSync(dir, { recursive: true });
@@ -229,7 +229,7 @@ test('launch proof carries the exact pre-turn role refusal', () => {
     ].join('\n'),
   );
 
-  assert.deepEqual(launchProof({ needle: 'gap-353', sessionsRoot: root })?.sessionRole, {
+  assert.deepEqual(dispatchProof({ needle: 'gap-353', sessionsRoot: root })?.sessionRole, {
     status: 'refused',
     role: 'worker',
     reason: 'skill-not-found',
@@ -256,12 +256,12 @@ test('a request id selects one triage session among siblings sharing the current
     );
   }
 
-  assert.deepEqual(launchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole, {
+  assert.deepEqual(dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole, {
     status: 'applied',
     role: 'triage-worker',
     skills: ['triage'],
   });
-  assert.equal(launchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
 });
 
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
@@ -278,7 +278,7 @@ test('a worker proof ignores newer advisor sidecars and chooses the newest sessi
   utimesSync(newer, new Date(2_000), new Date(2_000));
   utimesSync(sidecar, new Date(3_000), new Date(3_000));
 
-  assert.deepEqual(launchProof({ needle: 'worker', sessionsRoot: root })?.model, {
+  assert.deepEqual(dispatchProof({ needle: 'worker', sessionsRoot: root })?.model, {
     model: 'new',
     role: 'default',
   });

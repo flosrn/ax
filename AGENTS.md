@@ -15,7 +15,7 @@ node bin/ax.mjs          # the command surface this machine can answer
 1. **Prepare the worktree** — `src/worktree/`. Probe the checkout, derive one plan, then write it.
 2. **Equip the session** — `omp/model/`, `omp/roles/`, `omp/playbooks/`. Apply the pinned role,
    model and procedure before the first turn.
-3. **Orchestrate the work** — `src/worker/`, `src/ready/`, `src/pr-gate.mjs`, plus the peer/report/
+3. **Orchestrate the work** — `src/worker/`, `src/triage/`, `src/pr-gate.mjs`, plus the peer/report/
    checkpoint extensions under `omp/`. Record mutations, route messages, verify artifacts, recover.
 
 **The plan** — `src/worktree/plan.mjs`. `planWorktree()` decides a worktree's target state once, as
@@ -49,10 +49,10 @@ them.
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |
 | `src/worker/sweep.mjs` | reclaiming processes a dead worktree left behind, by pgid and never by name |
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup — including the AX bundle a child must load before it is dispatched — tracker, placement and parent route |
-| `src/ready/dispatch.mjs`, `src/ready/ask.mjs`, `src/ready/answer.mjs`, `src/ready/publish.mjs` | one analysis session per issue, questions, corrected publication |
-| `src/ready/spec.mjs`, `src/ready/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
-| `src/ready/index.mjs`, `src/ready/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
-| `src/ready/draft.mjs`, `src/ready/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
+| `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
+| `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
+| `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
+| `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
 | `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |
 | `src/board.mjs` | the one monotonic writer of a worktree checkpoint |
 | `src/pin.mjs` | exact npm release migration, install proof and doctor; never git |
@@ -112,7 +112,7 @@ Never `||` a missing container into a value that authorizes a mutation.
 
 **One readiness artifact, two ways in.** The spec flow publishes its own tickets ready: `to-spec`
 decides the work and `to-tickets` cuts it into tickets that are agent-grabbable by construction,
-labelled `ready-for-agent` at publication, so a spec-born ticket needs no readiness pass. `ax ready`
+labelled `ready-for-agent` at publication, so a spec-born ticket needs no readiness pass. `ax triage`
 serves the other way in — the triage on-ramp for work that arrived from outside: reported,
 agent-found, or born as a follow-up. `--job triage` decides what such an issue is, `--job brief`
 writes the brief for a verdict already reached, `--job custom` runs a project's own pass. Both ways
@@ -121,8 +121,8 @@ assignment: what to build, independently observable acceptance criteria, and its
 Where that assignment LIVES follows provenance — the spec flow writes it into the ticket body and
 posts no comment (`to-tickets` has no Agent Brief step); the on-ramp posts it as an Agent Brief.
 Demanding a Brief comment over spec-born work strands a wave exactly as triaging it would.
-`ax ready dispatch` refuses a triage pass over spec-born work, reading the labels a project declares
-in `ready.provenance` — triage is for inbound issues only.
+`ax triage dispatch` refuses a triage pass over spec-born work, reading the labels a project declares
+in `triage.provenance` — triage is for inbound issues only.
 
 **Proof, not self-report.** Liveness is cursor movement. Completion is a merged PR or the governing
 artifact. Every merge ground runs; nothing stops after the first refusal.

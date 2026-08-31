@@ -1,6 +1,6 @@
-// What a ready session hands back, and the one place its shape is decided.
+// What a triage session hands back, and the one place its shape is decided.
 //
-// The child of a ready dispatch mutates nothing: it reads the issue, judges it,
+// The child of a triage dispatch mutates nothing: it reads the issue, judges it,
 // and writes ONE file. The human reads that file, corrects it, and publishes it.
 // That ordering is the whole point — a verdict that lands the moment it is
 // rendered cannot be adjusted, and the four issues of 2026-08-10 landed with
@@ -26,7 +26,7 @@ import { join } from 'node:path';
 
 import { gitBlobSha } from '../hash.mjs';
 
-/** Where every ready draft lives, relative to the repository root. Gitignored, by design. */
+/** Where every triage draft lives, relative to the repository root. Gitignored, by design. */
 export const DRAFT_DIR = join('.scratch', 'triage');
 
 /**

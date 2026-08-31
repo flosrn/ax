@@ -2,7 +2,7 @@
 // OWN session, because that is the only place on this machine that holds it.
 //
 // WHY THIS EXISTS (measured 2026-08-26, ofmchat #78 and #79, two independent
-// triage dispatches). `ax ready ask` composed `orca orchestration ask` with
+// triage dispatches). `ax triage ask` composed `orca orchestration ask` with
 // neither `--from` nor `--dispatch-capability` and was refused
 // `dispatch_capability_invalid: The Dispatch capability is missing` (exit 3,
 // through the generic branch, so the child got no repair and improvised). The

@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { draftDirFor, draftPath, parseDraft, passesIn, readDraft, requestFor } from '../src/ready/draft.mjs';
+import { draftDirFor, draftPath, parseDraft, passesIn, readDraft, requestFor } from '../src/triage/draft.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-draft-'));
 

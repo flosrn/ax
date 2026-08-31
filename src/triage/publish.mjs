@@ -1,6 +1,6 @@
-// `ax ready publish` — the one place a ready verdict reaches the tracker.
+// `ax triage publish` — the one place a triage verdict reaches the tracker.
 //
-// A ready child writes a draft and mutates nothing, so the mutation has to
+// A triage child writes a draft and mutates nothing, so the mutation has to
 // happen somewhere. Leaving it to the operator's own `gh` calls is not a smaller
 // surface, it is an untested one — and it is precisely the failure this whole
 // noun is paid for: on 2026-08-10 four issues landed with three empty label
@@ -33,7 +33,7 @@ import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
 import { draftDirFor, passesIn, readDraft, requestFor } from './draft.mjs';
 import { REFINE_REMOVED, READY_LABEL } from './spec.mjs';
 
-const USAGE = 'ax ready publish --issue N [--issue M …] [--job triage|brief] [--pass N] [--repo <owner/repo>] [--republish] [--dry-run]';
+const USAGE = 'ax triage publish --issue N [--issue M …] [--job triage|brief] [--pass N] [--repo <owner/repo>] [--republish] [--dry-run]';
 
 /**
  * The disclaimer every AI-written comment carries, per job — and, since
@@ -92,7 +92,7 @@ const normalize = text => String(text ?? '').replace(/\r\n/g, '\n').trim();
 
 export function publish(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), resolve = resolveOrca, runner } = {}) {
   const usageError = message => {
-    process.stderr.write(`ax ready publish: ${message}\n${USAGE}\n`);
+    process.stderr.write(`ax triage publish: ${message}\n${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -151,7 +151,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   if (!paths.root) return refuse('not inside a git repository — the drafts live in this checkout');
   const gh = args => exec('gh', args, paths.root);
   const slug = repo || repoSlug(gh);
-  if (slug === '') return refuse('could not resolve the current repository', 'ax ready publish --repo <owner>/<repo>');
+  if (slug === '') return refuse('could not resolve the current repository', 'ax triage publish --repo <owner>/<repo>');
 
   // The repository's own vocabulary, read ONCE for the batch and before any
   // mutation — a name this list does not carry is refused here rather than
@@ -199,7 +199,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
 
     if (wantPass !== '' && !written.includes(pass) && !(written.length === 0 && pass === 1)) {
       bad(`#${issue} has no pass ${pass}${written.length > 0 ? ` — it has ${written.join(', ')}` : ' and no draft at all'}`);
-      fix(`ax ready status --issue ${issue} --job ${job}   # every pass this ticket has`);
+      fix(`ax triage status --issue ${issue} --job ${job}   # every pass this ticket has`);
       blocked = true;
       continue;
     }
@@ -253,7 +253,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // wave membership is an open arbitration.
     if (draft.questions.length > 0) {
       bad(`#${issue} still carries ${draft.questions.length} open question(s) — an open question is a verdict not yet rendered`);
-      fix(`ax ready status --issue ${issue} --job ${job}   # who is waiting; answer it, let the child fold and drop its Q lines, then publish`);
+      fix(`ax triage status --issue ${issue} --job ${job}   # who is waiting; answer it, let the child fold and drop its Q lines, then publish`);
       blocked = true;
       continue;
     }
@@ -309,7 +309,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       if (!republish) {
         bad(`#${issue} already carries ${already.what}`);
         fix(`gh issue view ${issue} --repo ${slug} --comments # ${already.read}`);
-        fix(`ax ready publish --issue ${issue} --job ${job} --pass ${pass} --repo ${slug} --republish # only if this draft must supersede it, on purpose`);
+        fix(`ax triage publish --issue ${issue} --job ${job} --pass ${pass} --repo ${slug} --republish # only if this draft must supersede it, on purpose`);
         blocked = true;
         continue;
       }
@@ -382,7 +382,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // Whether a dispatch record can ADDRESS this pass's pane, decided here with
     // the store already in hand: the release hint after the mutation must never
     // name a gesture that is guaranteed to refuse, and a hand-written pass has
-    // no record — `ready release` would answer "no dispatch record" every time.
+    // no record — `triage release` would answer "no dispatch record" every time.
     let releasable = false;
     if (recorded.includes(pass)) {
       try {
@@ -441,7 +441,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
         note('  ^ the comment may still have landed server-side; no label was applied either way');
         fix(`gh issue view ${issue} --repo ${slug} --json comments --jq '.comments[-1].body' # did it land?`);
         fix(`gh ${labels.join(' ')} # if it landed, only the labels are missing`);
-        fix(`ax ready publish --issue ${issue} --job ${job} --pass ${pass} # only if it did NOT land`);
+        fix(`ax triage publish --issue ${issue} --job ${job} --pass ${pass} # only if it did NOT land`);
         failed = 1;
         continue;
       }
@@ -453,7 +453,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
         continue;
       }
       note(`published — the comment, then ${draft.labels.length} label(s) including ${READY_LABEL}`);
-      if (releasable) note(dim(`ax ready release --issue ${issue} --job ${job} --pass ${pass}   # this comment IS the landing proof release needs`));
+      if (releasable) note(dim(`ax triage release --issue ${issue} --job ${job} --pass ${pass}   # this comment IS the landing proof release needs`));
       continue;
     }
 
@@ -486,7 +486,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // command below is one whose proof exists by construction. `status` cannot
     // see publication without a per-issue probe, and offering it there printed
     // a command that refused every time under the deferred-publish wave.
-    if (releasable) note(dim(`ax ready release --issue ${issue} --job ${job} --pass ${pass}   # this comment IS the landing proof release needs`));
+    if (releasable) note(dim(`ax triage release --issue ${issue} --job ${job} --pass ${pass}   # this comment IS the landing proof release needs`));
     if (draft.close) note('the draft recommended closing: that is yours to do, and this verb never does it');
   }
   return failed;

@@ -58,7 +58,7 @@ depend on a working tree under live edit.
 
 Every handled friction earns an entry in `FRICTIONS.md` — that file's own header
 owns the form and the four verdicts. The record exists because the alternative is
-a silent workaround: one consumer carried "`ax ready ask` is unavailable" in
+a silent workaround: one consumer carried "`ax triage ask` is unavailable" in
 durable memory for six minor versions, and the cause took one grep of the runtime
 source once it was finally reported.
 

@@ -11,7 +11,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { defaultStore, workerPane } from './record.mjs';
 import { equipment } from './child.mjs';
 import { readPane } from './pane.mjs';
-import { launchProof } from './transcript.mjs';
+import { dispatchProof } from './transcript.mjs';
 import { quote, remote } from './hosts.mjs';
 
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
@@ -63,7 +63,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   let moved = null;
 
   // EACH PROPOSITION IS LATCHED SEPARATELY, and that is the whole reason this is
-  // three variables instead of one `proof`. `launchProof` answers non-null the
+  // three variables instead of one `proof`. `dispatchProof` answers non-null the
   // moment a session FILE exists, with both fields still null inside it — and
   // that file exists as soon as the child boots, carrying only the boot
   // `model_change` Orca writes before the spec marker applies and long before
@@ -175,7 +175,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
 
 /** The same session proof read, wherever the transcript lives. */
 function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
-  if (host === null) return launchProof({ needle, env, sessionsRoot });
+  if (host === null) return dispatchProof({ needle, env, sessionsRoot });
   const root = host.sessions ?? '';
   if (root === '') return null;
   // Through ssh because ssh rejoins its arguments into one remote command.

@@ -283,7 +283,7 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
       return 2;
     }
     const rootAt = argv.indexOf('--sessions');
-    const found = launchProof({
+    const found = dispatchProof({
       needle,
       env,
       sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1],
@@ -517,14 +517,20 @@ function sessionsById(root, target) {
 }
 
 /**
- * The launch proof written by the child session itself.
+ * The dispatch proof written by the child session itself.
+ *
+ * Named for the verb that creates a child: `worker launch` became
+ * `worker dispatch` in 0.16, and this function is read by BOTH creation
+ * surfaces (`worker/verify.mjs` and `triage/dispatch.mjs`) — which is why the
+ * old name outlived the rename. A proof named after a verb nobody can type
+ * sends a reader looking for a `launch` that no longer exists.
  *
  * The model mover and the session role are independent. `model_change.role`
  * says who selected the model (`default` is the spec adapter); a hidden custom
  * message says whether the top-level role and every declared autoload skill
  * reached the first turn. Neither proposition can stand in for the other.
  */
-export function launchProof({ needle, request = '', env = process.env, sessionsRoot } = {}) {
+export function dispatchProof({ needle, request = '', env = process.env, sessionsRoot } = {}) {
   const file = sessionFileForNeedle({ needle, request, env, sessionsRoot });
   if (file === null) return null;
 

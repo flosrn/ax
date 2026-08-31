@@ -329,10 +329,15 @@ test('doctor refuses a config it cannot trust instead of guessing', () => {
 // A rename is a clean cutover: the old config key simply stops existing, and the
 // schema's `additionalProperties: false` refuses it. But "unknown key" does not
 // say where the key WENT, and a consuming repo meets this line while pinning the
-// release — so the finding names the edit. Two renames have now been made this
-// way (`triage` -> `ready`, `launch` -> `dispatch`), and both are read out of one
-// table so a third cannot arrive with advice only one verb prints.
-test('doctor names the rename when a config still carries the legacy triage key', () => {
+// release — so the finding names the edit. Three renames have now been made this
+// way (`triage` -> `ready` in 0.15, `launch` -> `dispatch` and `ready` ->
+// `triage` in 0.16), all read out of one table so a fourth cannot arrive with
+// advice only one verb prints.
+//
+// The 0.15 row is GONE rather than kept: `triage` is the declared key again, so
+// a row retiring it would tell an operator whose config is correct to break it.
+// That is asserted below — a valid `triage` block earns no advice at all.
+test('doctor names the rename when a config still carries the legacy ready key', () => {
   const good = readFileSync(join(dir, 'ax.config.json'), 'utf8');
   const config = JSON.parse(good);
   const capture = fn => {
@@ -345,45 +350,53 @@ test('doctor names the rename when a config still carries the legacy triage key'
       process.stdout.write = stdout;
     }
   };
-  writeFileSync(join(dir, 'ax.config.json'), `${JSON.stringify({ ...config, triage: { labels: 'docs/labels.md' } }, null, 2)}\n`);
+  writeFileSync(join(dir, 'ax.config.json'), `${JSON.stringify({ ...config, ready: { labels: 'docs/labels.md' } }, null, 2)}\n`);
   const legacy = capture(() => doctor(dir));
   assert.equal(legacy.code, 1);
-  assert.match(legacy.out, /unknown key "triage"/);
-  assert.match(legacy.out, /rename the "triage" key to "ready"/);
+  assert.match(legacy.out, /unknown key "ready"/);
+  assert.match(legacy.out, /rename the "ready" key to "triage"/);
+  assert.match(legacy.out, /labels, provenance/, 'the advice says the keys inside the block do not move');
 
   // And ONLY for that key. The advice is keyed on the validator's own phrasing
   // rather than the word, so a config whose real defect merely quotes a label
-  // value containing "triage" is not sent to rename a key it does not have.
+  // value containing "ready" is not sent to rename a key it does not have.
   writeFileSync(
     join(dir, 'ax.config.json'),
-    `${JSON.stringify({ ...config, dispatch: { ...(config.dispatch ?? {}), databaseLabels: 'needs-triage' } }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, dispatch: { ...(config.dispatch ?? {}), databaseLabels: 'ready-for-agent' } }, null, 2)}\n`,
   );
   const unrelated = capture(() => doctor(dir));
   assert.equal(unrelated.code, 1);
-  assert.doesNotMatch(unrelated.out, /rename the "triage" key/);
+  assert.doesNotMatch(unrelated.out, /rename the "ready" key/);
 
   // And ONLY at the ROOT. `src/schema.mjs` prints the LOCATION of the offending
-  // key, so a nested `dispatch.triage` typo reports `dispatch: unknown key "triage"`:
+  // key, so a nested `dispatch.ready` typo reports `dispatch: unknown key "ready"`:
   // advice to rename a root key this config does not have sends the operator to
   // edit a line that is already correct while the nested defect stays.
   writeFileSync(
     join(dir, 'ax.config.json'),
-    `${JSON.stringify({ ...config, dispatch: { ...(config.dispatch ?? {}), triage: { labels: 'docs/labels.md' } } }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, dispatch: { ...(config.dispatch ?? {}), ready: { labels: 'docs/labels.md' } } }, null, 2)}\n`,
   );
   const nested = capture(() => doctor(dir));
   assert.equal(nested.code, 1);
-  assert.match(nested.out, /dispatch: unknown key "triage"/);
-  assert.doesNotMatch(nested.out, /rename the "triage" key/);
+  assert.match(nested.out, /dispatch: unknown key "ready"/);
+  assert.doesNotMatch(nested.out, /rename the "ready" key/);
 
   // init meets the same closed-schema refusal while a repo pins the release, so
   // it names the same rename — and still leaves the file untouched, which is the
   // rule the test above states.
-  const legacyConfig = `${JSON.stringify({ ...config, triage: { labels: 'docs/labels.md' } }, null, 2)}\n`;
+  const legacyConfig = `${JSON.stringify({ ...config, ready: { labels: 'docs/labels.md' } }, null, 2)}\n`;
   writeFileSync(join(dir, 'ax.config.json'), legacyConfig);
   const initLegacy = capture(() => init(dir));
   assert.equal(initLegacy.code, 1);
-  assert.match(initLegacy.out, /rename the "triage" key to "ready"/);
+  assert.match(initLegacy.out, /rename the "ready" key to "triage"/);
   assert.equal(readFileSync(join(dir, 'ax.config.json'), 'utf8'), legacyConfig);
+
+  // The key the 0.15 row retired is the LIVE one now, and it validates: no row
+  // may survive its own key's return.
+  writeFileSync(join(dir, 'ax.config.json'), `${JSON.stringify({ ...config, triage: { labels: 'docs/labels.md' } }, null, 2)}\n`);
+  const live = capture(() => doctor(dir));
+  assert.equal(live.code, 0, 'a declared triage block is valid config, not a rename to advise');
+  assert.doesNotMatch(live.out, /rename the "triage" key/);
 
   writeFileSync(join(dir, 'ax.config.json'), good);
   assert.equal(doctor(dir), 0);

@@ -114,7 +114,7 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
   if (verdict.pane === 'MORT') {
     return refuse(
       `the recorded pane is gone (${verdict.detail}) — there is no session to deliver a brief into`,
-      `ax ready dispatch --issue <n> --fresh --because <text>   # a triage pass; or ax worker start --replace --request ${request}`,
+      `ax triage dispatch --issue <n> --fresh --because <text>   # a triage pass; or ax worker start --replace --request ${request}`,
     );
   }
   if (verdict.pane === 'INCONNU') {

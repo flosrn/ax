@@ -1,4 +1,4 @@
-// `ax ready release` — free a finished pass's pane, keyed by the vocabulary the
+// `ax triage release` — free a finished pass's pane, keyed by the vocabulary the
 // dispatching parent already thinks in.
 //
 // That parent thinks in ISSUES; `ax worker release` is keyed by DISPATCH
@@ -22,11 +22,11 @@ import { release } from '../worker/release.mjs';
 import { draftDirFor, passesOf, requestFor } from './draft.mjs';
 import { REFINE_REMOVED } from './spec.mjs';
 
-const USAGE = 'ax ready release --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--no-proof]';
+const USAGE = 'ax triage release --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--no-proof]';
 
-export function readyRelease(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), releaseFn = release, ...rest } = {}) {
+export function triageRelease(argv = [], { exec = defaultExec, env = process.env, cwd = process.cwd(), releaseFn = release, ...rest } = {}) {
   const usageError = message => {
-    process.stderr.write(`ax ready release: ${message}\n${USAGE}\n`);
+    process.stderr.write(`ax triage release: ${message}\n${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -61,21 +61,21 @@ export function readyRelease(argv = [], { exec = defaultExec, env = process.env,
   if (!paths.root) return refuse('not inside a git repository — the pass this frees was dispatched from one');
 
   const slug = repo === '' ? repoSlug(args => exec('gh', args, paths.root)) : repo;
-  if (slug === '') return refuse('could not resolve the current repository', `ax ready release --issue ${issue} --repo <owner>/<repo>`);
+  if (slug === '') return refuse('could not resolve the current repository', `ax triage release --issue ${issue} --repo <owner>/<repo>`);
 
   const base = { job, repo: slug, issue };
   const store = defaultStore(env);
   const passes = passesOf(store, draftDirFor(paths.root), base);
   if (passes.length === 0) return refuse(`no pass of #${issue} exists here — nothing was dispatched, so there is no pane to free`);
   const pass = passArg === '' ? passes[passes.length - 1] : Number(passArg);
-  if (!passes.includes(pass)) return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax ready status --issue ${issue} --job ${job}`);
+  if (!passes.includes(pass)) return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax triage status --issue ${issue} --job ${job}`);
 
   const request = requestFor({ ...base, pass });
   const path = join(store, `${request}.json`);
   if (!existsSync(path)) {
     return refuse(
       `pass ${pass} of #${issue} has no dispatch record — a draft written by hand holds no pane, so there is nothing to free`,
-      `ax ready status --issue ${issue} --job ${job}`,
+      `ax triage status --issue ${issue} --job ${job}`,
     );
   }
   let dispatchId;

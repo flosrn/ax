@@ -1,4 +1,4 @@
-// `ax ready answer` — the dispatching parent's ruling, paired to the questions before
+// `ax triage answer` — the dispatching parent's ruling, paired to the questions before
 // anything is sent.
 //
 // The receiving side is a LIVE child blocked mid-analysis: whatever this verb
@@ -31,11 +31,11 @@ import { INBOX_WINDOW, askHeader, composeReply, pairRulings, parseRulings, quest
 import { REFINE_REMOVED } from './spec.mjs';
 
 const USAGE =
-  'ax ready answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dry-run]';
+  'ax triage answer --issue N --id <message_id> --file <rulings> [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dry-run]';
 
 export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   const usageError = message => {
-    process.stderr.write(`ax ready answer: ${message}\n${USAGE}\n`);
+    process.stderr.write(`ax triage answer: ${message}\n${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -77,7 +77,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   if (!/^[1-9][0-9]*$/.test(issue)) return usageError(`--issue expects a number, got "${issue}"`);
   if (passArg !== '' && !/^[1-9][0-9]*$/.test(passArg)) return usageError(`--pass expects a number, got "${passArg}"`);
   if (file === '') return usageError('no --file given — the ruling text travels by file, never on argv');
-  if (id === '' && !dry) return usageError('no --id given — `ax ready status` prints the pending question\'s message id');
+  if (id === '' && !dry) return usageError('no --id given — `ax triage status` prints the pending question\'s message id');
 
   // ── 2. the record: which questions this issue is actually blocked on ───────
   const paths = repoPaths(cwd);
@@ -85,23 +85,23 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   const root = paths.root;
 
   const slug = repo === '' ? repoSlug(args => exec('gh', args, root)) : repo;
-  if (slug === '') return refuse('could not resolve the current repository', `ax ready answer --issue ${issue} --repo <owner>/<repo> …`);
+  if (slug === '') return refuse('could not resolve the current repository', `ax triage answer --issue ${issue} --repo <owner>/<repo> …`);
 
   const base = { job, repo: slug, issue };
   const store = defaultStore(env);
   const passes = passesOf(store, draftDirFor(root), base);
   if (passes.length === 0) {
-    return refuse(`no pass of #${issue} exists here — there is no draft whose questions this could answer`, `ax ready status --issue ${issue} --job ${job}`);
+    return refuse(`no pass of #${issue} exists here — there is no draft whose questions this could answer`, `ax triage status --issue ${issue} --job ${job}`);
   }
   const pass = passArg === '' ? passes[passes.length - 1] : Number(passArg);
   if (!passes.includes(pass)) {
-    return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax ready status --issue ${issue} --job ${job}`);
+    return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax triage status --issue ${issue} --job ${job}`);
   }
 
   const draft = readDraft(root, { ...base, pass });
-  if (draft.sha === '') return refuse(draft.reason, `ax ready status --issue ${issue} --job ${job}`);
+  if (draft.sha === '') return refuse(draft.reason, `ax triage status --issue ${issue} --job ${job}`);
   if (draft.questions.length === 0) {
-    return refuse(`the draft at ${draft.path} carries no Q<n>: line — it asks nothing, so there is nothing to answer`, `ax ready status --issue ${issue} --job ${job}   # the waiting pass, if any, is named there`);
+    return refuse(`the draft at ${draft.path} carries no Q<n>: line — it asks nothing, so there is nothing to answer`, `ax triage status --issue ${issue} --job ${job}   # the waiting pass, if any, is named there`);
   }
   const problem = questionProblem(draft.questions);
   if (problem !== null) return refuse(problem, `repair the Q<n>: lines in ${draft.path} before answering — a ruling pairs by number`);
@@ -145,13 +145,13 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   if (message === undefined) {
     return cannot(
       `${id} is not among the last ${INBOX_WINDOW} inbox rows, so it cannot be proven a question — an absence from a bounded list is not proof (F-028)`,
-      `ax ready status --issue ${issue} --job ${job}   # the pending question's real id`,
+      `ax triage status --issue ${issue} --job ${job}   # the pending question's real id`,
     );
   }
   if (message.type !== 'question') {
     return refuse(
       `${id} is a "${message.type}" message, not a question — replying to it would land a plain message while the child stays blocked`,
-      `ax ready status --issue ${issue} --job ${job}   # the pending question's real id`,
+      `ax triage status --issue ${issue} --job ${job}   # the pending question's real id`,
     );
   }
   // Identity FIRST, content second: Q-line text can legitimately coincide
@@ -163,20 +163,20 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   const header = askHeader(message.body);
   if (header === null) {
     return refuse(
-      `${id} carries no ax ask header — it was not sent by \`ax ready ask\`, so nothing proves which draft it asked from`,
-      `ax ready status --issue ${issue} --job ${job}   # the pending question's real id`,
+      `${id} carries no ax ask header — it was not sent by \`ax triage ask\`, so nothing proves which draft it asked from`,
+      `ax triage status --issue ${issue} --job ${job}   # the pending question's real id`,
     );
   }
   if (header.request !== request) {
     return refuse(
       `${id} was asked by ${header.request}, not ${request} — the id names another ask`,
-      `ax ready status --issue ${issue} --job ${job}   # which pass is waiting, and on which message`,
+      `ax triage status --issue ${issue} --job ${job}   # which pass is waiting, and on which message`,
     );
   }
   if (header.sha !== draft.sha) {
     return refuse(
       `${id} was asked from draft ${header.sha.slice(0, 12)}, but ${draft.path} is now ${draft.sha.slice(0, 12)} — the draft moved since the ask, and these rulings may answer questions that no longer stand`,
-      `ax ready status --issue ${issue} --job ${job}   # re-read the draft, then answer the ask it actually sent`,
+      `ax triage status --issue ${issue} --job ${job}   # re-read the draft, then answer the ask it actually sent`,
     );
   }
   const asked = questionsIn(message.body);
@@ -185,7 +185,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   if (!same) {
     return refuse(
       `${id} and the draft at ${draft.path} disagree on the questions — the id may name another pass's ask, or the draft moved since it was sent`,
-      `ax ready status --issue ${issue} --job ${job}   # which pass is waiting, and on which message`,
+      `ax triage status --issue ${issue} --job ${job}   # which pass is waiting, and on which message`,
     );
   }
 
@@ -205,7 +205,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   } catch (error) {
     return cannot(
       `could not record this reply against ${recordPath}: ${String(error.message ?? error)} — nothing was sent, because a reply issued from no record cannot be recovered (F-001)`,
-      `ax ready status --issue ${issue} --job ${job}   # what this pass recorded, and whether a question is really open`,
+      `ax triage status --issue ${issue} --job ${job}   # what this pass recorded, and whether a question is really open`,
     );
   }
   const sent = run(['orchestration', 'reply', '--id', id, '--body', body, '--json']);
@@ -235,11 +235,11 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
     }
     if (code === 'question_not_found') {
       close('refused', code);
-      return refuse(`${String(detail)}`, `ax ready status --issue ${issue} --job ${job}`);
+      return refuse(`${String(detail)}`, `ax triage status --issue ${issue} --job ${job}`);
     }
     if (code === 'dispatch_inactive') {
       close('refused', code);
-      return refuse('the question is closed because its Dispatch is inactive — the child that asked is gone, and no reply can reach it', `ax ready dispatch --issue ${issue} --job ${job} --fresh --because <what the rulings decided>`);
+      return refuse('the question is closed because its Dispatch is inactive — the child that asked is gone, and no reply can reach it', `ax triage dispatch --issue ${issue} --job ${job} --fresh --because <what the rulings decided>`);
     }
     return cannot(`orca refused the reply (${code || 'no code'}): ${String(detail).slice(0, 200)}`);
   }
@@ -257,12 +257,12 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
       note(`the pass record could not be reopened: ${String(error.message ?? error)}`);
     }
     bad(`orca answered success but recorded no question — the reply to ${id} landed as a PLAIN message, and the child is still blocked`);
-    fix(`ax ready status --issue ${issue} --job ${job}   # find the pending question and answer THAT id`);
+    fix(`ax triage status --issue ${issue} --job ${job}   # find the pending question and answer THAT id`);
     return 1;
   }
   if (result.duplicate === true) note('this exact ruling was already recorded — nothing new was sent');
   // Proven landed as a QUESTION reply, so the lifecycle closes here. Without
-  // this the record would keep saying `replying` forever and `ax ready status`
+  // this the record would keep saying `replying` forever and `ax triage status`
   // would report a live question over an answered one — the same class of lie,
   // pointing the other way, as the empty-mailbox verdict this lifecycle fixed.
   try {

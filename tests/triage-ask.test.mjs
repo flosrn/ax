@@ -1,4 +1,4 @@
-// `ax ready ask` — the child's escalation, and every refusal that keeps the
+// `ax triage ask` — the child's escalation, and every refusal that keeps the
 // questions on the wire identical to the `Q<n>:` lines on record.
 //
 // The transport shapes are the measured ones (shipped runtime, 2026-08-22):
@@ -14,7 +14,7 @@ import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { ASK_DEFAULT_TIMEOUT_MS, ASK_EXIT_MARGIN_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/ready/ask.mjs';
+import { ASK_DEFAULT_TIMEOUT_MS, ASK_EXIT_MARGIN_MS, ASK_MAX_TIMEOUT_MS, ask } from '../src/triage/ask.mjs';
 import { slugOf } from '../src/worker/transcript.mjs';
 
 const REPO = 'acme/widgets';
@@ -132,7 +132,7 @@ test('an issue with no pass at all is refused — there is no draft to ask from'
   const r = run(['--issue', '7']);
   assert.equal(r.code, 1);
   assert.match(r.out, /no pass of #7 exists here/);
-  assert.match(r.out, /ax ready dispatch --issue 7/);
+  assert.match(r.out, /ax triage dispatch --issue 7/);
   assert.deepEqual(r.orcaCalls, [], 'nothing was sent');
 });
 
@@ -215,7 +215,7 @@ test('a timeout is PENDING, exit 4, and the repair resumes the SAME question', (
   assert.equal(r.code, 4);
   assert.match(r.out, /PENDING, not dead/);
   assert.match(r.out, /do not report, do not end your turn/);
-  assert.match(r.out, /ax ready ask --resume msg_q9 --timeout-ms 5000/, 'copied verbatim by a parked child, so it must use the global dispatcher');
+  assert.match(r.out, /ax triage ask --resume msg_q9 --timeout-ms 5000/, 'copied verbatim by a parked child, so it must use the global dispatcher');
 });
 
 test('a cut connection is CANNOT ESTABLISH, and the question is not declared dead', () => {
@@ -228,7 +228,7 @@ test('a cut connection is CANNOT ESTABLISH, and the question is not declared dea
   assert.equal(r.code, 3);
   assert.match(r.out, /connection lost/);
   assert.match(r.out, /may still be pending/);
-  assert.match(r.out, /ax ready ask --resume msg_q9/);
+  assert.match(r.out, /ax triage ask --resume msg_q9/);
 });
 
 test('dispatch_inactive over a repaired stall is PROVEN from the record, and hands the child its real channel', () => {
@@ -267,7 +267,7 @@ test('dispatch_inactive with no repaired-stall proof stays a named disjunction, 
 
   assert.equal(r.code, 1);
   assert.match(r.out, /either this session was never a dispatched child, or its Dispatch is no longer active/);
-  assert.match(r.out, /ax ready status/);
+  assert.match(r.out, /ax triage status/);
   assert.doesNotMatch(r.out, /composer stall/, 'no stall diagnosis without the record that proves it');
 });
 
@@ -480,7 +480,7 @@ test('the PARENT session sharing the checkout does not make the capability ambig
       JSON.stringify({ type: 'session', version: 3, cwd: root }),
       JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: '/role readiness' }] } }),
       ...parentTail,
-      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'ax ready dispatch --issue 7 → triage-acme-widgets-7' }] } }),
+      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'ax triage dispatch --issue 7 → triage-acme-widgets-7' }] } }),
     ].join('\n')}\n`,
   );
 
@@ -744,7 +744,7 @@ test('--help carries the exit codes, because a child routes on them alone', () =
 // Measured 2026-08-27 on ofmchat #87. `ask` minted a real question, printed its
 // id ONLY on the exit-4 branch, and persisted nothing. So `status`, reading the
 // pane mailbox alone, answered "this pane has no pending question — it never
-// asked through `ax ready ask`" about a question that was provably pending
+// asked through `ax triage ask`" about a question that was provably pending
 // under `--resume`. Two shipped surfaces of one tool, opposite instructions,
 // and the child followed the wrong one and settled its pass.
 //

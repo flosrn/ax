@@ -7,7 +7,7 @@
 // implementation. So the implementation is an exported function, and the bin
 // entry is the thing that decides whose implementation runs.
 
-import { COMMANDS, renderUsage } from './commands.mjs';
+import { COMMANDS, renderUsage, retiredCommand } from './commands.mjs';
 import { board } from './board.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 import { worker } from './worker/index.mjs';
@@ -17,7 +17,7 @@ import { init } from './init.mjs';
 import { fatal } from './log.mjs';
 import { supabase } from './supabase-guard.mjs';
 import { worktree } from './worktree/index.mjs';
-import { ready } from './ready/index.mjs';
+import { triage } from './triage/index.mjs';
 import { pr } from './pr/index.mjs';
 import { pin } from './pin.mjs';
 
@@ -46,7 +46,7 @@ const runners = argv => ({
   // Verbs of one noun get the remaining argv, unparsed — same as worktree.
   worker: () => worker(argv.slice(1)),
   // Same, and its verbs each carry their own repeated --issue positionals.
-  ready: () => ready(argv.slice(1)),
+  triage: () => triage(argv.slice(1)),
   // Same again: `gate --pr <n>` carries its own flags, and none is whole-command.
   pr: () => pr(argv.slice(1)),
   // One positional version; --dry-run is whole-command but rides argv for symmetry.
@@ -92,6 +92,24 @@ export function runCli(argv = []) {
   }
   // A gated command on a machine without Orca is EXACTLY an unknown command:
   // it does not exist here, and the help printed below does not list it.
-  process.stderr.write(`ax: unknown command "${command}"\n\n${renderUsage(version)}`);
+  //
+  // A RETIRED NOUN IS UNKNOWN TOO — the exit code and the help are the same —
+  // but it is unknown for a reason the caller can act on, so it earns one line
+  // naming the replacement, composed from that command's own declared verb
+  // (./commands.mjs).
+  //
+  // UNCONDITIONALLY, and the first cut of this had it wrong: it named the
+  // replacement only where `visibleCommands` listed it, so on a machine that
+  // resolves no Orca — every CI runner, and any machine whose PATH or runtime
+  // is momentarily off — `ax ready` fell back to a bare "unknown command" and
+  // the rename went unmentioned. Retirement is REGISTRY DATA, not machine
+  // state; gating a naming fact on a probe makes one command explain itself
+  // differently on Tuesday and Wednesday. That the replacement is itself gated
+  // here is the help's own separate statement, made the same way for `worker`
+  // and `board`.
+  const retired = retiredCommand(command, argv[1] ?? '');
+  process.stderr.write(
+    `ax: unknown command "${command}"${retired ? ` — it is \`ax ${retired.to}\` now: ${retired.why}\n\n  ${retired.fix}\n` : ''}\n\n${renderUsage(version)}`,
+  );
   return 2;
 }

@@ -57,11 +57,11 @@ outside becomes work an agent can execute — is:
 ```text
 /role orchestrator
         │
-        ├── ax ready dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
+        ├── ax triage dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
         │                                  │
         │                           questions return here
         │                                  ▼
-        └── review and correct ──► ax ready publish
+        └── review and correct ──► ax triage publish
 ```
 
 The implementation lane, in the same session, is:
