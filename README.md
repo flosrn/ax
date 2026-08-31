@@ -31,14 +31,13 @@ write shared local data.
 `ax init` installs a small project-scoped OMP extension. A session started in the repo receives the
 version of ax pinned by that repo — roles, playbooks and runtime hooks included.
 
-The bundle provides five session roles:
+The bundle provides four session roles:
 
 | Role | Owns |
 |---|---|
-| `readiness` | the triage on-ramp — dispatch of an inbound issue's pass, review of the child's draft, and publication after correction |
-| `triage-worker` | one inbound issue's analysis and one draft; no tracker or repository mutation |
-| `orchestrator` | dependency order, worker fan-out, decisions, validated merge and release |
+| `orchestrator` | the one operator session: both dispatch lanes, decisions, publication, validated merge and release |
 | `worker` | one ticket, one worktree, one branch and one pull request through decided CI |
+| `triage-worker` | one inbound issue's analysis and one draft; no tracker or repository mutation |
 | `maintainer` | the ax checkout itself: frictions reported by live sessions, measured and repaired at the source |
 
 A dispatched child also receives the exact ticket brief, its git identity, a worktree-local
@@ -52,10 +51,11 @@ The implementation and triage playbooks are part of ax. They do not depend on a 
 
 ax is the control layer over OMP sessions and Orca's panes, worktrees, runs and transport.
 
-A readiness flow — one issue that arrived from outside becomes work an agent can execute — is:
+One operator session carries both dispatch lanes. The triage lane — one issue that arrived from
+outside becomes work an agent can execute — is:
 
 ```text
-/role readiness
+/role orchestrator
         │
         ├── ax ready dispatch ──► triage-worker ──► .scratch/triage/<draft>.md
         │                                  │
@@ -64,7 +64,7 @@ A readiness flow — one issue that arrived from outside becomes work an agent c
         └── review and correct ──► ax ready publish
 ```
 
-An implementation flow is:
+The implementation lane, in the same session, is:
 
 ```text
 /role orchestrator
@@ -77,7 +77,7 @@ An implementation flow is:
         └── ax worker release
 ```
 
-The safety properties live in executable commands rather than coordinator prose:
+The safety properties live in executable commands rather than operator prose:
 
 - every dispatch and release is written to a record **before** the mutation;
 - recovery replays the recorded call instead of composing a second identity;

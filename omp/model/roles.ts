@@ -12,11 +12,11 @@
  *      root, and a worktree checkout matches neither. So a trial dispatch before
  *      merge proved nothing (2026-08-07).
  *   2. Every one of these roles ALSO appeared in task-agent discovery, where it is
- *      not merely useless but wrong: `readiness` and `orchestrator` are operator
- *      session roles that dispatch top-level Orca children, and offering them as
- *      in-process `task` subagents invites a spawn that cannot do the job. Keeping
- *      them out needed `task.disabledAgents`, which suppresses a symptom the
- *      mechanism itself created.
+ *      not merely useless but wrong: `orchestrator` is an operator session role
+ *      that dispatches top-level Orca children, and offering it as an in-process
+ *      `task` subagent invites a spawn that cannot do the job. Keeping them out
+ *      needed `task.disabledAgents`, which suppresses a symptom the mechanism
+ *      itself created.
  *   3. A shipped package cannot write to `~/.omp` at all, so discovery-backed
  *      roles are unshippable by construction.
  *

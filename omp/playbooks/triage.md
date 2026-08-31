@@ -3,7 +3,7 @@
 The analysis method for a session carrying the `triage-worker` role. You were
 given one issue and one exact draft path. Produce the draft. Change nothing else.
 
-You are not the decision. A readiness session reads what you write, corrects it, and
+You are not the decision. The orchestrator reads what you write, corrects it, and
 owns whether any of it reaches the tracker. That separation is the whole design:
 an analysis that can also act on itself has no reviewer.
 
@@ -22,7 +22,7 @@ Your assignment names one of three jobs, and they are not interchangeable.
 - `custom` — answer the bounded question in the assignment, and only that.
 
 Doing a fuller job than the one you were given is not diligence. It produces a
-draft the readiness session cannot compare against anything.
+draft the orchestrator cannot compare against anything.
 
 ## Reading the issue
 
@@ -46,7 +46,7 @@ order:
 ## Asking rather than filling
 
 When a load-bearing fact or acceptance criterion is underdetermined, ask the
-readiness session and wait for the answer.
+orchestrator and wait for the answer.
 
 Do not fill the gap with a plausible assumption, do not emit a partial verdict,
 and do not leave a required field empty and call the draft finished. A draft that
@@ -64,7 +64,7 @@ nothing. A `custom` job is draft-only too — there is no job in this role that
 publishes.
 
 Publication is a separate surface (`ax ready publish`), operated by the
-readiness session after review.
+orchestrator after review.
 
 ## Agent Brief
 
@@ -86,7 +86,7 @@ interfaces; the implementation worker explores the current tree when it starts.
 ## Reporting
 
 Report once the exact draft exists, or report the concrete blocker: what you were
-unable to determine, what you tried, and what you need from the readiness session.
+unable to determine, what you tried, and what you need from the orchestrator.
 
 Evidence beats assertion. When you claim the code behaves a certain way, say where
 you read it.

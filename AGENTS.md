@@ -62,7 +62,7 @@ them.
 | `src/blocks.mjs`, `src/dotenv.mjs`, `src/hash.mjs`, `src/proc.mjs`, `src/supabase-guard.mjs` | managed block edits, env files, deterministic naming, pgid lookup, the shared-database guard |
 | `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
 | `omp/model/index.ts`, `omp/model/activation.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
-| `omp/roles/`, `omp/playbooks/` | readiness, orchestrator, worker, triage-worker and maintainer contracts |
+| `omp/roles/`, `omp/playbooks/` | orchestrator, worker, triage-worker and maintainer contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
