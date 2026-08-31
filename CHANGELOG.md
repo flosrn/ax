@@ -8,6 +8,14 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.15.3](https://github.com/flosrn/ax/compare/v0.15.2...v0.15.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* **peer:** a parent running several panes resolves through the dispatch record ([478e443](https://github.com/flosrn/ax/commit/478e443a8c0583d31d04577087d56436a50d5a07))
+* **ready:** the ask body names its own reply route ([5ef6808](https://github.com/flosrn/ax/commit/5ef6808859e10fd556486ed043d0212b65109e23))
+
 ## [0.15.2](https://github.com/flosrn/ax/compare/v0.15.1...v0.15.2) (2026-08-30)
 
 
