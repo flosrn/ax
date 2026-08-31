@@ -63,7 +63,7 @@ You apply no label. You post no comment. You change no issue state and you close
 nothing. A `custom` job is draft-only too — there is no job in this role that
 publishes.
 
-Publication is a separate surface (`ax ready publish`), operated by the
+Publication is a separate surface (`ax triage publish`), operated by the
 orchestrator after review.
 
 ## Agent Brief

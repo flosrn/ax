@@ -2,7 +2,7 @@
 title: A lookup keyed on the wrong field returns empty, and an empty lookup renders as "the thing does not exist"
 date: 2026-08-28
 category: bugs
-module: src/ready
+module: src/triage
 problem_type: bug
 component: ask-channel
 severity: high

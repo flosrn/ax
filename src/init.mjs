@@ -183,24 +183,31 @@ const report = (label, state) => (state === 'unchanged' ? note(`${label} — unc
  * `additionalProperties: false` refuses it. But "unknown key" does not say where
  * the key WENT, and both `ax init` and `ax doctor` meet that refusal while a
  * consuming repo pins the release — so a repair only one of them names is a
- * repair half the operators never see. Two renames have been made this way now,
- * which is what turned one predicate into this list: the third must not arrive
- * with advice only one verb prints.
+ * repair half the operators never see. Three renames have been made this way
+ * now, which is what turned one predicate into this list: the fourth must not
+ * arrive with advice only one verb prints.
+ *
+ * A ROW IS RETIRED WHEN ITS KEY BECOMES LIVE AGAIN. `triage` had a row here
+ * (0.15 renamed the block to `ready`); `triage` is the declared key again, so
+ * that row is GONE rather than kept for history. Left in place it would tell an
+ * operator whose config is CORRECT to break it, and the schema would then refuse
+ * the key the advice named — the only failure mode worse than an unexplained
+ * "unknown key".
  *
  * ROOT LEVEL ONLY, matched as the validator's own whole line rather than as a
  * substring. Two looser readings were both wrong. A substring of the WORD sends
  * a config whose real defect merely QUOTES a value like `needs-triage` — a
  * mistyped `dispatch.databaseLabels`, say — to rename a key it does not have.
- * And a substring of `unknown key "triage"` matches ANY nesting level, because
+ * And a substring of `unknown key "ready"` matches ANY nesting level, because
  * ./schema.mjs prints the location (`${where}: unknown key "${key}"`): a nested
- * `dispatch.triage` reports `dispatch: unknown key "triage"` and would earn
+ * `dispatch.ready` reports `dispatch: unknown key "ready"` and would earn
  * advice to rename a root key the config never carried, sending the operator to
  * edit a line that is already correct while the real nested defect stays.
  */
 const RETIRED_CONFIG_KEYS = [
   {
-    key: 'triage',
-    fix: `rename the "triage" key to "ready" in ${CONFIG_FILE} — the noun is \`ax ready\` now, because triage is one pass under it and not the whole of it (the jobs are --job triage|brief|custom)`,
+    key: 'ready',
+    fix: `rename the "ready" key to "triage" in ${CONFIG_FILE} — the noun follows the activity again (\`ax triage\`), and every key inside the block (labels, provenance) keeps its own name`,
   },
   {
     key: 'launch',

@@ -100,8 +100,8 @@ export const COMMANDS = [
     ],
   },
   {
-    name: 'ready',
-    summary: 'make an issue ready for an agent — triage what arrived, brief what a pass decided',
+    name: 'triage',
+    summary: 'the on-ramp: turn an issue that ARRIVED into work an agent can execute',
     // Gated on the same predicate as `worker`: the dispatch needs an Orca CLI.
     // `publish` needs only `gh`, but it publishes what a dispatched session
     // wrote, so a machine that cannot dispatch has nothing to publish either.
@@ -119,7 +119,7 @@ export const COMMANDS = [
     name: 'pr',
     summary: 'decide whether a pull request may merge, and merge it',
     // The one verb here reads `gh` and `git` only, so unlike `worker` and
-    // `ready` this noun carries no `gated` key: it answers wherever ax is
+    // `triage` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
     subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
   },
@@ -169,7 +169,7 @@ export const subcommandNames = name =>
  *
  * A renamed verb is not an unknown one. An operator re-running a line out of
  * their shell history, or an agent that learned the old name from a doc written
- * before the rename, is owed the replacement — the same debt `ax ready --job
+ * before the rename, is owed the replacement — the same debt `ax triage --job
  * refine` pays by name. The mapping lives beside the `subcommands` it was
  * renamed out of, so one noun's dispatcher and the help can never disagree
  * about which names exist, and `tests/commands.test.mjs` refuses a name that is
@@ -184,6 +184,40 @@ export function retiredSubcommand(name, verb) {
   if (retirement === undefined) return null;
   const declared = (command.subcommands ?? []).find(([usage]) => usage.split(' ')[0] === retirement.to);
   return { to: retirement.to, why: retirement.why, fix: `ax ${name} ${declared ? declared[0] : retirement.to}` };
+}
+
+/**
+ * Where a retired NOUN went — the same debt one level up.
+ *
+ * `retiredSubcommand` covers a verb renamed inside its noun. A whole noun can
+ * be renamed too, and then nothing in the registry answers at all: the name is
+ * simply absent, so the dispatcher falls through to "unknown command" and every
+ * line in every shell history, every doc written before the rename and every
+ * agent that learned the old name gets a help page instead of the one word it
+ * needed. `ready` served the on-ramp from 0.15 to 0.16 (`docs/adr/0001`: the
+ * noun follows the activity, and its verbs serve only the on-ramp), so that is
+ * exactly the population this table exists for.
+ *
+ * IT IS A TABLE, NOT A SECOND MECHANISM. The verbs survived the rename
+ * one-for-one, so the repair is COMPOSED from the replacement's own declared
+ * usage and reads back as the line the operator meant to type — a retyped copy
+ * of `status [--issue N …]` would be a second thing to keep true. A verb the
+ * replacement does not declare composes down to the bare noun, which names its
+ * own verbs rather than inventing one.
+ */
+export const RETIRED_COMMANDS = {
+  ready: {
+    to: 'triage',
+    why: 'the noun follows the activity — these verbs serve only the on-ramp, and the spec flow never calls them',
+  },
+};
+
+export function retiredCommand(name, verb = '') {
+  const retirement = RETIRED_COMMANDS[name];
+  if (retirement === undefined) return null;
+  const replacement = COMMANDS.find(entry => entry.name === retirement.to);
+  const declared = (replacement?.subcommands ?? []).find(([usage]) => usage.split(' ')[0] === verb);
+  return { to: retirement.to, why: retirement.why, fix: `ax ${retirement.to}${declared ? ` ${declared[0]}` : ''}` };
 }
 
 /**

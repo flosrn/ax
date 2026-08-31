@@ -21,17 +21,25 @@ import { passesIn, readDraft, requestFor } from './draft.mjs';
  * on the one guard whose whole job is to fail closed. Zero is legal, and means
  * "no new session on this machine right now".
  *
- * `ORCA_TRIAGE_SESSION_CAP` is not read as a fallback. A silent fallback would
+ * `ORCA_READY_SESSION_CAP` is not read as a fallback. A silent fallback would
  * drop a still-exported cap to the default of 3; refusing and naming
- * `ORCA_READY_SESSION_CAP` is the migration, the same way `ax doctor` refuses
- * the legacy `triage` config key rather than reading it. Empty is absence.
+ * `ORCA_TRIAGE_SESSION_CAP` is the migration, the same way `ax doctor` refuses
+ * the legacy `ready` config key rather than reading it. Empty is absence.
+ *
+ * BOTH NAMES HAVE NOW BEEN THE LIVE ONE, and that is why the refusal is keyed
+ * on the retired spelling rather than on "the one that is not mine": the knob
+ * followed the noun to `ready` in 0.15 and back to `triage` in 0.16
+ * (`docs/adr/0001`). A shell that exported the 0.15 name keeps exporting it, so
+ * it is refused BY NAME — a fallback chain reading whichever is set would make
+ * the two spellings interchangeable, which is precisely how a rename stops
+ * being one.
  */
 export function capOf(env) {
-  const retired = env.ORCA_TRIAGE_SESSION_CAP;
+  const retired = env.ORCA_READY_SESSION_CAP;
   if (retired !== undefined && retired !== '') {
-    return { ok: false, from: 'ORCA_TRIAGE_SESSION_CAP', to: 'ORCA_READY_SESSION_CAP' };
+    return { ok: false, from: 'ORCA_READY_SESSION_CAP', to: 'ORCA_TRIAGE_SESSION_CAP' };
   }
-  const raw = env.ORCA_READY_SESSION_CAP;
+  const raw = env.ORCA_TRIAGE_SESSION_CAP;
   if (raw === undefined || raw === '') return { ok: true, cap: 3 };
   const cap = Number(raw);
   if (!Number.isInteger(cap) || cap < 0) return { ok: false, raw: String(raw) };
@@ -80,7 +88,7 @@ export function passPlan({ store, root, index, inventory, issues, job, slug, fre
     if (latest === 0) {
       return refuse(
         `#${issue} has no recorded pass, so there is nothing to redo`,
-        `ax ready dispatch --issue ${issue} --job ${job}   # a first pass is an ordinary dispatch`,
+        `ax triage dispatch --issue ${issue} --job ${job}   # a first pass is an ordinary dispatch`,
       );
     }
 

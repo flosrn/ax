@@ -7,7 +7,7 @@
 // implementation. So the implementation is an exported function, and the bin
 // entry is the thing that decides whose implementation runs.
 
-import { COMMANDS, renderUsage } from './commands.mjs';
+import { COMMANDS, renderUsage, retiredCommand, visibleCommands } from './commands.mjs';
 import { board } from './board.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 import { worker } from './worker/index.mjs';
@@ -17,7 +17,7 @@ import { init } from './init.mjs';
 import { fatal } from './log.mjs';
 import { supabase } from './supabase-guard.mjs';
 import { worktree } from './worktree/index.mjs';
-import { ready } from './ready/index.mjs';
+import { triage } from './triage/index.mjs';
 import { pr } from './pr/index.mjs';
 import { pin } from './pin.mjs';
 
@@ -46,7 +46,7 @@ const runners = argv => ({
   // Verbs of one noun get the remaining argv, unparsed — same as worktree.
   worker: () => worker(argv.slice(1)),
   // Same, and its verbs each carry their own repeated --issue positionals.
-  ready: () => ready(argv.slice(1)),
+  triage: () => triage(argv.slice(1)),
   // Same again: `gate --pr <n>` carries its own flags, and none is whole-command.
   pr: () => pr(argv.slice(1)),
   // One positional version; --dry-run is whole-command but rides argv for symmetry.
@@ -92,6 +92,17 @@ export function runCli(argv = []) {
   }
   // A gated command on a machine without Orca is EXACTLY an unknown command:
   // it does not exist here, and the help printed below does not list it.
-  process.stderr.write(`ax: unknown command "${command}"\n\n${renderUsage(version)}`);
+  //
+  // A RETIRED NOUN IS UNKNOWN TOO — the exit code and the help are the same —
+  // but it is unknown for a reason the caller can act on, so it earns one line
+  // naming the replacement, composed from that command's own declared verb
+  // (../commands.mjs). Only when the replacement is answerable HERE: naming
+  // `ax triage status` on a machine whose help does not list `triage` trades
+  // one dead end for two.
+  const retired = retiredCommand(command, argv[1] ?? '');
+  const replaces = retired !== null && visibleCommands({ orca: orcaAvailable() }).some(entry => entry.name === retired.to);
+  process.stderr.write(
+    `ax: unknown command "${command}"${replaces ? ` — it is \`ax ${retired.to}\` now: ${retired.why}\n\n  ${retired.fix}\n` : ''}\n\n${renderUsage(version)}`,
+  );
   return 2;
 }

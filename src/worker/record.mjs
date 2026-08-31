@@ -405,10 +405,10 @@ export function report(path) {
 /**
  * The write-ahead intent for one question, and then its outcome.
  *
- * WHY THIS IS ON THE RECORD (ofmchat #87, 2026-08-27). `ax ready ask` minted a
+ * WHY THIS IS ON THE RECORD (ofmchat #87, 2026-08-27). `ax triage ask` minted a
  * real question, printed its id only on the timeout branch, and persisted
- * nothing. `ax ready status`, reading the pane mailbox alone, then answered
- * "this pane has no pending question — it never asked through `ax ready ask`"
+ * nothing. `ax triage status`, reading the pane mailbox alone, then answered
+ * "this pane has no pending question — it never asked through `ax triage ask`"
  * about a question `--resume` proved was pending. The child believed status,
  * reported, and settled a pass it had been told not to settle. Whatever mints a
  * live identity has to leave it where every other surface already looks.
@@ -421,7 +421,7 @@ export function report(path) {
  *
  * States: `asking` → `pending` (outlived the wait, id known) | `answered` |
  * `refused`; then `replying` → `answered` once a coordinator rules it, written
- * by ../ready/answer.mjs so a successful reply cannot leave a durable `pending`
+ * by ../triage/answer.mjs so a successful reply cannot leave a durable `pending`
  * lying to the next reader.
  */
 export function askBegin(path, { request, sha, argv, now = () => new Date().toISOString() }) {
@@ -443,7 +443,7 @@ export function askBegin(path, { request, sha, argv, now = () => new Date().toIS
 /**
  * Every record in `store` whose ask lifecycle carries this `messageId`.
  *
- * `ax ready ask --resume <id>` is the PRESCRIBED recovery after a timeout, and
+ * `ax triage ask --resume <id>` is the PRESCRIBED recovery after a timeout, and
  * it carries no issue, job or pass — so the pass it belongs to can only be
  * recovered from the id itself. Without this the ordinary post-timeout path
  * settled nothing and the record stayed `pending` forever (PR #19): status kept

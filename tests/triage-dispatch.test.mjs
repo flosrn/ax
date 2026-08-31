@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { dispatch, roleWaitOf } from '../src/ready/dispatch.mjs';
+import { dispatch, roleWaitOf } from '../src/triage/dispatch.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
 
 const REPO = 'acme/widgets';
@@ -40,7 +40,7 @@ function repo({ labels = 'docs/agents/triage-labels.md', provenance } = {}) {
       project: { name: 'widgets' },
       apps: { web: 'apps/web' },
       vendor: { repo: 'owner/kit' },
-      ready: provenance === undefined ? { labels } : { labels, provenance },
+      triage: provenance === undefined ? { labels } : { labels, provenance },
     }),
   );
   if (labels) {
@@ -262,7 +262,7 @@ test('an undeclared label contract refuses a triage job, and says what it would 
   const root = repo({ labels: '' });
   const r = run(['--issue', '7'], { root });
   assert.equal(r.code, 1);
-  assert.match(r.out, /declares ready\.labels nowhere/);
+  assert.match(r.out, /declares triage\.labels nowhere/);
   assert.match(r.out, /three empty groups/);
   assert.ok(r.calls.every(line => !line.includes('worker-start')), 'no child is dispatched under-specified');
 });
@@ -272,7 +272,7 @@ test('a label contract that is a directory is unreadable, not present', () => {
   const root = repo();
   mkdirSync(join(root, 'docs', 'agents', 'dir.md'), { recursive: true });
   const config = JSON.parse(readFileSync(join(root, 'ax.config.json'), 'utf8'));
-  config.ready.labels = 'docs/agents/dir.md';
+  config.triage.labels = 'docs/agents/dir.md';
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify(config));
 
   const r = run(['--issue', '7'], { root });
@@ -311,7 +311,7 @@ test('the cap counts live CHILD panes, never every pane the runtime owns (F-048)
     home,
     store,
     orca: { panes: ['term_child_a', 'term_me', 'term_editor', 'term_stranger'] },
-    env: { ORCA_READY_SESSION_CAP: '2' },
+    env: { ORCA_TRIAGE_SESSION_CAP: '2' },
   });
   assert.equal(r.code, 0, 'three unrelated panes do not consume triage capacity');
 });
@@ -321,7 +321,7 @@ test('one over the cap is refused, and the refusal shows the arithmetic', () => 
   const store = join(home, 'store');
   record(store, 'triage-acme-widgets-1', { handle: 'term_a', dispatchId: 'd-a' });
   record(store, 'triage-acme-widgets-2', { handle: 'term_b', dispatchId: 'd-b' });
-  const r = run(['--issue', '7'], { home, store, orca: { panes: ['term_a', 'term_b'] }, env: { ORCA_READY_SESSION_CAP: '2' } });
+  const r = run(['--issue', '7'], { home, store, orca: { panes: ['term_a', 'term_b'] }, env: { ORCA_TRIAGE_SESSION_CAP: '2' } });
   assert.equal(r.code, 1);
   assert.match(r.out, /cap: 2 live child pane\(s\) \+ 1 new > 2/);
   assert.deepEqual(r.started, []);
@@ -331,21 +331,21 @@ test('exactly at the cap the run is allowed — the boundary is greater-than', (
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const store = join(home, 'store');
   record(store, 'triage-acme-widgets-1', { handle: 'term_a', dispatchId: 'd-a' });
-  const r = run(['--issue', '7', '--dry-run'], { home, store, orca: { panes: ['term_a'] }, env: { ORCA_READY_SESSION_CAP: '2' } });
+  const r = run(['--issue', '7', '--dry-run'], { home, store, orca: { panes: ['term_a'] }, env: { ORCA_TRIAGE_SESSION_CAP: '2' } });
   assert.equal(r.code, 0);
 });
 
 test('a cap that is not a number refuses, rather than silently removing the fence', () => {
   // `Number('bad')` is NaN, and `live + new > NaN` is false for every input: the
   // guard would disappear on the one path whose whole job is to fail closed.
-  const r = run(['--issue', '7'], { env: { ORCA_READY_SESSION_CAP: 'lots' } });
+  const r = run(['--issue', '7'], { env: { ORCA_TRIAGE_SESSION_CAP: 'lots' } });
   assert.equal(r.code, 1);
   assert.match(r.out, /not a whole number of sessions/);
   assert.deepEqual(r.started, []);
 });
 
 test('a cap of zero is legal, and stops every new session', () => {
-  const r = run(['--issue', '7'], { env: { ORCA_READY_SESSION_CAP: '0' } });
+  const r = run(['--issue', '7'], { env: { ORCA_TRIAGE_SESSION_CAP: '0' } });
   assert.equal(r.code, 1);
   assert.match(r.out, /0 live child pane\(s\) \+ 1 new > 0/);
 });
@@ -353,7 +353,7 @@ test('a cap of zero is legal, and stops every new session', () => {
 test('the cap counts every new issue in the batch, not the invocation', () => {
   const r = run(['--issue', '7', '--issue', '8', '--issue', '9'], {
     issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b', 9: 'OPEN|0|c' },
-    env: { ORCA_READY_SESSION_CAP: '2' },
+    env: { ORCA_TRIAGE_SESSION_CAP: '2' },
   });
   assert.equal(r.code, 1);
   assert.match(r.out, /0 live child pane\(s\) \+ 3 new > 2/);
@@ -363,7 +363,7 @@ test('an issue that already has a dispatch record is not new, so it does not con
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const store = join(home, 'store');
   record(store, 'triage-acme-widgets-7', { handle: 'term_gone', dispatchId: 'd-7' });
-  const r = run(['--issue', '7'], { home, store, orca: { panes: [] }, env: { ORCA_READY_SESSION_CAP: '0' } });
+  const r = run(['--issue', '7'], { home, store, orca: { panes: [] }, env: { ORCA_TRIAGE_SESSION_CAP: '0' } });
   assert.equal(r.code, 0, 'a replay is not a new session');
   assert.match(r.out, /replaying it rather than creating a second task/);
 });
@@ -376,27 +376,27 @@ test('a dead pane frees its capacity — an orphaned terminal is not a live chil
     home,
     store,
     orca: { panes: [{ handle: 'term_a', orphaned: true }] },
-    env: { ORCA_READY_SESSION_CAP: '1' },
+    env: { ORCA_TRIAGE_SESSION_CAP: '1' },
   });
   assert.equal(r.code, 0);
 });
 
-test('ORCA_READY_SESSION_CAP moves the cap', () => {
-  const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, env: { ORCA_READY_SESSION_CAP: '1' } });
+test('ORCA_TRIAGE_SESSION_CAP moves the cap', () => {
+  const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, env: { ORCA_TRIAGE_SESSION_CAP: '1' } });
   assert.equal(r.code, 1);
   assert.match(r.out, /> 1/);
 });
 
-test('ORCA_TRIAGE_SESSION_CAP is refused and the repair names ORCA_READY_SESSION_CAP', () => {
-  const r = run(['--issue', '7'], { env: { ORCA_TRIAGE_SESSION_CAP: '5' } });
+test('ORCA_READY_SESSION_CAP is refused and the repair names ORCA_TRIAGE_SESSION_CAP', () => {
+  const r = run(['--issue', '7'], { env: { ORCA_READY_SESSION_CAP: '5' } });
   assert.equal(r.code, 1);
-  assert.match(r.out, /ORCA_TRIAGE_SESSION_CAP is set/);
-  assert.match(r.out, /unset ORCA_TRIAGE_SESSION_CAP and export ORCA_READY_SESSION_CAP instead/);
+  assert.match(r.out, /ORCA_READY_SESSION_CAP is set/);
+  assert.match(r.out, /unset ORCA_READY_SESSION_CAP and export ORCA_TRIAGE_SESSION_CAP instead/);
   assert.deepEqual(r.started, []);
 });
 
-test('an empty ORCA_TRIAGE_SESSION_CAP does not refuse', () => {
-  const r = run(['--issue', '7', '--dry-run'], { env: { ORCA_TRIAGE_SESSION_CAP: '' } });
+test('an empty ORCA_READY_SESSION_CAP does not refuse', () => {
+  const r = run(['--issue', '7', '--dry-run'], { env: { ORCA_READY_SESSION_CAP: '' } });
   assert.equal(r.code, 0);
 });
 
@@ -656,7 +656,7 @@ test('a dry run renders the spec and creates no session', () => {
 // ── the dispatch itself ──────────────────────────────────────────────────────
 
 test('a real run creates one verified triage-worker session per issue', () => {
-  const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, env: { ORCA_READY_SESSION_CAP: '5' } });
+  const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, env: { ORCA_TRIAGE_SESSION_CAP: '5' } });
   assert.equal(r.code, 0);
   assert.equal(r.started.length, 2, 'one session per issue, never one session for two');
   assert.match(r.out, /#7 VERIFIED/);
@@ -683,7 +683,7 @@ test('the verified line names the model it proved, so a later mover is legible',
 test('a dispatch with no role receipt is cannot-establish and is never relaunched', () => {
   let reads = 0;
   const r = run(['--issue', '7'], {
-    env: { AX_READY_ROLE_WAIT: '0' },
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
     proofFn: () => (reads += 1, null),
   });
   assert.equal(r.code, 3, 'a live child whose effects are unproven is not the code that means "retry"');
@@ -714,7 +714,7 @@ test('a booted session file is waited out, not reported as an unproven marker', 
 
 test('a child still on its boot model when the window closes is named as such', () => {
   const r = run(['--issue', '7'], {
-    env: { AX_READY_ROLE_WAIT: '0' },
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
     proofFn: () => ({ model: { model: 'omniroute/or-opus', role: '' }, sessionRole: null }),
   });
   assert.equal(r.code, 3);
@@ -771,7 +771,7 @@ test('a dispatch that cannot establish is reported as such, and does not become 
 test('an unproven live child dominates a duplicate in the summary code', () => {
   const mixed = run(['--issue', '7', '--issue', '8'], {
     issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' },
-    env: { ORCA_READY_SESSION_CAP: '5', AX_READY_ROLE_WAIT: '0' },
+    env: { ORCA_TRIAGE_SESSION_CAP: '5', AX_TRIAGE_ROLE_WAIT: '0' },
     startCodes: [2, 0],
     proofFn: () => null,
   });
@@ -842,7 +842,7 @@ test('--fresh on an issue with no recorded pass says a first pass is an ordinary
   const r = run(['--issue', '7', '--fresh', '--because', 'nothing to redo']);
   assert.equal(r.code, 1);
   assert.match(r.out, /no recorded pass/);
-  assert.match(r.out, /ax ready dispatch --issue 7/);
+  assert.match(r.out, /ax triage dispatch --issue 7/);
   assert.deepEqual(r.started, []);
 });
 
@@ -975,10 +975,10 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // its replacement.
   const r = run(['--issue', '7', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /ax ready ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the global dispatcher selects the consuming repo version');
+  assert.match(r.out, /ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the global dispatcher selects the consuming repo version');
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
-  assert.match(r.out, /ax ready ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
+  assert.match(r.out, /ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
   // The routing ruling (maintainer, 2026-08-23, tightened 2026-08-27): the
   // dispatching parent RULES, reversibly. `[product]` is advisory — not a
   // handoff to the operator. The tag opens the question TEXT, because
@@ -1024,7 +1024,7 @@ test('the same instruction reaches a brief child, because a brief escalates too'
   draftAt(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nThe triage pass.\n');
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], { root });
   assert.equal(r.code, 0);
-  assert.match(r.out, /ax ready ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
+  assert.match(r.out, /ax triage ask --issue 7 --job brief --repo acme\/widgets --pass 1/);
   assert.match(r.out, /Report when the draft is FINAL/);
 });
 
@@ -1037,7 +1037,7 @@ test('the child keeps its own context: the spec says why the answer comes back t
 });
 
 // ── the retired readiness lane ───────────────────────────────────────────────
-// `refine` was a Definition-of-Ready pass over PRD sub-issues, and it was the
+// `refine` was a Definition-of-Ready pass over spec sub-issues, and it was the
 // deviation: `to-tickets` publishes `ready-for-agent` itself, so its tickets are
 // agent-grabbable by construction, and triage is the on-ramp for work that
 // arrived instead. A pass wedged between the two had nothing left to decide.
@@ -1090,11 +1090,11 @@ test('malformed parent metadata is never coerced into a fake parent number', () 
 // Triage is an ON-RAMP, not a step in the spec chain: it is the pass for work
 // that ARRIVED, and `to-tickets` publishes its own tickets as `ready-for-agent`
 // by construction. So a spec-born ticket in a label-applying lane is refused,
-// and until now only prose said so — the readiness role told the operator
+// and until now only prose said so — the retired readiness role told the operator
 // "provenance decides the job", and `readIssue` asked for the parent ONLY in the
 // retired readiness lane, so `--job triage` on a spec-born ticket could not
 // notice what it was looking at. Measured 2026-08-30 on ofmchat: ten tickets
-// carrying `needs-triage`, `source:roadmap` AND a parent PRD at once (#118 →
+// carrying `needs-triage`, `source:roadmap` AND a parent spec at once (#118 →
 // #11), and one sentence was enough to start triaging the lot — re-deciding a
 // categorization those PRDs had already fixed.
 //
@@ -1114,17 +1114,17 @@ const PROVENANCE = { spec: ['source:roadmap'], inbound: ['source:agent-found', '
 test('a spec-born ticket is refused in the triage lane because it is already agent-ready', () => {
   const r = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
-    issues: { 7: 'OPEN|0|PRD 2 — ingestion|source:roadmap;needs-triage|11' },
+    issues: { 7: 'OPEN|0|spec 2 — ingestion|source:roadmap;needs-triage|11' },
   });
   assert.equal(r.code, 1);
   assert.match(r.out, /source:roadmap/);
-  assert.match(r.out, /#11/, 'the parent PRD is named, so the refusal is checkable');
+  assert.match(r.out, /#11/, 'the parent spec is named, so the refusal is checkable');
   assert.match(r.out, /published ready-for-agent by construction/);
   assert.match(r.out, /re-decide a categorization its spec already fixed/);
   // The two repairs, and NO third lane to switch to.
   assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --add-label ready-for-agent/);
   assert.match(r.out, /defect in the ticket its spec produced/);
-  assert.doesNotMatch(r.out, /--job refine/, 'there is no readiness pass to redirect into');
+  assert.doesNotMatch(r.out, /--job refine/, 'there is no other pass to redirect into');
   assert.ok(r.calls.every(line => !line.includes('worker-start')), 'nothing was dispatched');
 });
 
@@ -1134,7 +1134,7 @@ test('a spec label with no parent is a contradiction, and no pass is authorized'
     issues: { 7: 'OPEN|0|orphan roadmap ticket|source:roadmap|null' },
   });
   assert.equal(r.code, 1);
-  assert.match(r.out, /links to no PRD|no parent/i);
+  assert.match(r.out, /links to no spec|no parent/i);
   assert.doesNotMatch(r.out, /--job refine/);
 });
 
@@ -1206,7 +1206,7 @@ test('a declared vocabulary the ticket does not carry gates nothing', () => {
 test('a spec-born ticket refuses the BRIEF lane too, because a brief may apply labels', () => {
   const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),
-    issues: { 7: 'OPEN|2|PRD 2 — ingestion|source:roadmap;needs-triage|11' },
+    issues: { 7: 'OPEN|2|spec 2 — ingestion|source:roadmap;needs-triage|11' },
   });
   assert.equal(r.code, 1);
   assert.match(r.out, /source:roadmap/);
@@ -1327,7 +1327,7 @@ test('the brief lane verifies its role pair off the one shared map', () => {
   assert.match(good.out, /triage-worker \+ triage reached the first turn/);
   assert.match(good.started[0], /\.scratch\/triage\/brief-acme-widgets-7\.spec\.txt/, 'the spec file lands beside the draft, in the one draft dir');
   const wrong = run(['--issue', '7', '--job', 'brief'], {
-    env: { AX_READY_ROLE_WAIT: '0' },
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
     issues: { 7: 'OPEN|2|a' },
     proofFn: () => ({ model: { model: 'm', role: 'default' }, sessionRole: { status: 'applied', role: 'launch-worker', skills: ['launch'] } }),
   });
@@ -1335,29 +1335,29 @@ test('the brief lane verifies its role pair off the one shared map', () => {
   assert.match(wrong.out, /expected triage-worker/);
 });
 
-test('AX_TRIAGE_ROLE_WAIT is refused and the repair names AX_READY_ROLE_WAIT', () => {
-  const r = run(['--issue', '7', '--dry-run'], { env: { AX_TRIAGE_ROLE_WAIT: '0' } });
+test('AX_READY_ROLE_WAIT is refused and the repair names AX_TRIAGE_ROLE_WAIT', () => {
+  const r = run(['--issue', '7', '--dry-run'], { env: { AX_READY_ROLE_WAIT: '0' } });
   assert.equal(r.code, 1);
-  assert.match(r.out, /AX_TRIAGE_ROLE_WAIT is set/);
-  assert.match(r.out, /unset AX_TRIAGE_ROLE_WAIT and export AX_READY_ROLE_WAIT instead/);
+  assert.match(r.out, /AX_READY_ROLE_WAIT is set/);
+  assert.match(r.out, /unset AX_READY_ROLE_WAIT and export AX_TRIAGE_ROLE_WAIT instead/);
   assert.deepEqual(r.started, []);
 });
 
-test('an empty AX_TRIAGE_ROLE_WAIT does not refuse', () => {
-  const r = run(['--issue', '7', '--dry-run'], { env: { AX_TRIAGE_ROLE_WAIT: '' } });
+test('an empty AX_READY_ROLE_WAIT does not refuse', () => {
+  const r = run(['--issue', '7', '--dry-run'], { env: { AX_READY_ROLE_WAIT: '' } });
   assert.equal(r.code, 0);
 });
 
-test('roleWaitOf honours AX_READY_ROLE_WAIT and still defaults to 30', () => {
+test('roleWaitOf honours AX_TRIAGE_ROLE_WAIT and still defaults to 30', () => {
   assert.deepEqual(roleWaitOf({}), { ok: true, wait: 30 });
-  assert.deepEqual(roleWaitOf({ AX_READY_ROLE_WAIT: '0' }), { ok: true, wait: 0 });
-  assert.deepEqual(roleWaitOf({ AX_READY_ROLE_WAIT: '12' }), { ok: true, wait: 12 });
+  assert.deepEqual(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '0' }), { ok: true, wait: 0 });
+  assert.deepEqual(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '12' }), { ok: true, wait: 12 });
 });
 
-test('roleWaitOf refuses AX_TRIAGE_ROLE_WAIT rather than reading it', () => {
-  const out = roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '0' });
+test('roleWaitOf refuses AX_READY_ROLE_WAIT rather than reading it', () => {
+  const out = roleWaitOf({ AX_READY_ROLE_WAIT: '0' });
   assert.equal(out.ok, false);
-  assert.equal(out.from, 'AX_TRIAGE_ROLE_WAIT');
-  assert.equal(out.to, 'AX_READY_ROLE_WAIT');
-  assert.equal(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '' }).ok, true);
+  assert.equal(out.from, 'AX_READY_ROLE_WAIT');
+  assert.equal(out.to, 'AX_TRIAGE_ROLE_WAIT');
+  assert.equal(roleWaitOf({ AX_READY_ROLE_WAIT: '' }).ok, true);
 });

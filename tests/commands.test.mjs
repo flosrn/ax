@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
-import { COMMANDS, commandNames, renderUsage, retiredSubcommand, subcommandNames } from '../src/commands.mjs';
+import { COMMANDS, RETIRED_COMMANDS, commandNames, renderUsage, retiredCommand, retiredSubcommand, subcommandNames } from '../src/commands.mjs';
 import { agentsBody } from '../src/init.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
@@ -97,6 +97,48 @@ test('a retired verb names a declared replacement, and is never itself declared'
 
   assert.equal(retiredSubcommand('worker', 'dispatch'), null, 'a live verb is not retired');
   assert.equal(retiredSubcommand('worktree', 'launch'), null, 'retirements are per noun');
+});
+
+// ── retired nouns ────────────────────────────────────────────────────────────
+// A whole noun can be renamed too, and then every line in every shell history
+// names a command that no longer exists. `ax triage` served the on-ramp until
+// 0.16 (`docs/adr/0001`), so the debt is the same one a retired VERB pays: the
+// replacement, by name, composed from the registry rather than retyped.
+test('a retired noun names a declared replacement, and is never itself declared', () => {
+  const retirements = Object.keys(RETIRED_COMMANDS);
+  assert.ok(retirements.length > 0, 'the table is read at the dispatch; an empty one means it stopped being read');
+
+  for (const name of retirements) {
+    const retired = retiredCommand(name);
+    assert.ok(retired, `${name} is declared retired and reads back as nothing`);
+    assert.ok(commandNames.includes(retired.to), `${name} points at "${retired.to}", which is not a declared command`);
+    assert.ok(!commandNames.includes(name), `${name} is retired AND declared — the help would advertise both names`);
+    assert.doesNotMatch(renderUsage('0.0.0', { orca: true }), new RegExp(`^  ${name}\\b`, 'm'), `the help still lists the retired ${name}`);
+    assert.ok(retired.why.length > 0, `${name} retires without saying why`);
+  }
+
+  assert.equal(retiredCommand('worker'), null, 'a live noun is not retired');
+});
+
+test('the retired noun composes its repair from the verb the operator typed', () => {
+  // The verb survived the rename one-for-one, so the repair is the line they
+  // meant to type — not a pointer at a help page they then have to read.
+  assert.equal(retiredCommand('ready', 'status').fix, 'ax triage status [--issue N …]');
+  assert.equal(retiredCommand('ready', 'publish').fix, 'ax triage publish --issue N …');
+  // An unknown verb still gets the noun: `ax triage` names its own verbs.
+  assert.equal(retiredCommand('ready', 'refine').fix, 'ax triage');
+  assert.equal(retiredCommand('ready').fix, 'ax triage');
+});
+
+test('ax ready answers unknown, and the error names ax triage', () => {
+  const result = run(['ready', 'status', '--issue', '7']);
+  assert.equal(result.status, 2, 'a retired noun runs nothing');
+  assert.match(result.out, /unknown command "ready"/);
+  assert.match(result.out, /ax triage status/, 'the repair is the command an operator can type');
+
+  const bare = run(['ready']);
+  assert.equal(bare.status, 2);
+  assert.match(bare.out, /ax triage/);
 });
 
 test('an unknown command exits 2 and prints the help', () => {

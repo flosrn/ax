@@ -40,7 +40,7 @@ export const INBOX_WINDOW = 500;
  * WHY THE ROUTE IS IN THE MESSAGE. The transport's own reply capability belongs
  * to the child's Dispatch, so it dies with it: measured 2026-08-30 on ofmchat
  * #126, the question arrived on the parent's Run flagged [NO REPLY ROUTE] and
- * `peer_reply` refused it while the child sat blocked. `ax ready status` prints
+ * `peer_reply` refused it while the child sat blocked. `ax triage status` prints
  * this same command, and finding it there is what ended that hunt — but status
  * is a PULL, reached only by already suspecting the channel. The message is the
  * push, and it is the one artifact a woken reader holds. It now names its own
@@ -55,7 +55,7 @@ export function composeAsk({ request, sha, questions, issue, job }) {
     `${request} is blocked on the question(s) below, asked from draft ${sha}. Each needs one ruling, paired by number.`,
     ...questions.map(question => `Q${question.n}: ${question.text}`),
     '',
-    `Reply with: ax ready answer --issue ${issue} --job ${job} --id <the id shown on this message> --file <rulings.md>`,
+    `Reply with: ax triage answer --issue ${issue} --job ${job} --id <the id shown on this message> --file <rulings.md>`,
     'One A<n>: line per question, same numbers. A ruling that pairs with nothing is refused rather than half-applied.',
   ].join('\n');
 }
@@ -67,7 +67,7 @@ export function composeAsk({ request, sha, questions, issue, job }) {
  * can legitimately coincide across issues ("bug or enhancement?" asks the same
  * words everywhere), so `answer` must not pair on content alone — a reply keyed
  * to the wrong ask would wake the wrong live child with rulings it never asked
- * for. A body with no header was not sent by `ax ready ask`, and nothing can
+ * for. A body with no header was not sent by `ax triage ask`, and nothing can
  * prove which draft it asked from.
  */
 export function askHeader(body) {

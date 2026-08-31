@@ -1,10 +1,10 @@
-// `ax ready status` — the verb that tells a coordinator whether a child is
+// `ax triage status` — the verb that tells a coordinator whether a child is
 // waiting on it, and on WHICH message id.
 //
 // It had no behavioral test at all, and that is exactly how it shipped blind to
 // half the questions on the machine. Measured 2026-08-28 across this machine's
 // mailbox: 12 of 24 open `type: "question"` rows carried
-// `from_handle: "dispatch:ctx_…"`, because `ax ready ask` sends from the
+// `from_handle: "dispatch:ctx_…"`, because `ax triage ask` sends from the
 // child's DISPATCH — while this verb looked those rows up by the child's
 // TERMINAL handle, which is what the dispatch record stores. Every ask ax sends
 // itself was therefore invisible to the verb documented as its authority
@@ -24,8 +24,8 @@ import { test } from 'node:test';
 
 import { gitBlobSha } from '../src/hash.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
-import { status } from '../src/ready/index.mjs';
-import { composeAsk } from '../src/ready/rulings.mjs';
+import { status } from '../src/triage/index.mjs';
+import { composeAsk } from '../src/triage/rulings.mjs';
 
 const REPO = 'acme/widgets';
 const REQUEST = 'triage-acme-widgets-7';
@@ -85,7 +85,7 @@ const record = (root, { ask = null, request = REQUEST } = {}) => {
   return store;
 };
 
-/** One pending ask, byte-for-byte as `ax ready ask` composes it. */
+/** One pending ask, byte-for-byte as `ax triage ask` composes it. */
 const question = (over = {}) => ({
   id: 'msg_bf6613d0ee33',
   from_handle: HANDLE,
@@ -170,10 +170,10 @@ test('a question keyed by the pane handle is printed with its id', () => {
   const r = run(['--issue', '7'], { root, orca: fakeOrca({ messages: [question()] }) });
   assert.equal(r.code, 0);
   assert.match(r.out, /WAITING since 2026-08-28T01:37:14Z on Q1-Q2 — message msg_bf6613d0ee33/);
-  assert.match(r.out, /ax ready answer --issue 7 --job triage --id msg_bf6613d0ee33/);
+  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_bf6613d0ee33/);
 });
 
-// The measured miss. `ax ready ask` sends from the child's Dispatch, so Orca
+// The measured miss. `ax triage ask` sends from the child's Dispatch, so Orca
 // stamps `dispatch:<ctx>` — never the terminal handle the record stores.
 test('a question keyed by the DISPATCH is found, not reported as absent', () => {
   const root = repo();
@@ -184,7 +184,7 @@ test('a question keyed by the DISPATCH is found, not reported as absent', () => 
   });
   assert.equal(r.code, 0);
   assert.match(r.out, /message msg_bf6613d0ee33/);
-  assert.match(r.out, /ax ready answer --issue 7 --job triage --id msg_bf6613d0ee33/);
+  assert.match(r.out, /ax triage answer --issue 7 --job triage --id msg_bf6613d0ee33/);
   assert.doesNotMatch(r.out, /no answerable ask is visible/);
 });
 
@@ -239,7 +239,7 @@ test('an ISSUED-but-unrecorded ask names the row that proves it landed', () => {
   assert.equal(r.code, 0);
   assert.match(r.out, /an ask was ISSUED for this pass and its outcome was never recorded/);
   assert.match(r.out, new RegExp(`the WAITING row above IS that ask \\(its ax header names ${REQUEST}\\)`));
-  assert.doesNotMatch(r.out, /ax ready status --issue 7 --job triage {3}# the mailbox row above/);
+  assert.doesNotMatch(r.out, /ax triage status --issue 7 --job triage {3}# the mailbox row above/);
 });
 
 test('an ISSUED ask with no visible row routes somewhere other than this verb', () => {
@@ -256,7 +256,7 @@ test('an ISSUED ask with no visible row routes somewhere other than this verb', 
   assert.doesNotMatch(r.out, /# the mailbox row above, if any, is the authority/);
 });
 
-// Codex P1 on #27. A child whose own `ax ready ask` failed falls back to raw
+// Codex P1 on #27. A child whose own `ax triage ask` failed falls back to raw
 // `orca orchestration ask`: the row is dispatch-keyed but carries NO ax header.
 // `answer()` refuses such an id ("carries no ax ask header"), so rendering it as
 // answerable prints a guaranteed-refused repair AND hides the fold/publish exit
@@ -274,7 +274,7 @@ test('a headerless raw ask is reported, but never as an answerable id', () => {
   assert.equal(r.code, 0);
   assert.match(r.out, /message msg_bf6613d0ee33/, 'a blocked child is still the fact that matters');
   assert.match(r.out, /UNPAIRABLE \(no ax header\)/);
-  assert.doesNotMatch(r.out, /ax ready answer .* --id msg_bf6613d0ee33/, 'answer() would refuse this id');
+  assert.doesNotMatch(r.out, /ax triage answer .* --id msg_bf6613d0ee33/, 'answer() would refuse this id');
 });
 
 test('a headerless row does not suppress the fold-and-publish exit', () => {
@@ -301,7 +301,7 @@ test("a row whose header names another pass is unpairable, not this pass's ask",
   });
   assert.equal(r.code, 0);
   assert.match(r.out, /UNPAIRABLE \(asked by triage-acme-widgets-99\)/);
-  assert.doesNotMatch(r.out, /ax ready answer .* --id msg_bf6613d0ee33/);
+  assert.doesNotMatch(r.out, /ax triage answer .* --id msg_bf6613d0ee33/);
 });
 
 test('an ISSUED ask with only a headerless row does not claim an ax header exists', () => {
@@ -316,10 +316,10 @@ test('an ISSUED ask with only a headerless row does not claim an ax header exist
   assert.match(r.out, /no ax-sent row for this pass is visible here/);
 });
 
-test('the brief row marks an unpairable question instead of naming it answerable', () => {
+test('the oneline row marks an unpairable question instead of naming it answerable', () => {
   const root = repo();
   record(root);
-  const r = run(['--issue', '7', '--brief'], {
+  const r = run(['--issue', '7', '--oneline'], {
     root,
     orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}`, body: RAW_ASK })] }),
   });
@@ -340,10 +340,10 @@ test('an unreadable mailbox is named, never rendered as no question', () => {
   assert.match(r.out, /an absent answer is not an absent question/);
 });
 
-test('the brief view carries the waiting id for a dispatch-keyed question', () => {
+test('the oneline view carries the waiting id for a dispatch-keyed question', () => {
   const root = repo();
   record(root);
-  const r = run(['--issue', '7', '--brief'], {
+  const r = run(['--issue', '7', '--oneline'], {
     root,
     orca: fakeOrca({ messages: [question({ from_handle: `dispatch:${DISPATCH}` })] }),
   });

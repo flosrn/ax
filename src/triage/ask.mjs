@@ -1,4 +1,4 @@
-// `ax ready ask` — the child's escalation, sent from its own draft and nowhere
+// `ax triage ask` — the child's escalation, sent from its own draft and nowhere
 // else.
 //
 // The questions that go on the wire ARE the draft's `Q<n>:` lines, read back off
@@ -39,8 +39,8 @@ import { composeAsk } from './rulings.mjs';
 import { REFINE_REMOVED } from './spec.mjs';
 
 const USAGE =
-  'ax ready ask --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dispatch-capability <token>] [--timeout-ms <n>] [--dry-run]\n'
-  + '       ax ready ask --resume <message_id> [--dispatch-capability <token>] [--timeout-ms <n>]\n'
+  'ax triage ask --issue N [--pass P] [--job triage|brief|custom] [--repo <owner/repo>] [--dispatch-capability <token>] [--timeout-ms <n>] [--dry-run]\n'
+  + '       ax triage ask --resume <message_id> [--dispatch-capability <token>] [--timeout-ms <n>]\n'
   + '\n'
   + 'Exit codes — a blocked child routes on these alone:\n'
   + '  0  answered — the rulings are printed; revise the draft, then report\n'
@@ -92,7 +92,7 @@ const busyRefusal = out => (out.receipt ?? {}).ok === false && (out.receipt?.err
 
 export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd(), sessionsRoot, sleep = sleepDefault } = {}) {
   const usageError = message => {
-    process.stderr.write(`ax ready ask: ${message}\n${USAGE}\n`);
+    process.stderr.write(`ax triage ask: ${message}\n${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -164,20 +164,20 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     const root = paths.root;
 
     const slug = repo === '' ? repoSlug(args => exec('gh', args, root)) : repo;
-    if (slug === '') return refuse('could not resolve the current repository', `ax ready ask --issue ${issue} --repo <owner>/<repo>`);
+    if (slug === '') return refuse('could not resolve the current repository', `ax triage ask --issue ${issue} --repo <owner>/<repo>`);
 
     const base = { job, repo: slug, issue };
 
     const passes = passesOf(store, draftDirFor(root), base);
     if (passes.length === 0) {
-      return refuse(`no pass of #${issue} exists here — nothing was dispatched and no draft was written`, `ax ready dispatch --issue ${issue} --job ${job}`);
+      return refuse(`no pass of #${issue} exists here — nothing was dispatched and no draft was written`, `ax triage dispatch --issue ${issue} --job ${job}`);
     }
     // The NEWEST pass by default: at most one child per issue is alive (the
     // dispatch gates enforce it), and it is always the newest. `--pass` stays an
     // override so a hand run can name what it means.
     const pass = passArg === '' ? passes[passes.length - 1] : Number(passArg);
     if (!passes.includes(pass)) {
-      return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax ready status --issue ${issue} --job ${job}`);
+      return refuse(`pass ${pass} of #${issue} does not exist (existing: ${passes.join(', ')})`, `ax triage status --issue ${issue} --job ${job}`);
     }
 
     const identity = { ...base, pass };
@@ -264,13 +264,13 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     } catch (error) {
       return cannot(
         `could not record this ask: ${String(error.message ?? error)} — nothing was sent, because a mutation issued from no record cannot be recovered (F-001)`,
-        'ax ready status   # what this pass recorded, and whether a child is behind it',
+        'ax triage status   # what this pass recorded, and whether a child is behind it',
       );
     }
     if (!began.ok) {
       bad(`this pass already has a question in flight (${began.state}${began.messageId ? ` on ${began.messageId}` : ', outcome never recorded'}) — a second ask would put two questions on one draft`);
-      if (began.messageId) fix(`ax ready ask --resume ${began.messageId} --timeout-ms ${timeout}   # go back to waiting on the SAME question`);
-      else fix('ax ready status   # the mailbox is the authority on whether it landed; answer THAT id rather than asking again');
+      if (began.messageId) fix(`ax triage ask --resume ${began.messageId} --timeout-ms ${timeout}   # go back to waiting on the SAME question`);
+      else fix('ax triage status   # the mailbox is the authority on whether it landed; answer THAT id rather than asking again');
       return 1;
     }
   }
@@ -301,7 +301,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
 
   // ── 4. the receipt, on the measured shapes and no others ──────────────────
   if (out.error) {
-    return cannot(`orca orchestration ask did not finish: ${String(out.error)} — the question may still be pending`, 'ax ready status   # the pending question, if it exists, is named there');
+    return cannot(`orca orchestration ask did not finish: ${String(out.error)} — the question may still be pending`, 'ax triage status   # the pending question, if it exists, is named there');
   }
   const receipt = out.receipt ?? {};
   if (receipt.unparseable !== undefined) {
@@ -339,7 +339,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
         return 1;
       }
       bad(`${detail} — either this session was never a dispatched child, or its Dispatch is no longer active`);
-      fix('ax ready status   # what this issue\'s passes recorded, and whether a child is behind them');
+      fix('ax triage status   # what this issue\'s passes recorded, and whether a child is behind them');
       return 1;
     }
     if (code === 'dispatch_capability_invalid') {
@@ -350,16 +350,16 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
       bad(`${detail} — the ask carried ${capability.token === '' ? 'NO capability' : 'a capability this runtime rejected'}`);
       if (capability.token === '') {
         note(`  could not read one: ${capability.reason}`);
-        fix('ax ready ask --issue <n> --dispatch-capability <token>   # the token is in YOUR preamble, on the `orchestration ask` line it teaches');
+        fix('ax triage ask --issue <n> --dispatch-capability <token>   # the token is in YOUR preamble, on the `orchestration ask` line it teaches');
       } else {
         note('  the token was read off this session\'s own preamble, so it is the one this child was dispatched with — a runtime that rejects it has re-minted or settled the Dispatch');
-        fix('ax ready status   # whether this pass\'s Dispatch is still active');
+        fix('ax triage status   # whether this pass\'s Dispatch is still active');
       }
       note('either way the questions stay in the draft: quote them in your report and say the supervised channel is unavailable, rather than deciding them yourself');
       return 1;
     }
     if (code === 'question_not_found') {
-      return refuse(`${detail} — a resume only reaches a question this same Dispatch asked`, 'ax ready status   # which questions are actually pending');
+      return refuse(`${detail} — a resume only reaches a question this same Dispatch asked`, 'ax triage status   # which questions are actually pending');
     }
     if (code === 'runtime_busy') {
       // The arm that did not exist. Measured 2026-08-27 on ofmchat #83: this
@@ -387,7 +387,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
   if ((receipt.timedOut === true || receipt.cancelled === true) && minted === '') {
     return cannot(
       `the wait ended (${receipt.timedOut === true ? 'timed out' : 'cancelled'}) and the receipt named NO message id — a question may be open and nothing here can resume it; this pass stays recorded as issued-outcome-unknown`,
-      'ax ready status   # the mailbox is the authority on whether a question landed, and names the id if one did',
+      'ax triage status   # the mailbox is the authority on whether a question landed, and names the id if one did',
     );
   }
   if (receipt.timedOut === true) {
@@ -397,7 +397,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     // The global command delegates to the exact package version this repo
     // pinned. A parked child copies this repair verbatim, so it must use the
     // same entry point the generated AGENTS.md teaches.
-    fix(redactSecrets(`ax ready ask --resume ${minted} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
+    fix(redactSecrets(`ax triage ask --resume ${minted} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
     return 4;
   }
   if (receipt.cancelled === true) {
@@ -407,7 +407,7 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     settle('pending', { messageId: minted });
     return cannot(
       `the wait was cut (${receipt.connectionLost === true ? 'connection lost' : 'cancelled'}) — question ${minted} may still be pending`,
-      `ax ready ask --resume ${minted}   # nothing was lost; go back to waiting`,
+      `ax triage ask --resume ${minted}   # nothing was lost; go back to waiting`,
     );
   }
   if (typeof receipt.answer === 'string') {

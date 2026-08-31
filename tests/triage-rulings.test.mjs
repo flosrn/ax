@@ -8,8 +8,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { questionProblem, questionsIn } from '../src/ready/draft.mjs';
-import { askHeader, composeAsk, composeReply, pairRulings, parseRulings, questionSpan } from '../src/ready/rulings.mjs';
+import { questionProblem, questionsIn } from '../src/triage/draft.mjs';
+import { askHeader, composeAsk, composeReply, pairRulings, parseRulings, questionSpan } from '../src/triage/rulings.mjs';
 
 const QUESTIONS = [
   { n: 1, text: 'bug or enhancement?' },
@@ -32,20 +32,20 @@ test('the composed ask parses back to the same questions — the wire and the re
 });
 
 test('the ask body names its own reply route — the delivered message is the whole answer', () => {
-  // Measured 2026-08-30, ofmchat PRD 2 #126: the question landed on the parent's
+  // Measured 2026-08-30, ofmchat spec 2 #126: the question landed on the parent's
   // Run flagged [NO REPLY ROUTE] (`peer_reply` refuses it, `peer_list` shows no
   // triage session), because the transport's reply capability is the child's
   // Dispatch and that had settled. The body carried the header and the Q lines
   // and nothing else, so the one artifact the parent HELD named no way back. It
-  // re-derived `ax ready answer` through three command turns — `ready --help`,
-  // `ready answer` usage, `ready status` — while a live child sat blocked.
+  // re-derived `ax triage answer` through three command turns — the noun's help,
+  // the `answer` usage, then `status` — while a live child sat blocked.
   //
-  // `ax ready status` already prints the exact command (src/ready/index.mjs),
+  // `ax triage status` already prints the exact command (src/triage/index.mjs),
   // which is what ended that hunt. But status is a pull: reaching it requires
   // already suspecting the channel. The message is the push, and it is what a
   // woken reader has in hand, so the route belongs in it.
   const body = composeAsk({ request: 'triage-acme-widgets-7', sha: 'abc123', questions: QUESTIONS, issue: '7', job: 'triage' });
-  assert.match(body, /ax ready answer --issue 7 --job triage --id <the id shown on this message> --file <rulings\.md>/);
+  assert.match(body, /ax triage answer --issue 7 --job triage --id <the id shown on this message> --file <rulings\.md>/);
   // The id CANNOT be rendered here: it is minted by the send that carries this
   // body. The reader always has it — a delivered message shows its own id — so
   // the route names it as the one blank to fill, never a guess.
@@ -66,7 +66,7 @@ test('the reply route is not a question, and does not disturb the header', () =>
 
 test('CRLF Q lines parse the same as LF — a Windows-saved draft is not an empty ask', () => {
   // Measured 2026-08-27 on ofmchat #81: three `Q<n>: [technical] …` openings at
-  // column 0, legal shape, `ax ready ask` refused `carries no Q<n>: line`.
+  // column 0, legal shape, `ax triage ask` refused `carries no Q<n>: line`.
   // `questionsIn` splits on `\n` and anchors `$`, so a trailing `\r` makes the
   // line miss. Same three lines on LF parse; on CRLF they vanish.
   const lf = 'Q1: [technical] which side of the fork?\nQ2: [technical] who supplies the value?\n';

@@ -101,8 +101,11 @@ export const requestIdFor = (issue, slug) =>
  * The knobs this verb renamed with itself, REFUSED rather than read past.
  *
  * A retired name that is merely ignored becomes a silent default — the rule
- * `../ready/dispatch.mjs` states at its own reader, paid for when
- * `AX_TRIAGE_ROLE_WAIT` survived a rename in someone's shell. These four decide
+ * `../triage/dispatch.mjs` states at its own reader, paid for when the triage
+ * role-wait knob survived a rename in someone's shell. That knob has now been
+ * renamed in both directions (`../triage/capacity.mjs` records why the refusal
+ * is keyed on the retired spelling rather than on "the one that is not mine"),
+ * which is exactly why these are refused and never read past. These four decide
  * how long a dispatch waits for a selector, for an install, and where the spec
  * file lands: read past, `AX_LAUNCH_SEE_WAIT=0` turns a two-second preview into
  * a two-minute one and the operator has no way to see why.

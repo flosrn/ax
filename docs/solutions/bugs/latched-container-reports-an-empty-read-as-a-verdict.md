@@ -2,7 +2,7 @@
 title: A reader that answers with a container is non-null before its fields exist, so latching the container latches an absence as a verdict
 date: 2026-08-26
 category: bugs
-module: src/worker, src/ready
+module: src/worker, src/triage
 problem_type: bug
 component: verification
 severity: high

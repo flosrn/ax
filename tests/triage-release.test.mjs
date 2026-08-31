@@ -1,4 +1,4 @@
-// `ax ready release` — the issue-keyed resolver in front of worker/release.
+// `ax triage release` — the issue-keyed resolver in front of worker/release.
 //
 // The proposition under test is the DELEGATION: this verb resolves issue →
 // newest pass → request → record → dispatch id and hands over; every pane,
@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { readyRelease } from '../src/ready/release.mjs';
+import { triageRelease } from '../src/triage/release.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -55,7 +55,7 @@ const capture = fn => {
 const run = (argv, { root = repo(), code = 0 } = {}) => {
   const released = [];
   const result = capture(() =>
-    readyRelease([...argv, '--repo', REPO], {
+    triageRelease([...argv, '--repo', REPO], {
       exec: () => ({ status: 1, stdout: '', stderr: 'gh must not be needed with --repo' }),
       env: { ORCA_DISPATCH_STORE: join(root, 'store') },
       cwd: root,

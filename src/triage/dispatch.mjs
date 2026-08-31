@@ -1,4 +1,4 @@
-// `ax ready dispatch` — one Orca session per issue, and nothing else.
+// `ax triage dispatch` — one Orca session per issue, and nothing else.
 //
 // It does not read the issue, judge it, or write a word about it. The session
 // does that, from the preloaded triage playbook plus the project's own label
@@ -14,11 +14,11 @@
 // sidebar to produce one comment. Prose did not hold. This is the shape that
 // does.
 //
-// What a ready session needs: the repo readable, `gh`, and a pane that can talk
+// What a triage session needs: the repo readable, `gh`, and a pane that can talk
 // to its orchestrator. What it does not need: a worktree, a branch, a setup run,
 // a PR. So it runs with `--worktree current` — a real session in the existing
 // checkout, with nothing left behind, and several of them share the checkout
-// without colliding because a ready child writes only its own draft.
+// without colliding because a triage child writes only its own draft.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
@@ -32,14 +32,14 @@ import { defaultStore, dispatchIndex } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
 import { start as startVerb } from '../worker/start.mjs';
-import { launchProof } from '../worker/transcript.mjs';
+import { dispatchProof } from '../worker/transcript.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
 import { capOf, liveCount, passPlan } from './capacity.mjs';
 import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
 const USAGE =
-  'ax ready dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
+  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
@@ -61,21 +61,21 @@ const declaredCarried = (names, labels) => names.filter(name => labels.some(carr
 
 /**
  * Whether a ticket's ORIGIN forbids the requested job, when the repository
- * declared the vocabulary that says so (`ready.provenance`). Returns the
+ * declared the vocabulary that says so (`triage.provenance`). Returns the
  * refusal, or null when nothing in the ticket contradicts it.
  *
  * WHY THIS EXISTS. Triage is an ON-RAMP, not a step in the spec chain: it is
  * the pass for work that ARRIVED — a human's report, another agent's
  * follow-up — and `to-tickets` publishes its own tickets as `ready-for-agent`
  * by construction. So a spec-born ticket has nothing to gain from a triage
- * pass and something to lose: its categorization was decided by its PRD, and a
+ * pass and something to lose: its categorization was decided by its spec, and a
  * triage or brief child writes label groups over it. Only prose said so — the
  * readiness role told the operator that "provenance decides the job" — and
  * `readIssue` asked for the sub-issue parent in the retired readiness lane
  * only, so the lanes that must refuse a spec-born ticket were the ones that
  * never looked. Measured 2026-08-30: ten tickets carrying the inbound triage
- * label, a spec label AND a parent PRD at once, one sentence away from a triage
- * wave that would have re-decided a categorization their PRD had already fixed.
+ * label, a spec label AND a parent spec at once, one sentence away from a triage
+ * wave that would have re-decided a categorization their spec had already fixed.
  *
  * TWO SIGNALS, AND THE REFUSAL NEEDS BOTH. The `source:`-style label is the
  * repository's declaration of intent, read from config and never inferred. The
@@ -106,12 +106,12 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
   // EVERY label-applying lane, not just triage. `brief` is in `LABEL_JOBS` for
   // the same reason triage is — its child spec permits `Labels:` directives — so
   // a spec-born ticket briefed here writes label groups over a categorization
-  // its PRD already decided.
+  // its spec already decided.
   if (LABEL_JOBS.has(job) && spec.length > 0) {
     if (parent === null) {
       return {
-        bad: `^ carries ${spec.join(', ')} but links to no PRD — the label says spec-born, the tracker says nothing, and a ${job} pass is not safe on that`,
-        fix: [`gh issue edit ${issue} --repo ${slug} --remove-label ${spec[0]} # if it truly came from outside; otherwise link it to its PRD first`],
+        bad: `^ carries ${spec.join(', ')} but links to no spec — the label says spec-born, the tracker says nothing, and a ${job} pass is not safe on that`,
+        fix: [`gh issue edit ${issue} --repo ${slug} --remove-label ${spec[0]} # if it truly came from outside; otherwise link it to its spec first`],
       };
     }
     if (typeof parent !== 'number') {
@@ -167,11 +167,11 @@ const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
  * 30s default. Empty is absence.
  */
 export function roleWaitOf(env) {
-  const retired = env.AX_TRIAGE_ROLE_WAIT;
+  const retired = env.AX_READY_ROLE_WAIT;
   if (retired !== undefined && retired !== '') {
-    return { ok: false, from: 'AX_TRIAGE_ROLE_WAIT', to: 'AX_READY_ROLE_WAIT' };
+    return { ok: false, from: 'AX_READY_ROLE_WAIT', to: 'AX_TRIAGE_ROLE_WAIT' };
   }
-  const value = Number(env.AX_READY_ROLE_WAIT ?? 30);
+  const value = Number(env.AX_TRIAGE_ROLE_WAIT ?? 30);
   return { ok: true, wait: Number.isFinite(value) && value >= 0 ? value : 30 };
 }
 
@@ -184,7 +184,7 @@ export function roleWaitOf(env) {
  *
  * EACH PROPOSITION LATCHES SEPARATELY, and that is why this is two variables
  * and not one `proof` — the rule `../worker/verify.mjs` states at length, on
- * the reader both verbs share. `launchProof` answers non-null the moment the
+ * the reader both verbs share. `dispatchProof` answers non-null the moment the
  * session FILE exists, and that file exists as soon as the child boots: it then
  * carries only the boot `model_change` Orca writes, which has no mover, and no
  * role receipt at all. Measured 2026-08-27 on goodluckagency/ofmchat#101: a
@@ -244,8 +244,8 @@ function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proo
   // written when the FIRST PROVIDER CALL fails, which can be after the receipt
   // this loop settles on, so no bounded wait here can prove the selection final
   // — a fallback at wait+1s exists for every wait. What the channel does
-  // instead is keep the evidence durable: `launchProof` reads the whole session
-  // file and the LAST mover wins, so any later read (`ax ready status`,
+  // instead is keep the evidence durable: `dispatchProof` reads the whole session
+  // file and the LAST mover wins, so any later read (`ax triage status`,
   // `ax worker transcript`) sees a fallback this line could not have seen, and
   // a `fallback` mover observed at ANY time fails below rather than passing.
   if (
@@ -283,14 +283,14 @@ export function dispatch(
     env = process.env,
     cwd = process.cwd(),
     startFn = startVerb,
-    proofFn = launchProof,
+    proofFn = dispatchProof,
     sessionsRoot,
     now = Date.now,
     sleep = defaultSleep,
   } = {},
 ) {
   const usageError = message => {
-    process.stderr.write(`ax ready dispatch: ${message}\n${USAGE}\n`);
+    process.stderr.write(`ax triage dispatch: ${message}\n${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -353,31 +353,31 @@ export function dispatch(
 
   // ── 2. the machine, before the tracker ────────────────────────────────────
   const bin = runner ? null : resolve({ env });
-  if (!runner && bin === null) return cannot('no Orca CLI on this machine — a ready session is an Orca session, so none can be created here');
+  if (!runner && bin === null) return cannot('no Orca CLI on this machine — a triage session is an Orca session, so none can be created here');
   const run = runner ?? createRunner({ bin, exec });
   const ready = runtimeReady(run);
   if (!ready.ready) return cannot(ready.reason, 'orca open # start the runtime, then re-run this dispatch');
 
   const paths = repoPaths(cwd);
-  if (!paths.root) return refuse('not inside a git repository — a ready session reads this checkout, so it needs one');
+  if (!paths.root) return refuse('not inside a git repository — a triage session reads this checkout, so it needs one');
 
   const gh = args => exec('gh', args, paths.root);
   const slug = repo || repoSlug(gh);
-  if (slug === '') return refuse('could not resolve the current repository', 'ax ready dispatch --repo <owner>/<repo>');
+  if (slug === '') return refuse('could not resolve the current repository', 'ax triage dispatch --repo <owner>/<repo>');
 
   // ── 3. the vocabulary the child is answerable to ──────────────────────────
   // Declared and unreadable is a refusal, exactly like `dispatch.contract`: a spec
   // pointing at nothing sends a child to improvise, and improvising here means
   // recommending in prose and stopping.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
-  if (!loaded.exists) return refuse(`no ax.config.json for ${paths.root}`, 'ax init # a ready session reads this project\'s contract, so the project has to have one');
+  if (!loaded.exists) return refuse(`no ax.config.json for ${paths.root}`, 'ax init # a triage session reads this project\'s contract, so the project has to have one');
   if (loaded.errors.length > 0) return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
   const config = loaded.config ?? {};
-  const labels = readLabels(config.ready?.labels ?? '', paths.root);
+  const labels = readLabels(config.triage?.labels ?? '', paths.root);
   if (LABEL_JOBS.has(job) && labels.missing) {
     return refuse(
-      `ax.config.json declares ready.labels ${labels.why} — a ${job} child would have no group vocabulary and would land an incomplete verdict (2026-08-10: four issues, three empty groups each)`,
-      labels.path ? `create or repair ${labels.path} # the file that names this project's label groups` : "declare ready.labels in ax.config.json # the file that names this project's label groups",
+      `ax.config.json declares triage.labels ${labels.why} — a ${job} child would have no group vocabulary and would land an incomplete verdict (2026-08-10: four issues, three empty groups each)`,
+      labels.path ? `create or repair ${labels.path} # the file that names this project's label groups` : "declare triage.labels in ax.config.json # the file that names this project's label groups",
     );
   }
 
@@ -428,13 +428,13 @@ export function dispatch(
   if (!cap.ok) {
     if (cap.from) {
       return refuse(
-        `${cap.from} is set — the umbrella is ax ready now, so the cap is ${cap.to}`,
+        `${cap.from} is set — the umbrella is ax triage now, so the cap is ${cap.to}`,
         `unset ${cap.from} and export ${cap.to} instead`,
       );
     }
     return refuse(
-      `ORCA_READY_SESSION_CAP is ${JSON.stringify(cap.raw)}, which is not a whole number of sessions — refusing rather than dispatching with no cap at all`,
-      'unset ORCA_READY_SESSION_CAP # the default is 3, and 0 means "no new session here"',
+      `ORCA_TRIAGE_SESSION_CAP is ${JSON.stringify(cap.raw)}, which is not a whole number of sessions — refusing rather than dispatching with no cap at all`,
+      'unset ORCA_TRIAGE_SESSION_CAP # the default is 3, and 0 means "no new session here"',
     );
   }
   const wait = roleWaitOf(env);
@@ -442,14 +442,14 @@ export function dispatch(
     // Reachable from the same place the wait is consumed: before any session
     // starts. Putting it only in verifyPassRole would start children first.
     return refuse(
-      `${wait.from} is set — the umbrella is ax ready now, so the wait is ${wait.to}`,
+      `${wait.from} is set — the umbrella is ax triage now, so the wait is ${wait.to}`,
       `unset ${wait.from} and export ${wait.to} instead`,
     );
   }
   if (live + newSessions.length > cap.cap) {
     return refuse(
       `cap: ${live} live child pane(s) + ${newSessions.length} new > ${cap.cap}`,
-      'let a session finish, dispatch fewer issues, or raise ORCA_READY_SESSION_CAP',
+      'let a session finish, dispatch fewer issues, or raise ORCA_TRIAGE_SESSION_CAP',
     );
   }
 
@@ -486,7 +486,7 @@ export function dispatch(
       labels: meta.labels,
       parent: meta.parent,
       parentCause: meta.parentCause,
-      declared: config.ready?.provenance,
+      declared: config.triage?.provenance,
     });
     if (routing !== null) {
       bad(routing.bad);
@@ -511,11 +511,11 @@ export function dispatch(
       bad('^ F-030: this issue already carries comment(s), and the label cannot tell "never triaged" from "triaged, awaiting a human"');
       if (triaged) {
         note('  a full pass sent here re-measures finished work and returns a competing verdict');
-        fix(`ax ready dispatch --issue ${issue} --job brief # the pass is recorded here, so distil it — not --force`);
+        fix(`ax triage dispatch --issue ${issue} --job brief # the pass is recorded here, so distil it — not --force`);
       } else {
         note('  no triage pass is recorded here and no draft exists, so those comment(s) are not a pass this tool wrote');
         note('  read them first: a coordination note is not a verdict, and a human verdict is one this tool cannot see');
-        fix(`ax ready dispatch --issue ${issue} --force # once you have read them and they are not a triage pass`);
+        fix(`ax triage dispatch --issue ${issue} --force # once you have read them and they are not a triage pass`);
       }
       blocked = true;
       continue;
@@ -533,13 +533,13 @@ export function dispatch(
       const draft = readDraft(paths.root, { ...triageBase, pass: from });
       if (triagePasses.length > 0 && !existsSync(draft.path)) {
         bad(`^ triage pass ${from} is dispatched but has written no draft yet — there is nothing to distil, and falling back to an older pass would brief a verdict being replaced`);
-        fix(`ax ready status --issue ${issue} --job triage   # wait for pass ${from} to write, then run the brief`);
+        fix(`ax triage status --issue ${issue} --job triage   # wait for pass ${from} to write, then run the brief`);
         blocked = true;
         continue;
       }
       if (meta.comments === 0 && !draft.ok && !existsSync(draft.path)) {
         bad('^ no comment and no triage draft — there is no pass to distil into a brief');
-        fix(`ax ready dispatch --issue ${issue} # run the triage pass first`);
+        fix(`ax triage dispatch --issue ${issue} # run the triage pass first`);
         blocked = true;
         continue;
       }
@@ -662,7 +662,7 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  * routed by provenance, the labels and the sub-issue parent.
  *
  * EVERY LABEL-APPLYING LANE, and that used to be the retired readiness lane
- * only. The asymmetry is what let a triage pass start on a PRD sub-issue: the
+ * only. The asymmetry is what let a triage pass start on a spec sub-issue: the
  * lanes that must refuse a spec-born ticket were the ones that never asked what
  * they were looking at. The routed set IS `LABEL_JOBS` rather than a second
  * list kept beside it — the second list had already drifted, so `--job brief`

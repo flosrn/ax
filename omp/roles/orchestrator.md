@@ -15,7 +15,7 @@ you:
   dispatch one draft-only child per inbound issue, correct what it recommends,
   and hold every tracker mutation.
 
-One session for both, because both dispatch the same children: `ax ready
+One session for both, because both dispatch the same children: `ax triage
 dispatch` and `ax worker dispatch` take their Run from YOUR pane, so every
 question and every completion arrives on your mailbox and nobody else's. Two
 operator sessions in one worktree is also how children stop being able to report
@@ -29,7 +29,7 @@ body: they are agent-grabbable by construction. The triage lane serves the other
 way in, for work that was reported, agent-found, or born as a follow-up.
 
 You triage only work you did not create. A ticket the spec flow produced gets no
-pass, and `ax ready dispatch` refuses one — it is already agent-ready, and
+pass, and `ax triage dispatch` refuses one — it is already agent-ready, and
 re-deciding it would overwrite a verdict a human was in the room for. If such a
 ticket genuinely is not ready, that is a defect in the ticket, to repair on the
 ticket through the spec flow, not a triage pass to invent.
@@ -108,9 +108,9 @@ ax worker release
 The tracker is the only source of truth for what exists and for the state it is
 in. Enumerate a pass from it. Inbound work is the set that is NOT a spec's
 sub-issues — `gh issue list` with the provenance labels this repository declares
-in `ready.provenance`, and `gh issue view <spec> --json subIssues` when you need
+in `triage.provenance`, and `gh issue view <spec> --json subIssues` when you need
 to know which tickets a spec already owns and you therefore must not touch.
-`ax ready dispatch` refuses a ticket whose provenance contradicts this lane
+`ax triage dispatch` refuses a ticket whose provenance contradicts this lane
 rather than leaving the rule to prose.
 
 `.scratch/` is output, never input. The only file you read there is the exact
@@ -122,7 +122,7 @@ issue range out of a previous pass's replay artifact — the range was the previ
 spec's, and the real set was one `gh issue list` away.
 
 A range is only ever shorthand for a set `gh` just enumerated. The `N-M` form of
-`ax ready status` expands ARITHMETICALLY — every integer from N to M, capped at
+`ax triage status` expands ARITHMETICALLY — every integer from N to M, capped at
 100 — then reads local records for each. It asks the tracker nothing, so a wrong
 range is never refused: it reports "no record" for numbers that were never
 issues, and says nothing at all about the ones you missed.
@@ -134,23 +134,23 @@ issues, and says nothing at all about the ones you missed.
    - a completed triage pass awaiting an Agent Brief: `brief`;
    - a bounded one-off question: `custom`.
 
-   Provenance is checked, not trusted: with `ready.provenance` declared, a
+   Provenance is checked, not trusted: with `triage.provenance` declared, a
    spec-born ticket is refused here. A spec label with no parent spec, or a
    parent nothing could read, refuses the lane too — one signal stops a pass, and
    it never authorizes one somewhere else.
 2. Dispatch one session per issue:
 
    ```bash
-   ax ready dispatch --issue <N> [--job triage|brief|custom]
+   ax triage dispatch --issue <N> [--job triage|brief|custom]
    ```
 
 3. End your turn. A completion or question arrives on its own; never poll and
-   never run a second consuming wait loop. Between reports, `ax ready status`
+   never run a second consuming wait loop. Between reports, `ax triage status`
    is the pull that survives every transport — but it reads ONE lane, so name
    the job you dispatched on every status read:
 
    ```bash
-   ax ready status --issue <N>-<M> --brief --job triage
+   ax triage status --issue <N>-<M> --oneline --job triage
    ```
 
 4. Read the exact `.scratch/…` draft the child names. Correct that file in
@@ -164,7 +164,7 @@ issues, and says nothing at all about the ones you missed.
 6. Publish only the reviewed draft:
 
    ```bash
-   ax ready publish --issue <N> --job triage
+   ax triage publish --issue <N> --job triage
    ```
 
    A triage publication applies the draft's labels and its full body. A `brief`
@@ -179,7 +179,7 @@ issues, and says nothing at all about the ones you missed.
    moved after the draft was written means the verdict may have been authored
    against an older view — read the issue before landing it.
 
-Use `ax ready status --issue <N> --job triage` for the recorded dispatch of a
+Use `ax triage status --issue <N> --job triage` for the recorded dispatch of a
 pass and its recovery. Name the job even when it is the default: an unqualified
 read reports the triage lane whatever you dispatched, and would offer a recovery
 for a pass you never started.
@@ -188,7 +188,7 @@ worktree for a comment.
 
 ## When a child asks
 
-A child's `Q<n>:` line is addressed to YOU, not to the operator. `ax ready ask`
+A child's `Q<n>:` line is addressed to YOU, not to the operator. `ax triage ask`
 is blocked on your ruling. Ending your turn waits for the child; it does not
 wait for the operator.
 
@@ -208,7 +208,7 @@ why it meets that bar — not a bundle of mixed tags.
 Answer through the verb, naming the lane, so the child is released:
 
 ```bash
-ax ready answer --issue <N> --job triage --id <message_id> --file <rulings.md>
+ax triage answer --issue <N> --job triage --id <message_id> --file <rulings.md>
 ```
 
 Name the lane on `brief` and `custom` passes too. Surfacing to the operator
@@ -239,7 +239,7 @@ instead of ruling is how a pass sits PENDING for hours.
 A refusal you cannot act on, a message that names no repair, a verb that reports
 something its own state contradicts: that is a friction in the INSTRUMENT, and it
 has its own channel. Do not absorb it as a workaround — a workaround is invisible
-to everyone including your next wave, and one consumer carried "`ax ready ask`
+to everyone including your next wave, and one consumer carried "`ax triage ask`
 is unavailable" for six minor versions that way.
 
 Send it to the `maintainer` session if one is up (`peer_list` names it),

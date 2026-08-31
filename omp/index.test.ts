@@ -289,7 +289,7 @@ test('/role readiness refuses out loud, because triage is a lane and no longer a
   expect(await turn(installed, BASE)).toBeUndefined();
 });
 
-// `ax ready status` defaults its lane to `triage` (src/ready/index.mjs), so an
+// `ax triage status` defaults its lane to `triage` (src/triage/index.mjs), so an
 // operator who copies an unqualified example polls whatever the default is rather
 // than the lane it dispatched, and is offered a recovery for a dispatch that
 // never happened. The bundled role must therefore carry the job on every
@@ -301,12 +301,12 @@ test('the bundled orchestrator role names the lane on every status read', async 
   await installed.commands.get('role')?.handler('orchestrator', installed.ctx);
   const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
 
-  expect(role).toContain('ax ready status --issue <N>-<M> --brief --job triage');
-  expect(role).toContain('ax ready status --issue <N> --job triage');
+  expect(role).toContain('ax triage status --issue <N>-<M> --oneline --job triage');
+  expect(role).toContain('ax triage status --issue <N> --job triage');
   // A copyable example is one that names an issue; every one of those must say
   // which lane it inspects. A bare mention of the verb carries no lane to get
   // wrong.
-  const unqualified = [...role.matchAll(/ax ready status +--issue[^`\n]*/g)]
+  const unqualified = [...role.matchAll(/ax triage status +--issue[^`\n]*/g)]
     .map(match => match[0])
     .filter(example => !example.includes('--job'));
   expect(unqualified).toEqual([]);
@@ -325,7 +325,7 @@ test('the bundled orchestrator role carries the whole triage on-ramp, not just i
   // Enumeration comes from the tracker, and `.scratch/` is output. Measured on a
   // pass that took its issue range out of a previous pass's replay artifact.
   expect(role).toMatch(/gh issue list/);
-  expect(role).toMatch(/ready\.provenance/);
+  expect(role).toMatch(/triage\.provenance/);
   expect(role).toMatch(/\.scratch\//);
   expect(role).toMatch(/OUTPUT|output, never input/);
   // It is told to run triage waves itself, so it owes the whole lane.
@@ -337,14 +337,14 @@ test('the bundled orchestrator role carries the whole triage on-ramp, not just i
   expect(role).toMatch(/no sixth state/);
   // The three verbs a lane needs beyond `answer`: dispatch it, publish the
   // reviewed draft, and redo a pass out loud when the issue moved.
-  expect(role).toContain('ax ready dispatch --issue <N>');
-  expect(role).toContain('ax ready publish --issue <N> --job triage');
+  expect(role).toContain('ax triage dispatch --issue <N>');
+  expect(role).toContain('ax triage publish --issue <N> --job triage');
   expect(role).toMatch(/--republish/);
   expect(role).toMatch(/--fresh --because/);
   // The draft is read and corrected before publication — the separation that
   // gives the analysis a reviewer at all.
   expect(role).toMatch(/correct/i);
-  const unqualifiedPublish = [...role.matchAll(/ax ready publish +--issue[^`\n]*/g)]
+  const unqualifiedPublish = [...role.matchAll(/ax triage publish +--issue[^`\n]*/g)]
     .map(match => match[0])
     .filter(example => !example.includes('--job'));
   expect(unqualifiedPublish).toEqual([]);
@@ -354,7 +354,7 @@ test('the bundled orchestrator role carries the whole triage on-ramp, not just i
 // retired role used to say "answer when the operator has decided it; otherwise
 // surface the question", so every ask landed on the human and the child sat
 // PENDING. The tags are advisory; the orchestrator rules; only a high-stakes
-// product bar goes up. And the role must name `ax ready answer`, because the
+// product bar goes up. And the role must name `ax triage answer`, because the
 // child is taught `ask` and a parent that cannot name the reply improvises by
 // asking the operator.
 test('the bundled orchestrator role rules child questions itself', async () => {
@@ -364,7 +364,7 @@ test('the bundled orchestrator role rules child questions itself', async () => {
 
   expect(role).not.toMatch(/Answer a child's question when the operator has decided it/);
   expect(role).not.toMatch(/otherwise surface the question/);
-  expect(role).toContain('ax ready answer --issue <N>');
+  expect(role).toContain('ax triage answer --issue <N>');
   expect(role).toMatch(/routing tags are advisory/i);
   expect(role).toMatch(/\[technical\]/);
   expect(role).toMatch(/\[product\]/);
@@ -377,7 +377,7 @@ test('the bundled orchestrator role rules child questions itself', async () => {
   expect(role).toMatch(/personal data/);
   expect(role).toMatch(/intention the\s+operator has already expressed/);
   expect(role).toMatch(/hint, not a\s+handoff/);
-  const unqualifiedAnswer = [...role.matchAll(/ax ready answer +--issue[^`\n]*/g)]
+  const unqualifiedAnswer = [...role.matchAll(/ax triage answer +--issue[^`\n]*/g)]
     .map(match => match[0])
     .filter(example => !example.includes('--job'));
   expect(unqualifiedAnswer).toEqual([]);

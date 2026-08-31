@@ -31,5 +31,5 @@ orchestrator and wait. Do not fill the gap, emit a partial verdict, or leave a
 required label group empty and call the draft finished.
 
 Report only after the exact draft exists, or report the concrete blocker. The
-orchestrator reads and corrects the draft; `ax ready publish` is the separate
+orchestrator reads and corrects the draft; `ax triage publish` is the separate
 surface that may mutate the tracker.
