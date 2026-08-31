@@ -154,8 +154,9 @@ version pins must match the code.
 ## Vocabulary
 
 `F-0xx` is a measured finding filed in `gapilabs/omp`; the module header states the rule it paid for.
-`ADR NNNN` lives under `~/.omp/docs/adr/`. Neither is required reading before a patch unless the
-header's explanation is insufficient.
+ax's own architecture decisions live under `docs/adr/` in this repo, cited by path
+(`docs/adr/0001-…`); a bare `ADR NNNN` refers to the harness-wide set under `~/.omp/docs/adr/`.
+Neither is required reading before a patch unless the header's explanation is insufficient.
 
 Documented solutions live under `docs/solutions/` — problems this repo has already solved
 (bugs, practices), one file each, with YAML frontmatter (`module`, `tags`, `problem_type`);

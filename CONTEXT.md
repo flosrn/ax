@@ -4,6 +4,83 @@ Vocabulary for ax, the repository-scoped agent experience: it prepares worktrees
 sessions that enter them, and orchestrates work between those sessions. Terms are added as
 waves of work fix them; an absent term is still free.
 
+## The work
+
+**Spec**:
+The handoff artifact that decides a multi-session piece of work; made of tickets, published
+through the spec flow (`to-spec → to-tickets`).
+_Avoid_: PRD.
+
+**Issue**:
+The tracker's container, as GitHub names it. Being an issue says nothing about whether an
+agent may grab it.
+
+**Ticket**:
+An issue carrying a complete assignment. Spec-born tickets are tickets by construction; an
+inbound issue becomes one only through triage.
+_Avoid_: task, item.
+
+**Assignment**:
+What to build, independently observable acceptance criteria, and blocking edges — complete
+or absent, never partial. It lives in the ticket body (spec-born) or in the Brief (inbound).
+
+**Inbound**:
+Work that arrived instead of being planned: reported, agent-found, or born as a follow-up.
+The only work triage may touch.
+
+**Triage**:
+The on-ramp analysis deciding what one inbound issue is, landing exactly one of five states
+(`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). It never
+runs over spec-born work — that categorization was decided by its spec.
+_Avoid_: readiness, refinement, Definition-of-Ready.
+
+**Brief**:
+The Agent Brief — the comment that lands an inbound issue's assignment, the on-ramp's
+counterpart of a spec-born ticket's body. The word has this one meaning.
+_Avoid_: brief for wave notes, condensed output, or any file passed on dispatch.
+
+**Draft**:
+The one file a triage worker writes: a recommendation the orchestrator reads, corrects and
+publishes. A draft never mutates the tracker.
+
+**Ruling**:
+The orchestrator's recorded answer to one `Q<n>:` question a blocked child sent.
+_Avoid_: escalation (the exception, not the mechanism).
+
+## Orchestration
+
+**Orchestrator**:
+The one operator session: it dispatches children on both lanes — implementation and
+triage — rules their questions, and owns the validated merge.
+_Avoid_: coordinator, readiness (retired role).
+
+**Dispatch**:
+The recorded act of creating one child session for one assignment, written before it is
+issued and recovered by replaying that record, never by a second creation.
+_Avoid_: launch, start (plumbing), spawn.
+
+**Worker**:
+A child owning one implementation slice — one ticket, one worktree, one branch, one pull
+request. It never merges.
+
+**Triage worker**:
+A child analyzing one inbound issue. It writes exactly one draft and mutates nothing.
+
+**Wave**:
+One fan-out of children of one kind, implementation or triage. It closes on proof-by-kind:
+every PR merged or abandoned, or every verdict published.
+
+**Pass**:
+One child's analysis of one issue. A triage wave is made of passes.
+_Avoid_: pass for the whole fan-out (that is a wave).
+
+**Gate**:
+A fail-closed authorization: every ground executes, and nothing stops at the first refusal.
+What a refusal blocks belongs to the verb.
+
+**Release**:
+Freeing a finished child's pane, proven by its landed artifact, never by its word.
+
 ## Liveness
 
 **Pane**:
