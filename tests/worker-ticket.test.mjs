@@ -1,4 +1,4 @@
-// The ticket half of `ax worker launch`, one proposition per incident (F-027).
+// The ticket half of `ax worker dispatch`, one proposition per incident (F-027).
 //
 // This is the stage that runs BEFORE anything is created, and each rule below is
 // there because a child once inherited its absence: a doubled branch name
@@ -147,7 +147,7 @@ test('a GitHub issue answers the same shape, from the top level of its own JSON'
 test("an unreadable ticket is a refusal that carries the tracker's own words", () => {
   // 2026-08-01: three worktrees ran without ever reading their brief. A brief whose
   // ticket line is empty sends a child to improvise, so a read that does not answer
-  // must stop the launch here, before anything exists.
+  // must stop the dispatch here, before anything exists.
   const dead = readTicket('GAP-353', {
     kind: 'linear',
     run: runnerOf({ status: 1, stdout: '{"ok": false, "error": "linear_not_connected"}', stderr: 'auth failed\nretry' }),

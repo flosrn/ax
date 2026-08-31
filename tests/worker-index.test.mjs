@@ -17,3 +17,31 @@ test('an unknown or missing verb is a usage error, never a default action', () =
   assert.equal(worker(['bogus']), 2);
   assert.equal(worker([]), 2);
 });
+
+// ── the verb that was renamed ────────────────────────────────────────────────
+// `launch` was this pipeline's name until 0.16. An operator re-running a line out
+// of their shell history, and an agent that learned the name from a doc written
+// before the rename, both land here — and a bare list of nine verbs makes them
+// guess which one took over a gesture they already know how to describe. The
+// replacement is declared in the registry beside the verbs, so the help and this
+// answer cannot disagree.
+test('the retired launch verb is refused with the replacement named', () => {
+  const written = [];
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  process.stdout.write = chunk => (written.push(String(chunk)), true);
+  process.stderr.write = chunk => (written.push(String(chunk)), true);
+  let code;
+  try {
+    code = worker(['launch', '--issue', '42']);
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  const out = written.join('');
+
+  assert.equal(code, 2, 'a retired verb runs nothing');
+  assert.match(out, /ax worker launch is now ax worker dispatch/);
+  assert.match(out, /ax worker dispatch --issue <ref>/, 'the repair is the command that replaced it');
+  assert.doesNotMatch(out, /unknown verb/, 'a renamed verb is not an unknown one');
+});

@@ -1,4 +1,4 @@
-// `ax worker launch` — the pipeline that turns a ticket into a verified session.
+// `ax worker dispatch` — the pipeline that turns a ticket into a verified session.
 //
 // Every proposition here is one the Bash suite proved (F-027): this file is the
 // port of `orca-launch.test.ts`'s pipeline half — arguments, placement, the
@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { launch, requestIdFor } from '../src/worker/launch.mjs';
+import { dispatch, requestIdFor, retiredKnobs } from '../src/worker/dispatch.mjs';
 import { verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
 
@@ -44,13 +44,13 @@ function capture(fn) {
  * A real repository with a real `.worktrees` base, because placement compares
  * paths the filesystem answers for and the reuse branch reads a directory.
  */
-function repo({ launch = {} } = {}) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-launch-')));
+function repo({ dispatch: block = {} } = {}) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-dispatch-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   mkdirSync(join(dir, '.worktrees'), { recursive: true });
   writeFileSync(
     join(dir, 'ax.config.json'),
-    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry', ...launch } }),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', ...block } }),
   );
   return dir;
 }
@@ -162,7 +162,7 @@ const run = (argv, options = {}) => {
   mkdirSync(sessions, { recursive: true });
 
   // The Run this session's receiver consumes, from the peer registry — never
-  // invented, and the launch refuses without it.
+  // invented, and the dispatch refuses without it.
   if (options.registry !== false) {
     mkdirSync(join(home, '.omp', 'run', 'orca-peers'), { recursive: true });
     writeFileSync(join(home, '.omp', 'run', 'orca-peers', 'term_me.json'), JSON.stringify({ run: 'run_owner' }));
@@ -170,10 +170,10 @@ const run = (argv, options = {}) => {
 
   const started = [];
   const result = capture(() =>
-    launch([...argv], {
+    dispatch([...argv], {
       runner: options.runnerOverride ?? runner,
       exec: options.exec ?? (() => ({ status: 0, stdout: '', stderr: '' })),
-      env: { HOME: home, ORCA_TERMINAL_HANDLE: 'term_me', ORCA_DISPATCH_STORE: store, AX_LAUNCH_SPEC_DIR: join(home, 'specs'), AX_LAUNCH_TICK: '1', AX_LAUNCH_SEE_WAIT: '0', ...options.env },
+      env: { HOME: home, ORCA_TERMINAL_HANDLE: 'term_me', ORCA_DISPATCH_STORE: store, AX_DISPATCH_SPEC_DIR: join(home, 'specs'), AX_DISPATCH_TICK: '1', AX_DISPATCH_SEE_WAIT: '0', ...options.env },
       cwd: root,
       sleep: options.sleep ?? (() => {}),
       now: (() => {
@@ -217,10 +217,10 @@ test('a Linear ref with no --slug is refused: nothing here invents a branch name
   assert.deepEqual(r.started, []);
 });
 
-test('an unreadable --brief is refused before the ticket is even read', () => {
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--brief', '/nonexistent/brief.md']);
+test('an unreadable --notes file is refused before the ticket is even read', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--notes', '/nonexistent/wave-memory.md']);
   assert.equal(r.code, 1);
-  assert.match(r.out, /--brief file unreadable/);
+  assert.match(r.out, /--notes file unreadable/);
   assert.deepEqual(r.calls, [], 'nothing is read when the arguments already refuse');
 });
 
@@ -229,8 +229,8 @@ test('a project that declares no entry point must be given --task', () => {
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' } }));
   const bare = run(['--issue', ISSUE, '--slug', SLUG], { root });
   assert.equal(bare.code, 1);
-  assert.match(bare.out, /declares no launch entry point/);
-  assert.match(bare.out, /launch\.entry/);
+  assert.match(bare.out, /declares no dispatch entry point/);
+  assert.match(bare.out, /dispatch\.entry/);
 
   provisioned(root, `${ISSUE}-${SLUG}`);
   const told = run(['--issue', ISSUE, '--slug', SLUG, '--task', '/plan GAP-353', '--wait', '0'], { root });
@@ -257,7 +257,7 @@ test('no Run to own the Task is a named inability, never a guess', () => {
   assert.ok(runFlagAt === -1 || initAt < runFlagAt, 'the flag may only appear after the repair that makes a report arrive');
 });
 
-test('--run is refused: a launch cannot name a Run its own receiver does not consume', () => {
+test('--run is refused: a dispatch cannot name a Run its own receiver does not consume', () => {
   // peers.mjs states the rule this closes: the Run is never a flag, because a
   // guessed one sends the child's completion report to a session that will
   // never read it. The refusal above used to PRESCRIBE `--run`, and a Run minted
@@ -267,7 +267,7 @@ test('--run is refused: a launch cannot name a Run its own receiver does not con
   provisioned(root, `${ISSUE}-${SLUG}`);
   const empty = run(['--issue', ISSUE, '--slug', SLUG, '--run', 'run_minted', '--wait', '0'], { registry: false, root });
   assert.equal(empty.code, 2, 'refused on the argument alone, before anything is read');
-  assert.match(empty.out, /--run is not a launch input/);
+  assert.match(empty.out, /--run is not a dispatch input/);
   assert.deepEqual(empty.started, [], 'a hand-minted Run buys no dispatch');
 
   const registered = run(['--issue', ISSUE, '--slug', SLUG, '--run', 'run_other', '--wait', '0'], { root });
@@ -316,7 +316,7 @@ test('a --needs-ref origin does not carry creates nothing, and a pattern is refu
 test('a worktree that already exists for the ticket is reused, and still proven habitable', () => {
   // `worktree create` carries no --retry-request, so a create that strands
   // cannot be replayed: finding the first tree IS the countermeasure. But the
-  // launch that made it may be exactly the one that died before provisioning it,
+  // dispatch that made it may be exactly the one that died before provisioning it,
   // so a reused tree is provisioned again — `ax worktree setup` is idempotent by
   // contract, and re-running it on a live worktree is its normal case.
   const root = repo();
@@ -338,7 +338,7 @@ test("a ticket labelled as touching the database is provisioned with its own sta
   // whose whole subject was the database was told "this worktree does not touch
   // the database", and its child then reset a stack the primary checkout and
   // every other sharing worktree depend on.
-  const root = repo({ launch: { databaseLabels: ['domain:database'] } });
+  const root = repo({ dispatch: { databaseLabels: ['domain:database'] } });
   provisioned(root, `${ISSUE}-${SLUG}`);
   const setups = [];
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
@@ -368,7 +368,7 @@ test('a ticket with no declared database label leaves the plan to decide alone',
   assert.deepEqual(setups[0].argv, []);
 
   // Declared, and this ticket carries none of them: same answer.
-  const declared = repo({ launch: { databaseLabels: ['domain:database'] } });
+  const declared = repo({ dispatch: { databaseLabels: ['domain:database'] } });
   provisioned(declared, `${ISSUE}-${SLUG}`);
   const other = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
     root: declared,
@@ -396,7 +396,7 @@ test('a tree for another ticket is never reused for this one', () => {
 test('the declared worktree tool places it, and its last stdout line is the path', () => {
   const root = repo();
   const tree = join(root, '.worktrees', 'placed-by-tool');
-  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry', worktreeTool: 'place' } }));
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', worktreeTool: 'place' } }));
   const calls = [];
   const exec = (bin, args) => {
     calls.push([bin, ...args].join(' '));
@@ -414,7 +414,7 @@ test('the declared worktree tool places it, and its last stdout line is the path
 
 test('a placement tool that fails refuses, and dispatches nothing', () => {
   const root = repo();
-  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry', worktreeTool: 'place' } }));
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', worktreeTool: 'place' } }));
   const r = run(['--issue', ISSUE, '--slug', SLUG], { root, exec: bin => (bin === 'place' ? { status: 1, stdout: '', stderr: 'no branch\n' } : { status: 0, stdout: '', stderr: '' }) });
 
   assert.equal(r.code, 1);
@@ -434,7 +434,7 @@ test('a create receipt that names no path cannot be dispatched into', () => {
 test('a tree that exists but is not provisioned cannot be established, and names itself', () => {
   // Once a worktree EXISTS, exit 1 would be a lie: it promises nothing was
   // created. So the failure is cannot-establish, and it names the tree — which
-  // is also the tree a second launch will reuse rather than duplicate.
+  // is also the tree a second dispatch will reuse rather than duplicate.
   const root = repo();
   const tree = join(root, '.worktrees', 'made');
   mkdirSync(tree, { recursive: true });
@@ -469,7 +469,7 @@ test('--probe skips provisioning, and says it is never for real work', () => {
   assert.deepEqual(setups, [], '--probe provisions nothing');
 });
 
-test('a placement Orca cannot SEE stops the launch before any dispatch', () => {
+test('a placement Orca cannot SEE stops the pipeline before any dispatch', () => {
   // Measured 2026-08-21: `worker-start` answered selector_not_found five seconds
   // after placement and the same recorded call replayed clean three minutes
   // later, with no argument changed. It is indistinguishable from a bad
@@ -506,7 +506,7 @@ test('a set that lands while the field still reads empty is announced, not claim
 });
 
 test('a parent that reads back as someone else is NOT SET, however non-empty it is', () => {
-  // A tree reused from an earlier launch already carries a parent. Reading "some
+  // A tree reused from an earlier dispatch already carries a parent. Reading "some
   // parent" back would report success over a `set` Orca discarded — which is
   // exactly the shape F-002 is about.
   const root = repo();
@@ -514,7 +514,7 @@ test('a parent that reads back as someone else is NOT SET, however non-empty it 
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root, orca: { parent: 'repo-id::/somebody/else' } });
 
   assert.equal(r.code, 0, 'a degraded report channel never costs the slice');
-  assert.match(r.out, /not the \/parent\/wt this launch set/);
+  assert.match(r.out, /not the \/parent\/wt this dispatch set/);
 });
 
 test('a session Orca witnesses nowhere gets no guessed parent', () => {
@@ -531,7 +531,7 @@ test('a cross-host child says lineage is impossible rather than attempting it', 
   const root = repo();
   writeFileSync(
     join(root, 'ax.config.json'),
-    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, launch: { entry: '/entry', hosts: { far: { ssh: 'far-host' } } } }),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', hosts: { far: { ssh: 'far-host' } } } }),
   );
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], { root });
   assert.match(r.out, /lineage\s+impossible \(cross-host/);
@@ -591,7 +591,7 @@ test('a worktree whose registered OMP bundle is not installed dispatches NOTHING
   // cost a wave.
   const root = repo();
   equipped(provisioned(root, `${ISSUE}-${SLUG}`), { installed: false });
-  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, env: { AX_LAUNCH_EQUIP_WAIT: '0' } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root, env: { AX_DISPATCH_EQUIP_WAIT: '0' } });
 
   assert.equal(r.code, 3);
   assert.match(r.out, /node_modules\/@flosrn\/ax/);
@@ -623,7 +623,7 @@ test('a settings file that exists and cannot be parsed dispatches NOTHING', () =
 
   assert.equal(r.code, 3);
   assert.match(r.out, /could not be read/);
-  assert.deepEqual(r.started, [], 'a declared loader that loads nothing is not a launch');
+  assert.deepEqual(r.started, [], 'a declared loader that loads nothing is not a dispatch');
 });
 
 test('an unequipped child is named as the CAUSE, not left as two unexplained UNPROVENs', () => {
@@ -695,7 +695,7 @@ test('a wiring fault discovered at verification names `ax init`, not an install'
 
   assert.equal(r.code, 3);
   assert.match(r.out, /CAUSE: this worktree cannot load its AX bundle \(\.omp\/settings\.json registers 1 extension/);
-  assert.match(r.out, /ax init {3}# then settle this dispatch and launch again/);
+  assert.match(r.out, /ax init {3}# then settle this dispatch and re-dispatch/);
   assert.doesNotMatch(r.out, /package manager's install/, 'a wiring fault is not repaired by an install');
 });
 
@@ -735,9 +735,9 @@ test('an installed bundle is proven before the dispatch, and says so once', () =
 // ── dispatch and verification ────────────────────────────────────────────────
 
 test('a STRANDED dispatch is replayed here, and the child is still verified', () => {
-  // Both remote launches on record hit it, which makes the recovery the ordinary
+  // Both remote dispatches on record hit it, which makes the recovery the ordinary
   // path rather than an anomaly. Typing it by hand is what used to drop the
-  // verification: the launch exited and the operator resumed from a fresh shell,
+  // verification: the verb exited and the operator resumed from a fresh shell,
   // so the child was never proven.
   const root = repo();
   provisioned(root, `${ISSUE}-${SLUG}`);
@@ -777,7 +777,7 @@ test('an applied model without a session-role receipt is exit 3', () => {
 
   assert.equal(r.code, 3);
   assert.match(r.out, /UNPROVEN session role/);
-  assert.match(r.out, /Do NOT relaunch/);
+  assert.match(r.out, /Do NOT re-dispatch/);
 });
 
 test('a pre-turn role refusal is exit 3 with its exact cause', () => {
@@ -795,7 +795,7 @@ test('a pre-turn role refusal is exit 3 with its exact cause', () => {
   assert.match(r.out, /missing implementation/);
 });
 
-test('a child on its BOOT model is exit 3, and says not to relaunch', () => {
+test('a child on its BOOT model is exit 3, and says not to dispatch again', () => {
   const root = repo();
   provisioned(root, `${ISSUE}-${SLUG}`);
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
@@ -804,7 +804,7 @@ test('a child on its BOOT model is exit 3, and says not to relaunch', () => {
 
   assert.equal(r.code, 3);
   assert.match(r.out, /runs its BOOT model/);
-  assert.match(r.out, /Do NOT relaunch/);
+  assert.match(r.out, /Do NOT re-dispatch/);
   assert.equal(r.started.length, 1, 'a failed verdict never dispatches again');
 });
 
@@ -820,7 +820,7 @@ test('the quota chain moving a session is not the marker applying', () => {
 });
 
 test('a proof read before the child finished booting is re-read, never latched', () => {
-  // Measured 2026-08-26 (ofmchat, two launches of a live wave): the receipt said
+  // Measured 2026-08-26 (ofmchat, two dispatches of a live wave): the receipt said
   // `model …|` and `session unreadable` with the cursor moving 0 -> 604, and 20s
   // later the pane was on the marker's model with the role applied. The loop had
   // latched the FIRST read that found a session file — a file that exists as soon
@@ -889,7 +889,7 @@ test('the request id is the key every later gesture uses', () => {
 test('the request id is NOT injective, which is why a name is refused rather than normalised', () => {
   // The reason the canonical rule exists, stated as the measurement it comes
   // from: three different names, one request id. Keyed on that, the second
-  // launch would find the first one's tree and dispatch a child into it.
+  // dispatch would find the first one's tree and place a child into it.
   const collide = ['My Feature', 'my/feature', 'my@@feature'].map(name => requestIdFor(name, 'x'));
   assert.deepEqual(collide, ['my-feature-x', 'my-feature-x', 'my-feature-x']);
 });
@@ -917,7 +917,7 @@ test('a name that is not already the request id is refused, and the refusal show
     const r = run(['--name', given, '--task', 'do the thing']);
     assert.equal(r.code, 2, `${given} must be refused`);
     assert.match(r.out, /must be lowercase alphanumerics/);
-    assert.match(r.out, new RegExp(`ax worker launch --name ${suggestion}$`, 'm'), `${given} should suggest ${suggestion}`);
+    assert.match(r.out, new RegExp(`ax worker dispatch --name ${suggestion}$`, 'm'), `${given} should suggest ${suggestion}`);
     assert.deepEqual(r.started, []);
   }
 });
@@ -940,8 +940,8 @@ test('--slug is refused with --name: the name is the whole identity', () => {
 });
 
 test('a name with no instruction is refused: there is no ticket to read one from', () => {
-  // With a ticket, `launch.entry` composes `<entry> GAP-353` and the body carries
-  // the rest. A name has neither, so a launch that let this through would dispatch
+  // With a ticket, `dispatch.entry` composes `<entry> GAP-353` and the body carries
+  // the rest. A name has neither, so a dispatch that let this through would place
   // a child holding `/entry loading-states` and nothing else — the 2026-08-01
   // failure with better spelling.
   const r = run(['--name', 'loading-states']);
@@ -951,14 +951,14 @@ test('a name with no instruction is refused: there is no ticket to read one from
   assert.deepEqual(r.started, []);
 });
 
-test('a named launch reads no ticket, and its brief never points at one', () => {
+test('a named dispatch reads no ticket, and its brief never points at one', () => {
   const root = repo();
   const r = run(['--name', 'loading-states', '--task', 'fix the skeletons', '--dry-run'], { root });
 
   assert.equal(r.code, 0);
   assert.ok(
     r.calls.every(argv => !argv.includes('linear issue') && !argv.includes('issue view')),
-    `a tracker was read for a launch that has no ticket: ${r.calls.join(' | ')}`,
+    `a tracker was read for a dispatch that has no ticket: ${r.calls.join(' | ')}`,
   );
   assert.doesNotMatch(r.out, /Read the ticket/);
   assert.match(r.out, /^# loading-states$/m);
@@ -986,13 +986,13 @@ test('reuse is EXACT for a name: `auth` never takes the tree of `auth-refactor`'
   assert.match(again.out, /reusing the worktree that already exists for auth/);
 });
 
-test('a named launch reports no ticket instead of empty tracker fields', () => {
+test('a named dispatch reports no ticket instead of empty tracker fields', () => {
   const root = repo();
   provisioned(root, 'loading-states');
   const r = run(['--name', 'loading-states', '--task', 'fix the skeletons', '--wait', '0'], { root, request: 'loading-states' });
 
   assert.equal(r.code, 0);
-  assert.match(r.out, /LAUNCHED loading-states — fix the skeletons/);
+  assert.match(r.out, /DISPATCHED loading-states — fix the skeletons/);
   assert.match(r.out, /ticket {4}none — dispatched by name/);
   assert.doesNotMatch(r.out, /ticket {4}undefined/);
   assert.match(r.out, /request {3}loading-states/);

@@ -152,18 +152,18 @@
         }
       }
     },
-    "launch": {
+    "dispatch": {
       "type": "object",
       "additionalProperties": false,
-      "description": "What `ax worker launch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
+      "description": "What `ax worker dispatch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
       "properties": {
         "entry": {
           "type": "string",
-          "description": "The instruction a child is given when --task is not passed — the entry point that decides what it does with the ticket. Absent means every launch must pass --task: ax cannot invent the verb a project's agents answer to."
+          "description": "The instruction a child is given when --task is not passed — the entry point that decides what it does with the ticket. Absent means every dispatch must pass --task: ax cannot invent the verb a project's agents answer to."
         },
         "contract": {
           "type": "string",
-          "description": "Path to the pilot contract appended to every brief — repo-relative, or absolute for a contract shared by several repos. Declared and unreadable is a refusal: a brief pointing at nothing sends a child to improvise (2026-08-01, three worktrees that never read theirs). Absent means ax writes the mechanics-only contract it owns. Declared, it REPLACES those mechanics rather than adding to them, so it has to re-carry whatever they said that nothing else in this repo tells a child: the provisioned worktree and its `.agent/worktree-context.local.md`, who the coordinator is, that the child never merges, and the stall watcher. A contract that drops a verification sequence because the repo's AGENTS.md carries it is deduplicating; the same contract copied into a repo whose AGENTS.md does not is losing it."
+          "description": "Path to the pilot contract appended to every brief — repo-relative, or absolute for a contract shared by several repos. Declared and unreadable is a refusal: a brief pointing at nothing sends a child to improvise (2026-08-01, three worktrees that never read theirs). Absent means ax writes the mechanics-only contract it owns. Declared, it REPLACES those mechanics rather than adding to them, so it has to re-carry whatever they said that nothing else in this repo tells a child: the provisioned worktree and its `.agent/worktree-context.local.md`, who the orchestrator is, that the child never merges, and the stall watcher. A contract that drops a verification sequence because the repo's AGENTS.md carries it is deduplicating; the same contract copied into a repo whose AGENTS.md does not is losing it."
         },
         "worktreeTool": {
           "type": "string",
@@ -172,7 +172,7 @@
         "databaseLabels": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Tracker labels that mean 'this ticket touches the database'. A launch carrying one of them provisions its worktree with its own Supabase stack (`ax worktree setup --database`) instead of letting the plan decide from a diff — and the diff of a tree that was created seconds ago is empty, so an issue whose whole subject is the database was provisioned to SHARE the primary checkout's stack. Measured 2026-08-25 on ofmchat #71 (domain:database, domain:security): the brief required an isolated reset and a full pgTAP run, and the worktree was announced as not touching the database. Absent means no ticket label forces isolation and the plan decides alone; the guard in front of `ax supabase` still promotes on the first write, but only for commands that go through it."
+          "description": "Tracker labels that mean 'this ticket touches the database'. A dispatch carrying one of them provisions its worktree with its own Supabase stack (`ax worktree setup --database`) instead of letting the plan decide from a diff — and the diff of a tree that was created seconds ago is empty, so an issue whose whole subject is the database was provisioned to SHARE the primary checkout's stack. Measured 2026-08-25 on ofmchat #71 (domain:database, domain:security): the brief required an isolated reset and a full pgTAP run, and the worktree was announced as not touching the database. Absent means no ticket label forces isolation and the plan decides alone; the guard in front of `ax supabase` still promotes on the first write, but only for commands that go through it."
         },
         "hosts": {
           "type": "object",
@@ -184,9 +184,9 @@
             "properties": {
               "ssh": { "type": "string", "description": "ssh target that reaches this host, for the grounds Orca cannot answer." },
               "diskPath": { "type": "string", "description": "Mount point the worktrees land on — a remote worktree installs its own dependencies. Measured only together with diskFloorGb." },
-              "diskFloorGb": { "type": "integer", "minimum": 0, "description": "Free gigabytes below which a launch onto this host is refused. Measured only together with diskPath." },
+              "diskFloorGb": { "type": "integer", "minimum": 0, "description": "Free gigabytes below which a dispatch onto this host is refused. Measured only together with diskPath." },
               "cgroup": { "type": "string", "description": "cgroup directory of the unit every session on that host shares. Measured only together with memFreeFloorMb." },
-              "memFreeFloorMb": { "type": "integer", "minimum": 0, "description": "Unreclaimable headroom below which a launch is refused — never `memory.current`, which counts page cache the kernel drops under pressure. Measured only together with cgroup." },
+              "memFreeFloorMb": { "type": "integer", "minimum": 0, "description": "Unreclaimable headroom below which a dispatch is refused — never `memory.current`, which counts page cache the kernel drops under pressure. Measured only together with cgroup." },
               "sweep": {
                 "type": "array",
                 "items": { "type": "string" },

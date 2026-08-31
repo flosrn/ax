@@ -213,7 +213,7 @@ test('nothing here is internally latched, so the single-install contract is load
 // ── the dispatched path: `[omp role=worker …]` ───────────────────────────────
 
 test('a dispatched worker gets the BUNDLED worker role and its BUNDLED playbook', async () => {
-  // The acceptance path for `ax worker launch`: the parent writes the marker, and
+  // The acceptance path for `ax worker dispatch`: the parent writes the marker, and
   // the child must arrive as a worker carrying its implementation flow. No seam is
   // injected, so both bodies come off disk, out of this package.
   const installed = install('[omp role=worker model=@task]');

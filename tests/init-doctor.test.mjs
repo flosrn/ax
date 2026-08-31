@@ -326,10 +326,12 @@ test('doctor refuses a config it cannot trust instead of guessing', () => {
   writeFileSync(join(dir, 'ax.config.json'), good);
 });
 
-// The rename `ax triage` -> `ax ready` is a clean cutover: the old config key
-// simply stops existing, and the schema's `additionalProperties: false` refuses
-// it. But "unknown key" does not say where the key WENT, and a consuming repo
-// meets this line while pinning the release — so the finding names the edit.
+// A rename is a clean cutover: the old config key simply stops existing, and the
+// schema's `additionalProperties: false` refuses it. But "unknown key" does not
+// say where the key WENT, and a consuming repo meets this line while pinning the
+// release — so the finding names the edit. Two renames have now been made this
+// way (`triage` -> `ready`, `launch` -> `dispatch`), and both are read out of one
+// table so a third cannot arrive with advice only one verb prints.
 test('doctor names the rename when a config still carries the legacy triage key', () => {
   const good = readFileSync(join(dir, 'ax.config.json'), 'utf8');
   const config = JSON.parse(good);
@@ -354,23 +356,23 @@ test('doctor names the rename when a config still carries the legacy triage key'
   // value containing "triage" is not sent to rename a key it does not have.
   writeFileSync(
     join(dir, 'ax.config.json'),
-    `${JSON.stringify({ ...config, launch: { ...(config.launch ?? {}), databaseLabels: 'needs-triage' } }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, dispatch: { ...(config.dispatch ?? {}), databaseLabels: 'needs-triage' } }, null, 2)}\n`,
   );
   const unrelated = capture(() => doctor(dir));
   assert.equal(unrelated.code, 1);
   assert.doesNotMatch(unrelated.out, /rename the "triage" key/);
 
   // And ONLY at the ROOT. `src/schema.mjs` prints the LOCATION of the offending
-  // key, so a nested `launch.triage` typo reports `launch: unknown key "triage"`:
+  // key, so a nested `dispatch.triage` typo reports `dispatch: unknown key "triage"`:
   // advice to rename a root key this config does not have sends the operator to
   // edit a line that is already correct while the nested defect stays.
   writeFileSync(
     join(dir, 'ax.config.json'),
-    `${JSON.stringify({ ...config, launch: { ...(config.launch ?? {}), triage: { labels: 'docs/labels.md' } } }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, dispatch: { ...(config.dispatch ?? {}), triage: { labels: 'docs/labels.md' } } }, null, 2)}\n`,
   );
   const nested = capture(() => doctor(dir));
   assert.equal(nested.code, 1);
-  assert.match(nested.out, /launch: unknown key "triage"/);
+  assert.match(nested.out, /dispatch: unknown key "triage"/);
   assert.doesNotMatch(nested.out, /rename the "triage" key/);
 
   // init meets the same closed-schema refusal while a repo pins the release, so
@@ -382,6 +384,55 @@ test('doctor names the rename when a config still carries the legacy triage key'
   assert.equal(initLegacy.code, 1);
   assert.match(initLegacy.out, /rename the "triage" key to "ready"/);
   assert.equal(readFileSync(join(dir, 'ax.config.json'), 'utf8'), legacyConfig);
+
+  writeFileSync(join(dir, 'ax.config.json'), good);
+  assert.equal(doctor(dir), 0);
+});
+
+// The second rename, and the reason the advice above became a table: `launch` was
+// the verb until 0.16, so a config written against any earlier release carries
+// the block under that name. Every key inside it keeps its own name, which is
+// what makes the repair one line of editing rather than a re-read of the schema.
+test('a config still carrying the launch block is told the block is dispatch now', () => {
+  const good = readFileSync(join(dir, 'ax.config.json'), 'utf8');
+  const config = JSON.parse(good);
+  const capture = fn => {
+    const written = [];
+    const stdout = process.stdout.write;
+    process.stdout.write = chunk => (written.push(String(chunk)), true);
+    try {
+      return { code: fn(), out: written.join('') };
+    } finally {
+      process.stdout.write = stdout;
+    }
+  };
+
+  const legacyConfig = `${JSON.stringify({ ...config, launch: { entry: '/work' } }, null, 2)}\n`;
+  writeFileSync(join(dir, 'ax.config.json'), legacyConfig);
+
+  const legacy = capture(() => doctor(dir));
+  assert.equal(legacy.code, 1);
+  assert.match(legacy.out, /unknown key "launch"/);
+  assert.match(legacy.out, /rename the "launch" key to "dispatch"/);
+  assert.match(legacy.out, /ax worker dispatch/, 'the advice names the verb the block belongs to');
+
+  // Both verbs, one sentence: a repair only `doctor` names is a repair half the
+  // operators never see, and `init` is where a consuming repo meets the refusal.
+  const initLegacy = capture(() => init(dir));
+  assert.equal(initLegacy.code, 1);
+  assert.match(initLegacy.out, /rename the "launch" key to "dispatch"/);
+  assert.equal(readFileSync(join(dir, 'ax.config.json'), 'utf8'), legacyConfig, 'an invalid config is never rewritten');
+
+  // A nested `launch` is not the root block. `dispatch.hosts.<h>.launch` reports
+  // its own location, and advice to rename a root key this config does not carry
+  // sends the operator to edit a line that is already correct.
+  writeFileSync(
+    join(dir, 'ax.config.json'),
+    `${JSON.stringify({ ...config, dispatch: { hosts: { built: { ssh: 'x', launch: 'y' } } } }, null, 2)}\n`,
+  );
+  const nested = capture(() => doctor(dir));
+  assert.equal(nested.code, 1);
+  assert.doesNotMatch(nested.out, /rename the "launch" key/);
 
   writeFileSync(join(dir, 'ax.config.json'), good);
   assert.equal(doctor(dir), 0);

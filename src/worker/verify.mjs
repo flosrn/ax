@@ -1,6 +1,6 @@
-// The LAUNCHED receipt and its four proofs — the model marker applied by the
+// The DISPATCHED receipt and its four proofs — the model marker applied by the
 // adapter, the worker role, the implementation playbook, and pane movement.
-// Extracted from launch.mjs so the verification loop answers through its own
+// Extracted from dispatch.mjs so the verification loop answers through its own
 // interface (a record path, a transcript, a cursor sequence) instead of only
 // through a full ticket-and-placement pipeline. The cursor predicate here is
 // this verb's own disposition, as pane.mjs's header prescribes.
@@ -39,9 +39,9 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
     pane = '';
   }
 
-  // `ticket === null` is a launch dispatched by name: there is no id, no title
+  // `ticket === null` is a dispatch made by name: there is no id, no title
   // and no url, and printing empty fields would read as a tracker that failed.
-  section(ticket === null ? `LAUNCHED ${request} — ${instruction}` : `LAUNCHED ${ticket.id} — ${ticket.title}`);
+  section(ticket === null ? `DISPATCHED ${request} — ${instruction}` : `DISPATCHED ${ticket.id} — ${ticket.title}`);
   if (ticket === null) note('ticket    none — dispatched by name, and the brief is the whole definition of the work');
   else note(`ticket    ${ticket.url}  (${ticket.state})`);
   note(`host      ${on === '' ? 'here' : on}`);
@@ -68,7 +68,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   // that file exists as soon as the child boots, carrying only the boot
   // `model_change` Orca writes before the spec marker applies and long before
   // the child-side role receipt is written. Measured 2026-08-26 across two
-  // launches of one live wave: a loop that stopped re-reading once the OBJECT
+  // dispatches of one live wave: a loop that stopped re-reading once the OBJECT
   // was non-null printed `model …|` and `session unreadable`, exit 3, on two
   // children that were on the marker's model with the role applied twenty
   // seconds later. It reported the absence of a receipt as the absence of the
@@ -155,7 +155,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   // installed writes NEITHER, ever — while its pane moves and `gate` calls it
   // LIVE. Measured 2026-08-28 (ofmchat #101): this verdict was correct and was
   // overruled by `--show`, `gate` and `tail`, because none of those three answers
-  // who the session is and this line did not exist. `launch` now proves the bundle
+  // who the session is and this line did not exist. `dispatch` now proves the bundle
   // before dispatching; a dispatch made any other way, or an install that relinks
   // mid-flight, still lands here. The probe is a NAMED dependency with a real
   // default, like every other machine answer this function takes.
@@ -163,17 +163,17 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
     const equip = equipmentProbe(worktree);
     if (equip.measured && !equip.ready) {
       bad(`CAUSE: this worktree cannot load its AX bundle (${equip.wiring ? equip.reason : equip.missing.join(', ')}), so nothing in that child ever consumed its role marker — it is working UNEQUIPPED, not still booting`);
-      fix(equip.wiring ? 'ax init   # then settle this dispatch and launch again' : `run your package manager's install in ${worktree}   # then settle this dispatch and launch again`);
-      note('Its work is real and its model is not the one you asked for: decide whether to keep it before anything else. A live pane is never relaunched over (F-001).');
+      fix(equip.wiring ? 'ax init   # then settle this dispatch and re-dispatch' : `run your package manager's install in ${worktree}   # then settle this dispatch and re-dispatch`);
+      note('Its work is real and its model is not the one you asked for: decide whether to keep it before anything else. A live pane is never dispatched over (F-001).');
     }
   }
 
-  note('The dispatch DID happen. Do NOT relaunch (F-001) — inspect it:');
+  note('The dispatch DID happen. Do NOT re-dispatch (F-001) — inspect it:');
   fix(`ax worker start --show --request ${request}`);
   return 3;
 }
 
-/** The same launch proof read, wherever the transcript lives. */
+/** The same session proof read, wherever the transcript lives. */
 function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
   if (host === null) return launchProof({ needle, env, sessionsRoot });
   const root = host.sessions ?? '';

@@ -1,9 +1,9 @@
-// The ticket half of `ax worker launch`: everything that happens BEFORE anything
+// The ticket half of `ax worker dispatch`: everything that happens BEFORE anything
 // is created, because every failure here is one a child would have inherited.
 //
 // A brief whose ticket line is empty sends a child to improvise — the 2026-08-01
 // failure, where three worktrees ran without ever reading their brief. So the
-// ticket is read here, by name, and a read that does not answer stops the launch
+// ticket is read here, by name, and a read that does not answer stops the dispatch
 // instead of producing a session pointing at nothing.
 //
 // Nothing in this module writes, mutates or prints. It answers questions and
@@ -77,7 +77,7 @@ const unreadable = (ref, where, detail) => ({
   ok: false,
   reason:
     `could not read ${ref} from ${where}${detail ? `: ${detail}` : ''}. ` +
-    `Read it by hand first — a launch whose ticket line is empty creates a child that improvises.`,
+    `Read it by hand first — a dispatch whose ticket line is empty creates a child that improvises.`,
 });
 
 /**
@@ -101,7 +101,7 @@ function labelNames(container) {
  * SIZE of its body — and its LABELS.
  *
  * Two trackers, one shape. Linear answers under `result.issue`, GitHub at the
- * top level, and no caller should have to know which — a launcher that parses
+ * top level, and no caller should have to know which — a reader that parses
  * both inline grows a second parser the day a third tracker appears.
  *
  * The body TEXT never comes back. It is the child's to read, on its own host,
@@ -130,7 +130,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     if (typeof run !== 'function') {
       return {
         ok: false,
-        reason: `no Orca runtime on this host, so ${ref} cannot be read from Linear. Run the launch from a host that has the Orca CLI.`,
+        reason: `no Orca runtime on this host, so ${ref} cannot be read from Linear. Run the dispatch from a host that has the Orca CLI.`,
       };
     }
     const answer = run(['linear', 'issue', String(ref), '--json']);
@@ -237,7 +237,7 @@ export function readCommand({ kind = 'linear', ref } = {}) {
  * habitability, context file and marker all proved true while the one
  * indispensable object was missing. `ls-remote` answers for every host at once,
  * which is why this asks origin instead of ssh-ing into the target: a ref on
- * origin is reachable by any clone of it, including hosts this launch has never
+ * origin is reachable by any clone of it, including hosts this dispatch has never
  * seen.
  */
 export function needsRef(ref, { exec = defaultExec, cwd = process.cwd() } = {}) {

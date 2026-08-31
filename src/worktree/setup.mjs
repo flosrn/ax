@@ -30,9 +30,9 @@ import { promoteFromPlan } from './supabase.mjs';
 const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
 
 /**
- * `cwd` is injected for one caller: `ax worker launch` places a worktree and
+ * `cwd` is injected for one caller: `ax worker dispatch` places a worktree and
  * then provisions it, and it may not chdir — a process that changed directory
- * mid-launch would leave every later step resolving against the child's tree.
+ * mid-dispatch would leave every later step resolving against the child's tree.
  */
 export function setup(argv = [], { cwd } = {}) {
   const dryRun = argv.includes('--dry-run');

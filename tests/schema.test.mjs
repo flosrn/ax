@@ -67,7 +67,7 @@ test('a port outside the addressable range is rejected', () => {
   assert.match(errors.join(), /ports\.dev\[0\]: 80 is below the minimum 1024/);
 });
 
-test('this checkout’s ax.config.json validates, so ax worker launch can run here', () => {
+test('this checkout’s ax.config.json validates, so ax worker dispatch can run here', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const raw = JSON.parse(readFileSync(join(root, 'ax.config.json'), 'utf8'));
   assert.deepEqual(validate(raw, schema), []);

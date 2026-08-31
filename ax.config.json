@@ -14,7 +14,7 @@
     "$comment": "One job, one name. `.github/workflows/test.yml` runs `pnpm test` — both suites, node and the OMP bundle — and is unconditional on all three axes (no if:, no paths:, no branch filter on pull_request), which is what makes it safe to enumerate: a check that can legitimately skip would make the gate refuse every future PR that does not touch the filtered path (F-014). `checks` rather than `aggregate` because nothing here aggregates anything; there is exactly one job. What a green verdict therefore covers: both test suites on the exact head SHA. What it does NOT cover: this repository has no lint or typecheck step of its own, and npm publication is decided by release-please plus trusted publishing, not by this gate. Rename the job and this array changes in the same commit.",
     "checks": ["pnpm test"]
   },
-  "launch": {
+  "dispatch": {
     "hosts": {
       "gapicore": {
         "ssh": "orca@vps",

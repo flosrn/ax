@@ -1,8 +1,8 @@
 // The placement rules, exercised through placeLocal's own interface — above
-// all the reuse rule, which used to be reachable only through the whole launch
+// all the reuse rule, which used to be reachable only through the whole dispatch
 // pipeline and its seven-subcommand Orca stub: another ticket's tree is never
 // lent (GAP-35 vs gap-357), an earlier slug of the SAME ticket is exactly the
-// tree to reuse, and a --name launch matches whole names only.
+// tree to reuse, and a --name dispatch matches whole names only.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,7 +45,7 @@ const options = (root, over = {}) => ({
   slug: '',
   named: false,
   paths: { root },
-  launchConfig: {},
+  dispatchConfig: {},
   ticket: null,
   exec: () => assert.fail('no worktree tool is declared, so none may run'),
   run: () => assert.fail('this case must not reach Orca'),
@@ -79,7 +79,7 @@ test('gap-357 alone matches nothing for gap-35, so Orca places a fresh tree', ()
   assert.deepEqual(calls[0].slice(0, 4), ['worktree', 'create', '--name', 'gap-35-work']);
 });
 
-test('a --name launch matches whole names only: `auth` never reuses `auth-refactor`', () => {
+test('a --name dispatch matches whole names only: `auth` never reuses `auth-refactor`', () => {
   const root = fixture(['auth-refactor']);
   const fresh = provisioned(join(root, 'placed-by-orca', 'auth'));
   const placed = placeLocal(options(root, { request: 'auth', issue: '', named: true, run: orcaCreates(fresh) }));

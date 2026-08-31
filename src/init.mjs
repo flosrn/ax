@@ -176,28 +176,45 @@ function wireOmp(root, { dryRun }) {
 const report = (label, state) => (state === 'unchanged' ? note(`${label} — unchanged`) : ok(`${label} — ${state}`));
 
 /**
- * The one config violation with a mechanical repair rather than a decision, and
- * the reason it is a function instead of a literal in two files: `triage` was
- * the umbrella name for the readiness surface until it was renamed to `ready`,
- * so a config written for an older ax fails on that key first — and "unknown
- * key" alone does not say where the key WENT. Both `ax init` and `ax doctor`
- * meet that refusal while a consuming repo pins the release; a repair only one
- * of them names is a repair half the operators never see.
+ * The config violations with a mechanical repair rather than a decision, and the
+ * reason they are a table read by a function instead of literals in two files.
+ *
+ * A rename here is a clean cutover: the old key stops existing and the schema's
+ * `additionalProperties: false` refuses it. But "unknown key" does not say where
+ * the key WENT, and both `ax init` and `ax doctor` meet that refusal while a
+ * consuming repo pins the release — so a repair only one of them names is a
+ * repair half the operators never see. Two renames have been made this way now,
+ * which is what turned one predicate into this list: the third must not arrive
+ * with advice only one verb prints.
  *
  * ROOT LEVEL ONLY, matched as the validator's own whole line rather than as a
  * substring. Two looser readings were both wrong. A substring of the WORD sends
  * a config whose real defect merely QUOTES a value like `needs-triage` — a
- * mistyped `launch.databaseLabels`, say — to rename a key it does not have. And
- * a substring of `unknown key "triage"` matches ANY nesting level, because
+ * mistyped `dispatch.databaseLabels`, say — to rename a key it does not have.
+ * And a substring of `unknown key "triage"` matches ANY nesting level, because
  * ./schema.mjs prints the location (`${where}: unknown key "${key}"`): a nested
- * `launch.triage` reports `launch: unknown key "triage"` and would earn advice
- * to rename a root key the config never carried, sending the operator to edit a
- * line that is already correct while the real nested defect stays.
+ * `dispatch.triage` reports `dispatch: unknown key "triage"` and would earn
+ * advice to rename a root key the config never carried, sending the operator to
+ * edit a line that is already correct while the real nested defect stays.
  */
-export const namesLegacyReadyKey = errors => errors.some(error => error === 'root: unknown key "triage"');
+const RETIRED_CONFIG_KEYS = [
+  {
+    key: 'triage',
+    fix: `rename the "triage" key to "ready" in ${CONFIG_FILE} — the noun is \`ax ready\` now, because triage is one pass under it and not the whole of it (the jobs are --job triage|brief|custom)`,
+  },
+  {
+    key: 'launch',
+    fix: `rename the "launch" key to "dispatch" in ${CONFIG_FILE} — the verb is \`ax worker dispatch\` now, and every key inside the block (entry, contract, hosts, databaseLabels, worktreeTool) keeps its own name`,
+  },
+];
 
-/** One sentence, printed by both verbs, so the two can never drift apart. */
-export const LEGACY_READY_KEY_FIX = `rename the "triage" key to "ready" in ${CONFIG_FILE} — the noun is \`ax ready\` now, because triage is one pass under it and not the whole of it (the jobs are --job triage|brief|custom)`;
+/**
+ * The repairs for the retired root keys a config still carries, in table order.
+ * Empty when the errors name none — a config with three typos and no retired key
+ * gets the validator's own lines and nothing invented on top of them.
+ */
+export const retiredConfigKeyFixes = errors =>
+  RETIRED_CONFIG_KEYS.filter(({ key }) => errors.some(error => error === `root: unknown key "${key}"`)).map(({ fix }) => fix);
 
 /**
  * Make a project ax-ready: the config, the committed bootstrap, and the managed
@@ -233,7 +250,7 @@ export function init(root, { dryRun = false, vendor } = {}) {
     // Named, never rewritten: the file is the user's, and the refusal above is
     // the rule. Saying where the key went costs nothing and is the whole
     // difference between a closed schema and a dead end.
-    if (namesLegacyReadyKey(existing.errors)) fix(LEGACY_READY_KEY_FIX);
+    for (const repair of retiredConfigKeyFixes(existing.errors)) fix(repair);
     return 1;
   }
   if (!existing.exists) {

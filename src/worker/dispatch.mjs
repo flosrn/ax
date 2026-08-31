@@ -1,10 +1,10 @@
-// `ax worker launch --issue <ref>` — a ticket becomes a working session, in one gesture.
+// `ax worker dispatch --issue <ref>` — a ticket becomes a working session, in one gesture.
 //
 // WHY THIS EXISTS (measured 2026-08-14)
 // Both halves already existed and the SEAM did not: something turns an issue into
 // a bootstrapped worktree, and `ax worker start` issues a recoverable dispatch.
 // Between them sat six steps that lived as PROSE in a skill — and prose is not
-// executable, so every launch retyped them. Measured over five hand-run
+// executable, so every dispatch retyped them. Measured over five hand-run
 // dispatches on the night of 2026-08-13/14, retyping cost: one STRANDED dispatch
 // (creation flags passed for a worktree that already existed, which Orca refuses
 // with `invalid_argument`); two briefs left sitting unsent in a composer, each
@@ -21,7 +21,7 @@
 // differed per repo (so exactly one repo got the check). None of that is here,
 // because `ax worktree setup` owns provisioning and writes that context file,
 // `ax worktree doctor` re-derives the same plan and compares it, and the served
-// URL comes from the proxy probe that already reads a project's config. Launch
+// URL comes from the proxy probe that already reads a project's config. This verb
 // asks setup to run and reads its verdict; habitability is no longer a second
 // implementation that can disagree with the first.
 //
@@ -29,7 +29,7 @@
 // names a project: the ticket adapters (./ticket.mjs), the remote host grounds
 // (./hosts.mjs), the brief (./brief.mjs), what is prepared in the child's
 // worktree (./child.mjs). Everything host- or project-shaped arrives from
-// `ax.config.json`'s `launch` block, and a ground a project does not declare is
+// `ax.config.json`'s `dispatch` block, and a ground a project does not declare is
 // NOT MEASURED and says so — a floor measured for one fleet, inherited by a repo
 // that never declared it, is the same bug in a new place.
 //
@@ -47,7 +47,7 @@
 //      each degrade with an announcement instead, never silently.
 //   6. the brief, as a FILE
 //   7. `ax worker start`, whose STRANDED exit is REPLAYED here rather than
-//      reported — the recovery is the ordinary path for a remote launch
+//      reported — the recovery is the ordinary path for a remote dispatch
 //   8. verify: the marker applied WITH a role, and the pane emitting
 //
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
@@ -55,7 +55,7 @@
 //   1  refused, with a named reason — nothing was created
 //   2  usage error
 //   3  cannot establish. When the dispatch already happened the report says so
-//      and names the recovery; do NOT relaunch, that is how a duplicate is born.
+//      and names the recovery; do NOT re-dispatch, that is how a duplicate is born.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -79,15 +79,15 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 import { defaultExec } from '../exec.mjs';
 
 const USAGE =
-  'ax worker launch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--brief <file>] ' +
+  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--notes <file>] ' +
   '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
-/** The launch tick, shared by placement's selector poll and verify's proof loop. */
-const tickOf = env => Math.max(1, Number(env.AX_LAUNCH_TICK ?? 2000));
+/** The dispatch tick, shared by placement's selector poll and verify's proof loop. */
+const tickOf = env => Math.max(1, Number(env.AX_DISPATCH_TICK ?? 2000));
 
 /**
  * The request id every later gesture is keyed on: the store record, the stall
@@ -97,7 +97,23 @@ const tickOf = env => Math.max(1, Number(env.AX_LAUNCH_TICK ?? 2000));
 export const requestIdFor = (issue, slug) =>
   `${issue}${slug ? `-${slug}` : '-work'}`.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 
-export function launch(
+/**
+ * The knobs this verb renamed with itself, REFUSED rather than read past.
+ *
+ * A retired name that is merely ignored becomes a silent default — the rule
+ * `../ready/dispatch.mjs` states at its own reader, paid for when
+ * `AX_TRIAGE_ROLE_WAIT` survived a rename in someone's shell. These four decide
+ * how long a dispatch waits for a selector, for an install, and where the spec
+ * file lands: read past, `AX_LAUNCH_SEE_WAIT=0` turns a two-second preview into
+ * a two-minute one and the operator has no way to see why.
+ *
+ * Empty is absence, exactly as `capOf` reads it: an exported-but-empty variable
+ * is a shell artefact, not an instruction.
+ */
+export const retiredKnobs = (env = {}) =>
+  ['AX_LAUNCH_TICK', 'AX_LAUNCH_SEE_WAIT', 'AX_LAUNCH_EQUIP_WAIT', 'AX_LAUNCH_SPEC_DIR'].filter(name => (env[name] ?? '') !== '');
+
+export function dispatch(
   argv = [],
   {
     resolve = resolveOrca,
@@ -113,7 +129,7 @@ export function launch(
   } = {},
 ) {
   const usageError = (message, repair) => {
-    process.stderr.write(`ax worker launch: ${message}\n${repair ? `\n  ${repair}\n\n` : ''}${USAGE}\n`);
+    process.stderr.write(`ax worker dispatch: ${message}\n${repair ? `\n  ${repair}\n\n` : ''}${USAGE}\n`);
     return 2;
   };
   const refuse = (message, repair) => {
@@ -127,13 +143,25 @@ export function launch(
     return 3;
   };
 
+  // ── 0. the environment, before the arguments ───────────────────────────────
+  // Nothing has been read or created, and a knob under its retired name is the
+  // one input this verb cannot honour and cannot see the effect of.
+  const stale = retiredKnobs(env);
+  if (stale.length > 0) {
+    const one = stale.length === 1;
+    return refuse(
+      `${stale.join(', ')} ${one ? 'is' : 'are'} set, and this verb reads AX_DISPATCH_* now — ${one ? 'it' : 'they'} would be read past in silence`,
+      `unset ${stale.join(' ')} and export ${stale.map(name => name.replace('AX_LAUNCH_', 'AX_DISPATCH_')).join(' ')} instead`,
+    );
+  }
+
   // ── 1. arguments alone ─────────────────────────────────────────────────────
   const flags = {
     issue: '',
     name: '',
     slug: '',
     run: '',
-    brief: '',
+    notes: '',
     task: '',
     model: '@default',
     agent: 'omp',
@@ -151,7 +179,7 @@ export function launch(
     '--name': 'name',
     '--slug': 'slug',
     '--run': 'run',
-    '--brief': 'brief',
+    '--notes': 'notes',
     '--task': 'task',
     '--model': 'model',
     '--agent': 'agent',
@@ -188,13 +216,13 @@ export function launch(
   // ran with no route home.
   if (flags.run !== '') {
     return usageError(
-      '--run is not a launch input: the Run is the one this pane\'s receiver consumes, and naming another dispatches a child that reports into silence',
+      '--run is not a dispatch input: the Run is the one this pane\'s receiver consumes, and naming another dispatches a child that reports into silence',
       'ax init   # then RESTART this session so its pane joins the peer registry, and drop --run',
     );
   }
 
   // Exactly one identity. `--issue` names work a tracker owns; `--name` names
-  // work nothing owns yet. Both is not a richer launch, it is two identities for
+  // work nothing owns yet. Both is not a richer dispatch, it is two identities for
   // one worktree, and neither is then the one later gestures are keyed on.
   if (flags.issue !== '' && flags.name !== '') {
     return usageError('--issue and --name are two identities for one worktree; pass exactly one');
@@ -218,7 +246,7 @@ export function launch(
     //   INJECTIVE. That function lowercases and collapses every run of unusable
     //   characters to one `-`, so `My Feature`, `my/feature` and `my@@feature`
     //   all become `my-feature`. Two names would key one record, one directory
-    //   and one branch, and the second launch would dispatch a child into the
+    //   and one branch, and the second dispatch would place a child into the
     //   first one's tree.
     //
     //   A PLAIN SEGMENT. `.` and `..` pass a round-trip unchanged (`..` becomes
@@ -236,18 +264,21 @@ export function launch(
         .replace(/^[^a-z0-9]+/, '');
       return usageError(
         `--name is the request id itself, so it must be lowercase alphanumerics with single . _ - between them: "${flags.name}" is not`,
-        suggestion === '' ? undefined : `ax worker launch --name ${suggestion}`,
+        suggestion === '' ? undefined : `ax worker dispatch --name ${suggestion}`,
       );
     }
     // The name carries the whole identity; a slug on top of it is a second knob
     // on one name, and `<name>-<slug>` is how two names become one request.
     if (flags.slug !== '') return usageError('--slug belongs to a ticket ref; with --name the name is the slug');
   }
-  if (flags.brief !== '' && !existsSync(flags.brief)) {
-    // Checked before anything is read or created: a brief pointing at nothing
-    // sends a child to improvise (2026-08-01, three worktrees that never read
-    // theirs), and the cheapest moment to say so is now.
-    return refuse(`--brief file unreadable: ${flags.brief}`);
+  if (flags.notes !== '' && !existsSync(flags.notes)) {
+    // Checked before anything is read or created: a notes file pointing at
+    // nothing sends a child into a wave whose findings it cannot see (2026-08-01,
+    // three worktrees that never read theirs), and the cheapest moment to say so
+    // is now. The flag is `--notes` rather than `--brief` because Brief has one
+    // meaning in this vocabulary — the Agent Brief comment on an inbound issue —
+    // and wave memory is not it.
+    return refuse(`--notes file unreadable: ${flags.notes}`);
   }
 
   const { slug, note: slugNote } = normalizeSlug(flags.issue, flags.slug);
@@ -255,7 +286,7 @@ export function launch(
   if (kind === 'linear' && slug === '' && flags.worktree === '') {
     return refuse(
       'a Linear ref carries no branch name, so --slug is required: nothing here invents the name a worktree and a branch will be searched for later',
-      `ax worker launch --issue ${flags.issue} --slug <slug>`,
+      `ax worker dispatch --issue ${flags.issue} --slug <slug>`,
     );
   }
 
@@ -263,12 +294,12 @@ export function launch(
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (!loaded.exists || loaded.errors.length > 0) {
     return refuse(
-      loaded.exists ? `${loaded.errors.length} problem(s) in ax.config.json: ${loaded.errors[0]}` : 'no ax.config.json — launch reads this project\u2019s entry point, contract and hosts from it',
+      loaded.exists ? `${loaded.errors.length} problem(s) in ax.config.json: ${loaded.errors[0]}` : 'no ax.config.json — a dispatch reads this project\u2019s entry point, contract and hosts from it',
       'ax init   # in the primary checkout',
     );
   }
   const config = loaded.config;
-  const launchConfig = config.launch ?? {};
+  const dispatchConfig = config.dispatch ?? {};
   // A name IS the request, verbatim: that is what makes distinct names distinct
   // requests. A ticket ref goes through the normaliser, which is injective on the
   // two ref shapes `ticketKind` accepts.
@@ -276,11 +307,11 @@ export function launch(
 
   const bin = runner ? 'injected' : resolve({ env });
   if (!bin) {
-    return cannot('no Orca CLI on this machine, so neither the ticket nor a dispatch can be read here', 'ORCA_CLI_COMMAND=<binary> ax worker launch …');
+    return cannot('no Orca CLI on this machine, so neither the ticket nor a dispatch can be read here', 'ORCA_CLI_COMMAND=<binary> ax worker dispatch …');
   }
   const run = runner ?? createRunner({ bin });
   const ready = runtimeReady(run);
-  if (!ready.ready) return cannot(ready.reason, 'orca open   # start the runtime, then re-run this launch');
+  if (!ready.ready) return cannot(ready.reason, 'orca open   # start the runtime, then re-run this dispatch');
 
   // ── 2. the ticket, when there is one ───────────────────────────────────────
   // `--name` dispatches work no tracker owns. There is nothing to read, so there
@@ -291,34 +322,34 @@ export function launch(
     return cannot(ticket.reason, `${kind === 'linear' ? 'orca linear issue' : 'gh issue view'} ${flags.issue}   # read it by hand first`);
   }
 
-  const entry = launchConfig.entry ?? '';
+  const entry = dispatchConfig.entry ?? '';
   if (named) {
-    // With a ticket, `launch.entry` composes an instruction from the ref
+    // With a ticket, `dispatch.entry` composes an instruction from the ref
     // (`<entry> GAP-353`) and the ticket body carries the rest. With no ticket
     // there is no ref to compose and no body to fall back on, so the instruction
     // must be given explicitly — a child dispatched on `<entry> ` alone is the
     // 2026-08-01 failure with better spelling.
-    if (flags.task === '' && flags.brief === '') {
+    if (flags.task === '' && flags.notes === '') {
       return refuse(
         `--name carries no ticket, so nothing here knows what "${flags.name}" means: the instruction has to be given`,
-        `ax worker launch --name ${flags.name} --task "<instruction>"   # or --brief <file>`,
+        `ax worker dispatch --name ${flags.name} --task "<instruction>"   # or --notes <file>`,
       );
     }
   } else if (flags.task === '' && entry === '') {
     return refuse(
-      'this project declares no launch entry point, so there is no instruction to give the child',
-      'ax.config.json: launch.entry "<verb>"   # or pass --task "<instruction>"',
+      'this project declares no dispatch entry point, so there is no instruction to give the child',
+      'ax.config.json: dispatch.entry "<verb>"   # or pass --task "<instruction>"',
     );
   }
   const instruction = named ? flags.task || `${entry} ${flags.name}`.trim() : flags.task || `${entry} ${ticket.id}`;
 
   const emptyBody = named ? '' : emptyBodyRefusal({ bodyLength: ticket.bodyLength, task: flags.task, id: ticket.id });
-  if (emptyBody) return refuse(emptyBody, `ax worker launch --issue ${flags.issue} --task "<instruction> ${ticket.id}"`);
+  if (emptyBody) return refuse(emptyBody, `ax worker dispatch --issue ${flags.issue} --task "<instruction> ${ticket.id}"`);
 
   // ── 3. everything else knowable BEFORE anything is created ─────────────────
-  // A launch that can never dispatch must not leave a worktree, a mandate, a
+  // A dispatch that can never be issued must not leave a worktree, a mandate, a
   // pinned identity or a lineage behind: exit 1 says nothing was created, and it
-  // has to be true. So the ref, the contract, the Run and the operator's brief —
+  // has to be true. So the ref, the contract, the Run and the operator's notes —
   // all four knowable now — are settled before placement.
   if (flags.needsRef !== '') {
     const proven = needsRef(flags.needsRef, { exec, cwd });
@@ -326,11 +357,11 @@ export function launch(
     note(`${flags.needsRef} resolves on origin, so a child on any clone of it is defined by something it can reach`);
   }
 
-  const contract = readContract(launchConfig, paths.root);
+  const contract = readContract(dispatchConfig, paths.root);
   if (contract.missing) {
     return refuse(
-      `launch.contract names ${contract.path}, which cannot be read — a brief pointing at nothing sends a child to improvise (2026-08-01)`,
-      `ls ${contract.path}   # or drop launch.contract to use the mechanics-only contract`,
+      `dispatch.contract names ${contract.path}, which cannot be read — a brief pointing at nothing sends a child to improvise (2026-08-01)`,
+      `ls ${contract.path}   # or drop dispatch.contract to use the mechanics-only contract`,
     );
   }
 
@@ -350,11 +381,11 @@ export function launch(
   }
 
   let operator = null;
-  if (flags.brief !== '') {
+  if (flags.notes !== '') {
     try {
-      operator = { name: basename(flags.brief), text: readFileSync(flags.brief, 'utf8') };
+      operator = { name: basename(flags.notes), text: readFileSync(flags.notes, 'utf8') };
     } catch (error) {
-      return refuse(`--brief ${flags.brief} could not be read: ${String(error.message ?? error)}`);
+      return refuse(`--notes ${flags.notes} could not be read: ${String(error.message ?? error)}`);
     }
   }
   // ── 4. placement ───────────────────────────────────────────────────────────
@@ -367,7 +398,7 @@ export function launch(
     place.push('--worktree', `path:${worktree}`, '--agent', flags.agent);
   } else if (on !== '') {
     const declared = hostFor(config, on);
-    if (!declared.ok) return refuse(declared.reason, `ax.config.json: launch.hosts.${on}.ssh "<target>"`);
+    if (!declared.ok) return refuse(declared.reason, `ax.config.json: dispatch.hosts.${on}.ssh "<target>"`);
 
     let repoId = flags.repoId;
     if (repoId === '') {
@@ -391,9 +422,9 @@ export function launch(
     if (probe) place.push('--setup', 'skip');
   } else {
     if (paths.root === null) {
-      return cannot('not inside a git checkout, so there is no repository to place a worktree in', 'cd <repo> && ax worker launch …');
+      return cannot('not inside a git checkout, so there is no repository to place a worktree in', 'cd <repo> && ax worker dispatch …');
     }
-    const placed = placeLocal({ request, issue: flags.issue, slug, named, paths, launchConfig, ticket, exec, run, cwd, dry, probe, setupFn });
+    const placed = placeLocal({ request, issue: flags.issue, slug, named, paths, dispatchConfig, ticket, exec, run, cwd, dry, probe, setupFn });
     for (const line of placed.notes) note(line);
     if (placed.refused) return refuse(placed.refused, placed.repair);
     if (placed.cannot) return cannot(placed.cannot, placed.repair);
@@ -410,10 +441,10 @@ export function launch(
   // argument changed. That failure is indistinguishable from a bad selector,
   // which is what makes it expensive — it sends you auditing argv instead of
   // waiting. It guards EVERY local placement, not only a freshly created one: a
-  // worktree reused from an earlier launch reaches the same dispatch, and a
-  // stranded earlier launch is exactly how an unseen one comes to exist.
+  // worktree reused from an earlier dispatch reaches the same one, and a
+  // stranded earlier dispatch is exactly how an unseen one comes to exist.
   if (worktree !== '' && on === '' && !dry) {
-    const seen = untilSeen({ run, worktree, deadline: now() + Number(env.AX_LAUNCH_SEE_WAIT ?? 120) * 1000, now, sleep, tickMs: tickOf(env) });
+    const seen = untilSeen({ run, worktree, deadline: now() + Number(env.AX_DISPATCH_SEE_WAIT ?? 120) * 1000, now, sleep, tickMs: tickOf(env) });
     if (!seen) {
       return cannot(
         `orca does not resolve path:${worktree}, so a dispatch would fail selector_not_found with nothing wrong in its arguments`,
@@ -435,7 +466,7 @@ export function launch(
   if (worktree !== '' && !dry) {
     const equip = untilEquipped({
       worktree,
-      deadline: now() + Number(env.AX_LAUNCH_EQUIP_WAIT ?? 180) * 1000,
+      deadline: now() + Number(env.AX_DISPATCH_EQUIP_WAIT ?? 180) * 1000,
       now,
       sleep,
       tickMs: tickOf(env),
@@ -446,12 +477,12 @@ export function launch(
       // worktree would load OMP and consume no role marker at all.
       return cannot(
         `${equip.reason} — a child dispatched into it boots with no worker role, no playbook and its BOOT model, and implements the ticket anyway`,
-        `ax init   # register exactly one ${PACKAGE_NAME} bundle, then re-run this launch`,
+        `ax init   # register exactly one ${PACKAGE_NAME} bundle, then re-run this dispatch`,
       );
     } else if (!equip.ready) {
       return cannot(
         `this worktree registers an AX bundle it does not carry (${equip.missing.join(', ')}), so a child dispatched into it boots with no worker role, no playbook and its BOOT model — and implements the ticket anyway`,
-        `run your package manager's install in ${worktree}   # then re-run this launch`,
+        `run your package manager's install in ${worktree}   # then re-run this dispatch`,
       );
     } else note('the AX bundle this worktree registers is loadable, so the child can apply its role marker');
   }
@@ -475,7 +506,7 @@ export function launch(
     // database rather than a missing courtesy: nothing here provisions that
     // remote tree, so a ticket that says it touches the database cannot be
     // honoured from this side.
-    if (databaseArgs(launchConfig, ticket).argv.length > 0) {
+    if (databaseArgs(dispatchConfig, ticket).argv.length > 0) {
       note(`this ticket's labels ask for an isolated database, and a child on '${on}' is provisioned by that host's own setup hook — verify its stack there before it writes`);
     }
   }
@@ -503,8 +534,8 @@ export function launch(
     return 0;
   }
 
-  const specDir = env.AX_LAUNCH_SPEC_DIR || env.TMPDIR || '/tmp';
-  const spec = join(specDir.replace(/\/+$/, ''), `launch-${request}.spec.txt`);
+  const specDir = env.AX_DISPATCH_SPEC_DIR || env.TMPDIR || '/tmp';
+  const spec = join(specDir.replace(/\/+$/, ''), `dispatch-${request}.spec.txt`);
   try {
     mkdirSync(specDir, { recursive: true });
     writeFileSync(spec, brief, { mode: 0o600 });
@@ -518,9 +549,9 @@ export function launch(
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a
     // failure to report, it is exactly what --resume exists for, and BOTH remote
-    // launches on record hit it — which makes the recovery the ordinary path for
+    // dispatches on record hit it — which makes the recovery the ordinary path for
     // `--on`, not an anomaly. Typing it by hand is what used to drop the
-    // verification below, because the launch exited here and the operator
+    // verification below, because this verb exited here and the operator
     // resumed from a fresh shell.
     note('STRANDED — the recorded mutation may still be running; replaying the recorded call (F-001: never a second request)');
     code = startFn(['--resume', '--request', request, '--orca', bin], { env, runner });
@@ -560,7 +591,7 @@ export function launch(
  * its work and still lands its report on its Run, and refusing would trade a
  * whole slice for a degraded report channel. What is refused is a GUESS — the
  * coordinator's own worktree comes from Orca's witness of this session's
- * terminal, never from the directory the launcher happened to run in, because a
+ * terminal, never from the directory this verb happened to run in, because a
  * guessed parent addresses this child's report to a stranger.
  */
 function setLineage({ run, worktree, on, dry, env }) {
@@ -586,18 +617,18 @@ function setLineage({ run, worktree, on, dry, env }) {
     return 'NOT SET — the set call returned but parentWorktreeId still reads empty (F-002); this child cannot report home, and its Run is the only channel left';
   }
   // A non-empty field is not the field this call asked for. A tree reused from an
-  // earlier launch already carries a parent, so reading "some parent" back would
+  // earlier dispatch already carries a parent, so reading "some parent" back would
   // report success over a `set` Orca discarded — which is exactly the shape
   // F-002 is about. The recorded id ends with the path it was set to.
   if (!recorded.endsWith(parent)) {
-    return `NOT SET — parentWorktreeId reads ${recorded}, not the ${parent} this launch set (F-002: the set was discarded and answered ok); this child reports to whoever that is, not to this session`;
+    return `NOT SET — parentWorktreeId reads ${recorded}, not the ${parent} this dispatch set (F-002: the set was discarded and answered ok); this child reports to whoever that is, not to this session`;
   }
   return recorded;
 }
 
 /** The contract a project declares, or ax's own mechanics when it declares none. */
-function readContract(launchConfig, root) {
-  const declared = launchConfig.contract ?? '';
+function readContract(dispatchConfig, root) {
+  const declared = dispatchConfig.contract ?? '';
   if (declared === '') return { text: MECHANICS, path: '' };
   const path = isAbsolute(declared) ? declared : join(root ?? '', declared);
   try {

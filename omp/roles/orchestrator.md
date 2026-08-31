@@ -16,7 +16,7 @@ you:
   and hold every tracker mutation.
 
 One session for both, because both dispatch the same children: `ax ready
-dispatch` and `ax worker launch` take their Run from YOUR pane, so every
+dispatch` and `ax worker dispatch` take their Run from YOUR pane, so every
 question and every completion arrives on your mailbox and nobody else's. Two
 operator sessions in one worktree is also how children stop being able to report
 at all — Orca's lineage stops at the worktree, and a parent running several panes
@@ -69,16 +69,17 @@ derives from this record.
 Launch one worker per slice:
 
 ```bash
-ax worker launch --issue <ref> [--slug <slug>] [--on <host>] [--brief <file>]
+ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>]
 ```
 
 The command owns placement, setup, the recorded dispatch, role/model proof, and
-recovery. Never hand-roll `worker-start`, and never relaunch after an uncertain
-result. Follow the repair command the recorded result names.
+recovery. Never hand-roll `worker-start`, and never dispatch again after an
+uncertain result. Follow the repair command the recorded result names.
 
-Keep one wave-memory file per wave and pass it through `--brief` at each launch:
-a worker's report carries its findings; the next worker's brief carries the
-wave's. The file dies with the wave — promote what earned permanence into the
+Keep one wave-memory file per wave and pass it through `--notes` at each
+dispatch: a worker's report carries its findings; the next worker's notes carry
+the wave's. `--notes`, not `--brief` — Brief names the Agent Brief comment that
+carries an inbound issue's assignment, and wave memory is not an assignment. The file dies with the wave — promote what earned permanence into the
 repo's own stores at wave end, and never store session state as doctrine.
 
 End your turn after dispatch. Completion and questions arrive on their own; never
@@ -230,7 +231,7 @@ instead of ruling is how a pass sits PENDING for hours.
   describe, so a glob there answers with a set that was true once and reads as
   current.
 - The birth convention itself — `needs-triage`, a `source:` label, one
-  `Origin: #<ticket>` line — is the consuming repository's `launch.contract`
+  `Origin: #<ticket>` line — is the consuming repository's `dispatch.contract`
   to declare; this package only reads it.
 
 ## When ax itself is the problem

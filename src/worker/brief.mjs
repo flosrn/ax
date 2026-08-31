@@ -20,7 +20,7 @@
 //   5. the contract. The project's, when it declares one; MECHANICS when it does
 //      not.
 //   6. the remote addendum, when the child runs on another host.
-//   7. the operator's own brief, verbatim and last, under a heading naming the
+//   7. the operator's own notes, verbatim and last, under a heading naming the
 //      file it came from — an operator's words are never paraphrased by ax and
 //      never allowed to displace the contract above them.
 //
@@ -32,20 +32,26 @@
 // and a fleet whose parent is something else still gets a true contract here. It
 // is what is true of an Orca dispatch in any repo.
 
-/** Where the operator's own brief starts, so a child can tell it from ax's text. */
-const OPERATOR_HEADING = 'OPERATOR BRIEF';
+/**
+ * Where the operator's own notes start, so a child can tell them from ax's text.
+ *
+ * NOTES, not BRIEF: `Brief` names the Agent Brief comment that carries an inbound
+ * issue's assignment, and one word for two artifacts is how a child reads wave
+ * memory as its assignment. The flag that carries this file is `--notes`.
+ */
+const OPERATOR_HEADING = 'OPERATOR NOTES';
 
 /**
  * The contract ax itself owns: the mechanics of being a supervised child of the
  * session that dispatched it, with every fleet-specific instruction removed. A
- * project that declares `launch.contract` gets its own text instead of this one.
+ * project that declares `dispatch.contract` gets its own text instead of this one.
  *
  * Each line is a proposition an incident proved (F-027):
  *  - the extra worktree: a child that creates its own leaves the provisioned one
  *    unused and its dispatcher watching a tree nothing happens in. The same
  *    bullet names `.agent/worktree-context.local.md`, because a tree that is
  *    already prepared is only useful to a child that knows how it was prepared:
- *    `ax worker launch` REFUSES to dispatch into a tree without that file — "the
+ *    `ax worker dispatch` REFUSES to place a child in a tree without that file — "the
  *    child would have no URL to test against" (./placement.mjs) — and until
  *    2026-08-26 never named it, so the one artifact written to answer "which
  *    port, which database, which branch" was read by the dispatching session and
@@ -109,7 +115,7 @@ const TICKET_BULLET = 3;
 export const MECHANICS = BULLETS.join('\n');
 
 /**
- * The mechanics for a launch with NO ticket (`--name`, no tracker ref).
+ * The mechanics for a dispatch with NO ticket (`--name`, no tracker ref).
  *
  * The ticket bullet is not merely irrelevant there — it is an instruction the
  * child cannot carry out, and the cost is exact: it tells the child the
@@ -185,14 +191,14 @@ function markerLine(model, instruction) {
  * `host` is '' for a local child. `contract` is '' when the project declares
  * none, and MECHANICS takes its place. `operator` is `{ name, text }` or null.
  *
- * A project's contract and an operator's brief are placed VERBATIM — not
+ * A project's contract and an operator's notes are placed VERBATIM — not
  * trimmed, not re-wrapped, not re-indented. They were written by someone who
  * meant them, and a renderer that tidies its inputs is a renderer that has to be
  * checked before anything is put through it. Nothing is appended to them either:
  * the document is terminated with a newline only when its last block does not
  * already end in one, so a caller's bytes survive in both directions.
  *
- * `ticket: null` says the launch HAS no ticket, which renders differently from a
+ * `ticket: null` says the dispatch HAS no ticket, which renders differently from a
  * ticket that could not be read.
  *
  * THE ADDRESS LINE IS `ticket.handle` WHEN THE TRACKER GIVES ONE, and the url
@@ -204,7 +210,7 @@ function markerLine(model, instruction) {
  * Linear answers no handle, so there the url is the only address there is.
  */
 export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '' } = {}) {
-  // `ticket: null` is not "a ticket I could not read" — it is a launch that has
+  // `ticket: null` is not "a ticket I could not read" — it is a dispatch that has
   // none (`--name`). The two must not render the same: the tracked shape says
   // "read the ticket, it is canonical", and pointing that at nothing is how a
   // child is sent to improvise (2026-08-01, three worktrees that never read
@@ -213,7 +219,7 @@ export function renderBrief({ model, instruction, ticket = {}, readCommand, run,
   const tracked = ticket !== null;
   const head = tracked
     ? [`# ${ticket.title ?? ''}`, `${ticket.handle || ticket.url || ''}`, '', `Read the ticket before you plan: ${readCommand ?? ''}`, 'It is canonical; this file carries only the pilot contract.']
-    : [`# ${name}`, '', 'This launch carries NO ticket: what follows is the whole definition of the work.'];
+    : [`# ${name}`, '', 'This dispatch carries NO ticket: what follows is the whole definition of the work.'];
 
   const lines = [
     markerLine(model, instruction),

@@ -35,7 +35,7 @@ export const READY_LABEL = 'ready-for-agent';
 
 /**
  * The one sentence every `--job` reader prints for a retired lane, so six verbs
- * cannot drift apart — the same one-source rule as `LEGACY_READY_KEY_FIX`,
+ * cannot drift apart — the same one-source rule as `retiredConfigKeyFixes`,
  * which `doctor` and `init` share.
  *
  * `refine` was this repo's own Definition-of-Ready pass over PRD sub-issues,

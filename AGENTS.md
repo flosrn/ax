@@ -42,8 +42,8 @@ them.
 | `src/worktree/context.mjs` | `.agent/worktree-context.local.md`, read by a cold agent |
 | `src/worktree/locate.mjs` | proof that a destructive worktree target belongs to ax |
 | `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
-| `src/worker/start.mjs`, `src/worker/launch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs` | dispatch, prove, repair and close |
-| `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a LAUNCHED receipt carries |
+| `src/worker/start.mjs`, `src/worker/dispatch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs` | write-ahead plumbing, the one creation verb, repair and close |
+| `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a DISPATCHED receipt carries |
 | `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes |
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |

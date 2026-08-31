@@ -19,7 +19,6 @@ import { orcaAvailable } from './orca-bin.mjs';
  * `agentLine` is what the AGENTS.md block says about the command — set it only
  * when an agent should reach for it. Commands without one still work; they just
  * do not belong in a repo's onboarding surface.
- *
  * `runnerless` marks a command the dispatcher answers itself (help), so the
  * startup check does not demand a runner for it.
  *
@@ -28,6 +27,9 @@ import { orcaAvailable } from './orca-bin.mjs';
  * be declared where the help and the AGENTS.md block are built from. A test
  * asserts this list equals the runner's own dispatch table, which is what stops
  * the help from advertising a verb that answers "unknown".
+ *
+ * `retired` names where a verb WENT, and is read by that noun's unknown-verb
+ * path. See `retiredSubcommand`.
  */
 
 export const COMMANDS = [
@@ -67,7 +69,7 @@ export const COMMANDS = [
     subcommands: [
       ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
-      ['launch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
+      ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 'can this be relaunched without a duplicate agent? 0/1/2/3'],
@@ -75,6 +77,12 @@ export const COMMANDS = [
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
     ],
+    // `launch` was this verb until 0.16: one gesture creates implementation
+    // work, and everything that records it — the store record, the receipt, the
+    // `dispatch` config block — already called it a dispatch.
+    retired: {
+      launch: { to: 'dispatch', why: 'one verb creates implementation work, and the record, the receipt and the config block all call it a dispatch' },
+    },
   },
   {
     name: 'board',
@@ -155,6 +163,28 @@ export const agentLines = () => COMMANDS.filter(command => command.agentLine).ma
  */
 export const subcommandNames = name =>
   (COMMANDS.find(command => command.name === name)?.subcommands ?? []).map(([verb]) => verb.split(' ')[0]);
+
+/**
+ * Where a retired verb WENT, and the command that replaces it.
+ *
+ * A renamed verb is not an unknown one. An operator re-running a line out of
+ * their shell history, or an agent that learned the old name from a doc written
+ * before the rename, is owed the replacement — the same debt `ax ready --job
+ * refine` pays by name. The mapping lives beside the `subcommands` it was
+ * renamed out of, so one noun's dispatcher and the help can never disagree
+ * about which names exist, and `tests/commands.test.mjs` refuses a name that is
+ * declared and retired at once.
+ *
+ * The repair is COMPOSED from the declared verb rather than retyped: a second
+ * copy of `dispatch --issue <ref>` is a second thing to keep true.
+ */
+export function retiredSubcommand(name, verb) {
+  const command = COMMANDS.find(entry => entry.name === name);
+  const retirement = (command?.retired ?? {})[verb];
+  if (retirement === undefined) return null;
+  const declared = (command.subcommands ?? []).find(([usage]) => usage.split(' ')[0] === retirement.to);
+  return { to: retirement.to, why: retirement.why, fix: `ax ${name} ${declared ? declared[0] : retirement.to}` };
+}
 
 /**
  * The column budget every help line is held to, asserted by the test suite: a

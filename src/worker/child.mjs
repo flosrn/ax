@@ -53,7 +53,7 @@ const MANDATE_REL = '.omp/WATCHDOG.yml';
  * Written as one literal rather than composed: it is a contract a model reads,
  * so a line of it is only ever changed on purpose, by an incident.
  */
-const MANDATE = `# Written by ax worker launch. Worktree-scoped: it advises this dispatched
+const MANDATE = `# Written by ax worker dispatch. Worktree-scoped: it advises this dispatched
 # child only, never the operator's own sessions. Not tracked; see .git/info/exclude.
 advisors:
   - name: pilot
@@ -190,24 +190,24 @@ export function pinIdentity(worktree, { exec = defaultExec } = {}) {
  *
  * MEASURED 2026-08-28, ofmchat #101. `git worktree add` hands you a tree with no
  * node_modules (../worktree/setup.mjs says so and installs nothing), so the
- * install runs concurrently with the launch. That dispatch went out at 07:17:06
+ * install runs concurrently with the dispatch. That dispatch went out at 07:17:06
  * and `node_modules/@flosrn/ax` was not created until 07:17:11: the child booted
  * with no AX bundle at all, so nothing consumed the `[omp role=worker
  * model=@default]` marker its own brief carried. Its transcript holds exactly one
  * `model_change` — the boot model, no mover — and no role receipt in either
  * polarity, forever. It then implemented the ticket for real, on the wrong model,
  * with neither the worker role nor the implementation playbook, and both `gate`
- * and `tail` showed a healthy working agent. The launch's own verification said
+ * and `tail` showed a healthy working agent. The dispatch's own verification said
  * UNPROVEN and was disbelieved, because it named no cause.
  *
  * THE PROPOSITION IS ABOUT THE AX ENTRY, NOT ABOUT EVERY ENTRY. "each declared
  * extension resolves" passes on `extensions: []` and on a project that loads a
  * perfectly healthy foreign extension — both of which produce the same
- * unequipped child. And the mirror error costs a launch: a foreign extension
+ * unequipped child. And the mirror error costs a dispatch: a foreign extension
  * this project owns and has not installed is not ax's floor to enforce. So
  * exactly one thing is graded, and it is identified by ../init.mjs's own rule
  * (`ompExtensionRoot`: `.` for the ax checkout, the installed root everywhere
- * else) rather than by a second copy of that string — a self-hosted launch is
+ * else) rather than by a second copy of that string — a self-hosted dispatch is
  * registered as `"."` and must not be refused as unwired.
  *
  * The two not-ready states are DIFFERENT ANSWERS and are separated by `wiring`:
@@ -215,14 +215,14 @@ export function pinIdentity(worktree, { exec = defaultExec } = {}) {
  *   no/duplicate ax entry -> `ax init`; no amount of waiting installs a registration
  *
  * A worktree whose settings file cannot be read at all is NOT MEASURED and says
- * so. `ax doctor` owns the wiring, and a launch inventing a floor the project
+ * so. `ax doctor` owns the wiring, and a dispatch inventing a floor the project
  * never declared would refuse every repo that loads no ax bundle.
  */
 export function equipment(worktree, { exists = existsSync, read = path => readFileSync(path, 'utf8') } = {}) {
   const settings = join(worktree, ...OMP_SETTINGS.split('/'));
   const wiring = reason => ({ measured: true, ready: false, wiring: true, missing: [], reason });
   // ABSENT is the one NOT MEASURED case: a project that never wired OMP here has
-  // declared nothing, and a launch must not invent a floor for it. A file that
+  // declared nothing, and a dispatch must not invent a floor for it. A file that
   // EXISTS and cannot be read is the opposite — a declared loader that loads
   // nothing, which no wait repairs and which boots an unequipped child.
   if (!exists(settings)) {

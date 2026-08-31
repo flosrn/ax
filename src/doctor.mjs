@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote, version } from './config.mjs';
 import { EXACT_VERSION } from './delegation.mjs';
-import { LEGACY_OMP_LOADER, LEGACY_READY_KEY_FIX, OMP_SETTINGS, namesLegacyReadyKey, ompExtensionRoot } from './init.mjs';
+import { LEGACY_OMP_LOADER, OMP_SETTINGS, ompExtensionRoot, retiredConfigKeyFixes } from './init.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { worktreeFindings } from './worktree/doctor.mjs';
 
@@ -41,10 +41,10 @@ export function doctor(cwd = process.cwd()) {
   if (errors.length > 0) {
     fail(`${CONFIG_FILE} is invalid`, `edit ${CONFIG_FILE}`);
     for (const error of errors) note(error);
-    // Where the key WENT, root level only. Both bounds and their measured cost
-    // live with the predicate in ./init.mjs, which `ax init` calls on the same
-    // refusal.
-    if (namesLegacyReadyKey(errors)) fix(LEGACY_READY_KEY_FIX);
+    // Where each retired key WENT, root level only. The table, both bounds and
+    // their measured cost live in ./init.mjs, which `ax init` reads on the same
+    // refusal so neither verb can name a repair the other does not.
+    for (const repair of retiredConfigKeyFixes(errors)) fix(repair);
     return failures;
   }
   ok(`${CONFIG_FILE}: ${config.project.display}, dev ports ${config.ports.dev[0]}-${config.ports.dev[1]}`);
