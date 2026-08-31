@@ -67,7 +67,7 @@ them.
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
 | `src/config.mjs`, `src/schema.mjs`, `ax.schema.json` | the per-repository contract and defaults |
-| `src/commands.mjs` | command registry: help, visibility and generated AGENTS.md lines |
+| `src/commands.mjs` | command registry: help sections, visibility, plumbing and generated AGENTS.md lines |
 | `release-please-config.json`, `.release-please-manifest.json`, `.github/workflows/publish.yml` | version, changelog, tag, GitHub Release and OIDC npm publish |
 
 ## Rules a patch has to hold
@@ -86,6 +86,13 @@ command has no runner. Give a command an `agentLine` only when every consuming r
 A verb that must keep running but must not be offered is marked `plumbing` (`worker start`,
 `docs/adr/0001`): the marker hides it from the help and from its noun's verb list and changes
 nothing else, because undeclaring it would drop it out of that equality contract.
+
+**The CLI stays flat.** Every command declares the help section it prints under — `PROJECT`,
+`WORKTREE` or `ORCHESTRATION`, declared once as `SECTIONS` in `src/commands.mjs`. A future domain
+(automated checks, architecture rules, context rules) arrives as its own noun plus a section, never
+as a nesting prefix under an existing noun: the `gh` shape, not the `gcloud` shape
+(`docs/adr/0001`). A section is printed because visible commands landed in it, so the Orca gate
+empties `ORCHESTRATION` rather than leaving a heading over blank space.
 
 **Project version is authority.** The global bin only finds the local package. An exact declaration
 with no matching install is a refusal, including for `init`; otherwise the global copy could rewrite
@@ -113,19 +120,19 @@ expected failure, then change production. Prefer real temp git repos over mocked
 **Absence is not zero** (F-028). Read receipts by named key; an absent list is unknown, not empty.
 Never `||` a missing container into a value that authorizes a mutation.
 
-**One readiness artifact, two ways in.** The spec flow publishes its own tickets ready: `to-spec`
-decides the work and `to-tickets` cuts it into tickets that are agent-grabbable by construction,
-labelled `ready-for-agent` at publication, so a spec-born ticket needs no readiness pass. `ax triage`
-serves the other way in — the triage on-ramp for work that arrived from outside: reported,
-agent-found, or born as a follow-up. `--job triage` decides what such an issue is, `--job brief`
-writes the brief for a verdict already reached, `--job custom` runs a project's own pass. Both ways
-in converge on the same artifact — an issue labelled `ready-for-agent` carrying a complete
-assignment: what to build, independently observable acceptance criteria, and its blocking edges.
-Where that assignment LIVES follows provenance — the spec flow writes it into the ticket body and
-posts no comment (`to-tickets` has no Agent Brief step); the on-ramp posts it as an Agent Brief.
-Demanding a Brief comment over spec-born work strands a wave exactly as triaging it would.
-`ax triage dispatch` refuses a triage pass over spec-born work, reading the labels a project declares
-in `triage.provenance` — triage is for inbound issues only.
+**One assignment, two ways in.** The spec flow publishes its own tickets complete: `to-spec` decides
+the work and `to-tickets` cuts it into tickets that are agent-grabbable by construction, labelled
+`ready-for-agent` at publication — spec-born work is decided work, and triage never runs over it.
+`ax triage` serves the other way in — the on-ramp for inbound work: reported, agent-found, or born
+as a follow-up. `--job triage` decides what such an issue is, `--job brief` writes the Brief for a
+verdict already reached, `--job custom` runs a project's own pass. Both ways in converge on the same
+artifact — an issue labelled `ready-for-agent` carrying a complete assignment: what to build,
+independently observable acceptance criteria, and its blocking edges. Where that assignment LIVES
+follows provenance — the spec flow writes it into the ticket body and posts no comment (`to-tickets`
+has no Agent Brief step); the on-ramp posts it as an Agent Brief. Demanding a Brief comment over
+spec-born work strands a wave exactly as triaging it would. `ax triage dispatch` refuses a triage
+pass over spec-born work, reading the labels a project declares in `triage.provenance` — triage is
+for inbound issues only.
 
 **Proof, not self-report.** Liveness is cursor movement. Completion is a merged PR or the governing
 artifact. Every merge ground runs; nothing stops after the first refusal.
@@ -138,8 +145,9 @@ second agent. `board` fails open because a checkpoint hook must not take down th
 
 ## Adding a surface
 
-A new **command** needs one registry entry, one runner, one implementation, and a test that exercises
-what the generated help or AGENTS.md tells an agent to type.
+A new **command** needs one registry entry — its name, its help section and its summary — one
+runner, one implementation, and a test that exercises what the generated help or AGENTS.md tells an
+agent to type.
 
 A new **session role** needs a file under `omp/roles/`, an internal playbook when the role has a
 procedure, a role-proof name, and integration coverage for its real activation path. Operator roles
