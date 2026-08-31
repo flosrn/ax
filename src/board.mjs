@@ -6,7 +6,7 @@
 // discipline-shaped signal, and those go silent exactly when it matters. So the
 // writers are automatic (OMP extensions on todo flips and PR transitions), and
 // they all funnel HERE. Before the port the monotonicity rule lived in three
-// files (orca-checkpoint.ts, orca-peer/registry.ts, orca-coordinator.sh).
+// files (orca-checkpoint.ts, orca-peer/registry.ts, and the bash orchestrator).
 //
 // Monotonicity is read-then-write, and Orca's `worktree set` has no conditional
 // form — so without a lock two concurrent writers can interleave and a delayed
@@ -130,7 +130,7 @@ export function board(argv = [], { resolve = resolveOrca, runner, env = process.
   }
 
   // `current` resolves from cwd — what an agent calling this by hand wants.
-  // Callers that already know the worktree (a setup hook, a coordinator) pass
+  // Callers that already know the worktree (a setup hook, an orchestrator) pass
   // --worktree and are honoured verbatim: `current` would silently answer for
   // whatever directory the hook happens to run in.
   if (!selector) selector = 'current';

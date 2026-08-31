@@ -72,7 +72,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   // was non-null printed `model …|` and `session unreadable`, exit 3, on two
   // children that were on the marker's model with the role applied twenty
   // seconds later. It reported the absence of a receipt as the absence of the
-  // thing (F-028), and it cost the coordinator a manual `tail` per launch to
+  // thing (F-028), and it cost the orchestrator a manual `tail` per launch to
   // disbelieve its own gate.
   //
   // So the loop is settled only when the model has a MOVER (`role !== ''`, i.e.

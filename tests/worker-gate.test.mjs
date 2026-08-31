@@ -128,11 +128,12 @@ test('an unreadable task-list is an ignorance, never an absence', () => {
 });
 
 test('a REQUEST id is resolved to its task through the dispatch store', () => {
-  // Measured 2026-08-26 (ofmchat, a live wave): the coordinator typed the id
+  // Measured 2026-08-26 (ofmchat, a live wave): the orchestrator typed the id
   // `worker launch` had just printed as `· request 60-work` — the id every
-  // sibling verb accepts — and the one verb whose job is "can this be relaunched
-  // without duplicating an agent?" answered CANNOT ESTABLISH with two causes
-  // that were both false. The dispatch existed, locally, in the Run consulted.
+  // sibling verb accepts — and the one verb whose job is "can this be
+  // re-dispatched without duplicating an agent?" answered CANNOT ESTABLISH with
+  // two causes that were both false. The dispatch existed, locally, in the Run
+  // consulted.
   const r = verdict(
     { workers: [dispatch('ctx_live', 'term_live', 'ready')], terminals: ['term_live'] },
     ['60-work'],
@@ -173,7 +174,7 @@ test('F-003: an orphaned pane is a dead one, not an agent at work', () => {
 test('a pane on a host this list never asked about is disclosed, not silently a corpse', () => {
   // `terminal list` carries `hostScope.omittedHostIds`, non-empty on this Mac
   // (measured 2026-08-22: one stale runtime, 155 of 218 dispatch panes absent
-  // because of it). Refusing on that made every ordinary relaunch answer 3 —
+  // because of it). Refusing on that made every ordinary re-dispatch answer 3 —
   // the same "answered 3 for a day" bug this suite exists for — so the gate
   // still answers for THIS host and says what it could not see.
   const r = verdict({
@@ -203,7 +204,7 @@ test('F-001: a failed dispatch whose terminal is still live is a working agent, 
     terminals: ['term_live'],
   });
   assert.equal(r.code, 1);
-  assert.match(r.out, /DO NOT relaunch/);
+  assert.match(r.out, /DO NOT re-dispatch/);
   assert.match(r.out, /ctx_failed/, 'the live agent is named — the operator has to go look at it');
 });
 
@@ -229,7 +230,7 @@ test('a host without worker-list cannot conclude, and says which command is miss
 
 test('F-028: a worker-list receipt with no workers container is cannot-establish, never an empty list', () => {
   // An `or` on a container is how an empty worker list was once read as a count
-  // of 2 — here the same slip would authorise a relaunch on top of an agent.
+  // of 2 — here the same slip would authorise a re-dispatch on top of an agent.
   const r = verdict({ workerListShape: true, tasks: [TASK] });
   assert.equal(r.code, 3);
   assert.match(r.out, /no "workers"/);

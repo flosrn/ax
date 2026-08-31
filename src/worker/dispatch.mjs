@@ -593,7 +593,7 @@ export function dispatch(
  * A failure here is announced, never refused: a child with no lineage still does
  * its work and still lands its report on its Run, and refusing would trade a
  * whole slice for a degraded report channel. What is refused is a GUESS — the
- * coordinator's own worktree comes from Orca's witness of this session's
+ * orchestrator's own worktree comes from Orca's witness of this session's
  * terminal, never from the directory this verb happened to run in, because a
  * guessed parent addresses this child's report to a stranger.
  */

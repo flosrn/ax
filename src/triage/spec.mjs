@@ -87,8 +87,8 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
   //
   // But the first version of this string ended on "Report when the draft is
   // written", which told a child with open questions to FINISH. That is what
-  // broke the answer channel, and the coordinator measured both halves of it on
-  // 2026-08-22: children's `ask` refused because the stall had revoked their
+  // broke the answer channel, and the orchestrator measured both halves of it
+  // on 2026-08-22: children's `ask` refused because the stall had revoked their
   // capability, and its own replies with no route left "after their report".
   // Both are consequences of the child ending its turn.
   //
@@ -105,18 +105,19 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
   // resume goes back to waiting on the same one, which is what makes an
   // unbounded human latency survivable without the child dying or deciding).
   //
-  // The global command is the stable entry point a fresh child receives; its
-  // dispatcher hands this argv to the exact project package.
+  // The global command is the stable entry point a fresh child receives, and it
+  // delegates this argv to the exact project package (`src/delegation.mjs`).
   const askCommand = `ax triage ask --issue ${issue} --job ${job}${repo ? ` --repo ${repo}` : ''} --pass ${pass}`;
   // The routing tag lives INSIDE the question text, never between the number
   // and the colon: `Q<n> [technical]:` would break the one Q-line grammar
   // (draft.mjs), while `Q<n>: [technical] …` travels verbatim through ask and
   // answer with zero code. The categories are the maintainer's own ruling
   // (2026-08-23, measured on 24/24 answers that merely confirmed the
-  // coordinator's technical recommendation): the coordinator RULES, reversibly.
-  // `[product]` is advisory — escalate only when the ruling would change what
-  // users see, commit money, legal position or personal data, or contradict an
-  // expressed intention. The tag is not validated — an untagged question costs
+  // orchestrator's technical recommendation): the orchestrator RULES,
+  // reversibly. `[product]` is advisory — escalate only when the ruling would
+  // change what users see, commit money, legal position or personal data, or
+  // contradict an expressed intention. The tag is not validated — an untagged
+  // question costs
   const asking = `When something load-bearing is underdetermined, do not decide it alone and do not bury the ask in prose: write one \`Q<n>: <question>\` line per open decision, numbered from 1 with no gaps and no repeats, each answerable on its own, and OPEN each question's text with its routing tag — \`[technical]\` for representation, cardinality, file placement, versioning, pure/impure, type unions or SQL mechanics, which the parent that dispatched you rules itself and reversibly; \`[product]\` for scope, user-visible behavior, security, money, data, or business taxonomy — advisory for that parent, who still rules unless the answer would change what users see, commit money, legal position or personal data, or contradict an expressed intention — so the parent routes each question without reading it twice. Keep those lines in the draft so the decision is on record. Then run \`${askCommand}\`, which sends the draft's own Q lines to the parent that dispatched you and blocks until they are answered; if it exits 4 the question is PENDING under a printed message id, so go back to waiting on it with \`ax triage ask --resume <message_id>\` rather than giving up or deciding it yourself. Do not report and do not end your turn while a question is open — with ONE exception, and THE ASK ITSELF DECLARES IT: when its repair line tells you to report, that line outranks this sentence. Two refusals say so today — this Dispatch is not supervised (its capability died at a composer stall), and the runtime refusing to admit any ask after the verb's own retries (\`runtime_busy\`, long-poll capacity) — and in both, no ask can land from this session at all, so retrying by hand buys nothing. Then keep the \`Q<n>:\` lines in the draft and report immediately, quoting them verbatim and saying exactly why the supervised channel is unavailable; your report is the only channel left, and the parent answers by peer. On every other refusal, and on a timeout, you do NOT report: exit 4 is pending, not dead. You hold the issue and the code you have already read; that context is why the answer comes to you rather than to a later session. When the answers arrive, revise the draft into a final verdict, drop the \`Q<n>:\` lines the answers close, and only then report.`;
 
   // What a SECOND pass is told, and it is told before anything else it reads.

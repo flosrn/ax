@@ -47,7 +47,7 @@ const CAPABILITY = /\bdcap_[A-Za-z0-9_-]+/;
  *
  * So the preamble cluster ends at line ~8, exactly one file falls between 11 and
  * 40, and everything past that is a DIFFERENT phenomenon: a session that was
- * never handed a capability but mentions one later — a coordinator quoting a
+ * never handed a capability but mentions one later — an orchestrator quoting a
  * child's command, or a session reasoning about this very code. Taking that
  * token would hand one dispatch's grant to another caller.
  *
@@ -94,8 +94,8 @@ export function ownCapability({ cwd = process.cwd(), request = '', env = process
 
   // THE PREAMBLE IS THE DISCRIMINANT, and it has to be, because a whole-file
   // match is not one. Measured 2026-08-27 on ofmchat #87 and #88: triage places
-  // the child in the CURRENT checkout, so the coordinator's own session file
-  // sits in the same slug directory — and the coordinator typed the request id
+  // the child in the CURRENT checkout, so the orchestrator's own session file
+  // sits in the same slug directory — and the orchestrator typed the request id
   // when it dispatched. Selecting on `includes(request)` over the whole file
   // therefore matched BOTH, read as ambiguity, and told a genuine dispatched
   // child it might not be one. Two children hit it on two issues.

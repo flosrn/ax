@@ -316,7 +316,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       note(`#${issue} --republish over ${already.what}`);
     }
     // The stale-view warning, and it is a WARNING because the issue moving is
-    // ordinary — a label edit, the coordinator's own amendment — and only the
+    // ordinary — a label edit, the orchestrator's own amendment — and only the
     // operator knows whether the move changed the verdict. It exists because
     // #98's root cause was upstream of ax and undetectable from inside the
     // draft: OMP's `issue://98` resource served a snapshot from 08-27 for an
@@ -585,7 +585,7 @@ function trackerState(gh, { slug, issue, marker, body }) {
 
 /**
  * When this draft was last written, or `null` when that cannot be read. The
- * mtime is the right clock: a coordinator's own correction moves it, so the
+ * mtime is the right clock: an orchestrator's own correction moves it, so the
  * comparison is against the newest authorship rather than the dispatch date.
  */
 function writtenAt(path) {

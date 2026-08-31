@@ -98,8 +98,8 @@ function deliver(state: DeliveryState, send: (state: DeliveryState) => DeliveryR
 //
 // A `task` subagent runs its own todo list. Without this guard, the subagent
 // finishing its slice fires a completion report addressed to the LEAD's
-// mother - telling her the whole job is done while the lead is still working. A
-// coordinator waiting on that report reads it as the work having landed, so a
+// mother - telling her the whole job is done while the lead is still working. An
+// orchestrator waiting on that report reads it as the work having landed, so a
 // false one is not cosmetic: it ends the supervision early.
 //
 // The discriminator is the session, not the process, and two other extensions
@@ -136,8 +136,8 @@ export default function (pi, seams: ReportSeams = {}): void {
   //
   // `report()` answers `{sent, reason}` and this extension used to drop the
   // reason on the floor, which made an undeliverable finish indistinguishable
-  // from a delivered one — from inside this session, from the coordinator's side,
-  // and from the transcript afterwards.
+  // from a delivered one — from inside this session, from the orchestrator's
+  // side, and from the transcript afterwards.
   //
   // The reason is rarely exotic. Measured 2026-08-25: a child whose parent
   // worktree ran two registered panes got `parent worktree 'ax' runs several
@@ -197,8 +197,9 @@ export default function (pi, seams: ReportSeams = {}): void {
   // committed and opened PR #76, and ended that run at 11:47:40 in silence —
   // `current` was still `done`, `lastReported` was `done`, and `agent_end`
   // returned before the send. Orca's ledger holds nothing from that pane after
-  // 11:32:28. The coordinator, idle since 11:42, was never told. Its `worker_done`
-  // could not cover the gap either: Orca's preamble allows exactly one.
+  // 11:32:28. The orchestrator, idle since 11:42, was never told. Its
+  // `worker_done` could not cover the gap either: Orca's preamble allows exactly
+  // one.
   //
   // WHY THIS EVENT AND NOT A MEASUREMENT. The todo tool is untouched by most
   // follow-up work, which is precisely how the silence arose. Proving new work

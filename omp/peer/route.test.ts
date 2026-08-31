@@ -47,7 +47,7 @@ const runRow = (over: Record<string, unknown> = {}) => ({
 
 const listed = (runs: Record<string, unknown>[]) => ({ ok: true, result: { runs } });
 
-test('the run whose coordinator and objective BOTH match is the address', () => {
+test('the run whose `coordinator_handle` and objective BOTH match is the address', () => {
   const calls: string[] = [];
   const route = resolveChildRoute(
     orca({ 'worker-show': shown(), 'run-list': listed([runRow()]) }, calls),

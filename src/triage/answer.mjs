@@ -11,7 +11,7 @@
 // not a question quietly lands a PLAIN message — the child stays blocked and
 // nothing says so.
 //
-// The ruling text arrives by FILE, never on this verb's argv: the coordinator
+// The ruling text arrives by FILE, never on this verb's argv: the orchestrator
 // is an agent typing into a shell, and free text on a shell line is the one
 // hazard the whole worker subsystem already routes around (spec files, brief
 // files). Flags and ids on argv; bodies on disk.
@@ -197,7 +197,7 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
   //
   // And it REFUSES rather than sending anyway. A reply is the mutation that
   // unblocks a live child exactly once; issuing one that no record can account
-  // for is how two coordinators answer the same question, or how a retry after
+  // for is how two orchestrators answer the same question, or how a retry after
   // a crash sends a second ruling to a child that already consumed the first.
   const recordPath = join(store, `${requestFor({ ...base, pass })}.json`);
   try {

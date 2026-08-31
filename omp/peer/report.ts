@@ -1,6 +1,6 @@
 // @ts-nocheck — runs under OMP's Bun runtime, not the repo TypeScript project.
 /**
- * Completion reporting: `REPORT_SHAPE` is the contract a coordinator reads,
+ * Completion reporting: `REPORT_SHAPE` is the contract an orchestrator reads,
  * `report()` the send that honors it. Board movement and the artifact note
  * carry their own incident history below.
  */
@@ -14,7 +14,7 @@ import { parentPeer, selfWorktree } from './lineage.ts';
 export type ReportState = 'done' | 'blocked' | 'interrupted' | 'turn-ended';
 
 /**
- * Exported because it is a CONTRACT with the coordinator, not an implementation
+ * Exported because it is a CONTRACT with the orchestrator, not an implementation
  * detail: the head is the whole message for a reader who acts on the first line,
  * and `type` decides which reflex it invites. `registry.test.ts` pins both.
  *
@@ -48,8 +48,8 @@ export const REPORT_SHAPE: Record<
       'A fresh session reaches this while it is still reading its ticket, so prove the artifact — commits, a PR, or a named failure — before treating it as finished. Do not answer on the strength of it: interrupting a child that is still working can make it skip its very next tool call.',
     // The board says "in-review" = "no longer working, needs someone". That is
     // false for this state, which usually means "just started". A card is the one
-    // channel a coordinator is told to trust for a remote child, so a wrong card
-    // is worse than no card.
+    // channel an orchestrator is told to trust for a remote child, so a wrong
+    // card is worse than no card.
     movesBoard: false,
   },
 };
@@ -79,16 +79,16 @@ function gitIn(worktree: string): (args: string[]) => string | null {
 /**
  * What the `turn-ended` tail asks its reader to do, done by the sender instead.
  *
- * The state's entire message is "prove the artifact rather than answer", and a
- * coordinator holding five children pays that in two round-trips per ping — measured
+ * The state's entire message is "prove the artifact rather than answer", and an
+ * orchestrator holding five children pays that in two round-trips per ping — measured
  * three times inside twenty minutes on 2026-08-16, and every answer was already sitting
  * in the child's own worktree. Local git only: no `gh`, no network, nothing that can
  * hang a turn boundary.
  *
  * It also survives late delivery, which the ping itself does not: a first-turn report
- * reaches a busy coordinator minutes after it was sent, by which time "has no todo list
- * yet" is routinely false. A measurement taken at SEND time is still a true statement
- * about that moment, and it is dated by the message it rides on.
+ * reaches a busy orchestrator minutes after it was sent, by which time "has no todo
+ * list yet" is routinely false. A measurement taken at SEND time is still a true
+ * statement about that moment, and it is dated by the message it rides on.
  *
  * Pure, with the reader injected, because the failure worth testing is not a wrong
  * count. It is a refused command rendered as `0 commits` — the flattering reading of an
@@ -154,12 +154,12 @@ export function report(
   // It does not mean "stopped"; it usually means "just started and has not
   // created a todo list yet". Writing `in-review` for it makes the sidebar claim a
   // child needs someone while it is reading its ticket — and the board is the one
-  // channel a coordinator is told to trust for a remote child, because it is the
+  // channel an orchestrator is told to trust for a remote child, because it is the
   // only thing that reports itself. Measured 2026-08-15: GAP-370's card read
   // `in-review · 0/10 · Plan` while the session was actively working, and the
-  // coordinator quoted that card as evidence without noticing it was false. Fixing
-  // the report's wording while leaving this write is fixing the sentence and
-  // keeping the lie.
+  // orchestrator quoted that card as evidence without noticing it was false.
+  // Fixing the report's wording while leaving this write is fixing the sentence
+  // and keeping the lie.
   if (mine && shape.movesBoard) {
     // One-shot and unlatched on purpose: this is the session's last board move,
     // and a transient checkpoint failure earlier in the session must not

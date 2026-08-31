@@ -1,6 +1,6 @@
 // `ax worker transcript` — the WHOLE of a child's conversation, structured and redacted.
 //
-// New verb: the bash coordinator had no equivalent, and the two things that
+// New verb: the bash orchestrator had no equivalent, and the two things that
 // look like one were measured on 2026-08-21 and are not:
 //   - `peer_read` returns the TAIL, in prose — the last few turns as narrated
 //     text, so the tool calls, the model moves and everything before the tail

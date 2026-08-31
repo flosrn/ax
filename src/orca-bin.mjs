@@ -5,9 +5,9 @@
 // on the user's machine) while the runtime ships as `orca-ide`; a scheduled job
 // that resolved the bare name ran 246 times reading nothing. The 2026-08-09
 // duplicate agent (F-001) was born on the host whose command set nobody had
-// checked. Before the port this resolution existed three times — in
-// orca-coordinator.sh, orca-stall-watch.sh and orca-model/self.ts — and the
-// copies could drift. This is the only one now, and it is also the availability
+// checked. Before the port this resolution existed three times — in the bash
+// orchestrator, orca-stall-watch.sh and orca-model/self.ts — and the copies
+// could drift. This is the only one now, and it is also the availability
 // predicate that gates every Orca-facing verb out of the help and the dispatch
 // of machines that have no Orca.
 

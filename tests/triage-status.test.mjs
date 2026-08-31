@@ -1,4 +1,4 @@
-// `ax triage status` — the verb that tells a coordinator whether a child is
+// `ax triage status` — the verb that tells an orchestrator whether a child is
 // waiting on it, and on WHICH message id.
 //
 // It had no behavioral test at all, and that is exactly how it shipped blind to

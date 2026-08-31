@@ -185,7 +185,7 @@ test('only commands meant for agents reach the AGENTS block', () => {
 
 test('a plumbing verb is declared and dispatchable, and never advertised', () => {
   const plumbing = COMMANDS.flatMap(command => plumbingSubcommands(command.name).map(verb => [command.name, verb]));
-  assert.ok(plumbing.length > 0, 'the marker is read by the help and by the noun dispatcher; an empty table means it stopped being read');
+  assert.ok(plumbing.length > 0, 'the marker is read by the help and by the noun router; an empty table means it stopped being read');
 
   for (const [name, verb] of plumbing) {
     assert.ok(subcommandNames(name).includes(verb), `${name} ${verb} is marked plumbing but is not a declared verb — nothing holds its runner to the dispatch table`);
@@ -242,7 +242,7 @@ test('no advertised command is a plumbing verb', () => {
 // Both halves are one declaration, so neither can be added without the other.
 test('a retired verb names a declared replacement, and is never itself declared', () => {
   const retirements = COMMANDS.flatMap(command => Object.keys(command.retired ?? {}).map(verb => [command.name, verb]));
-  assert.ok(retirements.length > 0, 'the table is read by every noun dispatcher; an empty one means it stopped being read');
+  assert.ok(retirements.length > 0, 'the table is read by every noun router; an empty one means it stopped being read');
 
   for (const [name, verb] of retirements) {
     const retired = retiredSubcommand(name, verb);

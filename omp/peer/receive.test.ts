@@ -702,7 +702,7 @@ test('a resolver that cannot establish the address records nothing, and says so'
   // Still delivered: refusing an address must not silence the worker.
   expect(h.sent).toHaveLength(1);
   // And the delivery SAYS it cannot be answered. Measured 2026-08-25 on ofmchat
-  // #55: a coordinator answered a load-bearing escalation from a worker whose
+  // #55: an orchestrator answered a load-bearing escalation from a worker whose
   // capability Orca had revoked, was refused by `peer_reply`, and only then went
   // looking for a route by hand. A note on the log is not the reader's channel.
   expect(String(h.sent[0]?.content ?? '')).toContain('[NO REPLY ROUTE]');
@@ -848,7 +848,7 @@ test('a repeated sequence is reported, not injected twice', async () => {
  * teaches ("REQUIRED exactly once"), so the message carried no
  * `payload.replyTo`. It arrived witnessed by its pane key, was labelled with the
  * peer's real name and model, and the delivery invited `Reply with the peer_reply
- * tool (message_id: msg_0c83c5b494db)`. The coordinator answered a load-bearing
+ * tool (message_id: msg_0c83c5b494db)`. The orchestrator answered a load-bearing
  * decision, `peer_reply` refused with `No reply route`, and the answer went into
  * the child's pane by hand instead. The child then stopped using the channel at
  * all: "your decision arrived on this pane and I acted on it from here."

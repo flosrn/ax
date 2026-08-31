@@ -180,7 +180,7 @@ export function startReceiverIfOwned(
  * (measured 2026-08-15). Delivery improved, the receipt did not, so the working
  * and the broken case are indistinguishable from the wire. The sender's own
  * counter is the one signal that differs: a hole in it is loss, and the alarm
- * below is the only way the coordinator learns that something is missing —
+ * below is the only way the orchestrator learns that something is missing —
  * which is all it can learn, since the content is gone.
  *
  * SCOPE, HONESTLY. Only messages sent through `sendToPeer` carry `seq`. A
@@ -225,7 +225,7 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
  * revoked the capability and rejected the child's escalation outright — and then
  * delivered its body here anyway. The route derivation refused (correctly: a
  * join it cannot make unique is not a destination), noted that on the log, and
- * injected the words with nothing said about answerability. The coordinator
+ * injected the words with nothing said about answerability. The orchestrator
  * answered a load-bearing question, was refused with `No reply route for
  * msg_…`, and had to resolve the child's pane out of `orca terminal list --json`
  * by hand. The refusal is right; discovering it by failing is not.
@@ -256,7 +256,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
    *
    * Process-lifetime, deliberately: a restarted receiver has no baseline and
    * therefore does not alarm on the first message it sees. A missed check is a
-   * silence we already live with; a false alarm would teach the coordinator to
+   * silence we already live with; a false alarm would teach the orchestrator to
    * ignore the real one.
    */
   const lastSeq = new Map<string, number>();
@@ -358,7 +358,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // (the injected preamble sends `alive`, empty body, but the payload
             // carries `phase`: investigating → implementing → reviewing). They
             // are consumed and logged WITH that phase, never injected: waking
-            // the coordinator with an empty custom message per beat is pure
+            // the orchestrator with an empty custom message per beat is pure
             // noise. Progress on demand:
             // `orca orchestration inbox --limit 100 --json` reads the same
             // payloads back out of the Run inbox.
@@ -383,7 +383,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // shared parent with a `forwardTo` envelope. This session — the
             // parent — re-posts to the target with the origin it VERIFIED
             // itself (senderIdentity, witnessed pane), logs the relay, and does
-            // not wake its own model: the coordinator's guarantee is the audit
+            // not wake its own model: the orchestrator's guarantee is the audit
             // line plus the two hard gates (decision escalation, merge review),
             // not reading every sibling exchange.
             //
@@ -474,9 +474,10 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // Injecting one wakes the child with its own words and burns a turn:
             // measured 2026-08-15, a gapicore child wrote `my own report echoed
             // back through the relay — nothing to answer there` twice in four
-            // minutes, having sent nine reports of which its coordinator saw three.
-            // Dropping is the whole fix available HERE — the delivery is consumed
-            // by the time this code runs, so this ends the noise, not the loss.
+            // minutes, having sent nine reports of which its orchestrator saw
+            // three. Dropping is the whole fix available HERE — the delivery is
+            // consumed by the time this code runs, so this ends the noise, not the
+            // loss.
             const selfHandle = (process.env.ORCA_TERMINAL_HANDLE ?? '').trim();
             if (selfHandle && String(msg.from_handle ?? '') === selfHandle) {
               deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
@@ -503,7 +504,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // traffic: Orca's supervised preamble teaches `orca orchestration send
             // --type worker_done`, which carries no payload at all. Measured
             // 2026-08-25 on ofmchat, three times in one day — each cost the
-            // coordinator a turn and then a hand-built address.
+            // orchestrator a turn and then a hand-built address.
             let answerable = false;
             const paneHandle = String(msg.from_handle ?? '').trim();
             // `kind !== 'dispatch'` and not merely `attributed`: a dispatch sender

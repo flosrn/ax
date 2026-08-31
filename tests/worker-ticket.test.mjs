@@ -136,7 +136,8 @@ test('a GitHub issue answers the same shape, from the top level of its own JSON'
     id: '#1234',
     title: 'Wheel hangs',
     url: 'https://github.com/o/r/issues/1234',
-    // The address a child can act on; the url above is for the coordinator's receipt.
+    // The address a child can act on; the url above is for the orchestrator's
+    // receipt.
     handle: 'issue://1234',
     state: 'OPEN',
     bodyLength: 5,

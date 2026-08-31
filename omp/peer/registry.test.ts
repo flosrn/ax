@@ -266,11 +266,11 @@ describe('setModel ownership', () => {
 });
 
 /**
- * The report SHAPE is a contract with the coordinator, so it is asserted rather
- * than left to prose. The regression it guards is a merge, not a typo: folding
- * `turn-ended` back into `done` because they look like the same event from
- * inside the child. They are not the same proposition, and the difference is
- * what a coordinator acts on.
+ * The report SHAPE is a contract with the orchestrator, so it is asserted
+ * rather than left to prose. The regression it guards is a merge, not a typo:
+ * folding `turn-ended` back into `done` because they look like the same event
+ * from inside the child. They are not the same proposition, and the difference
+ * is what an orchestrator acts on.
  *
  * Measured 2026-08-15: two of three dispatched children sent "finished its
  * work" within minutes of launch, zero commits each, one showing `0/10 · Plan`
@@ -295,7 +295,7 @@ describe('report shape', () => {
   });
 
   test('turn-ended informs rather than handing over', () => {
-    // `handoff` invites the coordinator to take the work over, which is the
+    // `handoff` invites the orchestrator to take the work over, which is the
     // expensive reflex for a child that is still reading its ticket. `done`
     // keeps the handoff because there the invitation is correct.
     expect(REPORT_SHAPE['turn-ended'].type).toBe('status');
@@ -304,8 +304,8 @@ describe('report shape', () => {
   });
 
   test('turn-ended carries the instruction that replaces the wrong reflex', () => {
-    // Naming the signal is not enough: a coordinator needs the next action, and
-    // it is to measure the artifact instead of answering.
+    // Naming the signal is not enough: an orchestrator needs the next action,
+    // and it is to measure the artifact instead of answering.
     const tail = REPORT_SHAPE['turn-ended'].tail ?? '';
     expect(tail).toContain('prove the artifact');
     expect(tail).toContain('skip its very next tool call');
@@ -323,7 +323,7 @@ describe('report shape', () => {
     // means "just started", so writing it for `turn-ended` fixes the report's
     // sentence and keeps the sidebar's lie. Measured 2026-08-15: GAP-370's card
     // read `in-review · 0/10 · Plan` while the session was actively working, and
-    // the coordinator quoted that card as evidence.
+    // the orchestrator quoted that card as evidence.
     //
     // Asserted on the table rather than by intercepting the spawn: the decision
     // is the contract, the spawn is plumbing, and a test that stubbed Bun.spawn
@@ -337,7 +337,7 @@ describe('report shape', () => {
 
 /**
  * `turn-ended` tells its reader to prove the artifact. The child is standing in the
- * worktree, so it answers that itself — measured 2026-08-16, a coordinator with five
+ * worktree, so it answers that itself — measured 2026-08-16, an orchestrator with five
  * children paid two git round-trips per ping, three times in twenty minutes, for facts
  * that were already under the sender's feet.
  *

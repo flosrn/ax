@@ -133,7 +133,7 @@ function worktreeFor(run, handle, executionEnv) {
  * list omits it, so this answers `false` and the death below is never claimed —
  * the silence alert stays the only net in that configuration. A watcher that
  * reported a death it had not measured would be worse than a late one: it would
- * send a coordinator to bury a worker that is still building.
+ * send an orchestrator to bury a worker that is still building.
  *
  * The shared verdict (`paneVerdict`, ./pane.mjs) can additionally prove a LOCAL
  * pane dead when the receipt's `hostIds` names `local` — the exception release
@@ -199,7 +199,7 @@ function alertStall(run, fields, request, silentSeconds, status, signal) {
  * that it stopped before finishing. Measured 2026-08-22: `orca terminal close`
  * on a worker holding an unfinished todo settled the Dispatch
  * `termination_reason: operator_close` and produced NOT ONE message on the
- * coordinator's Run. Silence there reads exactly like a worker still thinking,
+ * orchestrator's Run. Silence there reads exactly like a worker still thinking,
  * which is the confusion this whole file exists to end — so the watcher, the
  * only party still alive, says it instead.
  *
@@ -359,7 +359,7 @@ export function stall(
   try {
     let worktreePath = '';
     if (!cardWatchAsked) log('card watch: disabled by ORCA_CARD_WATCH=0');
-    else if (!cardEnabled) log('card watch: off for a same-host dispatch — its own peer report reaches the coordinator directly.');
+    else if (!cardEnabled) log('card watch: off for a same-host dispatch — its own peer report reaches the orchestrator directly.');
     else {
       worktreePath = worktreeFor(run, fields.handle, fields.env);
       if (!worktreePath) log(`card watch: no worktree resolved for ${fields.handle} yet; retrying discovery each tick.`);
@@ -402,8 +402,8 @@ export function stall(
       // Measured 2026-08-22: Orca left the proven case `dispatch=dispatched
       // worker=ready` after its pane was killed, so nothing but this said so.
       //
-      // `settled` is excluded because a closed pane is then the coordinator's own
-      // `worker-release`. A REPAIRED held composer is excluded for a sharper
+      // `settled` is excluded because a closed pane is then the orchestrator's
+      // own `worker-release`. A REPAIRED held composer is excluded for a sharper
       // reason: its Dispatch settled `failed` and never settles again, so
       // `!settled` stays true for the whole life of the child `start.mjs` left
       // running — and that child's pane closes normally at the end of real work
@@ -461,8 +461,8 @@ export function stall(
             // TWICE — measured 2026-08-22, `comm-ax-card` published
             // `DECISION: …` and its silence alert followed 58 seconds later,
             // because only cursor movement fed the clock. The card is the one
-            // channel that crosses hosts, so refusing it as evidence is how a
-            // coordinator is woken about a child that had just spoken to it.
+            // channel that crosses hosts, so refusing it as evidence is how an
+            // orchestrator is woken about a child that had just spoken to it.
             lastActivity = currentTime;
             lastSignal = 'card';
             const comment = card.includes('\t') ? card.slice(card.indexOf('\t') + 1) : card;

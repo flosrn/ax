@@ -8,9 +8,9 @@
  *      its own pane, the board pinned it at `completed`, and `status_rank` is
  *      monotonic so nothing could bring it back down while its agent kept
  *      working for hours.
- *   2. A COORDINATOR IS NOT ITS WORKERS. `.omp/commands/epic.md` §5 merges a
- *      worker's PR from the coordinator's checkout, where an argument-less
- *      probe resolves the COORDINATOR's PR instead and moves the wrong board
+ *   2. AN ORCHESTRATOR IS NOT ITS WORKERS. `.omp/commands/epic.md` §5 merges a
+ *      worker's PR from the orchestrator's checkout, where an argument-less
+ *      probe resolves the ORCHESTRATOR's PR instead and moves the wrong board
  *      entry.
  *
  * `statusFromPrState` is driven against a fake `Bun.spawn`, NOT against a stub
@@ -99,7 +99,7 @@ test('a merge from this worktree own pane leaves the board where it was - 2026-0
 test('an unnamed `gh pr merge` of this worktree own merged PR moves nothing either - the flag-led form reaches the same guard by a different path', async () => {
   pr({ state: 'MERGED', isDraft: false, number: 7, url: 'https://x/pull/7' });
 
-  // No explicit ref, so the coordinator guard does not fire and the MERGED
+  // No explicit ref, so the orchestrator guard does not fire and the MERGED
   // branch is the only thing standing between this and a wrong `completed`.
   expect(explicitPrRef('gh pr merge --squash')).toBeUndefined();
   expect(await statusFromPrState('gh pr merge --squash')).toBeUndefined();
@@ -137,10 +137,10 @@ test('unparseable `gh` output is swallowed - this is observability and must neve
   expect(await statusFromPrState('gh pr create')).toBeUndefined();
 });
 
-// ── statusFromPrState · the coordinator is not its workers ───────────────────
+// ── statusFromPrState · the orchestrator is not its workers ───────────────────
 
-test('a coordinator merging a WORKER PR does not touch the coordinator own board entry - epic.md §5 runs that merge from the coordinator checkout', async () => {
-  // The argument-less probe answers for the coordinator's own branch, which is
+test('an orchestrator merging a WORKER PR does not touch the orchestrator own board entry - epic.md §5 runs that merge from the orchestrator checkout', async () => {
+  // The argument-less probe answers for the orchestrator's own branch, which is
   // open and non-draft: without the named-ref guard this would report
   // `in-review` because a worker somewhere else merged.
   pr({ state: 'OPEN', isDraft: false, number: 7, url: 'https://x/pull/7' });

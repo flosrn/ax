@@ -236,9 +236,9 @@ export function looksLikePrTransition(command: string): boolean {
  * The PR this command names, when it names one explicitly.
  *
  * `.omp/commands/epic.md` §5 runs `gh pr merge <pr>` for a WORKER's PR from
- * the coordinator's checkout. An argument-less probe there resolves the
- * coordinator's own branch instead — so it either finds nothing or, worse,
- * moves the coordinator's checkpoint because a worker merged. Only act when
+ * the orchestrator's checkout. An argument-less probe there resolves the
+ * orchestrator's own branch instead — so it either finds nothing or, worse,
+ * moves the orchestrator's checkpoint because a worker merged. Only act when
  * the command is about this worktree's own PR.
  */
 export function explicitPrRef(command: string): string | undefined {
@@ -278,8 +278,8 @@ export async function statusFromPrState(
     const pr = JSON.parse(out);
 
     // The command named a PR explicitly — only ours counts. This is what stops
-    // an epic coordinator's `gh pr merge <worker-pr>` from moving the
-    // coordinator's own checkpoint to `completed`.
+    // an epic orchestrator's `gh pr merge <worker-pr>` from moving the
+    // orchestrator's own checkpoint to `completed`.
     const named = explicitPrRef(command);
     if (named) {
       const matches =

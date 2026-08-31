@@ -1,12 +1,12 @@
 // The write-ahead record of one dispatch — the memory that survives the mutation.
 //
-// Port of `~/.omp/agent/scripts/coordinator/record.py`, the decision core of the
-// bash coordinator. The protocol it encodes is F-001 (2026-08-09, two agents
-// created twice in one worktree): a mutation may only ever be issued from a
-// record written BEFORE it, and recovered by replaying that record byte for
-// byte. A missing, unreadable or ambiguous record is an inability to establish —
-// never permission. No live-agent snapshot can change that outcome, because a
-// snapshot cannot see a mutation still in flight.
+// Port of the bash orchestrator's `record.py`, its decision core. The protocol
+// it encodes is F-001 (2026-08-09, two agents created twice in one worktree): a
+// mutation may only ever be issued from a record written BEFORE it, and
+// recovered by replaying that record byte for byte. A missing, unreadable or
+// ambiguous record is an inability to establish — never permission. No
+// live-agent snapshot can change that outcome, because a snapshot cannot see a
+// mutation still in flight.
 //
 // COMPATIBILITY IS A CONTRACT: the JSON vocabulary here (`attempts`, `phases`,
 // `receipt`, `identity`, `argv`) is record.py's, unchanged, so a record written
@@ -27,7 +27,8 @@ import { parseReceipt } from '../orca-bin.mjs';
 /**
  * The request-id grammar, closed: it names a file in the store, so a leading
  * dot (dotfiles, `..`) and separators are refused before any disk access.
- * This grammar existed twice in bash (coordinator + stall-watch), verbatim.
+ * This grammar existed twice in bash (the orchestrator and its stall watcher),
+ * verbatim.
  */
 export const REQUEST_ID = /^(?!\.)[A-Za-z0-9_.-]+$/;
 export const requestIdOk = request => typeof request === 'string' && REQUEST_ID.test(request);
@@ -420,7 +421,7 @@ export function report(path) {
  * exists", which is the failure this whole lifecycle was added to end.
  *
  * States: `asking` → `pending` (outlived the wait, id known) | `answered` |
- * `refused`; then `replying` → `answered` once a coordinator rules it, written
+ * `refused`; then `replying` → `answered` once an orchestrator rules it, written
  * by ../triage/answer.mjs so a successful reply cannot leave a durable `pending`
  * lying to the next reader.
  */

@@ -289,7 +289,7 @@ test('a refused label call posts nothing for that issue', () => {
 });
 
 test('a state transition asks for the removal, in the same invocation as the adds', () => {
-  // Reported by the first real coordinator campaign, 2026-08-22: publish only
+  // Reported by the first real orchestrator campaign, 2026-08-22: publish only
   // ever built `--add-label`, so publishing a draft that moved an issue off
   // `needs-triage` left BOTH state labels on it.
   //
@@ -754,8 +754,8 @@ test('GitHub returning CRLF does not hide a verbatim republication', () => {
 // `updated 2026-08-27`, over an issue mutated on 08-28 — and it is detectable
 // here without trusting the snapshot: the draft's own mtime against the issue's
 // `updatedAt`. It warns rather than refuses, because the issue moving is
-// ordinary (a label edit, the coordinator's own amendment) and only the operator
-// knows whether the move changed the verdict.
+// ordinary (a label edit, the orchestrator's own amendment) and only the
+// operator knows whether the move changed the verdict.
 
 test('an issue that moved after the draft was written warns, and still publishes', () => {
   const root = repo();
@@ -880,11 +880,12 @@ test('status names an unsettled mutation and routes recovery to --resume, never 
 });
 
 test('a repaired held composer is never offered a --resume, because its child is running', () => {
-  // Measured 2026-08-22 on the first real coordinator campaign: #50 and #51 both
-  // read `RAN · failed · <handle> — UNSETTLED` and both were offered a resume,
-  // while `orca terminal read` answered `status: running` on their panes and the
-  // children were mid-analysis. Following that line puts a SECOND agent in a
-  // working session — printed as the repair, which is the worst place for it.
+  // Measured 2026-08-22 on the first real orchestrator campaign: #50 and #51
+  // both read `RAN · failed · <handle> — UNSETTLED` and both were offered a
+  // resume, while `orca terminal read` answered `status: running` on their panes
+  // and the children were mid-analysis. Following that line puts a SECOND agent
+  // in a working session — printed as the repair, which is the worst place for
+  // it.
   const root = repo();
   const store = join(root, 'store');
   record(store, 'triage-acme-widgets-7', { usable: false, repaired: true });

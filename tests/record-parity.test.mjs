@@ -1,5 +1,5 @@
 // Cross-implementation parity, proven — not assumed. The fixture was written by
-// the REAL coordinator/record.py (python3, 2026-08-21, this machine: init,
+// the REAL bash-era `record.py` (python3, 2026-08-21, this machine: init,
 // phase-begin ×2, phase-end ×2 — the exact sequence a bash-era dispatch left on
 // disk). The migration replays in-flight bash records through ax at step 4, so
 // "the JS port reads them" is load-bearing for F-001 and gets its own fixture

@@ -1,6 +1,6 @@
-// The port of `orca-coordinator.sh triage` — 42 propositions, each one paid for
-// by an incident on 2026-08-10, when "N issues is N sessions" was given four
-// times in prose and violated four different ways.
+// The port of the bash orchestrator's `triage` — 42 propositions, each one paid
+// for by an incident on 2026-08-10, when "N issues is N sessions" was given
+// four times in prose and violated four different ways.
 //
 // F-027: every test here proves the SAME proposition as the Bash test it
 // replaces, not a neighbouring one. Five could not be carried verbatim, and each
@@ -680,7 +680,7 @@ test('the verified line names the model it proved, so a later mover is legible',
   assert.match(r.out, /reached the first turn on omniroute\/or-opus/);
 });
 
-test('a dispatch with no role receipt is cannot-establish and is never relaunched', () => {
+test('a dispatch with no role receipt is cannot-establish and is never re-dispatched', () => {
   let reads = 0;
   const r = run(['--issue', '7'], {
     env: { AX_TRIAGE_ROLE_WAIT: '0' },
@@ -690,7 +690,7 @@ test('a dispatch with no role receipt is cannot-establish and is never relaunche
   assert.equal(r.started.length, 1);
   assert.equal(reads, 1);
   assert.match(r.out, /#7 CANNOT-ESTABLISH/);
-  assert.match(r.out, /Do NOT relaunch/);
+  assert.match(r.out, /Do NOT re-dispatch/);
 });
 
 // The friction reported from goodluckagency/ofmchat#101 on 2026-08-27: the
@@ -795,7 +795,7 @@ test('the summary refuses to let a report stand for a landing', () => {
 
 // ── a second pass on one issue ───────────────────────────────────────────────
 //
-// Measured 2026-08-22: the coordinator never ran a second pass, because there
+// Measured 2026-08-22: the orchestrator never ran a second pass, because there
 // was no verb for one. It hand-edited the child's draft with string replacements
 // and published that. Every refusal below is a way that shortcut could have gone
 // wrong once it became a real verb.
@@ -966,7 +966,7 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // which told a child with open questions to FINISH — and finishing is what
   // broke the answer channel both ways on 2026-08-22: the children's `ask` was
   // refused because the stall had revoked their capability, and the
-  // coordinator's replies had no route left "after their report".
+  // orchestrator's replies had no route left "after their report".
   //
   // The command is ax's OWN, fully rendered — issue, job, repo, pass — for the
   // same reason the label grammar is named: an unnamed gesture gets improvised,
@@ -975,7 +975,7 @@ test('a child that must ask is told the exact command, and told to wait on it', 
   // its replacement.
   const r = run(['--issue', '7', '--dry-run']);
   assert.equal(r.code, 0);
-  assert.match(r.out, /ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the global dispatcher selects the consuming repo version');
+  assert.match(r.out, /ax triage ask --issue 7 --job triage --repo acme\/widgets --pass 1/, 'the global command delegates to the consuming repo version');
   assert.doesNotMatch(r.out, /orca orchestration ask/, 'the raw transport is not the child’s interface');
   assert.match(r.out, /blocks until they are answered/);
   assert.match(r.out, /ax triage ask --resume <message_id>/, 'an unbounded human latency is survivable, not fatal');
@@ -1096,7 +1096,7 @@ test('malformed parent metadata is never coerced into a fake parent number', () 
 // notice what it was looking at. Measured 2026-08-30 on ofmchat: ten tickets
 // carrying `needs-triage`, `source:roadmap` AND a parent spec at once (#118 →
 // #11), and one sentence was enough to start triaging the lot — re-deciding a
-// categorization those PRDs had already fixed.
+// categorization those specs had already fixed.
 //
 // NEITHER SIGNAL DECIDES ALONE. A parent proves nesting, not provenance: a
 // follow-up nested under its origin ticket is inbound and would be misjudged by
@@ -1199,7 +1199,7 @@ test('a declared vocabulary the ticket does not carry gates nothing', () => {
 // The brief lane applies labels too — `LABEL_JOBS` has said so since the
 // vocabulary preflight was written — so it is judged by provenance for the same
 // reason triage is: its child spec permits `Labels:` directives, and a spec-born
-// ticket's categorization was decided by its PRD. Measured on the 2026-08-30
+// ticket's categorization was decided by its spec. Measured on the 2026-08-30
 // review: `readIssue` routed on a second, hand-kept list of jobs that had
 // drifted from the first, so `--job brief` read no labels at all and the gate
 // ran on an empty set — indistinguishable from a project that declared nothing.
@@ -1233,7 +1233,7 @@ test('an INBOUND ticket is legitimate in the brief lane — a brief distils the 
 test('a declared provenance label gates despite case and surrounding whitespace', () => {
   const r = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: { spec: [' Source:Roadmap '], inbound: ['source:user-report'] } }),
-    issues: { 7: 'OPEN|0|PRD sub-issue|source:roadmap|11' },
+    issues: { 7: 'OPEN|0|spec sub-issue|source:roadmap|11' },
   });
   assert.equal(r.code, 1);
   assert.match(r.out, /Source:Roadmap/, 'the refusal prints the DECLARED name that matched, not a normalized form');

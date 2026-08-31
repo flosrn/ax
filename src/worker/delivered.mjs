@@ -26,7 +26,7 @@
 // read identically — and on that reading ax sent a phantom Enter and reported
 // `SPEC WAS HELD unsent in the pane — one Enter submitted it`. On #56 that Enter
 // went in at 10:49:48.203Z, eight seconds AFTER the child had recorded the
-// brief. The claim was false, the coordinator relayed it as measurement, and
+// brief. The claim was false, the orchestrator relayed it as measurement, and
 // `ax worker repair` on the same reading would have delivered the whole spec a
 // SECOND time.
 //
@@ -103,15 +103,15 @@ function newestDispatch(rec) {
  * compare it with the moment the dispatch settled.
  *
  * `count` and `lastAt` answer a DIFFERENT question, and the incident that asked
- * it (2026-08-26) is why the scan no longer stops at the first hit: a coordinator
- * sent three steering messages to a child whose pane was VIVANT and whose
- * transcript was readable, and all three sat at `delivered_at: null` for an hour.
- * The child opened its pull request without them, and the loss became visible
- * only at review. A send receipt cannot distinguish "queued" from "never", and
- * the pane cannot either — but the child's own session can: a delivered
- * injection lands there as another `role: 'user'` entry. So `count === 1` means
- * the brief arrived and NOTHING since, and `lastAt` is what a coordinator
- * compares against the moment it sent.
+ * it (2026-08-26) is why the scan no longer stops at the first hit: an
+ * orchestrator sent three steering messages to a child whose pane was VIVANT and
+ * whose transcript was readable, and all three sat at `delivered_at: null` for an
+ * hour. The child opened its pull request without them, and the loss became
+ * visible only at review. A send receipt cannot distinguish "queued" from
+ * "never", and the pane cannot either — but the child's own session can: a
+ * delivered injection lands there as another `role: 'user'` entry. So `count ===
+ * 1` means the brief arrived and NOTHING since, and `lastAt` is what an
+ * orchestrator compares against the moment it sent.
  *
  * Delivery is still not liveness, and neither is a count.
  */

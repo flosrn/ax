@@ -1,8 +1,8 @@
 // `ax worker tail <handle|request>` — is that pane ALIVE, and what has it printed?
 //
-// `orca terminal read` answers zero in three unrelated situations, and a
-// coordinator acts on that number. Measured 2026-08-09 on one live handle, back
-// to back (port of orca-terminal-tail.sh + its suite):
+// `orca terminal read` answers zero in three unrelated situations, and an
+// orchestrator acts on that number. Measured 2026-08-09 on one live handle,
+// back to back (port of orca-terminal-tail.sh + its suite):
 //
 //   read --terminal <h> --json            -> status: running, returnedLineCount: 1, tail: 1 line
 //   read --terminal <h> --lines 60 --json -> status: null,    returnedLineCount: null, tail: absent
@@ -77,7 +77,7 @@ function transcriptOwner(target, handle, env) {
  * What the child's OWN session says about the messages it received, or ''.
  *
  * ALIVE was never a claim about the correction channel, and on 2026-08-26 that
- * gap cost a coordinator two canonical ticket amendments and three direct
+ * gap cost an orchestrator two canonical ticket amendments and three direct
  * steerings: the pane was VIVANT, the transcript readable, `worker-list`
  * succeeded — and all five injections sat at `delivered_at: null` while the
  * child opened its pull request without them. The loss surfaced at review.
@@ -228,7 +228,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   // `status=exited cursor=0` with no line, and this verb printed `ALIVE,
   // SILENT` followed by "This is not a dead terminal" — about a terminal that
   // was exactly that. The status was in the receipt and printed on the same
-  // line; nothing read it. A coordinator waiting for that pane to speak waits
+  // line; nothing read it. An orchestrator waiting for that pane to speak waits
   // forever, and the reassurance argues against the only correct action.
   const { lines, cursor, paneStatus: status } = pane;
   const exited = status === 'exited';

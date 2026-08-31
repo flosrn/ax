@@ -10,7 +10,7 @@
  * `body` was added 2026-08-15 because aliasing one of the three names only
  * removed one of the collisions. The remaining one is the sharpest: this tool's
  * own `execute` spawns `orca orchestration reply --body`, so the name it
- * rejected was the name it uses. It was hit by a coordinator that had run
+ * rejected was the name it uses. It was hit by an orchestrator that had run
  * `orchestration send --body` minutes earlier.
  *
  * A name contract is exactly the kind of fix that regresses in silence: someone
@@ -102,8 +102,8 @@ describe.each([
  * with no payload, so it is named perfectly and states no return address.
  * Measured 2026-08-25 on ofmchat: three invitations, three refusals
  * (`msg_a1064a6fcec8`, `msg_c8b9136b5e77`, `msg_0c83c5b494db`), each costing the
- * coordinator a turn before it built an address by hand — and teaching the child
- * that the channel does not work.
+ * orchestrator a turn before it built an address by hand — and teaching the
+ * child that the channel does not work.
  */
 describe("the reply instruction", () => {
 	const pane = { name: "worker", model: "claude-opus-5", attributed: true, kind: "pane" as const };

@@ -3,12 +3,13 @@
 //
 // The channel exists because a child that hits an underdetermined decision must
 // not decide it alone and must not die: it writes `Q<n>:` lines into its draft,
-// sends EXACTLY those lines to the coordinator, and blocks until each one gets a
-// ruling. Before this grammar the middle of that loop was hand work — the first
-// real campaign (2026-08-22) folded rulings back with ~200-line string edits per
-// ticket, four of which crashed — and a hand-rolled reply validated nothing: a
-// ruling could name a question that did not exist, skip one that did, or carry
-// stray prose that meant something to its author and nothing to the child.
+// sends EXACTLY those lines to the orchestrator, and blocks until each one gets
+// a ruling. Before this grammar the middle of that loop was hand work — the
+// first real campaign (2026-08-22) folded rulings back with ~200-line string
+// edits per ticket, four of which crashed — and a hand-rolled reply validated
+// nothing: a ruling could name a question that did not exist, skip one that did,
+// or carry stray prose that meant something to its author and nothing to the
+// child.
 //
 // So every function here is a refusal or a rendering, and the pairing rule is
 // single: a ruling reaches a question BY NUMBER, one to one, no leftovers on
