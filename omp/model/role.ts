@@ -77,10 +77,10 @@ export function applyRoleBody(current: readonly string[], body: string): string[
  * be extracted from whatever OMP's `discoverAgents` had found, on the argument
  * that the host owns precedence and merge and re-implementing that would drift.
  * The argument was sound and the conclusion was wrong: it made these roles
- * task-agent files, so they appeared in subagent discovery where a `readiness`
- * is actively harmful, they could not ship inside a package, and a role on a
- * branch did not exist for any session until it landed in the main checkout
- * (measured 2026-08-07). Owning the files is what makes a role a session
+ * task-agent files, so they appeared in subagent discovery where an
+ * `orchestrator` is actively harmful, they could not ship inside a package, and a
+ * role on a branch did not exist for any session until it landed in the main
+ * checkout (measured 2026-08-07). Owning the files is what makes a role a session
  * identity rather than a subagent template.
  */
 export interface RoleDefinition {
