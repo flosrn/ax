@@ -751,6 +751,65 @@ export function dispatchIndex(store) {
 }
 
 /**
+ * "Which Run dispatched the session sitting in THIS pane?" — or the named
+ * inability.
+ *
+ * WHY IT EXISTS. A finished child reports UPWARD, and `omp/peer/lineage.ts`
+ * resolves that direction through Orca's lineage, which is worktree-level:
+ * `parentWorktreeId` names the parent WORKTREE and nothing inside it. A parent
+ * running one pane is unambiguous; a parent running three is not, so the report
+ * refused. Measured 2026-08-30 on ofmchat PRD 2, twice in one night (#117
+ * ctx_0c5dacb47230, #113 ctx_812f22b13b19): the primary checkout hosted the
+ * orchestrator beside two readiness sessions, which is the ORDINARY shape of a
+ * wave night, and both children had to re-deliver by hand.
+ *
+ * The discriminator Orca has no field for is already on this machine, written by
+ * the dispatching session BEFORE it issued the dispatch: the record pairs the
+ * child's pane with its own `--run`. So the child needs to hold nothing but its
+ * own pane handle — no capability, no dispatch id, no cooperation from a
+ * runtime whose lineage stops at the worktree.
+ *
+ * The record is authority here for the same reason it is everywhere else: it was
+ * written ahead of the mutation, by the only party that knew both halves. It is
+ * read strictly — an absence, an unreadable store and a reused pane are three
+ * different inabilities and each is named (F-028), because the caller's fallback
+ * is a sentence a woken human reads. Never last-file-wins: a guess here delivers
+ * a completion to a session that dispatched different work.
+ *
+ * HOST-LOCAL BY CONSTRUCTION. The store lives under this machine's HOME, so a
+ * child on another host resolves nothing and must not: that case has its own
+ * channel (the board card, see ../worker/brief.mjs).
+ */
+export function dispatcherRunForPane(store, handle) {
+  if (typeof handle !== 'string' || handle === '') {
+    return { reason: 'this session has no pane handle, so no dispatch record can be matched to it' };
+  }
+  const index = dispatchIndex(store);
+  // EVERY refusal names the pane. The caller's fallback is a sentence the child
+  // says out loud on another channel, and "I am term_x and my dispatcher is
+  // unknown" is answerable by a human; "no dispatcher could be looked up" is not.
+  if (index.missing) return { reason: `the dispatch store ${store} does not exist, so the dispatcher of pane ${handle} could not be looked up` };
+  if (index.reason !== '') return { reason: `the dispatch store ${store} could not be read, so the dispatcher of pane ${handle} is unknown: ${index.reason}` };
+
+  const named = [...index.byDispatch.values()].filter(entry => entry.handle === handle);
+  const requests = [...new Set(named.map(entry => entry.request))];
+  if (requests.length === 0) {
+    const looked = index.unreadable.length > 0 ? ` (${index.unreadable.length} record(s) there are unreadable)` : '';
+    return { reason: `no dispatch record names pane ${handle}${looked}` };
+  }
+  if (requests.length > 1) {
+    return { reason: `two dispatch records name pane ${handle} (${requests.join(', ')}), so which session dispatched it cannot be established` };
+  }
+
+  const request = requests[0];
+  try {
+    return { run: recordedRun(join(store, `${request}.json`)) };
+  } catch (error) {
+    return { reason: `the dispatch record ${request} names pane ${handle} but carries no Run: ${String(error.message ?? error)}` };
+  }
+}
+
+/**
  * Every pane handle recorded against each request, from a `dispatchIndex`.
  *
  * A request can hold more than one: a `--replace` records a second worker-start,

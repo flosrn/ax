@@ -141,11 +141,19 @@ export default function (pi, seams: ReportSeams = {}): void {
   //
   // The reason is rarely exotic. Measured 2026-08-25: a child whose parent
   // worktree ran two registered panes got `parent worktree 'ax' runs several
-  // panes and none can be identified as the dispatcher`. That refusal is right —
-  // Orca's lineage is worktree-level, so no pane-level discriminator exists and
-  // guessing would send a completion to a stranger — but it is invisible, so
-  // opening a second session in a coordinator's worktree makes every child of it
-  // go mute with nothing said anywhere.
+  // panes and none can be identified as the dispatcher`, and went mute with
+  // nothing said anywhere. That announcement is why the same failure was
+  // REPORTED rather than guessed at on 2026-08-30 (ofmchat PRD 2, #117 and
+  // #113): both children read this line, said so on the peer channel, and
+  // nothing was lost.
+  //
+  // A parent running several panes now resolves through the write-ahead dispatch
+  // record instead (`dispatcherRunForPane`, ../peer/lineage.ts), so that
+  // particular reason is no longer the ordinary one. What has not changed is the
+  // rule this block exists for: every remaining reason — a departed dispatcher,
+  // an unreadable store, a pane no record names, another host — is a finish this
+  // session must not treat as handed over, and silence is the one outcome that
+  // makes it indistinguishable from success.
   //
   // ONE ANNOUNCEMENT PER DISTINCT REASON. A per-cycle repetition of a condition
   // the session cannot change is noise, and noise is how the signal that matters

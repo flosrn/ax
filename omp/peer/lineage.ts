@@ -8,6 +8,7 @@
 import { idToPath, orca, prop, rows, str, worktrees } from './orca.ts';
 import { selfHandle } from './store.ts';
 import { type Peer, peers } from './address.ts';
+import { defaultStore, dispatcherRunForPane } from '../../src/worker/record.mjs';
 
 // -------------------------------------------------------------- worktrees --
 
@@ -107,10 +108,23 @@ export function warmLineage(): void {
  * peer shell can forge it, so it alone decides WHICH WORKTREE may receive a
  * report.
  *
- * There is no pane-level refinement: Orca's lineage is worktree-level, and the
- * `<worktree>/.agent/orca-spawn.json` that used to name the spawning pane is no
- * longer written by anything. A parent worktree running several panes is
- * therefore ambiguous and reported as such rather than guessed.
+ * There is no pane-level refinement IN ORCA: its lineage is worktree-level, and
+ * the `<worktree>/.agent/orca-spawn.json` that used to name the spawning pane is
+ * no longer written by anything. So a parent worktree running several panes used
+ * to be reported as ambiguous outright — correct, and measured intolerable on
+ * 2026-08-30 (ofmchat PRD 2, #117 and #113 in one night): the primary checkout
+ * hosts readiness sessions beside the orchestrator, so "several panes" is the
+ * ordinary shape of a wave night and every child of it finished undeliverable.
+ *
+ * The discriminator Orca has no field for is on this machine: the dispatching
+ * session wrote its write-ahead record BEFORE issuing the dispatch, pairing the
+ * child's pane with its own Run. That record is authority here for the reason it
+ * is everywhere in ax — written ahead of the mutation by the only party holding
+ * both halves. It breaks the tie and NOTHING ELSE: a single-pane parent never
+ * reads it, and an absent, unreadable, ambiguous or departed answer keeps the
+ * refusal rather than falling back to a pane that merely happens to be there.
+ * Delivering a completion to a session that dispatched different work is worse
+ * than telling the child to re-route, which is what the refusal makes it do.
  */
 export function parentPeer(): { peer?: Peer; reason?: string } {
   const resolved = parentWorktreePath();
@@ -126,10 +140,22 @@ export function parentPeer(): { peer?: Peer; reason?: string } {
   const name = parentPath.split('/').pop() || parentPath;
   if (inParent.length === 0)
     return { reason: `parent worktree '${name}' has no live session to report to` };
-  if (inParent.length > 1)
-    return {
-      reason: `parent worktree '${name}' runs several panes and none can be identified as the dispatcher`,
-    };
+  if (inParent.length > 1) {
+    // Host-local by construction: the store is under this machine's HOME, so a
+    // child on another host resolves nothing here and must not — that case has
+    // its own channel (the board card, src/worker/brief.mjs).
+    const found = dispatcherRunForPane(defaultStore(process.env), selfHandle());
+    if (found.run === undefined)
+      return { reason: `parent worktree '${name}' runs several panes and ${found.reason}` };
+    const dispatcher = inParent.find((p) => p.run === found.run);
+    if (dispatcher === undefined)
+      return {
+        reason:
+          `the record that dispatched this session names Run ${found.run}, which no live pane in '${name}' is running `
+          + '— the dispatching session is gone, so its worktree cannot receive this report',
+      };
+    return { peer: dispatcher };
+  }
   return { peer: inParent[0] };
 }
 

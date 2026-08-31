@@ -365,10 +365,16 @@ function announcing(sendReport: Send) {
 }
 
 test('a refused delivery is said in the session that could not deliver it', async () => {
+  // A reason ax still produces: the tie-break through the dispatch record found
+  // the dispatcher's Run and no live pane is running it. A fixture quoting a
+  // refusal the resolver no longer emits would keep passing while the real
+  // sentence went unannounced.
   const lead = ctx('mute-child');
   const h = announcing(() => ({
     sent: false,
-    reason: "parent worktree 'ax' runs several panes and none can be identified as the dispatcher",
+    reason:
+      "the record that dispatched this session names Run run_departed, which no live pane in 'ax' is running "
+      + '— the dispatching session is gone, so its worktree cannot receive this report',
   }));
 
   await h.fire('session_start', {}, lead);
@@ -377,8 +383,8 @@ test('a refused delivery is said in the session that could not deliver it', asyn
   await h.fire('agent_end', {}, lead);
 
   expect(h.said).toHaveLength(1);
-  expect(h.said[0]).toContain('runs several panes');
-  // What it is, and what it costs: the coordinator is not going to learn this.
+  expect(h.said[0]).toContain('dispatching session is gone');
+  // What it is, and what it costs: nobody upstream is going to learn this.
   expect(h.said[0]).toMatch(/not delivered|undelivered/i);
 });
 

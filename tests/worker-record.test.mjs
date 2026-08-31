@@ -13,6 +13,7 @@ import {
   attemptNew,
   claimRecord,
   dispatchFields,
+  dispatcherRunForPane,
   initRecord,
   newIdentity,
   phaseArgv,
@@ -399,6 +400,91 @@ test('dispatch fields take the newest worker but recover --run from older phases
   noTerminal.attempts[0].phases[1].receipt.result.effects = [{ kind: 'worktree', id: 'wt_1' }];
   writeFileSync(path, JSON.stringify(noTerminal));
   assert.throws(() => dispatchFields(path), /terminal effect/);
+});
+
+// ── which Run dispatched the session sitting in THIS pane ─────────────────────
+//
+// Measured 2026-08-30, ofmchat PRD 2, twice in one night (#117 dispatch
+// ctx_0c5dacb47230, #113 dispatch ctx_812f22b13b19). A child's `worker_done`
+// could not be delivered: `omp/peer/lineage.ts` resolves a report UPWARD by
+// worktree, Orca's lineage is worktree-level, and the primary checkout was
+// running the orchestrator beside two triage sessions. Several panes, no
+// discriminator, so the report refused rather than guessing — correctly, but
+// "several panes in the parent worktree" is the NORMAL shape of a wave night.
+//
+// The discriminator Orca lacks is on this machine: the dispatching session wrote
+// this record BEFORE it issued the dispatch, and it carries both the child's
+// pane and its own `--run`. So a child holding nothing but its own pane handle
+// can name the Run that dispatched it.
+
+test('a pane handle resolves to the Run that dispatched it', () => {
+  const dir = store();
+  const path = join(dir, 'impl-117.json');
+  claimRecord(dir, 'impl-117');
+  initRecord(path, { request: 'impl-117', orca: 'orca' });
+  phaseBegin(path, { name: 'task-create', identity: 'id-1', argv: ['orca', 'orchestration', 'task-create', '--run', 'run_orchestrator'] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { task: { id: 'task_1' } } }) });
+  phaseBegin(path, { name: 'worker-start', identity: 'id-2', argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1'] });
+  phaseEnd(path, 'last', {
+    exit: 0,
+    receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_0c5dacb47230', effects: [{ kind: 'terminal', id: 'term_child' }] } }),
+  });
+
+  assert.deepEqual(dispatcherRunForPane(dir, 'term_child'), { run: 'run_orchestrator' });
+});
+
+test('a pane no record dispatched is an inability that says whether it looked', () => {
+  // F-028 both ways: an empty store is not "dispatched by nobody" for a caller
+  // that will fall back to a refusal message a human reads. It has to be able
+  // to say the store was read and held no such pane.
+  const dir = store();
+  const absent = dispatcherRunForPane(dir, 'term_stranger');
+  assert.equal(absent.run, undefined);
+  assert.match(absent.reason, /no dispatch record names pane term_stranger/);
+
+  const missing = dispatcherRunForPane(join(dir, 'nope'), 'term_child');
+  assert.equal(missing.run, undefined);
+  assert.match(missing.reason, /dispatch store/);
+});
+
+test('one pane recorded by two requests is ambiguous, never last-file-wins', () => {
+  // A reused pane. Guessing here would deliver a completion to a session that
+  // dispatched a different unit of work — the F-001 class, at delivery time.
+  const dir = store();
+  for (const [request, run] of [['impl-117', 'run_a'], ['impl-118', 'run_b']]) {
+    const path = join(dir, `${request}.json`);
+    claimRecord(dir, request);
+    initRecord(path, { request, orca: 'orca' });
+    phaseBegin(path, { name: 'task-create', identity: `${request}-1`, argv: ['orca', 'orchestration', 'task-create', '--run', run] });
+    phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { task: { id: 'task_1' } } }) });
+    phaseBegin(path, { name: 'worker-start', identity: `${request}-2`, argv: ['orca', 'orchestration', 'worker-start'] });
+    phaseEnd(path, 'last', {
+      exit: 0,
+      receiptText: JSON.stringify({ ok: true, result: { dispatchId: `ctx_${request}`, effects: [{ kind: 'terminal', id: 'term_shared' }] } }),
+    });
+  }
+
+  const r = dispatcherRunForPane(dir, 'term_shared');
+  assert.equal(r.run, undefined);
+  assert.match(r.reason, /two dispatch records name pane term_shared/);
+});
+
+test('a record that never carried --run cannot name a dispatcher, and says so', () => {
+  // `recordedRun` throws on it by design; a delivery path must not turn that
+  // into a silent absence.
+  const dir = store();
+  const path = join(dir, 'impl-119.json');
+  claimRecord(dir, 'impl-119');
+  initRecord(path, { request: 'impl-119', orca: 'orca' });
+  phaseBegin(path, { name: 'worker-start', identity: 'id-1', argv: ['orca', 'orchestration', 'worker-start'] });
+  phaseEnd(path, 'last', {
+    exit: 0,
+    receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_x', effects: [{ kind: 'terminal', id: 'term_child' }] } }),
+  });
+
+  const r = dispatcherRunForPane(dir, 'term_child');
+  assert.equal(r.run, undefined);
+  assert.match(r.reason, /impl-119/);
 });
 
 test('the Run and the binary are recovered newest-phase-first, and strictly', () => {

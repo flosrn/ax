@@ -19,13 +19,18 @@
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../../src/worker/record.mjs';
 
 const HANDLE = 'term_child';
 const CHILD_WT = '/tmp/fake/child';
 const PARENT_WT = '/tmp/fake/parent';
+/** The two panes a wave night legitimately runs beside the orchestrator. */
+const ORCH = 'term_orch';
+const READY = 'term_ready';
 
 let dir = '';
 let log = '';
@@ -42,7 +47,7 @@ printf '%s\\n' "$*" >> "${log}"
 mode="$(cat "${dir}/mode")"
 case "$*" in
   *"terminal list"*)
-    echo '{"ok":true,"result":{"terminals":[{"handle":"${HANDLE}","worktreePath":"${CHILD_WT}"}]}}'
+    echo '{"ok":true,"result":{"terminals":[{"handle":"${HANDLE}","worktreePath":"${CHILD_WT}"},{"handle":"${ORCH}","worktreePath":"${PARENT_WT}"},{"handle":"${READY}","worktreePath":"${PARENT_WT}"}]}}'
     ;;
   *"worktree ps"*)
     if [[ "$mode" == "down" ]]; then
@@ -71,6 +76,39 @@ function calls(pattern: string): number {
     .filter((line) => line.includes(pattern)).length;
 }
 
+/**
+ * A live, reachable session in the registry: `peers()` filters on a published
+ * Run, so an unregistered pane is invisible to it — which is why the cases
+ * above see an empty parent worktree despite `terminal list` naming two panes.
+ */
+function publishPeer(handle: string, run: string): void {
+  mkdirSync(join(dir, 'peers'), { recursive: true });
+  writeFileSync(
+    join(dir, 'peers', `${handle}.json`),
+    JSON.stringify({ handle, run, sessionId: `sess_${run}`, model: 'anthropic/claude-opus-5', level: 'high', ownerPid: process.pid }),
+  );
+}
+
+/**
+ * The write-ahead record a dispatching session leaves before it issues the
+ * dispatch — built by the real writer, so the fixture cannot drift from the
+ * shape `dispatcherRunForPane` reads.
+ */
+function writeRecord({ request, run, pane }: { request: string; run: string; pane: string }): void {
+  const store = join(dir, 'dispatch');
+  mkdirSync(store, { recursive: true });
+  const path = join(store, `${request}.json`);
+  claimRecord(store, request);
+  initRecord(path, { request, orca: 'orca' });
+  phaseBegin(path, { name: 'task-create', identity: `${request}-1`, argv: ['orca', 'orchestration', 'task-create', '--run', run] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { task: { id: 'task_1' } } }) });
+  phaseBegin(path, { name: 'worker-start', identity: `${request}-2`, argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1'] });
+  phaseEnd(path, 'last', {
+    exit: 0,
+    receiptText: JSON.stringify({ ok: true, result: { dispatchId: `ctx_${request}`, effects: [{ kind: 'terminal', id: pane }] } }),
+  });
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'peer-lineage-'));
   log = join(dir, 'calls.log');
@@ -79,10 +117,15 @@ beforeEach(() => {
     ORCA_BIN: process.env.ORCA_BIN,
     ORCA_TERMINAL_HANDLE: process.env.ORCA_TERMINAL_HANDLE,
     ORCA_PEER_REGISTRY_DIR: process.env.ORCA_PEER_REGISTRY_DIR,
+    ORCA_DISPATCH_STORE: process.env.ORCA_DISPATCH_STORE,
   };
   process.env.ORCA_BIN = installFakeOrca();
   process.env.ORCA_TERMINAL_HANDLE = HANDLE;
   process.env.ORCA_PEER_REGISTRY_DIR = join(dir, 'peers');
+  // An EMPTY store by default, never the operator's live one: a case that does
+  // not write a record must read "no record names this pane", not whatever this
+  // machine happens to have dispatched today.
+  process.env.ORCA_DISPATCH_STORE = join(dir, 'dispatch');
 });
 
 afterEach(() => {
@@ -148,4 +191,84 @@ test('warmLineage resolves at startup so the first report pays nothing', async (
 
   m.parentPeer();
   expect(calls('worktree ps')).toBe(afterWarm);
+});
+
+// ── several panes in the parent worktree ──────────────────────────────────────
+//
+// Measured 2026-08-30 on ofmchat PRD 2, twice in one night: #117 (dispatch
+// ctx_0c5dacb47230) and #113 (ctx_812f22b13b19) both finished, both sent
+// `worker_done`, and both were told the report could not be delivered because
+// the parent worktree ran several panes. It did — the orchestrator beside two
+// readiness sessions — and that is the ORDINARY shape of a wave night, not an
+// edge case. Orca's lineage stops at the worktree, so this side had no
+// discriminator and refused rather than guessing.
+//
+// The discriminator was on the machine all along: the dispatching session wrote
+// the record BEFORE it dispatched, and that record pairs the child's pane with
+// its own Run.
+
+test('a parent running several panes resolves through the record that dispatched this child', async () => {
+  setMode('parented');
+  publishPeer(ORCH, 'run_orchestrator');
+  publishPeer(READY, 'run_readiness');
+  writeRecord({ request: 'impl-117', run: 'run_orchestrator', pane: HANDLE });
+  const m = await import('./lineage.ts?case=record-picks');
+
+  const r = m.parentPeer();
+  expect(r.reason).toBeUndefined();
+  expect(r.peer?.handle).toBe(ORCH);
+  expect(r.peer?.run).toBe('run_orchestrator');
+});
+
+test('the record decides, not the pane order — the other session is never picked by luck', async () => {
+  // Same two panes, the OTHER one dispatched this child. A resolution that
+  // happened to return `inParent[0]` would pass the case above and deliver every
+  // completion to the wrong session here.
+  setMode('parented');
+  publishPeer(ORCH, 'run_orchestrator');
+  publishPeer(READY, 'run_readiness');
+  writeRecord({ request: 'triage-126', run: 'run_readiness', pane: HANDLE });
+  const m = await import('./lineage.ts?case=record-picks-other');
+
+  expect(m.parentPeer().peer?.handle).toBe(READY);
+});
+
+test('several panes and no record still refuses, and the reason names what was missing', async () => {
+  // The refusal is not replaced, it is narrowed: with no record naming this pane
+  // there is still nothing to pick, and a completion sent to a stranger is worse
+  // than one the child is told to re-route. The reason has to say which of the
+  // two facts stopped it, because the child reads it and acts on it.
+  setMode('parented');
+  publishPeer(ORCH, 'run_orchestrator');
+  publishPeer(READY, 'run_readiness');
+  const m = await import('./lineage.ts?case=record-absent');
+
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.reason).toContain('several panes');
+  expect(r.reason).toContain(HANDLE);
+});
+
+test('a record naming a Run that is not live in the parent refuses rather than falling back', async () => {
+  // The dispatcher died and something else opened in its worktree. Falling back
+  // to "the only other pane" is exactly the guess this channel must not make.
+  setMode('parented');
+  publishPeer(ORCH, 'run_orchestrator');
+  publishPeer(READY, 'run_readiness');
+  writeRecord({ request: 'impl-117', run: 'run_departed', pane: HANDLE });
+  const m = await import('./lineage.ts?case=record-stale');
+
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.reason).toContain('run_departed');
+});
+
+test('one live pane still resolves with no record at all — the ordinary case pays nothing', async () => {
+  // The store is only consulted to break a tie. A single-pane parent must not
+  // start depending on a record being readable.
+  setMode('parented');
+  publishPeer(ORCH, 'run_orchestrator');
+  const m = await import('./lineage.ts?case=single-pane');
+
+  expect(m.parentPeer().peer?.handle).toBe(ORCH);
 });
