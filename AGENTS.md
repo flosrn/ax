@@ -34,7 +34,7 @@ them.
 
 | Path | Owns |
 |---|---|
-| `src/dispatch.mjs`, `bin/ax.mjs`, `src/cli.mjs` | global command → exact project version → CLI dispatch |
+| `src/delegation.mjs`, `bin/ax.mjs`, `src/cli.mjs` | global command → exact project version → CLI delegation |
 | `src/init.mjs`, `src/doctor.mjs` | project inference, managed wiring, recorded state vs reality |
 | `src/worktree/plan.mjs`, `src/worktree/probes.mjs` | every worktree decision and every machine fact it consumes |
 | `src/worktree/identity.mjs`, `src/worktree/ports.mjs`, `src/worktree/supabase.mjs`, `src/worktree/addressing.mjs` | the rules composed by the plan |

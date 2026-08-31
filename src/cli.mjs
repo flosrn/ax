@@ -1,11 +1,11 @@
 // The CLI body: argv in, exit code out.
 //
 // This lives in `src/` rather than in `bin/ax.mjs` because the bin entry is no
-// longer the CLI — it is a dispatcher. A globally installed ax has to run the
-// version a PROJECT installed, and the only way to do that without spawning a
-// second Node and re-entering the same dispatcher is to import the local
-// package's implementation. So the implementation is an exported function, and
-// the bin entry is the thing that decides whose implementation runs.
+// longer the CLI — it delegates. A globally installed ax has to run the version
+// a PROJECT installed, and the only way to do that without spawning a second
+// Node and re-entering the same entry is to import the local package's
+// implementation. So the implementation is an exported function, and the bin
+// entry is the thing that decides whose implementation runs.
 
 import { COMMANDS, renderUsage } from './commands.mjs';
 import { board } from './board.mjs';

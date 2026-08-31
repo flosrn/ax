@@ -2,7 +2,7 @@
 //
 // ax is installed globally so an agent can type `ax` anywhere, and pinned per
 // project so a repo's tooling is versioned with the repo. Those two facts
-// collide: without this dispatcher, upgrading the global copy silently changed
+// collide: without this delegation, upgrading the global copy silently changed
 // what `ax doctor` graded in every checkout on the machine at once. Every test
 // here is about that collision, and one of them runs the real `bin/ax.mjs`
 // against a project whose install is a different package entirely.
@@ -15,12 +15,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { installCommand, resolveDelegation, runDelegated } from '../src/dispatch.mjs';
+import { installCommand, resolveDelegation, runDelegated } from '../src/delegation.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SELF_VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 
-const temp = () => realpathSync(mkdtempSync(join(tmpdir(), 'ax-dispatch-')));
+const temp = () => realpathSync(mkdtempSync(join(tmpdir(), 'ax-delegation-')));
 
 /** A project root: declares ax or not, installs it or not, split or not. */
 function project({ pinned = '1.2.3', install = '1.2.3', split = true, body } = {}) {
@@ -32,8 +32,8 @@ function project({ pinned = '1.2.3', install = '1.2.3', split = true, body } = {
     mkdirSync(join(dir, 'bin'), { recursive: true });
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@flosrn/ax', version: install }));
     // The bin wrapper exists in every real install, and delegation must never
-    // reach for it: that file IS this dispatcher, and handing argv back to it is
-    // how a version loop starts. So it is planted here, and it throws.
+    // reach for it: that file IS the delegating entry, and handing argv back to
+    // it is how a version loop starts. So it is planted here, and it throws.
     writeFileSync(join(dir, 'bin', 'ax.mjs'), '#!/usr/bin/env node\nthrow new Error("the bin wrapper must never be delegated to");\n');
     if (split) writeFileSync(join(dir, 'src', 'cli.mjs'), body ?? 'export const runCli = () => 0;\n');
   }
@@ -82,7 +82,7 @@ test('nothing here declares ax, so the copy that was typed answers', () => {
 });
 
 test('only an EXACT declaration is authority: a github:, range or link: pin is no wall', () => {
-  // None of these names one version, so there is nothing for the dispatcher to
+  // None of these names one version, so there is nothing for delegation to
   // insist on. `ax doctor` grades a non-exact pin and names the repair; turning
   // it into a refusal here would lock a developer out of the very project they
   // are linking ax into.

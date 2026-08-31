@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote, version } from './config.mjs';
-import { EXACT_VERSION } from './dispatch.mjs';
+import { EXACT_VERSION } from './delegation.mjs';
 import { LEGACY_OMP_LOADER, LEGACY_READY_KEY_FIX, OMP_SETTINGS, namesLegacyReadyKey, ompExtensionRoot } from './init.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { worktreeFindings } from './worktree/doctor.mjs';
