@@ -30,7 +30,7 @@
  * resolve to something else.
  *
  * WHY `omp/ax-run.mjs` AND NOT `bin/ax.mjs`
- * The bin entry is a dispatcher — `resolveDelegation` / `runDelegated` exist to
+ * The bin entry delegates — `resolveDelegation` / `runDelegated` exist to
  * hand the invocation to ANOTHER project's install. That is the correct answer
  * for a human typing `ax`, and the wrong one here: it reintroduces exactly the
  * version skew above, by a different route. `omp/ax-run.mjs` imports the CLI body

@@ -16,8 +16,8 @@
 //   refuse  — the project declares ax and has not installed it; name the repair
 //
 // Delegation imports the local package's CLI implementation, never its
-// `bin/ax.mjs`: that file is this dispatcher, and handing argv back to it is
-// how a version loop starts.
+// `bin/ax.mjs`: that file is the delegating entry, and handing argv back to it
+// is how a version loop starts.
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -89,7 +89,7 @@ const selfVersion = self => readManifest(join(self, 'package.json'))?.version ??
  * single version — there is nothing to insist on — so a project carrying one
  * gets whatever it actually installed, and the copy that was typed when it
  * installed nothing. `ax doctor` is where a non-exact pin is graded and named;
- * this dispatcher does not turn it into a wall.
+ * delegation does not turn it into a wall.
  *
  * `roots` is injectable so the decision can be tested without a git repository;
  * `self` likewise, so a test can pretend to be a different copy than the one
@@ -172,7 +172,7 @@ export function resolveDelegation({ cwd = process.cwd(), self = SELF_DIR, roots 
       root: legacy.candidate,
       pin: authority.pin,
       version: legacy.installedManifest.version,
-      message: `${legacy.candidate} installed ${PACKAGE_NAME} ${legacy.installedManifest.version}, which ships no src/cli.mjs — that release predates global-to-local dispatch`,
+      message: `${legacy.candidate} installed ${PACKAGE_NAME} ${legacy.installedManifest.version}, which ships no src/cli.mjs — that release predates global-to-local delegation`,
       repair: `pnpm add -D ${PACKAGE_NAME}@${selfVersion(self)} --dir ${quote(legacy.candidate)}`,
     };
   }

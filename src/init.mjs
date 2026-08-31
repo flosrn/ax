@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { applyBlock, getJsonPath, setJsonPath, styleFor } from './blocks.mjs';
 import { agentLines } from './commands.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, vendorRemote, version } from './config.mjs';
-import { EXACT_VERSION } from './dispatch.mjs';
+import { EXACT_VERSION } from './delegation.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 
 // An exact npm version, not a git tag and not a range: ax is published to the

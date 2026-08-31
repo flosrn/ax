@@ -138,7 +138,7 @@ jobs:
 
   # Tell every consuming repository that a version it can install now exists.
   #
-  # WHY THIS EXISTS. The pin is the version authority (`src/dispatch.mjs`), so a
+  # WHY THIS EXISTS. The pin is the version authority (`src/delegation.mjs`), so a
   # fix released here does not reach a consumer until that consumer's pin moves.
   # Dependabot moves it, but on a `daily` schedule — and a scheduled poll is not
   # what "propagate on release" means: measured 2026-08-28, five releases shipped

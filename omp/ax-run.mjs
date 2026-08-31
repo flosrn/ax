@@ -2,7 +2,7 @@
 // The entry the bundle's extensions spawn when they need `ax`, and the reason
 // they do not spawn `bin/ax.mjs`.
 //
-// `bin/ax.mjs` is a DISPATCHER: it asks `src/dispatch.mjs` whether some other
+// `bin/ax.mjs` DELEGATES: it asks `src/delegation.mjs` whether some other
 // project's install should answer instead, and hands the invocation over when it
 // says yes. That is right for a human typing `ax` into a shell, where the
 // question "whose ax?" is genuinely open. It is wrong here. An extension was

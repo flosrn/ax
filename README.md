@@ -104,7 +104,7 @@ pnpm install
 ax doctor
 ```
 
-The global command is a dispatcher. Inside a repo, the exact `@flosrn/ax` version declared in that
+The global command delegates. Inside a repo, the exact `@flosrn/ax` version declared in that
 repo commands; the global copy never silently substitutes itself. If the dependency is declared
 but not installed, ax refuses and names `pnpm install` as the repair. Outside a configured repo,
 the global copy remains available to run `ax init`.
