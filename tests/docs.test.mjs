@@ -126,6 +126,14 @@ test('the docs speak the ratified glossary, and CONTEXT.md is what ratified it',
   }
 });
 
+test('AGENTS.md routes a prose writer to the dictionary that grades them', () => {
+  // The test above enforces CONTEXT.md's _Avoid_ lines OVER AGENTS.md — so a
+  // cold agent editing prose here is graded against a glossary the file never
+  // named. The pointer is the repair: the dictionary must be one hop away from
+  // the writer it rules (spec #39 US-24, found by the wave's verification pass).
+  assert.match(read('AGENTS.md'), /CONTEXT\.md/, 'AGENTS.md never names CONTEXT.md, the naming authority its own prose is graded against');
+});
+
 // ── the routing table's completeness, which is the half a machine can hold ────
 //
 // Measured 2026-08-26: `src/worker/capability.mjs` was added — a module owning a

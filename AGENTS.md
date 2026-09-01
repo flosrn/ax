@@ -164,6 +164,10 @@ version pins must match the code.
 
 ## Vocabulary
 
+`CONTEXT.md` is the ratified glossary — the dictionary every surface picks its terms from. Read it
+before writing prose that names a session, a verb or an artifact: its `_Avoid_` lines are enforced
+over this file and README.md by `tests/docs.test.mjs`.
+
 `F-0xx` is a measured finding filed in `gapilabs/omp`; the module header states the rule it paid for.
 ax's own architecture decisions live under `docs/adr/` in this repo, cited by path
 (`docs/adr/0001-…`); a bare `ADR NNNN` refers to the harness-wide set under `~/.omp/docs/adr/`.
