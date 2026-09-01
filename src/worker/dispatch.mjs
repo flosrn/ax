@@ -69,7 +69,7 @@ import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
-import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, ticketKind } from './ticket.mjs';
+import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, repoIdFor } from './hosts.mjs';
 import { MECHANICS, renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
@@ -79,7 +79,7 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 import { defaultExec } from '../exec.mjs';
 
 const USAGE =
-  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--notes <file>] ' +
+  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
   '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
@@ -166,6 +166,7 @@ export function dispatch(
     run: '',
     notes: '',
     task: '',
+    because: '',
     model: '@default',
     agent: 'omp',
     on: '',
@@ -184,6 +185,7 @@ export function dispatch(
     '--run': 'run',
     '--notes': 'notes',
     '--task': 'task',
+    '--because': 'because',
     '--model': 'model',
     '--agent': 'agent',
     '--on': 'on',
@@ -222,6 +224,15 @@ export function dispatch(
       '--run is not a dispatch input: the Run is the one this pane\'s receiver consumes, and naming another dispatches a child that reports into silence',
       'ax init   # then RESTART this session so its pane joins the peer registry, and drop --run',
     );
+  }
+
+  // `--because` is the reason `--task` was reached for at all, and it is written
+  // into the dispatch record. Refused rather than dropped, on the `--fresh
+  // --because` precedent in `src/triage/dispatch.mjs`: a reason recorded against
+  // a dispatch that overrode nothing is a sentence a later reader trusts and
+  // cannot check.
+  if (flags.because !== '' && flags.task === '') {
+    return usageError('--because only means something with --task: it records why a ticket\u2019s own assignment was overridden, and nothing was overridden here');
   }
 
   // Exactly one identity. `--issue` names work a tracker owns; `--name` names
@@ -348,6 +359,26 @@ export function dispatch(
 
   const emptyBody = named ? '' : emptyBodyRefusal({ bodyLength: ticket.bodyLength, task: flags.task, id: ticket.id });
   if (emptyBody) return refuse(emptyBody, `ax worker dispatch --issue ${flags.issue} --task "<instruction> ${ticket.id}"`);
+
+  // The tracker's own completeness assertion, read BEFORE anything is created —
+  // and after the empty-body gate, which owns the one shape where the label
+  // cannot be true (R4/KTD3). `--name` carries no ticket and therefore no label.
+  const overridden = named
+    ? ''
+    : readyAssignmentRefusal({
+        labels: ticket.labels,
+        task: flags.task,
+        because: flags.because,
+        id: ticket.id,
+        entry,
+        bodyLength: ticket.bodyLength,
+      });
+  if (overridden) {
+    return refuse(
+      overridden,
+      `ax worker dispatch --issue ${flags.issue}${slug === '' ? '' : ` --slug ${slug}`} --task '${flags.task}' --because '<reason>'`,
+    );
+  }
 
   // ── 3. everything else knowable BEFORE anything is created ─────────────────
   // A dispatch that can never be issued must not leave a worktree, a mandate, a
@@ -527,13 +558,23 @@ export function dispatch(
     operator,
   });
 
+  // The options `ax worker start` owns and RECORDS, as against the placement
+  // argv forwarded to Orca after `--`. `--because` belongs here and only here:
+  // it is provenance for this dispatch, not an input to the child, and the child
+  // reads the ticket (KD4). A reason nobody kept is a reason nobody asked for.
+  const owned = [
+    '--request', request,
+    '--run', runId,
+    ...(flags.because === '' ? [] : ['--because', flags.because]),
+  ];
+
   if (dry) {
     section(named ? `dry run — ${flags.name}: ${instruction}` : `dry run — ${ticket.id}: ${ticket.title}`);
     raw(brief);
     // The preview is composed from the SAME array the dispatch would carry, so
     // it cannot drift from what runs. The Bash it replaces re-typed this line by
     // hand, which is a second implementation of the argv nobody tests.
-    note(`would run: ax worker start ${['--request', request, '--run', runId, '--spec-file', '<spec>', '--', ...place].join(' ')}`);
+    note(`would run: ax worker start ${[...owned, '--spec-file', '<spec>', '--', ...place].join(' ')}`);
     return 0;
   }
 
@@ -547,7 +588,7 @@ export function dispatch(
   }
 
   // ── 7. dispatch ────────────────────────────────────────────────────────────
-  const startArgs = ['--request', request, '--run', runId, '--spec-file', spec, '--orca', bin, '--', ...place];
+  const startArgs = [...owned, '--spec-file', spec, '--orca', bin, '--', ...place];
   let code = startFn(startArgs, { env, runner });
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a

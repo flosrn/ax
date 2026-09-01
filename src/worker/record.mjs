@@ -241,9 +241,20 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
   };
 }
 
-/** The first write of a claimed record: who asked, on what host, through which binary. */
-export function initRecord(path, { request, orca, host = hostname(), now = () => new Date().toISOString() }) {
-  save({ request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] }, path);
+/**
+ * The first write of a claimed record: who asked, on what host, through which
+ * binary — and, when the caller overrode the ticket's own assignment, why
+ * (`--because`, R4/KTD3).
+ *
+ * `because` is ADDITIVE and omitted when empty (the shape rule in this file's
+ * header): every reader here works from named keys, no recovery path branches on
+ * it, and a record written by an older ax carries none. It is provenance for the
+ * human who asks, weeks later, why a ticket's brief was not the instruction.
+ */
+export function initRecord(path, { request, orca, because = '', host = hostname(), now = () => new Date().toISOString() }) {
+  const rec = { request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] };
+  if (String(because).trim() !== '') rec.because = because;
+  save(rec, path);
 }
 
 /**

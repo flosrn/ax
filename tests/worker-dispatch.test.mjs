@@ -18,7 +18,13 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
+// The canonical name, from the module that APPLIES it. Imported rather than
+// retyped: `ax triage publish` is what makes a ticket agent-grabbable, and a
+// refusal keyed on a second spelling of that label would stop refusing the day
+// either string moved.
+import { READY_LABEL } from '../src/triage/spec.mjs';
 import { dispatch, requestIdFor, retiredKnobs } from '../src/worker/dispatch.mjs';
+import { READY_LABEL as TICKET_READY_LABEL } from '../src/worker/ticket.mjs';
 import { readProof, verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
 
@@ -293,6 +299,87 @@ test('an empty ticket body creates nothing on the default entry point', () => {
   assert.match(r.out, /body is empty|names none/i);
   assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'an empty ticket places nothing');
   assert.deepEqual(r.started, []);
+});
+
+// ── --task over a ticket the tracker calls complete ──────────────────────────
+// R4/KTD3. `ready-for-agent` is not decoration: it is the tracker's own
+// assertion that this ticket's body IS the assignment. `--task` replaces that
+// assignment with one the ticket never carried, so an orchestrator that reaches
+// for it on a ready ticket is either working around a label that is wrong or
+// discarding a brief it did not read — and only it can say which. The predicate
+// is the LABEL, never the body: a body that exists and underdetermines the work
+// stays the child's own gate (worker-ticket.test.mjs pins that boundary).
+
+test('the label dispatch refuses on is the one triage APPLIES, spelled once per layer', () => {
+  // `src/worker/ticket.mjs` declares its own copy rather than importing this
+  // one, because six triage modules read `worker` and one import back would make
+  // the dependency mutual. The equality is therefore a proposition, held here:
+  // without it, either string could move and the refusal would simply stop
+  // refusing — the silent failure a label-keyed gate is most exposed to.
+  assert.equal(TICKET_READY_LABEL, READY_LABEL);
+});
+
+test('--task over a ready-for-agent ticket is refused, and --because is the one way through', () => {
+  const ready = () => {
+    const root = repo();
+    provisioned(root, `${ISSUE}-${SLUG}`);
+    return root;
+  };
+
+  const barred = run(['--issue', ISSUE, '--slug', SLUG, '--task', '/lfg GAP-353', '--wait', '0'], {
+    root: ready(),
+    orca: { labels: [READY_LABEL] },
+  });
+  assert.equal(barred.code, 1);
+  assert.match(barred.out, new RegExp(READY_LABEL));
+  // The repair is the project's DECLARED entry, verbatim — nothing here invents a
+  // verb, and an operator cannot copy a route this repo does not have.
+  assert.match(barred.out, /\/entry GAP-353/);
+  // Copy-pasteable, quotes included: the override has to be typeable from the
+  // refusal alone, or the only route through it is guesswork.
+  assert.ok(barred.out.includes("--because '"), 'the refusal must print the override it accepts');
+  assert.deepEqual(barred.started, [], 'a refused dispatch creates nothing');
+  assert.ok(barred.calls.every(argv => !argv.startsWith('worktree create')));
+
+  // Said out loud, the dispatch proceeds — and the reason is recorded with it,
+  // because "why was this ticket's own brief overridden" is a question asked
+  // weeks later, of the record, by someone who was not in the room.
+  const told = run(['--issue', ISSUE, '--slug', SLUG, '--task', '/lfg GAP-353', '--because', 'the plan link on the ticket 404s', '--wait', '0'], {
+    root: ready(),
+    orca: { labels: [READY_LABEL] },
+  });
+  assert.equal(told.code, 0);
+  assert.equal(told.started.length, 1);
+  assert.match(told.started[0], /--because the plan link on the ticket 404s/, 'the reason travels with the recorded dispatch');
+});
+
+test('--because is refused without --task: a recorded reason for nothing is a lie in the record', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--because', 'felt like it', '--wait', '0']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--because only means something with --task/);
+  assert.deepEqual(r.started, []);
+});
+
+test('a ticket the tracker has NOT called complete takes --task with no reason asked', () => {
+  // The label is the whole predicate. Every other ticket keeps the route it had:
+  // an untriaged one, and (below) one whose body is empty — where the label would
+  // be a false assertion anyway, so it is the empty-body gate that owns the case.
+  const untriaged = () => {
+    const root = repo();
+    provisioned(root, `${ISSUE}-${SLUG}`);
+    return root;
+  };
+  const other = run(['--issue', ISSUE, '--slug', SLUG, '--task', '/lfg GAP-353', '--wait', '0'], {
+    root: untriaged(),
+    orca: { labels: ['domain:web'] },
+  });
+  assert.equal(other.code, 0);
+
+  const empty = run(['--issue', ISSUE, '--slug', SLUG, '--task', '/lfg GAP-353', '--wait', '0'], {
+    root: untriaged(),
+    orca: { emptyBody: true, labels: [READY_LABEL] },
+  });
+  assert.equal(empty.code, 0, 'zero characters cannot be a complete assignment, whatever the label claims');
 });
 
 test('a --needs-ref origin does not carry creates nothing, and a pattern is refused as one', () => {

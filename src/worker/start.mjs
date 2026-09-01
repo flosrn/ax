@@ -79,6 +79,14 @@ function parse(argv) {
   let runId = '';
   let specFile = '';
   let explicitOrca = '';
+  // Why the caller overrode a ticket's own assignment (`ax worker dispatch
+  // --task … --because …`, R4/KTD3). AX-OWNED, so it is consumed here and never
+  // reaches the passthrough: Orca's `worker-start` knows no such flag, and an
+  // unrecognised argument forwarded to it fails the dispatch instead of
+  // recording the reason. It is provenance, written once at init and never read
+  // by a mutation — so a record that carries it and one that does not are the
+  // same record to every recovery path.
+  let because = '';
   let passthru = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -98,6 +106,7 @@ function parse(argv) {
       ['--run', value => { runId = value; }],
       ['--spec-file', value => { specFile = value; }],
       ['--orca', value => { explicitOrca = value; }],
+      ['--because', value => { because = value; }],
     ];
     const split = fields.find(([name]) => arg === name);
     if (split) {
@@ -114,7 +123,7 @@ function parse(argv) {
     passthru.push(arg);
   }
 
-  return { mode, request, runId, specFile, explicitOrca, passthru };
+  return { mode, request, runId, specFile, explicitOrca, because, passthru };
 }
 
 /** Refusals that must happen before binary resolution, claim or mutation. */
@@ -622,7 +631,7 @@ export function start(
         if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
         // Install the new owner's identity before releasing the recovery lock.
         // A sibling then sees a zero-phase record and cannot call it stale.
-        initRecord(claim.path, { request: parsed.request, orca: bin, now });
+        initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, now });
       } catch (error) {
         return cannot(`could not preserve stale foreign record: ${String(error)}`);
       }
@@ -650,6 +659,6 @@ export function start(
     }
   }
 
-  initRecord(claim.path, { request: parsed.request, orca: bin, now });
+  initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, now });
   return fresh(claim.path, spec, parsed.passthru, context);
 }

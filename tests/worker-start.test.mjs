@@ -979,6 +979,34 @@ test('the flags a caller legitimately owns are forwarded untouched', () => {
   assert.deepEqual(call.slice(-(passthru.length + 1)), [...passthru, '--json']);
 });
 
+test('--because is recorded, never forwarded: the reason a ticket\u2019s own assignment was overridden', () => {
+  // R4/KTD3. `ax worker dispatch --task … --because …` is how an orchestrator
+  // overrides a ticket the tracker already called complete, and the reason has
+  // to survive the dispatch — it is asked for weeks later, of the record, by
+  // someone who was not in the room. Orca's `worker-start` knows no such flag,
+  // so this is also the guard against recording it by forwarding it: a reason in
+  // the passthrough would fail the mutation it was meant to explain.
+  const home = scratch();
+  const args = freshArgs(home, 'req-because');
+  args.splice(args.indexOf('--'), 0, '--because', 'the plan link on the ticket 404s');
+  const r = invoke(args, { env: { HOME: home } });
+
+  assert.equal(r.code, 0, r.out);
+  const rec = JSON.parse(readFileSync(recordAt(r.env, 'req-because'), 'utf8'));
+  assert.equal(rec.because, 'the plan link on the ticket 404s');
+  assert.ok(
+    r.calls.every(call => !call.includes('--because')),
+    'ax owns this flag; Orca must never see it',
+  );
+
+  // Additive, and absent when nothing was overridden — an ordinary dispatch's
+  // record must not grow an empty field that reads as a reason nobody gave.
+  const plain = invoke(freshArgs(home, 'req-plain'), { env: { HOME: home } });
+  assert.equal(plain.code, 0, plain.out);
+  const ordinary = JSON.parse(readFileSync(recordAt(plain.env, 'req-plain'), 'utf8'));
+  assert.equal('because' in ordinary, false);
+});
+
 // ── One replace at a time, and the gate is Run-scoped ───────────────────────
 
 test('replace gates the RECORDED Run, never an unscoped task id', () => {
