@@ -1007,6 +1007,31 @@ test('--because is recorded, never forwarded: the reason a ticket\u2019s own ass
   assert.equal('because' in ordinary, false);
 });
 
+test('--tracker-repo is recorded, never forwarded: the repository a record belongs to', () => {
+  // The dispatch store is host-global, and the frontier excludes candidates by
+  // record prefix — so a record must NAME its repository or a `42-api.json`
+  // from another checkout hides this repository's #42 forever. AX-OWNED like
+  // `--because`: Orca's worker-start knows no such flag.
+  const home = scratch();
+  const args = freshArgs(home, 'req-repo');
+  args.splice(args.indexOf('--'), 0, '--tracker-repo', 'gapilabs/gapila');
+  const r = invoke(args, { env: { HOME: home } });
+
+  assert.equal(r.code, 0, r.out);
+  const rec = JSON.parse(readFileSync(recordAt(r.env, 'req-repo'), 'utf8'));
+  assert.equal(rec.repo, 'gapilabs/gapila');
+  assert.ok(
+    r.calls.every(call => !call.includes('--tracker-repo')),
+    'ax owns this flag; Orca must never see it',
+  );
+
+  // Additive, absent when the dispatch names no tracker repository.
+  const plain = invoke(freshArgs(home, 'req-norepo'), { env: { HOME: home } });
+  assert.equal(plain.code, 0, plain.out);
+  const ordinary = JSON.parse(readFileSync(recordAt(plain.env, 'req-norepo'), 'utf8'));
+  assert.equal('repo' in ordinary, false);
+});
+
 // ── One replace at a time, and the gate is Run-scoped ───────────────────────
 
 test('replace gates the RECORDED Run, never an unscoped task id', () => {

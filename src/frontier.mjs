@@ -161,8 +161,14 @@ function frontierQuery(owner, name, numbers) {
  * rule: every record whose name begins `<number>-`. Absence is the one clean
  * "no record" answer; an unreadable or malformed record is an inability to
  * establish, never permission to classify (F-001's rule, applied to a read).
+ *
+ * The store is HOST-global, not repository-global: a record that NAMES its
+ * repository (`repo`, written by dispatch since this verb learned to read it)
+ * and names a DIFFERENT one is another checkout's dispatch and is skipped. A
+ * record with no repo key is unknown, not foreign — it keeps the conservative
+ * exclusion, because false-exclude is the safe direction for a dispatcher.
  */
-function dispatchStateOf(names, store, number) {
+function dispatchStateOf(names, store, number, slug) {
   const prefix = `${number}-`;
   let settledSeen = false;
   for (const name of names.filter(entry => entry.startsWith(prefix) && entry.endsWith('.json')).sort()) {
@@ -172,6 +178,7 @@ function dispatchStateOf(names, store, number) {
       const record = JSON.parse(readFileSync(path, 'utf8'));
       const request = must(record, 'request', 'dispatch record');
       if (String(request) !== stem) throw new Error(`dispatch record: 'request' is ${clean(request)} but the file is named ${stem}`);
+      if (typeof record.repo === 'string' && record.repo.trim() !== '' && record.repo.trim().toLowerCase() !== slug.toLowerCase()) continue;
       const attempts = must(record, 'attempts', 'dispatch record');
       if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('dispatch record: attempts is not a non-empty list');
       const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
@@ -413,8 +420,8 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // on this ticket — spec-born AND inbound at once. Only measured where the
       // mapping is declared; an undeclared ground is NOT measured (the
       // repository is input).
-      const spec = specLabels.filter(declaredName => candidate.labels.some(carried => sameLabel(declaredName, carried)));
-      const inbound = inboundLabels.filter(declaredName => candidate.labels.some(carried => sameLabel(declaredName, carried)));
+      const spec = specLabels.filter(declaredName => carriedLabels.some(carried => sameLabel(declaredName, carried?.name ?? '')));
+      const inbound = inboundLabels.filter(declaredName => carriedLabels.some(carried => sameLabel(declaredName, carried?.name ?? '')));
       if (spec.length > 0 && inbound.length > 0) {
         excluded.push({ ...candidate, reason: `provenance-refused (carries ${spec[0]} and ${inbound[0]} at once)` });
         continue;
@@ -485,7 +492,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // Dispatch state, read-only from the store. Unsettled → a live attempt
       // owns this ticket; settled with the ticket still open → the attempt
       // ended without a merge, and the loop must SEE that.
-      const dispatched = dispatchStateOf(storeNames, store, candidate.number);
+      const dispatched = dispatchStateOf(storeNames, store, candidate.number, slug);
       if (dispatched.state === 'unreadable') {
         unestablished.push({ ...candidate, read: `the dispatch record at ${dispatched.path} is unreadable (${dispatched.reason})`, repair: `cat ${dispatched.path}` });
         continue;

@@ -191,7 +191,7 @@ test('a declared provenance contradiction is excluded provenance-refused', () =>
   try {
     const { code, out } = runFrontier({
       issues: [issueRow(40, 'T40', [READY, 'source:spec', 'source:report'])],
-      graph: { i40: issueNode() },
+      graph: { i40: issueNode({ labels: [READY, 'source:spec', 'source:report'] }) },
     });
     assert.equal(code, 0);
     assert.match(out, /#40 T40 — provenance-refused \(carries source:spec and source:report at once\)/);
@@ -230,6 +230,42 @@ test('an UNSETTLED record is already-dispatched, a settled one on an open ticket
   assert.match(out, /cannot establish — 3/);
   assert.match(out, /takeable — 1/);
   assert.match(out, /#53 T53 — no blockers declared/);
+});
+
+test('a record from ANOTHER repository never excludes this repository\'s ticket', () => {
+  // The dispatch store is host-global: a `61-api.json` written by a different
+  // checkout must not read as this repository's dispatch. A record that NAMES
+  // its repository is skipped when the name differs; a record with no repo key
+  // keeps the conservative exclusion — false-exclude is the safe direction.
+  const record = (request, repo) => ({ request, host: 'h', orca: 'orca', createdAt: 'now', ...(repo ? { repo } : {}), attempts: [{ n: 1, settled: false, phases: [] }] });
+  writeFileSync(join(store, `${requestIdFor('61', 'api')}.json`), JSON.stringify(record(requestIdFor('61', 'api'), 'other/elsewhere')));
+  writeFileSync(join(store, `${requestIdFor('62', '')}.json`), JSON.stringify(record(requestIdFor('62', ''), SLUG)));
+  writeFileSync(join(store, `${requestIdFor('63', '')}.json`), JSON.stringify(record(requestIdFor('63', ''))));
+  const { code, out } = runFrontier({
+    issues: [issueRow(61), issueRow(62), issueRow(63)],
+    graph: { i61: issueNode(), i62: issueNode(), i63: issueNode() },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /#61 T61 — no blockers declared/, 'a foreign-repo record must not exclude this candidate');
+  assert.match(out, /#62 T62 — already-dispatched/);
+  assert.match(out, /#63 T63 — already-dispatched/, 'a record with no repo key keeps the conservative exclusion');
+});
+
+test('provenance reads the batched labels, never the earlier list snapshot', () => {
+  // The batched read is the authoritative second moment: a spec/inbound label
+  // added between the list and the batch must be SEEN by the contradiction
+  // check, exactly as the ready-label recheck already sees a removal.
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ triage: { provenance: { spec: ['source:spec'], inbound: ['source:report'] } } }));
+  try {
+    const { code, out } = runFrontier({
+      issues: [issueRow(45, 'T45', [READY])],
+      graph: { i45: issueNode({ labels: [READY, 'source:spec', 'source:report'] }) },
+    });
+    assert.equal(code, 0);
+    assert.match(out, /#45 T45 — provenance-refused \(carries source:spec and source:report at once\)/);
+  } finally {
+    rmSync(join(root, 'ax.config.json'), { force: true });
+  }
 });
 
 test('a ready label applied without write permission is excluded untrusted-labeler', () => {

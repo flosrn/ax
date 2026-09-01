@@ -87,6 +87,10 @@ function parse(argv) {
   // by a mutation — so a record that carries it and one that does not are the
   // same record to every recovery path.
   let because = '';
+  // WHICH repository the dispatched ticket lives in (`--tracker-repo`,
+  // ax-owned like `--because`): the store is host-global, and the frontier
+  // uses this name to tell one checkout's `42-…` record from another's.
+  let trackerRepo = '';
   let passthru = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -107,6 +111,7 @@ function parse(argv) {
       ['--spec-file', value => { specFile = value; }],
       ['--orca', value => { explicitOrca = value; }],
       ['--because', value => { because = value; }],
+      ['--tracker-repo', value => { trackerRepo = value; }],
     ];
     const split = fields.find(([name]) => arg === name);
     if (split) {
@@ -123,7 +128,7 @@ function parse(argv) {
     passthru.push(arg);
   }
 
-  return { mode, request, runId, specFile, explicitOrca, because, passthru };
+  return { mode, request, runId, specFile, explicitOrca, because, trackerRepo, passthru };
 }
 
 /** Refusals that must happen before binary resolution, claim or mutation. */
@@ -631,7 +636,7 @@ export function start(
         if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
         // Install the new owner's identity before releasing the recovery lock.
         // A sibling then sees a zero-phase record and cannot call it stale.
-        initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, now });
+        initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
       } catch (error) {
         return cannot(`could not preserve stale foreign record: ${String(error)}`);
       }
@@ -659,6 +664,6 @@ export function start(
     }
   }
 
-  initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, now });
+  initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
   return fresh(claim.path, spec, parsed.passthru, context);
 }

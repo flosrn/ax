@@ -98,6 +98,17 @@ export const requestIdFor = (issue, slug) =>
   `${issue}${slug ? `-${slug}` : '-work'}`.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 
 /**
+ * The `owner/repo` a GitHub ticket lives in, read from its own URL — '' when
+ * the tracker is not GitHub-shaped or the URL does not parse. Recorded on the
+ * dispatch record (`--tracker-repo`, ax-owned) so the frontier can tell THIS
+ * repository's records from another checkout's in the host-global store.
+ */
+export const trackerRepoOf = url => {
+  const match = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/issues\/\d+/.exec(String(url ?? ''));
+  return match === null ? '' : match[1];
+};
+
+/**
  * The knobs this verb renamed with itself, REFUSED rather than read past.
  *
  * A retired name that is merely ignored becomes a silent default — the rule
@@ -226,14 +237,13 @@ export function dispatch(
     );
   }
 
-  // `--because` is the reason `--task` was reached for at all, and it is written
-  // into the dispatch record. Refused rather than dropped, on the `--fresh
-  // --because` precedent in `src/triage/dispatch.mjs`: a reason recorded against
-  // a dispatch that overrode nothing is a sentence a later reader trusts and
-  // cannot check.
-  if (flags.because !== '' && flags.task === '') {
-    return usageError('--because only means something with --task: it records why a ticket\u2019s own assignment was overridden, and nothing was overridden here');
-  }
+  // `--because` is provenance on the dispatch record, and it has two legitimate
+  // shapes: WITH `--task` it records why a ticket's own assignment was
+  // overridden (R4/KTD3); ALONE it records why a ticket is being dispatched
+  // AGAIN — KTD6's dead-route recovery, where a fresh `--slug` mints the fresh
+  // request id, the ticket stays the assignment, and the reason is the one
+  // sentence a later reader needs. Both land on the record root; neither ever
+  // reaches the child (KD4).
 
   // Exactly one identity. `--issue` names work a tracker owns; `--name` names
   // work nothing owns yet. Both is not a richer dispatch, it is two identities for
@@ -559,13 +569,17 @@ export function dispatch(
   });
 
   // The options `ax worker start` owns and RECORDS, as against the placement
-  // argv forwarded to Orca after `--`. `--because` belongs here and only here:
-  // it is provenance for this dispatch, not an input to the child, and the child
-  // reads the ticket (KD4). A reason nobody kept is a reason nobody asked for.
+  // argv forwarded to Orca after `--`. `--because` and `--tracker-repo` belong
+  // here and only here: they are provenance for this dispatch, not an input to
+  // the child, and the child reads the ticket (KD4). A reason nobody kept is a
+  // reason nobody asked for; a record that does not name its repository hides
+  // another checkout's ticket from the frontier.
+  const trackerRepo = named ? '' : trackerRepoOf(ticket.url);
   const owned = [
     '--request', request,
     '--run', runId,
     ...(flags.because === '' ? [] : ['--because', flags.because]),
+    ...(trackerRepo === '' ? [] : ['--tracker-repo', trackerRepo]),
   ];
 
   if (dry) {

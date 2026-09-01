@@ -131,7 +131,10 @@ a second staleness refusal reaches the worker. And a SECOND refusal of the same
 PR after a repair round escalates to the operator — an unattended loop does not
 buy a third attempt. When the route is dead — `ax worker gate` proves no live
 child owns the slice — post the refusal autopsy as a comment on the ticket, then
-redispatch recorded, with `--because gate-refusal` and a fresh identity; the
+redispatch recorded: `ax worker dispatch --issue <n> --slug <fresh-slug>
+--because gate-refusal`. The fresh `--slug` IS the fresh identity (it mints a
+new request id, so the dead attempt's record is never replayed), the ticket
+stays the assignment (no `--task`), and the reason lands on the new record; the
 comment is what keeps the next session from re-deriving the refusal from
 nothing.
 

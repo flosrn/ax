@@ -23,7 +23,7 @@ import { createRunner } from '../src/orca-bin.mjs';
 // refusal keyed on a second spelling of that label would stop refusing the day
 // either string moved.
 import { READY_LABEL } from '../src/triage/spec.mjs';
-import { dispatch, requestIdFor, retiredKnobs } from '../src/worker/dispatch.mjs';
+import { dispatch, requestIdFor, retiredKnobs, trackerRepoOf } from '../src/worker/dispatch.mjs';
 import { READY_LABEL as TICKET_READY_LABEL } from '../src/worker/ticket.mjs';
 import { readProof, verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
@@ -362,11 +362,32 @@ test('--task over a ready-for-agent ticket is refused, and --because is the one 
   assert.match(told.started[0], /--because the plan link on the ticket 404s/, 'the reason travels with the recorded dispatch');
 });
 
-test('--because is refused without --task: a recorded reason for nothing is a lie in the record', () => {
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--because', 'felt like it', '--wait', '0']);
-  assert.equal(r.code, 2);
-  assert.match(r.out, /--because only means something with --task/);
-  assert.deepEqual(r.started, []);
+test('--because without --task is a recorded redispatch reason, never a usage error', () => {
+  // KTD6's dead-route recovery: the ticket stays the assignment (no --task),
+  // the fresh --slug mints the fresh request id, and --because records WHY a
+  // second dispatch exists — the question the record is asked weeks later.
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--because', 'gate-refusal', '--wait', '0'], { root });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.started.length, 1);
+  assert.match(r.started[0], /--because gate-refusal/, 'the reason travels with the recorded dispatch');
+});
+
+test('the tracker repo travels only for a GitHub-shaped ticket URL', () => {
+  // The dispatch store is host-global; a record must NAME its repository or a
+  // `42-api.json` from another checkout hides this repository's #42 forever.
+  // The GitHub half is the pure mapping (start.mjs pins the record root); this
+  // harness speaks Linear, which pins the negative: no URL match, no key.
+  assert.equal(trackerRepoOf('https://github.com/gapilabs/gapila/issues/42'), 'gapilabs/gapila');
+  assert.equal(trackerRepoOf('https://ghe.example.com/owner/repo/issues/7'), 'owner/repo');
+  assert.equal(trackerRepoOf('https://linear.test/GAP-353'), '');
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.started.length, 1);
+  assert.doesNotMatch(r.started[0], /--tracker-repo/, 'a non-GitHub ticket writes no repo key');
 });
 
 test('a ticket the tracker has NOT called complete takes --task with no reason asked', () => {
