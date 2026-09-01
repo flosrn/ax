@@ -163,6 +163,32 @@ function sendOk(out) {
   return out.status === 0 && out.receipt?.ok === true;
 }
 
+// THE DELIVERY FORM OF EVERY ALERT IN THIS FILE.
+//
+// Addressing was never the gap: all three alerts already reach the dispatching
+// Run. Waking it is. The documented coordinator wait is
+// `orchestration check --wait --types worker_done,escalation,question`, and Orca's
+// own guide says in so many words that the type filter decides when a waiter
+// wakes. A `status` alert therefore sits in the mailbox of an orchestrator that
+// waits that way, and a child that died between opening its pull request and
+// reporting freezes the loop until the operator returns — exactly the stop this
+// file exists to announce.
+//
+// THE BOUND ON THAT CLAIM, because it is not a universal one: a session whose
+// consuming loop filters nothing wakes on any directed message whatever its type
+// (`omp/peer/receive.ts` injects with `triggerTurn: true`). So this constant buys
+// the FILTERED waiter — the loop Orca documents — and costs the unfiltered one
+// nothing.
+//
+// `escalation` and not the other two types in that filter: `question` is a
+// PENDING thread awaiting a `reply` (`src/triage/index.mjs` counts them, and
+// `answer.mjs` will answer nothing else), and this watcher exits the moment it
+// sends, so it would promise a reply route no process survives to consume;
+// `worker_done` carries Dispatch lifecycle authority and would settle the very
+// task nobody finished. The words of each alert are unchanged; only the envelope
+// wakes.
+const WAKE_TYPE = 'escalation';
+
 function alertStall(run, fields, request, silentSeconds, status, signal) {
   const terminalRepair = ['orca terminal read', '--terminal', fields.handle];
   if (fields.env) terminalRepair.push('--environment', fields.env);
@@ -186,7 +212,7 @@ function alertStall(run, fields, request, silentSeconds, status, signal) {
     `Re-arm: node src/worker/stall.mjs --request ${request}`,
   ].join('\n');
   return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', 'status',
+    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
     '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' has gone silent`),
     '--body', redactSecrets(body), '--json',
   ]);
@@ -216,7 +242,7 @@ function alertGone(run, fields, request, status) {
     `State: orca orchestration worker-show --dispatch ${fields.dispatchId} --json`,
   ].join('\n');
   return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', 'status',
+    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
     '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' is GONE without reporting`),
     '--body', redactSecrets(body), '--json',
   ]);
@@ -233,7 +259,7 @@ function alertCard(run, fields, request, card, worktreePath) {
     `Inspect: ${repair.join(' ')}`,
   ].join('\n');
   return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', 'status',
+    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
     '--subject', redactSecrets(`card: '${request}' published a checkpoint`), '--body', redactSecrets(body), '--json',
   ]);
 }
