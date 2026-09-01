@@ -5,6 +5,10 @@
 // written here.
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { renderContext } from '../src/worktree/context.mjs';
@@ -35,4 +39,33 @@ test('the context file teaches the workflow-scope push escape', () => {
     text.includes("git -c 'url.git@github.com:.insteadOf=https://github.com/' push origin HEAD"),
     'one copyable command: ephemeral URL rewrite, no config mutation, no-op on an SSH remote',
   );
+});
+
+// The prose above PROMISES a behavior matrix: rewrite on an HTTPS GitHub
+// origin, "harmless when origin is already SSH", and by the same no-match
+// rule, untouched on a non-GitHub host. A grep proves the string is present,
+// not that it works — so this test extracts the exact command the child will
+// copy and executes its `-c` argument against real repos, offline
+// (`ls-remote --get-url` expands `url.<base>.insteadOf` without contacting
+// the remote). Rewriting the prose line re-proves the matrix or fails here.
+test('the escape command the prose hands out rewrites exactly the HTTPS GitHub origin', () => {
+  const line = render().match(/^git -c '([^']+)' push origin HEAD$/m);
+  assert.ok(line, 'the Pushing section carries the command in its copyable form');
+
+  const dir = mkdtempSync(join(tmpdir(), 'ax-context-'));
+  try {
+    execFileSync('git', ['init', '-q', dir]);
+    const expanded = origin => {
+      execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', origin]);
+      const out = execFileSync('git', ['-C', dir, '-c', line[1], 'ls-remote', '--get-url', 'origin']);
+      execFileSync('git', ['-C', dir, 'remote', 'remove', 'origin']);
+      return String(out).trim();
+    };
+
+    assert.equal(expanded('https://github.com/o/r.git'), 'git@github.com:o/r.git', 'the wall case is rewritten to SSH');
+    assert.equal(expanded('git@github.com:o/r.git'), 'git@github.com:o/r.git', 'an SSH origin is untouched — the promise "harmless when origin is already SSH"');
+    assert.equal(expanded('https://gitlab.com/o/r.git'), 'https://gitlab.com/o/r.git', 'a non-GitHub origin is untouched — no rewrite to a host that never refused the push');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
