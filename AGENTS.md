@@ -143,6 +143,11 @@ Supabase stop runs behind `ownsStack()`. Guessing a path is never an escape hatc
 **Exit codes belong to the verb** (ADR 0003). `worker gate` fails closed because it authorizes a
 second agent. `board` fails open because a checkpoint hook must not take down the work it observes.
 
+**Orca is readable source, not a black box.** This machine runs a patched Orca fork (ADR 0026);
+the source lives at `~/Code/flosrn/orca` (`upstream` = stablyai/orca). Answer an Orca behavior
+question by reading that checkout — never by unpacking the installed app's `.asar`. A fix that
+belongs in Orca goes to the fork branch, not to a workaround in ax.
+
 ## Adding a surface
 
 A new **command** needs one registry entry — its name, its help section and its summary — one
@@ -162,28 +167,18 @@ Release; npm publishes only when that release was created and trusted publishing
 `tests/docs.test.mjs` grades this file and README.md: copyable commands, module pointers and
 version pins must match the code.
 
-## Vocabulary
-
-`CONTEXT.md` is the ratified glossary — the dictionary every surface picks its terms from. Read it
-before writing prose that names a session, a verb or an artifact: its `_Avoid_` lines are enforced
-over this file and README.md by `tests/docs.test.mjs`.
-
-`F-0xx` is a measured finding filed in `gapilabs/omp`; the module header states the rule it paid for.
-ax's own architecture decisions live under `docs/adr/` in this repo, cited by path
-(`docs/adr/0001-…`); a bare `ADR NNNN` refers to the harness-wide set under `~/.omp/docs/adr/`.
-Neither is required reading before a patch unless the header's explanation is insufficient.
-
-Documented solutions live under `docs/solutions/` — problems this repo has already solved
-(bugs, practices), one file each, with YAML frontmatter (`module`, `tags`, `problem_type`);
-relevant when implementing or debugging in an area a past learning covers.
-
-**Orca is readable source, not a black box.** This machine runs a patched Orca fork (ADR 0026);
-the source lives at `~/Code/flosrn/orca` (`upstream` = stablyai/orca). Answer an Orca behavior
-question by reading that checkout — never by unpacking the installed app's `.asar`. A fix that
-belongs in Orca goes to the fork branch, not to a workaround in ax.
-
 ## Try this checkout in another project
 
 Released projects carry an exact npm version and move with `ax pin <version>`. To test this
 checkout, declare `"@flosrn/ax": "link:../../flosrn/ax"` in the consumer, then `pnpm install`,
 `ax init`, `ax doctor`. A link is a development exception.
+
+## Domain docs
+
+`CONTEXT.md` (the ratified glossary — read it before writing prose that names a session, a verb or
+an artifact; its `_Avoid_` lines are enforced over this file and README.md by `tests/docs.test.mjs`)
+· `docs/adr/` (this repo's decisions, cited by path; a bare `ADR NNNN` is the harness-wide set under
+`~/.omp/docs/adr/`) · `docs/solutions/` (past fixes, one file each, YAML frontmatter keyed by
+`module`/`tags`/`problem_type`). `F-0xx` is a measured finding filed in `gapilabs/omp`; the module
+header states the rule it paid for. None of it is required reading before a patch unless the owning
+header's explanation is insufficient.
