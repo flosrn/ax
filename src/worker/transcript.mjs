@@ -36,7 +36,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
-import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, section as sectionLine } from '../log.mjs';
+import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, section as sectionLine, warn as warnLine } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultStore } from './record.mjs';
 
@@ -44,11 +44,12 @@ import { defaultStore } from './record.mjs';
 // is how the leak gets in: it only takes the one field nobody thought carried
 // child text — a customType, a path inside a diagnostic, an error message
 // quoting the line it failed on. Nothing in this module writes to a stream
-// except through these four.
+// except through these emitters.
 const note = message => noteLine(redactSecrets(message));
 const bad = message => badLine(redactSecrets(message));
 const fix = command => fixLine(redactSecrets(command));
 const section = title => sectionLine(redactSecrets(title));
+const warn = message => warnLine(redactSecrets(message));
 // The marker mode's payload: one parseable line, redacted like everything else
 // this module prints — a needle is a worktree name, but the line crosses a
 // transport and every emission here goes through one boundary.
@@ -271,15 +272,25 @@ export function lastMessageIn(lines) {
 
 export function transcript(argv = [], { resolve = resolveOrca, runner, env = process.env, sessionsRoot } = {}) {
   let target = '';
-  // Launch verification is the one mode that reads a transcript WITHOUT
+  // Dispatch verification is the one mode that reads a transcript WITHOUT
   // rendering it. It returns both independent proofs — model mover and session
   // role/skills — as one JSON line, locally or through the remote transport.
   // It asks no runtime question, so it answers before the readiness gate below.
-  const proofAt = argv.indexOf('--launch-proof');
+  //
+  // `--launch-proof` is the retired spelling (issue #57): released 0.15.x
+  // still sends it over SSH, so the alias answers identically until the next
+  // breaking release. The warning rides STDERR because the remote reader takes
+  // the FIRST STDOUT LINE as the proof — a warning on stdout would corrupt
+  // exactly the cross-version call the alias exists to serve.
+  const proofFlag = argv.includes('--dispatch-proof') ? '--dispatch-proof' : '--launch-proof';
+  const proofAt = argv.indexOf(proofFlag);
   if (proofAt !== -1) {
+    if (proofFlag === '--launch-proof') {
+      warn('--launch-proof is retired; the flag is --dispatch-proof. This alias answers until the next breaking release — upgrade the sending ax with `ax pin`.');
+    }
     const needle = argv[proofAt + 1];
     if (needle === undefined || needle.startsWith('-')) {
-      bad('ax worker transcript --launch-proof expects the session needle (a worktree directory name)');
+      bad('ax worker transcript --dispatch-proof expects the session needle (a worktree directory name)');
       return 2;
     }
     const rootAt = argv.indexOf('--sessions');

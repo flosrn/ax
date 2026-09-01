@@ -207,10 +207,56 @@ test('dispatch proof keeps model selection separate from role and skill applicat
   });
 
   const { code, out } = capture(() =>
-    transcript(['--launch-proof', 'gap-353', '--sessions', root], { env: { HOME: root } }),
+    transcript(['--dispatch-proof', 'gap-353', '--sessions', root], { env: { HOME: root } }),
   );
   assert.equal(code, 0);
   assert.deepEqual(JSON.parse(out), dispatchProof({ needle: 'gap-353', sessionsRoot: root }));
+});
+
+// Issue #57: the flag renamed with the glossary (`--launch-proof` →
+// `--dispatch-proof`), but it travels over SSH from ax versions this machine
+// does not choose — released 0.15.x still speaks the retired spelling. The
+// alias answers identically; the warning rides STDERR because the remote
+// reader takes the FIRST STDOUT LINE as the proof, so anything else on stdout
+// would corrupt exactly the cross-version call the alias exists to serve.
+test('the retired --launch-proof spelling answers, warns on stderr, keeps stdout pure', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-gap-353');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'session.jsonl'),
+    [
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-sonnet-5', role: 'default' }),
+      JSON.stringify({
+        type: 'custom_message',
+        customType: 'skill-prompt',
+        details: { role: 'worker', skills: ['implementation'], status: 'applied' },
+      }),
+    ].join('\n'),
+  );
+
+  const outs = [];
+  const errs = [];
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  process.stdout.write = chunk => (outs.push(String(chunk)), true);
+  process.stderr.write = chunk => (errs.push(String(chunk)), true);
+  let code;
+  try {
+    code = transcript(['--launch-proof', 'gap-353', '--sessions', root], { env: { HOME: root } });
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+
+  assert.equal(code, 0);
+  assert.deepEqual(
+    JSON.parse(outs.join('')),
+    dispatchProof({ needle: 'gap-353', sessionsRoot: root }),
+    'stdout carries the proof line and nothing else',
+  );
+  assert.match(errs.join(''), /--dispatch-proof/, 'the warning names the live spelling');
+  assert.match(errs.join(''), /retired/, 'and says the old one is retired');
 });
 
 test('dispatch proof carries the exact pre-turn role refusal', () => {
