@@ -68,6 +68,24 @@ export function renderContext({ plan, config, main }) {
     'Every database command goes through `ax supabase …`. Calling the `supabase` binary',
     'directly bypasses the guard that keeps a migration or a reset off the shared database.',
     '',
+    // FRICTIONS.md 2026-08-31: the provisioned worktree inherits the primary
+    // checkout's HTTPS remote, which rides the gh OAuth token — no `workflow`
+    // scope, so a slice that legitimately edits a workflow file cannot push.
+    // The cost of NOT saying this here was measured: a dropped change and an
+    // orchestrator↔child round-trip. The command is ephemeral (`-c`, no config
+    // mutation), repo-agnostic (rewrites whatever `origin` says), and inert
+    // when origin is already SSH — it needs this machine to hold an SSH key
+    // GitHub accepts, which is also true of every other SSH escape.
+    '## Pushing',
+    '',
+    'A push touching `.github/workflows/**` is rejected on the HTTPS remote this worktree',
+    'inherited — the gh OAuth token carries no `workflow` scope. Push over SSH instead; one',
+    'command, no config change, harmless when origin is already SSH:',
+    '',
+    '```bash',
+    "git -c 'url.git@github.com:.insteadOf=https://github.com/' push origin HEAD",
+    '```',
+    '',
   ];
 
   return `${lines.filter(line => line !== undefined).join('\n')}`;
