@@ -7,7 +7,7 @@
 
 import { basename, join } from 'node:path';
 
-import { bad, fix, note, ok, section } from '../log.mjs';
+import { bad, fix, note, ok, section, warn } from '../log.mjs';
 import { defaultStore, workerPane } from './record.mjs';
 import { equipment } from './child.mjs';
 import { readPane } from './pane.mjs';
@@ -173,18 +173,35 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   return 3;
 }
 
-/** The same session proof read, wherever the transcript lives. */
-function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
+/**
+ * The same session proof read, wherever the transcript lives.
+ *
+ * The remote flag is `--dispatch-proof`, renamed with the glossary (issue
+ * #57) — but the REMOTE ax is the remote project's pin, not this machine's
+ * choice, and released 0.15.x only speaks `--launch-proof`. The remote's exit
+ * code discriminates the three answers: 0 proof, 1 no proof yet, 2 unknown
+ * flag. The retired spelling is retried ONLY on 2 — a pre-0.16 remote —
+ * because retrying on 1 would double every SSH round-trip of the ordinary
+ * boot-wait poll, and a transport failure is not a vocabulary problem. The
+ * fallback retires with the alias, in the next breaking release.
+ */
+export function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
   if (host === null) return dispatchProof({ needle, env, sessionsRoot });
   const root = host.sessions ?? '';
   if (root === '') return null;
   // Through ssh because ssh rejoins its arguments into one remote command.
   // Every value is quoted as data, and the target grammar is closed by remote().
-  const out = remote(
-    args => exec('ssh', args, cwd),
-    host.ssh,
-    `ax worker transcript --launch-proof ${quote(needle)} --sessions ${quote(root)}`,
-  );
+  const ask = flag =>
+    remote(
+      args => exec('ssh', args, cwd),
+      host.ssh,
+      `ax worker transcript ${flag} ${quote(needle)} --sessions ${quote(root)}`,
+    );
+  let out = ask('--dispatch-proof');
+  if (!out.error && out.status === 2) {
+    warn(`the ax on ${host.ssh} does not speak --dispatch-proof (pre-0.16); answering through the retired --launch-proof — pin that project to the current release`);
+    out = ask('--launch-proof');
+  }
   if (out.error || out.status !== 0) return null;
   const answer = firstLine(out.stdout);
   if (answer === '') return null;

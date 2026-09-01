@@ -19,7 +19,7 @@ import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
 import { dispatch, requestIdFor, retiredKnobs } from '../src/worker/dispatch.mjs';
-import { verify } from '../src/worker/verify.mjs';
+import { readProof, verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
 
 const ISSUE = 'GAP-353';
@@ -996,4 +996,71 @@ test('a named dispatch reports no ticket instead of empty tracker fields', () =>
   assert.match(r.out, /ticket {4}none — dispatched by name/);
   assert.doesNotMatch(r.out, /ticket {4}undefined/);
   assert.match(r.out, /request {3}loading-states/);
+});
+
+// -- readProof: the cross-version SSH contract (issue #57) --------------------
+//
+// `--launch-proof` became `--dispatch-proof` in 0.16.0, but the flag travels
+// over SSH to a REMOTE ax whose version this machine does not choose. The
+// remote's exit codes discriminate the three answers: 0 proof, 1 no proof yet,
+// 2 unknown flag — a pre-0.16 remote. The retry arms ONLY on 2: retrying on 1
+// would double every SSH round-trip of the ordinary boot-wait poll.
+
+const PROOF_LINE = JSON.stringify({
+  model: { model: 'anthropic/claude-sonnet-5', role: 'default' },
+  sessionRole: { status: 'applied', role: 'worker', skills: ['implementation'] },
+});
+const REMOTE_HOST = { ssh: 'orca@vps', sessions: '/home/orca/.omp/agent/sessions' };
+
+/** An exec that plays the remote ax: one scripted answer per call, argv recorded. */
+function remoteAx(...answers) {
+  const calls = [];
+  const exec = (cmd, args) => {
+    calls.push(`${cmd} ${args.join(' ')}`);
+    return answers[calls.length - 1] ?? { status: null, stdout: '', stderr: '', error: new Error('unscripted call') };
+  };
+  exec.calls = calls;
+  return exec;
+}
+
+const remoteProof = exec =>
+  capture(() => readProof({ needle: 'gap-353', env: {}, sessionsRoot: '', host: REMOTE_HOST, exec, cwd: '/' }));
+
+test('the sender speaks the renamed flag and asks a fluent remote exactly once', () => {
+  const exec = remoteAx({ status: 0, stdout: `${PROOF_LINE}\n`, stderr: '' });
+  const got = readProof({ needle: 'gap-353', env: {}, sessionsRoot: '', host: REMOTE_HOST, exec, cwd: '/' });
+
+  assert.deepEqual(got, JSON.parse(PROOF_LINE));
+  assert.equal(exec.calls.length, 1, 'a remote that answers is never asked twice');
+  assert.match(exec.calls[0], /--dispatch-proof/);
+  assert.doesNotMatch(exec.calls[0], /--launch-proof/, 'the retired spelling is a fallback, never the opener');
+});
+
+test('a pre-0.16 remote (exit 2) is retried once through the retired spelling', () => {
+  const exec = remoteAx(
+    { status: 2, stdout: '', stderr: 'unknown argument: --dispatch-proof' },
+    { status: 0, stdout: `${PROOF_LINE}\n`, stderr: '' },
+  );
+  const r = remoteProof(exec);
+
+  assert.deepEqual(r.code, JSON.parse(PROOF_LINE), 'the proof still arrives');
+  assert.equal(exec.calls.length, 2);
+  assert.match(exec.calls[1], /--launch-proof/);
+  assert.match(r.out, /older ax|pre-0\.16|--launch-proof/, 'the version skew is named, not absorbed');
+});
+
+test('no-proof-yet (exit 1) is never retried — the poll must not double', () => {
+  const exec = remoteAx({ status: 1, stdout: '', stderr: '' });
+  const got = readProof({ needle: 'gap-353', env: {}, sessionsRoot: '', host: REMOTE_HOST, exec, cwd: '/' });
+
+  assert.equal(got, null);
+  assert.equal(exec.calls.length, 1);
+});
+
+test('a transport failure is never retried — ssh down is not a vocabulary problem', () => {
+  const exec = remoteAx({ status: null, stdout: '', stderr: '', error: new Error('ssh: connect refused') });
+  const got = readProof({ needle: 'gap-353', env: {}, sessionsRoot: '', host: REMOTE_HOST, exec, cwd: '/' });
+
+  assert.equal(got, null);
+  assert.equal(exec.calls.length, 1);
 });
