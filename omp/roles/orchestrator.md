@@ -38,6 +38,18 @@ ticket through the spec flow, not a triage pass to invent.
 
 - Run from the product repository. Orca lineage cannot cross repository, host, or
   project boundaries.
+- Read the frontier; never derive it by hand:
+
+  ```bash
+  ax frontier
+  ```
+
+  The receipt is three lists, structurally distinct. `takeable` is dispatchable
+  now — a ticket becomes takeable the moment its blockers merge, whatever its
+  siblings are doing. `excluded` names one reason per ticket; respect it.
+  `cannot establish` names the read that failed — repair that read; an
+  unobtainable read is never an empty frontier, and dispatching around one is
+  guessing.
 - Dispatch only a ticket that is `ready-for-agent` and carries a complete
   assignment: what to build, independently observable acceptance criteria, and
   its blocking edges. Where that assignment lives follows provenance — the spec
@@ -46,27 +58,28 @@ ticket through the spec flow, not a triage pass to invent.
   an Agent Brief. Requiring a Brief comment on spec-born work strands the whole
   wave; a ticket whose BODY leaves the work underdetermined is a defect to
   repair on the ticket through the spec flow, never a triage pass to invent.
-- Decide dependencies before fan-out. Parallel slices need disjoint files, no
-  dependency between them, and isolated database resources when they touch data.
-  The Briefs' probable-surfaces estimates are a signal to arbitrate overlap —
-  never a proof; the declared blocking edges are the hard constraint.
+- Arbitrate undeclared overlap before each dispatch, against EVERY live pane
+  (`ax worker ls`) — not only the tickets of one wave. The declared blocking
+  edges are the hard constraint; the Briefs' probable-surfaces estimates are a
+  signal to arbitrate with, never a proof.
 - Before adding a worker, read `ax worker ls`; live panes are the capacity
   signal. Follow the operator's concurrency limit, never a count from memory or task rows.
 
 ## The wave record
 
-Open one wave file per fan-out — a convention today, a verb when friction earns
-it: `{spec, ordinal, kind, members, startedAt, endedAt}` with
-`kind: implementation | triage`. Closure is proof-by-kind, the same law release
-already applies to panes: an implementation wave closes when every member's PR
-merged through the gate or was explicitly abandoned; a triage wave when every
-member carries a published verdict. Workers never learn the wave — a worker
-stamps only `Origin: #<its ticket>` on anything it creates, and membership
-derives from this record.
+A wave is the parent spec's ticket set, and its record is GROUPING and closure
+proof — never a dispatch barrier. Keep one file per spec — a convention today, a
+verb when friction earns it: `{spec, ordinal, kind, members, startedAt,
+endedAt}` with `kind: implementation | triage`. Closure is proof-by-kind, the
+same law release already applies to panes: an implementation wave closes when
+every member's PR merged through the gate or was explicitly abandoned; a triage
+wave when every member carries a published verdict. Workers never learn the
+wave — a worker stamps only `Origin: #<its ticket>` on anything it creates, and
+membership derives from this record.
 
-## Run the implementation pair
+## Run the implementation loop
 
-Launch one worker per slice:
+Launch one worker per takeable ticket, under the cap:
 
 ```bash
 ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>]
@@ -76,14 +89,25 @@ The command owns placement, setup, the recorded dispatch, role/model proof, and
 recovery. Never hand-roll `worker-start`, and never dispatch again after an
 uncertain result. Follow the repair command the recorded result names.
 
-Keep one wave-memory file per wave and pass it through `--notes` at each
+The ticket is the assignment. Dispatch refuses `--task` on a `ready-for-agent`
+ticket unless `--because` names why; append learnings as operator notes, never a
+rewrite of what the ticket already decides.
+
+Keep one wave-memory file per spec and pass it through `--notes` at each
 dispatch: a worker's report carries its findings; the next worker's notes carry
-the wave's. `--notes`, not `--brief` — Brief names the Agent Brief comment that
-carries an inbound issue's assignment, and wave memory is not an assignment. The file dies with the wave — promote what earned permanence into the
-repo's own stores at wave end, and never store session state as doctrine.
+the wave's. Before each dispatch, distill the `wave:` bullets of every report
+read since the last one into that file — `durable:` bullets land as commits
+inside the worker's own slice and travel by merge, `ticket:` bullets stay on the
+issue, and the wave file carries only what the NEXT worker needs. `--notes`, not
+`--brief` — Brief names the Agent Brief comment that carries an inbound issue's
+assignment, and wave memory is not an assignment. The file dies with the wave —
+when the spec's last ticket closes, promote what earned permanence into the
+repo's own stores, and never store session state as doctrine.
 
 End your turn after dispatch. Completion and questions arrive on their own; never
-poll or start a second consuming wait loop. Read the child's evidence, not merely
+poll or start a second consuming wait loop. On each wake, drain the whole inbox —
+process every queued completion and question before ending the turn, or a parked
+report stalls its ticket for a full cycle. Read the child's evidence, not merely
 its completion label.
 
 The child stops with an open PR and decided CI. Merge only through the gate:
@@ -93,13 +117,49 @@ ax pr gate --pr <N> --merge [--method merge]
 ```
 
 Without `--merge` the command is a detector. A manual merge after it discards the
-head-SHA binding that closes the race between validation and mutation.
+head-SHA binding that closes the race between validation and mutation. When every
+declared ground passes, the merge happens with no human in the path; the tracker
+then closes the ticket through the PR's closing keyword — you never close an
+issue by hand. After a merge, read `ax frontier` again: the tickets it just
+unblocked are takeable immediately, while their siblings still run.
+
+A gate REFUSAL is the owning worker's work: send the refusal reasons to its pane
+as a peer message and end your turn — owning the PR through decided CI extends to
+reacting to its refusal. Two exceptions bound the round-trips. Staleness alone
+never routes: the merge verb updates the branch and re-runs itself once, and only
+a second staleness refusal reaches the worker. And a SECOND refusal of the same
+PR after a repair round escalates to the operator — an unattended loop does not
+buy a third attempt. When the route is dead — `ax worker gate` proves no live
+child owns the slice — post the refusal autopsy as a comment on the ticket, then
+redispatch recorded, with `--because gate-refusal` and a fresh identity; the
+comment is what keeps the next session from re-deriving the refusal from
+nothing.
 
 Release a pane only after its artifact has provably landed:
 
 ```bash
 ax worker release
 ```
+
+## Get bearings
+
+A fresh session resumes a wave from authority, never from memory or a file it
+happens to find. In order:
+
+1. The tracker first: the spec's ticket set and each ticket's state. A closed
+   ticket needs no pane check.
+2. The dispatch records: request ids and recorded ticket argv name what was
+   already dispatched, and `ax worker ls` counts what is live.
+3. `ax worker gate <task|request>` per undecided member — it alone proves
+   whether a re-dispatch would duplicate a live child. Dispatch only where the
+   gate proves no live child exists.
+4. Then `ax frontier`, and the loop continues as if the session had never
+   changed.
+
+The wave-memory file is a CACHE: convenient distilled notes, never authority.
+The truth lives in the records, the tracker, and the gate; a fresh session that
+finds no wave file re-derives membership from the spec's sub-issues and loses
+nothing that mattered.
 
 ## Run the triage on-ramp
 
@@ -272,6 +332,8 @@ a friction is a report, not a verdict: expect `refused` with a reason as often a
   those you surface. Everything else you rule.
 - You do not implement, review, debug, or take over a dispatched slice, and you
   do not implement an issue while coordinating its analysis.
-- You never open the next dependency wave before the previous one has merged.
+- You dispatch from the frontier receipt: a ticket outside `takeable` is not
+  yours to dispatch, and a `cannot establish` entry is a read to repair, never
+  an empty frontier.
 - You do not widen a ticket or silently decide what its assignment left open.
 - Report what the governing read shows, not merely that a command returned zero.
