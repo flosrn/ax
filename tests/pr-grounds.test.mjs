@@ -147,8 +147,46 @@ test('closing keyword: a declared tracker names the ref the verb targets, not th
   assert.match(named.message, /GitHub closes nothing there/);
 });
 
-test('closing keyword: genuinely nothing is the two-readings detector line, never a refusal', () => {
+test('closing keyword: no keyword and no tracker ref is a REFUSAL naming the repair (AE6)', () => {
   const out = keywordGround({ body: 'Tooling fix.', tracker: undefined, pr: '7', slug: 'gapilabs/gapila' });
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].message, /closes no issue and expresses no intent to/);
+  assert.match(out.refusals[0].repair, /gh pr edit 7 --repo gapilabs\/gapila/);
+});
+
+test('closing keyword: a base that is not the default branch refuses — the keyword is inert there', () => {
+  const out = keywordGround({
+    body: 'Closes #42.',
+    tracker: undefined,
+    pr: '7',
+    slug: 'gapilabs/gapila',
+    baseBranch: 'develop',
+    defaultBranch: 'main',
+  });
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].message, /base 'develop' is not the default branch 'main'/);
+  assert.match(out.refusals[0].message, /inert/);
+  assert.ok(out.refusals[0].repair);
+});
+
+test('closing keyword: Closes #N on the default base passes unchanged', () => {
+  const out = keywordGround({
+    body: 'Closes #42.',
+    tracker: undefined,
+    pr: '7',
+    slug: 'gapilabs/gapila',
+    baseBranch: 'main',
+    defaultBranch: 'main',
+  });
   assert.equal(out.refusals.length, 0);
-  assert.ok(out.notes.some(entry => /no reading of the body separates them/.test(entry.message)));
+  assert.equal(out.unknowns.length, 0);
+  assert.ok(out.notes.some(entry => /'Closes #42' — GitHub will close the issue/.test(entry.message)));
+});
+
+test('closing keyword: half of the base pair is a ground unread, never an assumed match (F-028)', () => {
+  const out = keywordGround({ body: 'Closes #42.', tracker: undefined, pr: '7', slug: 'gapilabs/gapila', baseBranch: 'develop' });
+  assert.equal(out.refusals.length, 0);
+  assert.equal(out.unknowns.length, 1);
+  assert.match(out.unknowns[0].message, /default branch/);
+  assert.match(out.unknowns[0].repair, /gh repo view gapilabs\/gapila --json defaultBranchRef/);
 });

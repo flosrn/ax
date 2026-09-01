@@ -267,10 +267,16 @@ export function initRecord(path, { request, orca, because = '', host = hostname(
  * `--replace` leaves hours behind the dispatch it produced. `release` dates a
  * comment against the dispatch, so it needs the phase's own time; a record
  * written before this field existed falls back to `createdAt`.
+ *
+ * `grounds` is additive the same way (KTD4): the merge namespace records WHAT
+ * its mutation stood on — the per-ground verdict lines of the gate run that
+ * authorised it. Omitted when null; no reader branches on it.
  */
-export function phaseBegin(path, { name, identity, argv, receiptPath = null, now = () => new Date().toISOString() }) {
+export function phaseBegin(path, { name, identity, argv, receiptPath = null, grounds = null, now = () => new Date().toISOString() }) {
   const rec = load(path);
-  must(lastAttempt(rec), 'phases', 'last attempt').push({ name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() });
+  const phase = { name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() };
+  if (grounds !== null) phase.grounds = grounds;
+  must(lastAttempt(rec), 'phases', 'last attempt').push(phase);
   save(rec, path);
 }
 

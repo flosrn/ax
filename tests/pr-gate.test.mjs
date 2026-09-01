@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -195,7 +195,23 @@ const realGit = (args, at) => defaultExec('git', args, at);
  */
 const run = (
   argv,
-  { shape = 'current', prGate = DEFAULT_GATE, receipt, checks, threads, commits, slug = SLUG, mergeFails = false, git: gitOverride } = {},
+  {
+    shape = 'current',
+    prGate = DEFAULT_GATE,
+    receipt,
+    checks,
+    threads,
+    commits,
+    slug = SLUG,
+    mergeFails = false,
+    git: gitOverride,
+    defaultBranch = 'main',
+    issueStates = ['CLOSED'],
+    prStates,
+    store,
+    updateBranchFails = false,
+    onMerge,
+  } = {},
 ) => {
   const root = repos[shape];
   writeConfig(root, prGate);
@@ -203,17 +219,39 @@ const run = (
   const calls = [];
   const pages = threads ?? [threadPage([])];
   let page = 0;
+  let issuePoll = 0;
+  let prViews = 0;
 
   const gh = args => {
     calls.push(args.join(' '));
     const [verb, target] = args;
+    if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) {
+      return defaultBranch === null ? refusedByGh('HTTP 502') : answered(JSON.stringify({ defaultBranchRef: { name: defaultBranch } }));
+    }
     if (verb === 'repo' && target === 'view') return slug === null ? refusedByGh('no remote') : answered(`${slug}\n`);
     if (verb === 'pr' && target === 'view') {
-      return receipt === null ? refusedByGh('could not resolve to a Pull Request') : answered(JSON.stringify(receipt ?? prView()));
+      // `prStates` sequences the receipts a replaying run reads; the plain
+      const body = prStates ? prStates[Math.min(prViews, prStates.length - 1)] : receipt === null ? null : (receipt ?? prView());
+      prViews += 1;
+      return body === null ? refusedByGh('could not resolve to a Pull Request') : answered(JSON.stringify(body));
     }
-    if (verb === 'pr' && target === 'merge') return mergeFails ? refusedByGh('Head branch was modified') : answered('merged\n');
+    if (verb === 'pr' && target === 'update-branch') return updateBranchFails ? refusedByGh('update failed') : answered('updated\n');
+    if (verb === 'pr' && target === 'merge') {
+      // `onMerge` may RETURN a forced result (a transport crash is data, not a
+      // throw); an observer hook returns anything else and is ignored.
+      const forced = onMerge ? onMerge(args) : undefined;
+      if (forced && typeof forced === 'object' && ('status' in forced || 'error' in forced)) return forced;
+      return mergeFails ? refusedByGh('Head branch was modified') : answered('merged\n');
+    }
+    if (verb === 'issue' && target === 'view') {
+      const state = issueStates[Math.min(issuePoll, issueStates.length - 1)];
+      issuePoll += 1;
+      return state === null ? refusedByGh('HTTP 502') : answered(JSON.stringify({ state }));
+    }
     if (verb === 'api' && target === 'graphql') {
-      const body = pages[page];
+      // Exhaustion repeats the LAST page (a staleness self-repair re-runs the
+      // whole gate); a test modelling a failed page still says so with null.
+      const body = pages[Math.min(page, pages.length - 1)];
       page += 1;
       return body === null || body === undefined ? refusedByGh('GraphQL: Something went wrong') : answered(JSON.stringify(body));
     }
@@ -230,8 +268,13 @@ const run = (
     return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
   };
 
-  const result = capture(() => gate([...argv], { gh, git: gitOverride ?? realGit, cwd: root }));
-  return { ...result, calls };
+  // Every run gets its OWN store unless the test replays across runs: the merge
+  // record is keyed by owner/repo/pr, so a shared default would leak one test's
+  // record into the next as a phantom replay.
+  const storeDir = store ?? mkdtempSync(join(sandbox, 'store-'));
+  const env = { HOME: sandbox, ORCA_DISPATCH_STORE: storeDir };
+  const result = capture(() => gate([...argv], { gh, git: gitOverride ?? realGit, cwd: root, env, sleep: () => {} }));
+  return { ...result, calls, store: storeDir };
 };
 
 const CLEAN = { threads: [threadPage([thread('T1', true)])] };
@@ -309,6 +352,7 @@ test('a checkout may declare its gate WITHOUT the provisioning contract', () => 
     gate(['--pr', '1845'], {
       gh: args => {
         const [verb, target] = args;
+        if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) return answered(JSON.stringify({ defaultBranchRef: { name: 'main' } }));
         if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
         if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView()));
         if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([])));
@@ -671,12 +715,15 @@ test('a recognised keyword passes and is echoed without the surrounding prose', 
   assert.doesNotMatch(out, /some more prose/);
 });
 
-test('F-040: a PR that closes no issue is a detector, not a refusal', () => {
-  // gapila #1867, a tooling fix with no ticket behind it. Refusing here would
-  // block every chore forever.
+test('AE6: a PR that closes no issue is a refusal naming the two readings and the by-hand exit', () => {
+  // F-040 made this a detector so a chore with no ticket could merge; R8
+  // inverts it — under autonomous frontier derivation nobody reads the merge,
+  // and a delivered ticket that closes nothing stalls its whole subgraph. The
+  // chore case survives through the repair: the human merges by hand.
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ body: 'Tooling fix: the doctor read the wrong path.' }) });
-  assert.equal(code, 0);
-  assert.match(out, /closing keyword: \[DETECTOR\] the body closes no issue and expresses no intent to/);
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
+  assert.match(out, /→ gh pr edit 1845 --repo gapilabs\/gapila --body-file -/);
 });
 
 test('a declared tracker turns the false "no intent" line into the actionable one', () => {
@@ -690,9 +737,11 @@ test('a declared tracker turns the false "no intent" line into the actionable on
   assert.doesNotMatch(out, /expresses no intent/);
 });
 
-test('without a declared tracker the wording is unchanged, so no other repository moves', () => {
-  const { out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }) });
-  assert.match(out, /\[DETECTOR\] the body closes no issue and expresses no intent to/);
+test('without a declared tracker the refusal wording is the bare one, so no other repository moves', () => {
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }) });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
+  assert.doesNotMatch(out, /moves by hand/);
 });
 
 test('the tracker ref reported is the one a closing verb points at, not the first mention', () => {
@@ -726,18 +775,18 @@ test('a GitHub keyword still wins over the tracker ref when both are present', (
   assert.doesNotMatch(out, /moves by hand/);
 });
 
-test('a tracker pattern that does not compile falls back to the detector, and decides nothing', () => {
-  // The tracker half is a WORDING aid: it exists so the line below is not false
-  // on a repository that tracks elsewhere. A typo in it must not gain a vote on
-  // a merge, so it reverts to the bare detector line and the verdict is
-  // whatever the other grounds said.
+test('a tracker pattern that does not compile falls back to the bare refusal, and gains no vote', () => {
+  // The tracker half is a WORDING aid: it exists so the refusal below is not
+  // false on a repository that tracks elsewhere. A typo in it must not change
+  // the verdict beyond what the bare body already earns — which under R8 is
+  // the no-closing-intent refusal, exactly as if no tracker were declared.
   const { code, out } = run(['--pr', '1845'], {
     ...CLEAN,
     prGate: { aggregate: AGGREGATE, tracker: { name: 'Linear', pattern: 'GAP-[0-9' } },
     receipt: prView({ body: 'Part of GAP-380.' }),
   });
-  assert.equal(code, 0);
-  assert.match(out, /closing keyword: \[DETECTOR\] the body closes no issue and expresses no intent to/);
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
   assert.doesNotMatch(out, /moves by hand/);
 });
 
@@ -777,6 +826,30 @@ test('--merge carries the SHA this run validated, and squash is the default', ()
     calls.filter(call => call.startsWith('pr merge')),
     [`pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${HEAD_SHA}`],
   );
+});
+
+test('a merge writes its record BEFORE the merge call is issued (KTD4)', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
+  // Snapshot taken INSIDE the injected merge call: an after-merge write would
+  // leave this null, which is exactly the ordering bug the record exists to
+  // remove — a mutation that cannot be replayed because nothing preceded it.
+  let atMergeTime = null;
+  const { code } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    onMerge: () => {
+      atMergeTime = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, 'utf8')) : null;
+    },
+  });
+  assert.equal(code, 0);
+  assert.ok(atMergeTime !== null, 'the record was on disk before the merge was issued');
+  const begun = atMergeTime.attempts[0].phases[0];
+  assert.deepEqual(begun.argv, ['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', HEAD_SHA]);
+  assert.equal(begun.exit, null, 'at merge time the phase is begun, not ended');
+  assert.ok(Array.isArray(begun.grounds) && begun.grounds.length > 0, 'the per-ground verdicts ride the phase');
+  const settled = JSON.parse(readFileSync(recordPath, 'utf8')).attempts[0].phases[0];
+  assert.equal(settled.exit, 0, 'the phase closed with the merge exit');
 });
 
 test('--method merge lands a real merge commit, and squash never appears', () => {
@@ -846,6 +919,168 @@ test('a refusal outranks an inability to establish when both apply', () => {
   assert.match(out, /REFUSE — 1 named reason\(s\)\. Nothing was mutated\./);
 });
 
+
+test('AE3: a crash between record and merge replays the recorded argv exactly, and mints no second record', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
+  // First run: the merge call itself dies after the record landed.
+  // First run: the merge transport dies after the record landed — the spawn
+  // never returns, which defaultExec reports as error-as-data.
+  const crashed = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    onMerge: () => ({ status: null, stdout: '', stderr: '', error: new Error('simulated crash between record and merge') }),
+  });
+  assert.notEqual(crashed.code, 0);
+  const recorded = JSON.parse(readFileSync(recordPath, 'utf8'));
+  assert.equal(recorded.attempts.length, 1);
+  const recordedArgv = recorded.attempts[0].phases[0].argv;
+
+  // Recovery: same PR, same head — the reissued merge is the recorded argv,
+  // byte for byte, on the same single record.
+  const merges = [];
+  const recovered = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, onMerge: args => merges.push([...args]) });
+  assert.equal(recovered.code, 0);
+  assert.match(recovered.out, /replay — reissuing the recorded merge argv byte for byte/);
+  assert.deepEqual(merges, [recordedArgv]);
+  const after = JSON.parse(readFileSync(recordPath, 'utf8'));
+  assert.equal(after.attempts.length, 1, 'no second attempt was minted for an unchanged head');
+  assert.equal(after.attempts[0].phases.length, 1, 'the recorded phase was reissued, not duplicated');
+});
+
+test('replay against a PR merged at the recorded SHA is replayed-success, with zero merge calls', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const first = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir });
+  assert.equal(first.code, 0);
+  const merges = [];
+  const replayed = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    prStates: [prView({ state: 'MERGED' })],
+    onMerge: args => merges.push(args),
+  });
+  assert.equal(replayed.code, 0);
+  assert.match(replayed.out, /REPLAYED-SUCCESS — the recorded merge already landed at 3f9a1c27/);
+  assert.deepEqual(merges, [], 'a replayed success issues no mutation');
+});
+
+test('replay against a PR merged at a DIVERGENT SHA is a named report, never a success receipt', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir }).code, 0);
+  const moved = 'aaaa1c27b4d6e8f0a2c4e6081a3c5e7092b4d6f8';
+  const merges = [];
+  const replayed = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    prStates: [prView({ state: 'MERGED', headRefOid: moved })],
+    onMerge: args => merges.push(args),
+  });
+  assert.equal(replayed.code, 1);
+  assert.match(replayed.out, /REPLAY — gapilabs\/gapila#1845 merged OUTSIDE this gate's validated head/);
+  assert.doesNotMatch(replayed.out, /REPLAYED-SUCCESS|MERGED — /);
+  assert.deepEqual(merges, []);
+});
+
+test('replay against an open PR whose head moved opens a NEW attempt on the freshly validated head', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir }).code, 0);
+  const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
+  const moved = 'bbbb1c27b4d6e8f0a2c4e6081a3c5e7092b4d6f8';
+  const merges = [];
+  const replayed = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    receipt: prView({ headRefOid: moved }),
+    onMerge: args => merges.push([...args]),
+  });
+  assert.equal(replayed.code, 0);
+  assert.match(replayed.out, /replay — the head moved past the recorded/);
+  assert.deepEqual(merges, [['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', moved]]);
+  const record = JSON.parse(readFileSync(recordPath, 'utf8'));
+  assert.equal(record.attempts.length, 2, 'the stale attempt settled and a new one opened');
+  assert.equal(record.attempts[0].settled, true);
+});
+
+test('KTD6: staleness as the only refusing ground updates the branch and re-runs once; the second refusal routes', () => {
+  // First run sees the stale shape; the harness cannot move the fixture repo
+  // mid-run, so the retried run refuses on staleness AGAIN — which is exactly
+  // the second-refusal path: one update-branch, then routing, never a loop.
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'stale' });
+  assert.equal(code, 1);
+  assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
+  assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
+  assert.match(out, /self-repair already ran once — a second staleness refusal routes to the owning worker/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
+});
+
+test('a failing update-branch stops the self-repair with the named repair', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'stale', updateBranchFails: true });
+  assert.equal(code, 1);
+  assert.match(out, /self-repair failed — update failed/);
+  assert.match(out, /→ gh pr update-branch 1845/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('a detector run never self-repairs staleness', () => {
+  const { code, calls } = run(['--pr', '1845'], { ...CLEAN, shape: 'stale' });
+  assert.equal(code, 1);
+  assert.ok(!calls.some(call => call.startsWith('pr update-branch')), 'a detector run mutated the branch');
+});
+
+test('KTD5: a PR that edits the prGate declaration it is measured by refuses toward the human merge', () => {
+  // A dedicated repository: main commits one declaration, feature commits a
+  // weakened one. The guard compares committed prGate values across the
+  // merge-base, so an uncommitted local config cannot trip it.
+  const root = join(sandbox, 'declaration-guard');
+  mkdirSync(root, { recursive: true });
+  git(root, 'init', '-q', '-b', 'main');
+  commit(root, 'ax.config.json', JSON.stringify({ prGate: { aggregate: AGGREGATE } }), 'declare the gate');
+  git(root, 'checkout', '-q', '-b', 'feature');
+  commit(root, 'ax.config.json', JSON.stringify({ prGate: { checks: ['lint'] } }), 'weaken the gate');
+  const calls = [];
+  const gh = args => {
+    calls.push(args.join(' '));
+    const [verb, target] = args;
+    if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) return answered(JSON.stringify({ defaultBranchRef: { name: 'main' } }));
+    if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
+    if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView()));
+    if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
+    if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
+    if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
+    return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
+  };
+  const { code, out } = capture(() => gate(['--pr', '1845', '--merge'], { gh, git: realGit, cwd: root, env: { HOME: sandbox }, sleep: () => {} }));
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — declaration guard: this PR edits the prGate declaration it is measured by/);
+  assert.match(out, /→ review the prGate diff, then merge by hand: gh pr merge 1845/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'the disarming PR was not merged autonomously');
+});
+
+test('closure verification: an issue that closes on a later poll is merged and delivered', () => {
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, issueStates: ['OPEN', 'CLOSED'] });
+  assert.equal(code, 0);
+  assert.match(out, /MERGED — gapilabs\/gapila#1845/);
+  assert.match(out, /closure: issue #1786 reads closed — merged and delivered/);
+});
+
+test('KTD5: an issue that never closes is an operator escalation, never a silent exit-0 note', () => {
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, issueStates: ['OPEN'] });
+  assert.equal(code, 3);
+  assert.match(out, /MERGED — gapilabs\/gapila#1845/, 'the merge itself is reported — it happened');
+  assert.match(out, /CANNOT ESTABLISH — issue #1786 is not closed after the recorded merge/);
+  assert.match(out, /→ check the repository setting "auto-close issues with merged linked pull requests"/);
+});
+
+test('closure verification has nothing to poll for a declared-tracker body, and says so', () => {
+  const { code, out } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    prGate: { aggregate: AGGREGATE, tracker: { name: 'Linear', pattern: 'GAP-[0-9]+' } },
+    receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }),
+    issueStates: [null],
+  });
+  assert.equal(code, 0);
+  assert.match(out, /closure: the body names no same-repository #N to verify — that ticket moves by hand/);
+});
 // ── The noun ───────────────────────────────────────────────────────────────
 
 test('every declared pr verb has a runner, and every runner is declared', () => {

@@ -35,7 +35,8 @@
 //   2  usage error. The Bash spent 3 here; in ax, 2 is the usage error on every
 //      verb, so it moves. The Bash's "reserved 2" line is dead and does not
 //      survive the port.
-//   3  cannot establish — including "no prGate declared for this checkout"
+//   3  cannot establish — "no prGate declared", an unreadable merge record,
+//      and a recorded merge whose ticket closure could not be observed
 // A refusal outranks an inability to establish when both apply: neither merges,
 // and a named reason is the more actionable of the two.
 //
@@ -50,6 +51,32 @@
 //
 // The git-backed grounds (staleness, landed-by-content, residual findings) run
 // against the current checkout, which must hold the PR branch.
+//
+// THE MERGE IS RECORDED BEFORE IT MUTATES (KTD4). Every live mutation in ax
+// goes through `record.mjs`'s write-ahead protocol; this verb was the one
+// exception, and a crash between its decision and its mutation left nothing to
+// replay. The record lives under `<store>/merge/` as `merge-<owner>-<repo>-<pr>`
+// and recovery classifies THREE ways: merged at the recorded SHA is
+// replayed-success; merged at a DIVERGENT SHA is a named report, never a
+// success — the record must not become false proof of validation; open with a
+// moved head settles the attempt and opens a new one on a freshly validated
+// head; open with the head unchanged reissues the recorded argv byte for byte.
+//
+// TWO MORE THINGS ONLY THE MERGE PATH DOES. Staleness self-repair (KTD6): when
+// base-ancestor staleness is the ONLY refusing ground, the verb updates the
+// branch from base and re-runs itself once — a merge that landed a sibling
+// makes every open PR stale, and round-tripping each one to its worker is N
+// wasted round-trips for a mechanical update. And closure verification (KTD5):
+// after a recorded merge, the linked issue is re-read with bounded retries;
+// closure is eventually consistent on GitHub's side, and a ticket that never
+// closes leaves every dependent deriving from a stale blocker — that is an
+// operator escalation (exit 3), never a silent note. The subgraph halt KTD5
+// asks for is MECHANICAL, not a marker file: an unclosed issue stays OPEN in
+// the tracker, so `ax frontier` keeps every dependent excluded `blocked-by`
+// until a human acts — fail-closed by construction, with no cached state that
+// can outlive the repair. `gh pr update-branch` is the one unrecorded mutation
+// here: it mints no identity and is idempotently re-runnable, which is exactly
+// what the record protocol exists to protect.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -58,9 +85,30 @@ import { CONFIG_FILE, repoPaths } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
 import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
-import { ciGround, clean, commitsGround, firstLine, gitGrounds, keywordGround, must, payload, succeeded, threadsGround } from './pr-grounds.mjs';
+import {
+  ciGround,
+  clean,
+  closedIssueOf,
+  commitsGround,
+  declarationGround,
+  firstLine,
+  gitGrounds,
+  keywordGround,
+  must,
+  payload,
+  succeeded,
+  threadsGround,
+} from './pr-grounds.mjs';
+import { argvValue, attemptNew, claimRecord, defaultStore, initRecord, newIdentity, phaseArgv, phaseBegin, phaseCount, phaseEnd } from './worker/record.mjs';
 
 const USAGE = 'ax pr gate --pr <n> [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
+
+const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
+
+/** Closure is event-driven on GitHub's side: the reads and the tick between them. */
+const CLOSURE_READS = 5;
+const CLOSE_TICK = 2000;
 
 /**
  * The flags that acknowledge a detector's list, declared once so the parser and
@@ -147,7 +195,13 @@ export function readDeclaration(prGate) {
 
 export function gate(
   argv = [],
-  { gh = (args, at) => defaultExec('gh', args, at), git = (args, at) => defaultExec('git', args, at), cwd = process.cwd() } = {},
+  {
+    gh = (args, at) => defaultExec('gh', args, at),
+    git = (args, at) => defaultExec('git', args, at),
+    cwd = process.cwd(),
+    env = process.env,
+    sleep = defaultSleep,
+  } = {},
 ) {
   const usageError = message => {
     process.stderr.write(`ax pr gate: ${message}\n${USAGE}\n`);
@@ -166,6 +220,8 @@ export function gate(
   /** Insertion-ordered, so a reprinted command reads the way it was typed. */
   const acks = new Set();
   let method = 'squash';
+  /** Set by the one recursive re-run the staleness self-repair issues (KTD6). */
+  let staleRetried = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -175,6 +231,7 @@ export function gate(
     else if (arg === '--merge') doMerge = true;
     else if (ACK_FLAGS.includes(arg)) acks.add(arg);
     else if (arg === '--method') method = value();
+    else if (arg === '--stale-retried') staleRetried = true;
     // Identifiers and flags only — an extra bare word is not a sentence this
     // command reads, it is an argument it does not have.
     else return usageError(`unknown argument "${arg}"`);
@@ -253,6 +310,85 @@ export function gate(
   const slug = own;
   const [owner, name] = slug.split('/');
 
+  // The default branch, read once: the keyword ground's base pair stands on
+  // it, and a failed read leaves the half-pair unread rather than assumed
+  // matching (F-028).
+  const defaulted = payload(run(['repo', 'view', slug, '--json', 'defaultBranchRef']));
+  const defaultBranch = defaulted.ok ? String(defaulted.value?.defaultBranchRef?.name ?? '').trim() : '';
+
+  const store = join(defaultStore(env), 'merge');
+  const requestId = `merge-${owner}-${name}-${pr}`;
+  const recordPath = join(store, `${requestId}.json`);
+
+  /**
+   * KTD5: a merged PR proves delivery only when its ticket actually closed.
+   * Bounded re-reads, then an operator escalation: every ticket blocked by an
+   * unclosed-but-delivered issue derives from a stale blocker, so the gap must
+   * never travel as a note.
+   */
+  const verifyClosure = body => {
+    const issue = closedIssueOf(body);
+    if (issue === null) {
+      note('closure: the body names no same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
+      return 0;
+    }
+    for (let attempt = 0; attempt < CLOSURE_READS; attempt += 1) {
+      if (attempt > 0) sleep(CLOSE_TICK);
+      const read = payload(run(['issue', 'view', String(issue), '--repo', slug, '--json', 'state']));
+      if (!read.ok) continue;
+      if (String(read.value?.state ?? '').toUpperCase() === 'CLOSED') {
+        note(`closure: issue #${issue} reads closed — merged and delivered`);
+        return 0;
+      }
+    }
+    bad(
+      `CANNOT ESTABLISH — issue #${issue} is not closed after the recorded merge (${CLOSURE_READS} reads); every ticket blocked by it now stands on a stale blocker, so its subgraph must not re-derive silently`,
+    );
+    fix(`check the repository setting "auto-close issues with merged linked pull requests", then close by hand: gh issue close ${issue} --repo ${slug}`);
+    return 3;
+  };
+
+  // ── Replay precheck (KTD4). An existing record means a merge was already
+  // issued or intended for this PR; what happened to it decides everything
+  // before any ground re-runs.
+  if (doMerge && existsSync(recordPath)) {
+    let recordedArgv = null;
+    try {
+      if (phaseCount(recordPath) > 0) recordedArgv = phaseArgv(recordPath, 'last');
+    } catch (error) {
+      bad(
+        `CANNOT ESTABLISH — the merge record at ${recordPath} is unreadable (${clean(String(error.message ?? error))}); a record that cannot be read is never permission to mint a second mutation`,
+      );
+      fix(`cat ${recordPath}   # repair or remove it by hand, then re-run`);
+      return 3;
+    }
+    if (recordedArgv !== null) {
+      const recordedSha = argvValue(recordedArgv, '--match-head-commit') ?? '';
+      const seen = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,body']));
+      if (!seen.ok) return cannot(`the replay read 'gh pr view ${pr}' ${seen.reason}`, `gh pr view ${pr} --repo ${slug}`);
+      const prState = String(seen.value?.state ?? '').toUpperCase();
+      const headNow = String(seen.value?.headRefOid ?? '').trim();
+      if (prState === 'MERGED') {
+        section(`pr gate — ${slug}#${pr} (replay)`);
+        if (recordedSha !== '' && recordedSha === headNow) {
+          note(`REPLAYED-SUCCESS — the recorded merge already landed at ${recordedSha}; no second mutation minted`);
+          return verifyClosure(typeof seen.value?.body === 'string' ? seen.value.body : '');
+        }
+        bad(
+          `REPLAY — ${slug}#${pr} merged OUTSIDE this gate's validated head (recorded ${recordedSha || 'nothing'}, merged ${headNow || 'unread'}); the record must not become false proof of validation`,
+        );
+        fix(`gh pr view ${pr} --repo ${slug} --json headRefOid,mergeCommit   # inspect what actually landed, then decide by hand`);
+        return 1;
+      }
+      if (prState === 'CLOSED') {
+        bad('REPLAY — the recorded merge\'s PR is now closed unmerged; replaying would mutate a PR someone decided against');
+        fix(`gh pr reopen ${pr} --repo ${slug}   # or remove ${recordPath} once the attempt is truly abandoned`);
+        return 1;
+      }
+      note(`replay pending — an unsettled merge record exists for ${slug}#${pr}; the gate revalidates the current head before any reissue`);
+    }
+  }
+
   // ── Setup. The head SHA is resolved ONCE and every ground below uses that one
   // value, so no step can validate one commit and speak about another.
   const receipt = payload(
@@ -307,8 +443,9 @@ export function gate(
     ci,
     threadsGround({ run, owner, name, pr, sha, ciDecided: ci.ciDecided, invocation }),
     gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir }),
+    declarationGround({ git, root: paths.root, baseBranch, headBranch, pr, slug }),
     commitsGround({ run, slug, pr, openedAt, ackBody, invocation }),
-    keywordGround({ body, tracker: loaded.prGate?.tracker, pr, slug }),
+    keywordGround({ body, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch }),
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);
@@ -343,6 +480,24 @@ export function gate(
         : `CANNOT ESTABLISH — ${unknowns.length} ground(s) unread. Nothing was mutated.`,
   );
 
+  // ── Staleness self-repair (KTD6): mechanical, once, and only on the merge
+  // path — a detector run mutates nothing, and a second staleness refusal
+  // routes to the owning worker instead of looping here.
+  if (doMerge && code === 1 && unknowns.length === 0 && refusals.every(entry => entry.message.startsWith('staleness:'))) {
+    if (staleRetried) {
+      note('self-repair already ran once — a second staleness refusal routes to the owning worker, not another update (KTD6)');
+    } else {
+      note('self-repair: staleness is the only refusing ground — updating the branch from base and re-running this gate once (KTD6)');
+      const updated = run(['pr', 'update-branch', pr, '--repo', slug]);
+      if (!succeeded(updated)) {
+        bad(`self-repair failed — ${firstLine(updated.stderr) || `exit ${updated.status}`}`);
+        fix(`gh pr update-branch ${pr} --repo ${slug}   # then: ${invocation('--merge')}`);
+        return 1;
+      }
+      return gate([...argv, '--stale-retried'], { gh, git, cwd, env, sleep });
+    }
+  }
+
   if (!doMerge) {
     // A printed command is advice a caller can substitute, and
     // `--match-head-commit` only closes the push race when the exact validated
@@ -356,13 +511,50 @@ export function gate(
     return code;
   }
 
+  // ── The merge, recorded before it mutates (KTD4) ─────────────────────────
   note(`merging with the SHA this run validated (method: ${method})`);
-  const merged = run(['pr', 'merge', pr, '--repo', slug, `--${method}`, '--match-head-commit', sha]);
+  const mergeArgv = ['pr', 'merge', pr, '--repo', slug, `--${method}`, '--match-head-commit', sha];
+  const groundLines = notes.map(entry => entry.message).slice(0, 40);
+  const claim = claimRecord(store, requestId);
+  let issueArgv = mergeArgv;
+  if (claim.claimed) {
+    initRecord(claim.path, { request: requestId, orca: 'gh' });
+    phaseBegin(claim.path, { name: 'pr-merge', identity: newIdentity(), argv: mergeArgv, grounds: groundLines });
+  } else {
+    // The precheck established this record is readable and its PR still open.
+    const phases = phaseCount(claim.path);
+    if (phases === 0) {
+      // Claimed and initialised, but no phase was ever begun: write-ahead
+      // ordering proves no mutation was issued, so this run may proceed as
+      // the first.
+      phaseBegin(claim.path, { name: 'pr-merge', identity: newIdentity(), argv: mergeArgv, grounds: groundLines });
+    } else {
+      const recordedArgv = phaseArgv(claim.path, 'last');
+      const recordedSha = argvValue(recordedArgv, '--match-head-commit') ?? '';
+      if (recordedSha === sha) {
+        issueArgv = [...recordedArgv];
+        note(`replay — reissuing the recorded merge argv byte for byte (head unchanged at ${sha})`);
+      } else {
+        // KTD4 class (c): the head moved past the recorded SHA. A replacement
+        // is a NEW logical attempt on the head THIS run just validated.
+        note(`replay — the head moved past the recorded ${recordedSha || 'nothing'}; settling that attempt and opening a new one at ${sha}`);
+        attemptNew(claim.path);
+        phaseBegin(claim.path, { name: 'pr-merge', identity: newIdentity(), argv: mergeArgv, grounds: groundLines });
+      }
+    }
+  }
+  const merged = run(issueArgv);
+  phaseEnd(claim.path, 'last', {
+    exit: merged.error ? null : (merged.status ?? null),
+    receiptText: String(merged.stdout ?? ''),
+    stderr: String(merged.stderr ?? ''),
+    error: merged.error ? String(merged.error.message ?? merged.error) : null,
+  });
   if (!succeeded(merged)) {
     bad(`MERGE FAILED — ${firstLine(merged.stderr) || `exit ${merged.status}`}; the head may have moved past ${sha}`);
     fix(`${invocation('--merge')}   # re-run the gate against the new head`);
     return 1;
   }
   note(`MERGED — ${slug}#${pr} at ${sha} (${method})`);
-  return 0;
+  return verifyClosure(body);
 }

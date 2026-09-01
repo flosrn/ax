@@ -432,19 +432,61 @@ export function commitsGround({ run, slug, pr, openedAt, ackBody, invocation }) 
 }
 
 /**
- * Ground 7. A closing keyword GitHub actually recognises.
+ * Ground 7. A closing keyword GitHub actually recognises, on a base where it
+ * fires.
  *
  * `Ferme #N` and `Clot #N` close nothing, and a view that treats open issues
  * as its queue then re-dispatches delivered work. F-018 exactly: PR #1831
  * opened on `Ferme #1786`, merged, and #1786 stayed OPEN and `ready-for-agent`.
  * Only the matched phrase is echoed, never the surrounding prose.
+ *
+ * Two halves harden under autonomous frontier derivation (R8), where nobody
+ * reads the merge before the next wave derives from the tracker:
+ *
+ *  - Absent closing intent is a REFUSAL, not the detector note it used to be.
+ *    The two readings that note described — "a PR with no ticket behind it" and
+ *    "an author who forgot" — are still both undecidable from the body, and
+ *    that is exactly why the answer cannot be to merge: the frontier re-derives
+ *    from issue state, so a delivered ticket that closes nothing stalls its
+ *    whole subgraph. Naming the ticket, or merging by hand, is the operator's
+ *    call and the repair says so.
+ *  - A base that is not the repository's default branch makes every keyword
+ *    inert: GitHub closes linked issues only on a default-branch merge. The
+ *    detector would otherwise print "GitHub will close the issue" about a merge
+ *    that closes nothing — F-018's failure with a different cause.
+ *
+ * `baseBranch`/`defaultBranch` are one question, not two fields: with neither,
+ * the caller is not asking (the ground answers on the body alone); with one,
+ * the ground is unread and says so — an absent default branch is not a match
+ * (F-028).
  */
-export function keywordGround({ body, tracker, pr, slug }) {
+export function keywordGround({ body, tracker, pr, slug, baseBranch = '', defaultBranch = '' }) {
   const out = account();
+  const base = String(baseBranch ?? '').trim();
+  const head = String(defaultBranch ?? '').trim();
+  let inert = false;
+  if (base !== '' && head !== '') {
+    if (base !== head) {
+      inert = true;
+      out.refuse(
+        `closing keyword: base '${clean(base)}' is not the default branch '${clean(head)}' — every closing keyword is inert there, because GitHub closes a linked issue only when the PR merges into the default branch`,
+        `gh pr edit ${pr} --repo ${slug} --base ${clean(head)}   # or merge here and move the ticket by hand`,
+      );
+    }
+  } else if (base !== '' || head !== '') {
+    out.unknown(
+      `closing keyword: base '${clean(base) || 'unread'}' against default branch '${clean(head) || 'unread'}' — half the pair decides nothing, and an unread default branch is not a match (F-028)`,
+      `gh repo view ${slug} --json defaultBranchRef   # read the default branch, then re-run`,
+    );
+  }
   const matched = new RegExp(`\\b(?:${KEYWORDS})\\b\\s*:?\\s+${TARGET}`, 'i').exec(body);
   const intended = new RegExp(`\\b(?:${INTENT})\\b\\s*:?\\s+${TARGET}`, 'i').exec(body);
   if (matched) {
-    out.note(`closing keyword: '${clean(matched[0].trim())}' — GitHub will close the issue`);
+    out.note(
+      inert
+        ? `closing keyword: '${clean(matched[0].trim())}' — recognised, but inert on this base (see the refusal below)`
+        : `closing keyword: '${clean(matched[0].trim())}' — GitHub will close the issue`,
+    );
     return out;
   }
   if (intended) {
@@ -492,14 +534,113 @@ export function keywordGround({ body, tracker, pr, slug }) {
       `closing keyword: no GitHub keyword, but the body names ${clean(declaredTracker.name)} '${clean(ref[0])}' — GitHub closes nothing there, so that ticket moves by hand`,
     );
   } else {
-    // Genuinely nothing. That is a tooling fix, a docs pass, a chore — and
-    // refusing it would block every such PR forever. The distinction between
-    // "absent by mistake" and "absent by design" is not decidable from the
-    // body, so this ground says which of the two it found instead of guessing.
-    // Same family as the residual ground (F-039), one ground over, found the
-    // same day by running this gate on a real PR.
-    out.note(
-      'closing keyword: [DETECTOR] the body closes no issue and expresses no intent to. That is a PR with no ticket behind it, or an author who forgot — no reading of the body separates them',
+    // Genuinely nothing — and under R8 that is where the loop breaks, not a
+    // detector line. "Absent by mistake" and "absent by design" are still
+    // undecidable from the body (the reading that made this a note), so the
+    // refusal names both readings and hands the choice to a human: name the
+    // ticket, or merge by hand. Same family as the residual ground (F-039).
+    out.refuse(
+      'closing keyword: the body closes no issue and expresses no intent to. That is a PR with no ticket behind it, or an author who forgot — no reading of the body separates them, and the frontier re-derives from issue state, so an unclosed delivered ticket stalls its subgraph',
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #N", or merge this one by hand if no ticket is behind it`,
+    );
+  }
+  return out;
+}
+
+/**
+ * The issue a merged PR will close, when GitHub itself will do the closing:
+ * the FIRST recognised closing construct, and only a bare `#N` in this same
+ * repository. A qualified `owner/repo#N` or a full URL is a real closing
+ * target too, but it closes in ANOTHER repository — the caller verifying
+ * closure has nothing to poll here, and saying `null` sends it to the
+ * "moves by hand" note instead of polling the wrong tracker.
+ */
+export function closedIssueOf(body) {
+  const matched = new RegExp(`\\b(?:${KEYWORDS})\\b\\s*:?\\s+(${TARGET})`, 'i').exec(String(body ?? ''));
+  if (!matched) return null;
+  const bare = /^#(\d+)$/.exec(matched[1]);
+  return bare ? Number(bare[1]) : null;
+}
+
+/**
+ * Ground 8. The declaration guard: a PR must not weaken the gate that
+ * measures it.
+ *
+ * `declarationOf` reads `prGate` from the working tree with no notion of who
+ * last changed it, so the first PR that edits the block silently redefines
+ * what every LATER autonomous merge must prove — and this PR is still measured
+ * by the OLD grounds, so nothing else refuses it. Under gate-sovereign merging
+ * (KD2) that is the one change that can disarm the gate from inside the loop;
+ * refusing it here is what returns the human for exactly that change and no
+ * other.
+ *
+ * The comparison is SEMANTIC, merge-base against head: the two committed
+ * `prGate` values, canonically serialised — never a grep over patch lines,
+ * which misses a value edited without its key appearing in the hunk. An
+ * absent file is a confirmed-absent declaration (`undefined`), which compares
+ * clean against itself; an unreadable side is an unknown, not a match (F-028).
+ */
+const canonical = value =>
+  JSON.stringify(value, (key, inner) =>
+    inner !== null && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(Object.keys(inner).sort().map(name => [name, inner[name]]))
+      : inner,
+  );
+
+export function declarationGround({ git, root, baseBranch, headBranch, pr, slug }) {
+  const out = account();
+  const gitRun = args => git(args, root);
+  const refOf = name => {
+    for (const candidate of [`origin/${name}`, name]) {
+      if (succeeded(gitRun(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]))) return candidate;
+    }
+    return '';
+  };
+  const baseRef = refOf(baseBranch);
+  const headRef = refOf(headBranch);
+  if (baseRef === '' || headRef === '') {
+    out.unknown(
+      `declaration guard: '${baseBranch}' or '${headBranch}' is absent from this checkout, so whether this PR edits prGate is unreadable`,
+      `git fetch origin ${baseBranch} ${headBranch}`,
+    );
+    return out;
+  }
+  const mergeBase = gitRun(['merge-base', baseRef, headRef]);
+  if (!succeeded(mergeBase)) {
+    out.unknown(
+      `declaration guard: no merge base between ${baseRef} and ${headRef}, so the prGate diff has no before side`,
+      `git merge-base ${baseRef} ${headRef}`,
+    );
+    return out;
+  }
+  const declarationAt = ref => {
+    const shown = gitRun(['show', `${ref}:ax.config.json`]);
+    if (succeeded(shown)) {
+      try {
+        return { ok: true, gate: JSON.parse(String(shown.stdout ?? '')).prGate };
+      } catch {
+        return { ok: false, reason: `ax.config.json at ${clean(ref)} is not readable JSON`, repair: `git show ${ref}:ax.config.json` };
+      }
+    }
+    const stderr = String(shown.stderr ?? '');
+    // git's two "confirmed absent" answers; anything else is a failed read.
+    if (/does not exist|exists on disk, but not in|invalid object name/i.test(stderr)) return { ok: true, gate: undefined };
+    return { ok: false, reason: `git show ${clean(ref)}:ax.config.json failed (${clean(firstLine(stderr))})`, repair: `git show ${ref}:ax.config.json` };
+  };
+  const before = declarationAt(String(mergeBase.stdout ?? '').trim());
+  const after = declarationAt(headRef);
+  for (const side of [before, after]) {
+    if (!side.ok) {
+      out.unknown(`declaration guard: ${side.reason}`, side.repair);
+      return out;
+    }
+  }
+  if (canonical(before.gate) === canonical(after.gate)) {
+    out.note('declaration guard: the PR leaves the prGate declaration untouched');
+  } else {
+    out.refuse(
+      'declaration guard: this PR edits the prGate declaration it is measured by — measured by the OLD grounds, it would silently redefine what every later autonomous merge must prove',
+      `review the prGate diff, then merge by hand: gh pr merge ${pr} --repo ${slug} --squash   # the human checkpoint this refusal restores`,
     );
   }
   return out;
