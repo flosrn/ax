@@ -8,6 +8,29 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.16.0](https://github.com/flosrn/ax/compare/v0.15.3...v0.16.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* `ax ready <verb>` is now `ax triage <verb>`; the `ax.config.json` key `ready.{labels,provenance}` is now `triage.{…}`; the environment knobs `ORCA_READY_SESSION_CAP` and `AX_READY_ROLE_WAIT` are now `ORCA_TRIAGE_SESSION_CAP` and `AX_TRIAGE_ROLE_WAIT`; `ax triage status --brief` is now `--oneline`; and the exported entry `ready()` is now `triage()` (`readyRelease` -> `triageRelease`, `launchProof` -> `dispatchProof`). A consuming repo renames one config key and moves its exports; every retired name refuses with the replacement named rather than falling back silently.
+* `ax worker launch` no longer runs; use `ax worker dispatch`. The `ax.config.json` key `launch.{entry,contract,hosts,databaseLabels,worktreeTool}` is now `dispatch.{...}`, `--brief <file>` on that verb is `--notes <file>`, and `AX_LAUNCH_{TICK,SEE_WAIT,EQUIP_WAIT,SPEC_DIR}` are `AX_DISPATCH_{...}`.
+
+### Features
+
+* ax --help groups commands by domain section, and the docs speak the glossary ([#54](https://github.com/flosrn/ax/issues/54)) ([2318e57](https://github.com/flosrn/ax/commit/2318e572cee2af2882093987beedd9d4589c697d)), closes [#45](https://github.com/flosrn/ax/issues/45)
+* ax triage is the on-ramp noun ([#52](https://github.com/flosrn/ax/issues/52)) ([3835cc0](https://github.com/flosrn/ax/commit/3835cc09d333655b08eb9320023d5ebc41a31c45))
+* **omp:** one operator role — delete readiness, absorb the triage lane ([#48](https://github.com/flosrn/ax/issues/48)) ([35fa806](https://github.com/flosrn/ax/commit/35fa8065fdba6408fb33e5926574d9eb042e837d))
+* the code speaks the glossary — comments say orchestrator, never coordinator ([#55](https://github.com/flosrn/ax/issues/55)) ([6f6005e](https://github.com/flosrn/ax/commit/6f6005e9f4789555983ce9b2740afa7cf5354662)), closes [#46](https://github.com/flosrn/ax/issues/46)
+* worker dispatch is the one implementation creation verb ([#51](https://github.com/flosrn/ax/issues/51)) ([f52475a](https://github.com/flosrn/ax/commit/f52475a13ef95431fd4b32f94ec7a217e006317e)), closes [#42](https://github.com/flosrn/ax/issues/42)
+* worker start is plumbing, not an agent-facing verb ([#53](https://github.com/flosrn/ax/issues/53)) ([5b1d891](https://github.com/flosrn/ax/commit/5b1d89129f37e102c9584ec03ad5687864220f9b)), closes [#44](https://github.com/flosrn/ax/issues/44)
+
+
+### Bug Fixes
+
+* **worker:** --dispatch-proof is the flag; the retired spelling survives one release ([#64](https://github.com/flosrn/ax/issues/64)) ([feb21b7](https://github.com/flosrn/ax/commit/feb21b78ebff958a24bae78594d1ace690a1cab6))
+* **worktree:** the context file teaches the workflow-scope push escape ([#61](https://github.com/flosrn/ax/issues/61)) ([09df78b](https://github.com/flosrn/ax/commit/09df78b8479f9c1705b99b6d7a6e79116c64a979))
+
 ## [0.15.3](https://github.com/flosrn/ax/compare/v0.15.2...v0.15.3) (2026-08-31)
 
 
