@@ -79,6 +79,23 @@ anything the orchestrator must decide. If you stopped short, report the concrete
 blocker — what you tried, and what is missing — rather than a summary that reads
 like completion.
 
+Close every report with a `## LEARNINGS` heading — the last section, present
+even when empty. Each bullet is prose prefixed by the scope it belongs to:
+
+- `durable:` — true of the repository next month. Land it yourself, inside this
+  slice, before reporting: prefer an ADDITIVE file (a new solutions entry, one
+  appended line) over editing a shared page, so concurrent slices cannot
+  collide on it. The bullet then names what you landed and where.
+- `wave:` — true only while the sibling slices of this spec are in flight (a
+  freshly moved seam, a landmine the next worker steps on). You cannot reach
+  the next worker; the orchestrator distills these into the notes it passes at
+  the next dispatch, so write them to be lifted verbatim.
+- `ticket:` — true of this ticket alone. It rides this report and goes no
+  further.
+
+Scope is the routing: a bullet with the wrong prefix either dies with the wave
+or outlives its truth.
+
 ## Subagents
 
 You may delegate bounded work: a search whose shape you cannot guess, a review

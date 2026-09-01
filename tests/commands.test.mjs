@@ -168,7 +168,9 @@ test('only commands meant for agents reach the AGENTS block', () => {
   // An explicit allow-list, not a count: `init` is a human's setup step, and
   // advertising it invites an agent to rewrite the project's managed files
   // mid-task. Adding a command here is a decision, so it belongs in a diff.
-  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'worktree ls', 'worktree setup']);
+  // `frontier` is that decision (U1): the orchestrator reads its receipt at
+  // every wake, so the block is exactly where the verb must be learned from.
+  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'frontier', 'worktree ls', 'worktree setup']);
   assert.doesNotMatch(agentsBody(), /`ax init/);
 });
 

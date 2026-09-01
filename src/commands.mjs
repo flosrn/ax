@@ -160,6 +160,16 @@ export const COMMANDS = [
     subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
   },
   {
+    name: 'frontier',
+    section: 'ORCHESTRATION',
+    // Ungated like `pr`: pure `gh` reads plus a read-only look at the dispatch
+    // store, so it answers wherever ax is installed — no Orca required to ask
+    // what is takeable.
+    summary: 'the takeable ticket set — blockers, provenance and dispatch state, one receipt',
+    agentLine: '`ax frontier` — the takeable ticket set in one receipt: ready label, blocking edges, dispatch records, each exclusion named.',
+    options: [['--dry-run', 'name the reads without issuing them — no gh call']],
+  },
+  {
     name: 'pin',
     section: 'PROJECT',
     summary: 'move this project onto an ax release — edit, install, prove, doctor',

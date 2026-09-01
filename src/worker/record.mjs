@@ -241,9 +241,22 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
   };
 }
 
-/** The first write of a claimed record: who asked, on what host, through which binary. */
-export function initRecord(path, { request, orca, host = hostname(), now = () => new Date().toISOString() }) {
-  save({ request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] }, path);
+/**
+ * The first write of a claimed record: who asked, on what host, through which
+ * binary — and, when the caller overrode the ticket's own assignment, why
+ * (`--because`, R4/KTD3), and WHICH repository the ticket lives in (`repo`,
+ * from `--tracker-repo`): the store is host-global, and the frontier needs the
+ * name to keep one checkout's records from excluding another's candidates.
+ *
+ * Both keys are ADDITIVE and omitted when empty (the shape rule in this file's
+ * header): every reader here works from named keys, no recovery path branches
+ * on them, and a record written by an older ax carries neither.
+ */
+export function initRecord(path, { request, orca, because = '', repo = '', host = hostname(), now = () => new Date().toISOString() }) {
+  const rec = { request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] };
+  if (String(because).trim() !== '') rec.because = because;
+  if (String(repo).trim() !== '') rec.repo = repo;
+  save(rec, path);
 }
 
 /**
@@ -256,10 +269,16 @@ export function initRecord(path, { request, orca, host = hostname(), now = () =>
  * `--replace` leaves hours behind the dispatch it produced. `release` dates a
  * comment against the dispatch, so it needs the phase's own time; a record
  * written before this field existed falls back to `createdAt`.
+ *
+ * `grounds` is additive the same way (KTD4): the merge namespace records WHAT
+ * its mutation stood on — the per-ground verdict lines of the gate run that
+ * authorised it. Omitted when null; no reader branches on it.
  */
-export function phaseBegin(path, { name, identity, argv, receiptPath = null, now = () => new Date().toISOString() }) {
+export function phaseBegin(path, { name, identity, argv, receiptPath = null, grounds = null, now = () => new Date().toISOString() }) {
   const rec = load(path);
-  must(lastAttempt(rec), 'phases', 'last attempt').push({ name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() });
+  const phase = { name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() };
+  if (grounds !== null) phase.grounds = grounds;
+  must(lastAttempt(rec), 'phases', 'last attempt').push(phase);
   save(rec, path);
 }
 
@@ -907,6 +926,21 @@ export function staleClaim(path, callerRun) {
   if (!recorded) return { stale: false, reason: 'record names no Run — being foreign cannot be proven' };
   if (recorded === callerRun) return { stale: false, reason: `record names this caller's own Run ${recorded} — replay it` };
   return { stale: true, foreignRun: recorded };
+}
+
+/**
+ * Close the last attempt WITHOUT opening another — the release verb's
+ * settlement gesture. Until this existed, `settled: true` was written only by
+ * `attemptNew`, so a released-but-unmerged dispatch read as a live attempt
+ * forever and the frontier's `attempt-ended-unmerged` state was unreachable
+ * (validated review finding, 2026-09-01). Idempotent: settling a settled
+ * attempt changes nothing.
+ */
+export function attemptSettle(path) {
+  const rec = load(path);
+  const attempts = must(rec, 'attempts', 'record root');
+  attempts[attempts.length - 1].settled = true;
+  save(rec, path);
 }
 
 /** A replacement is a NEW logical attempt: settle the current one, open the next. */

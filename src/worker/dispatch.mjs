@@ -69,8 +69,8 @@ import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
-import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, ticketKind } from './ticket.mjs';
-import { hostFor, proveHost, repoIdFor } from './hosts.mjs';
+import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
+import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
 import { MECHANICS, renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
@@ -79,7 +79,7 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 import { defaultExec } from '../exec.mjs';
 
 const USAGE =
-  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--notes <file>] ' +
+  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
   '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
@@ -96,6 +96,17 @@ const tickOf = env => Math.max(1, Number(env.AX_DISPATCH_TICK ?? 2000));
  */
 export const requestIdFor = (issue, slug) =>
   `${issue}${slug ? `-${slug}` : '-work'}`.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+
+/**
+ * The `owner/repo` a GitHub ticket lives in, read from its own URL — '' when
+ * the tracker is not GitHub-shaped or the URL does not parse. Recorded on the
+ * dispatch record (`--tracker-repo`, ax-owned) so the frontier can tell THIS
+ * repository's records from another checkout's in the host-global store.
+ */
+export const trackerRepoOf = url => {
+  const match = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/issues\/\d+/.exec(String(url ?? ''));
+  return match === null ? '' : match[1];
+};
 
 /**
  * The knobs this verb renamed with itself, REFUSED rather than read past.
@@ -166,6 +177,7 @@ export function dispatch(
     run: '',
     notes: '',
     task: '',
+    because: '',
     model: '@default',
     agent: 'omp',
     on: '',
@@ -184,6 +196,7 @@ export function dispatch(
     '--run': 'run',
     '--notes': 'notes',
     '--task': 'task',
+    '--because': 'because',
     '--model': 'model',
     '--agent': 'agent',
     '--on': 'on',
@@ -223,6 +236,14 @@ export function dispatch(
       'ax init   # then RESTART this session so its pane joins the peer registry, and drop --run',
     );
   }
+
+  // `--because` is provenance on the dispatch record, and it has two legitimate
+  // shapes: WITH `--task` it records why a ticket's own assignment was
+  // overridden (R4/KTD3); ALONE it records why a ticket is being dispatched
+  // AGAIN — KTD6's dead-route recovery, where a fresh `--slug` mints the fresh
+  // request id, the ticket stays the assignment, and the reason is the one
+  // sentence a later reader needs. Both land on the record root; neither ever
+  // reaches the child (KD4).
 
   // Exactly one identity. `--issue` names work a tracker owns; `--name` names
   // work nothing owns yet. Both is not a richer dispatch, it is two identities for
@@ -348,6 +369,26 @@ export function dispatch(
 
   const emptyBody = named ? '' : emptyBodyRefusal({ bodyLength: ticket.bodyLength, task: flags.task, id: ticket.id });
   if (emptyBody) return refuse(emptyBody, `ax worker dispatch --issue ${flags.issue} --task "<instruction> ${ticket.id}"`);
+
+  // The tracker's own completeness assertion, read BEFORE anything is created —
+  // and after the empty-body gate, which owns the one shape where the label
+  // cannot be true (R4/KTD3). `--name` carries no ticket and therefore no label.
+  const overridden = named
+    ? ''
+    : readyAssignmentRefusal({
+        labels: ticket.labels,
+        task: flags.task,
+        because: flags.because,
+        id: ticket.id,
+        entry,
+        bodyLength: ticket.bodyLength,
+      });
+  if (overridden) {
+    return refuse(
+      overridden,
+      `ax worker dispatch --issue ${flags.issue}${slug === '' ? '' : ` --slug ${slug}`} --task ${quote(flags.task)} --because '<reason>'`,
+    );
+  }
 
   // ── 3. everything else knowable BEFORE anything is created ─────────────────
   // A dispatch that can never be issued must not leave a worktree, a mandate, a
@@ -527,13 +568,27 @@ export function dispatch(
     operator,
   });
 
+  // The options `ax worker start` owns and RECORDS, as against the placement
+  // argv forwarded to Orca after `--`. `--because` and `--tracker-repo` belong
+  // here and only here: they are provenance for this dispatch, not an input to
+  // the child, and the child reads the ticket (KD4). A reason nobody kept is a
+  // reason nobody asked for; a record that does not name its repository hides
+  // another checkout's ticket from the frontier.
+  const trackerRepo = named ? '' : trackerRepoOf(ticket.url);
+  const owned = [
+    '--request', request,
+    '--run', runId,
+    ...(flags.because === '' ? [] : ['--because', flags.because]),
+    ...(trackerRepo === '' ? [] : ['--tracker-repo', trackerRepo]),
+  ];
+
   if (dry) {
     section(named ? `dry run — ${flags.name}: ${instruction}` : `dry run — ${ticket.id}: ${ticket.title}`);
     raw(brief);
     // The preview is composed from the SAME array the dispatch would carry, so
     // it cannot drift from what runs. The Bash it replaces re-typed this line by
     // hand, which is a second implementation of the argv nobody tests.
-    note(`would run: ax worker start ${['--request', request, '--run', runId, '--spec-file', '<spec>', '--', ...place].join(' ')}`);
+    note(`would run: ax worker start ${[...owned, '--spec-file', '<spec>', '--', ...place].join(' ')}`);
     return 0;
   }
 
@@ -547,7 +602,7 @@ export function dispatch(
   }
 
   // ── 7. dispatch ────────────────────────────────────────────────────────────
-  const startArgs = ['--request', request, '--run', runId, '--spec-file', spec, '--orca', bin, '--', ...place];
+  const startArgs = [...owned, '--spec-file', spec, '--orca', bin, '--', ...place];
   let code = startFn(startArgs, { env, runner });
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a

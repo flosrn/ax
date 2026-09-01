@@ -319,3 +319,75 @@ to treat the ticket as canonical — so it would escalate, correctly, after bein
 Write them on the ticket, or name an entry point that does not need them:
 ${escape}`;
 }
+
+/**
+ * The label that means "this ticket's body IS the assignment".
+ *
+ * The same string is declared in `src/triage/spec.mjs`, which is what APPLIES
+ * it, and it is deliberately not imported from there: `triage` reads `worker`
+ * (six modules do), and one import the other way would make the dependency
+ * mutual. The two spellings are held identical by an assertion in
+ * `tests/worker-dispatch.test.mjs` instead, so a drift is a red suite rather
+ * than a refusal that quietly stops refusing.
+ */
+export const READY_LABEL = 'ready-for-agent';
+
+/**
+ * A label carried by a ticket, matched the way a human means it — measured in
+ * `src/triage/dispatch.mjs`, where a declared name differing only in case read
+ * as "this project declares no such vocabulary" and the wrong lane started.
+ */
+const sameLabel = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+/**
+ * `--task` over a ticket the TRACKER has already called complete — the refusal
+ * text, or '' when there is nothing to refuse.
+ *
+ * `ready-for-agent` is not decoration. It is the only machine-readable statement
+ * a tracker makes that this ticket's body is an assignment a child can execute:
+ * `ax triage publish` applies it last, after the Agent Brief lands, precisely so
+ * that the label and the brief are one artifact. `--task` REPLACES that
+ * assignment with an instruction the ticket never carried, and the two readings
+ * of that gesture are far apart — the label is wrong, or the brief was never
+ * read — so the caller is the only one who can say which. Recorded, because
+ * "why was this ticket's own brief overridden" is asked weeks later, of the
+ * record, by someone who was not in the room.
+ *
+ * THE LABEL IS THE WHOLE PREDICATE (KTD3). Not the body: a body that exists and
+ * underdetermines the work stays the child's own decision gate, unchanged, the
+ * same boundary `emptyBodyRefusal` draws one function up.
+ *
+ * Two shapes carry no refusal at all, and both are the label failing to mean
+ * what it asserts:
+ *
+ *   AN EMPTY BODY. Zero characters cannot be a complete assignment however the
+ *   ticket is labelled, so the label proves nothing and `emptyBodyRefusal` owns
+ *   the case — its `--task` escape is the one correct route to an undecided
+ *   ticket, and closing it here would leave no route at all.
+ *
+ *   NO DECLARED ENTRY. The repair IS the declared entry, verbatim, and a repo
+ *   that declares none has no other route: `--task` is the only instruction
+ *   there is. A refusal whose repair is unreachable is a wall, not a gate.
+ */
+export function readyAssignmentRefusal({ labels = [], task, because, id, entry = '', bodyLength, ready = READY_LABEL } = {}) {
+  if (!task) return '';
+  if (String(because ?? '').trim() !== '') return '';
+  if (!(Number(bodyLength) > 0)) return '';
+  if (String(entry).trim() === '') return '';
+
+  // The name that MATCHED is what comes back, never the canonical spelling: it
+  // is the string an operator has to go and look at on the ticket.
+  const carried = (Array.isArray(labels) ? labels : []).find(name => sameLabel(name, ready));
+  if (carried === undefined) return '';
+
+  return `${id} carries ${carried}, which is this tracker's own assertion that its body IS the
+assignment — the label is applied after the brief lands, and the two are one artifact. --task
+replaces that assignment with an instruction the ticket never carried, so either the label is
+wrong or the brief was not read, and nothing here can tell those apart.
+
+Dispatch it on the entry point the brief was written for:
+  ${entry} ${id}
+
+Or say what the label is wrong about — the reason is recorded with the dispatch:
+  --because '<reason>'`;
+}

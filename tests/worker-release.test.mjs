@@ -735,6 +735,22 @@ test('a close is recorded BEFORE it is issued, in its own namespace', () => {
   assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.json')), []);
 });
 
+test('a settled release settles the dispatch record — the frontier must see the attempt END', () => {
+  // Measured in review (validated finding): `settled: true` was written only by
+  // attemptNew, so a released-unmerged dispatch stayed `already-dispatched` in
+  // the frontier forever and `attempt-ended-unmerged` was unreachable. The
+  // release IS the settlement gesture: work proven landed or explicitly closed.
+  const dir = store();
+  record(dir, '77-work', 'ctx_settle');
+  const r = run(['--close', '--dispatch', 'ctx_settle', '--no-proof'], {
+    dir,
+    orca: { workers: [worker('ctx_settle')], terminals: [terminal('term_ctx_settle')] },
+  });
+  assert.equal(r.code, 0);
+  const rec = JSON.parse(readFileSync(join(dir, '77-work.json'), 'utf8'));
+  assert.equal(rec.attempts[rec.attempts.length - 1].settled, true, 'the released dispatch attempt is settled');
+});
+
 test('a second close replays the recorded request and never mints a second identity', () => {
   const dir = store();
   const first = run(['--close', '--dispatch', 'ctx_twice', '--no-proof'], {

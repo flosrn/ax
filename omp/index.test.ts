@@ -383,6 +383,58 @@ test('the bundled orchestrator role rules child questions itself', async () => {
   expect(unqualifiedAnswer).toEqual([]);
 });
 
+// The continuous-frontier rewrite (KTD6/KTD9). The old Authority line — "You
+// never open the next dependency wave before the previous one has merged" — was
+// a live contradiction an LLM reads literally once blockers alone decide
+// takeability, so its ABSENCE is asserted as hard as the new doctrine's
+// presence.
+test('the bundled orchestrator role drives the continuous frontier, not a wave barrier', async () => {
+  const installed = install('[omp model=@task]');
+  await installed.commands.get('role')?.handler('orchestrator', installed.ctx);
+  const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
+
+  expect(role).not.toContain('never open the next dependency wave');
+  expect(role).toContain('ax frontier');
+  expect(role).toContain('## Get bearings');
+  // The receipt vocabulary, so the session and the verb share one grammar.
+  expect(role).toContain('`takeable`');
+  // The heading alone is not the contract: the ORDERED procedure is (validated
+  // review finding — a rewrite could keep the heading and lose the order).
+  expect(role).toMatch(/tracker first/i);
+  expect(role).toContain('ax worker gate <task|request>');
+  expect(role).toMatch(/Dispatch only where the\s+gate proves no live child exists/);
+  expect(role).toMatch(/cannot establish.*read to repair, never\s+an empty frontier/s);
+  // Overlap arbitration widened to every live pane, not one wave's members.
+  expect(role).toMatch(/EVERY live pane/);
+  // Wake-drain, refusal routing, and the two bounds on unattended repair.
+  expect(role).toMatch(/drain the whole inbox/);
+  expect(role).toMatch(/gate REFUSAL is the owning worker's work/);
+  expect(role).toMatch(/second staleness refusal/);
+  expect(role).toMatch(/escalates to the operator/);
+  expect(role).toMatch(/--because gate-refusal/);
+  // Learnings distillation is the orchestrator's half of the wave channel.
+  expect(role).toMatch(/distill the `wave:` bullets/);
+  // The wave file demoted to cache; records, tracker and gate are authority.
+  expect(role).toMatch(/wave-memory file is a CACHE/);
+});
+
+// The worker's half of the learnings channel (KTD7) and the refusal duty the
+// routing above depends on: a routed refusal with no worker contract to
+// receive it is a message into the void.
+test('the bundled worker contract carries the LEARNINGS grammar and the refusal duty', async () => {
+  const installed = install('[omp role=worker model=@task]');
+  const out = await turn(installed, BASE);
+  const role = out?.systemPrompt?.[2] ?? '';
+  const playbook = String(out?.message?.content ?? '');
+
+  expect(role).toMatch(/gate-refusal message on your pull request is your work/);
+  expect(playbook).toContain('## LEARNINGS');
+  for (const scope of ['`durable:`', '`wave:`', '`ticket:`']) expect(playbook).toContain(scope);
+  // Durable learnings prefer additive files: the bound on concurrent-slice
+  // doc collisions the whole channel rests on.
+  expect(playbook).toMatch(/ADDITIVE file/);
+});
+
 // ── unknown names refuse, visibly ────────────────────────────────────────────
 
 test('an unknown dispatched role locks the session before its first turn', async () => {

@@ -639,3 +639,69 @@ test('card watch is off for a same-host dispatch, whose peer report already reac
   assert.equal(r.calls.some(args => `${args[0]} ${args[1]}` === 'worktree ps'), false, 'the local board is never read');
   assert.match(r.log, /card watch: off for a same-host dispatch/);
 });
+
+// THE DELIVERY FORM, not the fact of a message. Every test above proves that an
+// alert was SENT; none of them proves it lands on a session that has ended its
+// turn. The documented coordinator wait is
+// `check --wait --types worker_done,escalation,question`, and Orca's own guide
+// states that the type filter decides when a waiter wakes — so `--type status`
+// is mail an idle orchestrator reads whenever it happens to look, which is the
+// gap KTD8 names: a child dying between PR-open and report freezes the loop
+// until the operator returns. `escalation` is the one waking type the watcher
+// may use: `question` promises a reply route this detached process does not
+// survive to consume, and `worker_done` is Dispatch-lifecycle authority that
+// would settle the very task nobody has finished.
+const typeOf = args => args[args.indexOf('--type') + 1];
+
+test('every alert is issued in the WAKE delivery form, with its words unchanged', () => {
+  const silence = sends(
+    invoke({
+      runner: fakeRunner({ cursors: [7, 7, 7, 7] }),
+      env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' },
+    }).calls,
+  );
+  assert.equal(silence.length, 1);
+  assert.equal(typeOf(silence[0]), 'escalation');
+  assert.match(silence[0][silence[0].indexOf('--subject') + 1], /has gone silent/);
+
+  const gone = sends(
+    invoke({
+      runner: fakeRunner({ cursors: [null], worktrees: [''] }),
+      recordOptions: { on: '' },
+      env: { ORCA_STALL_AFTER: '30', ORCA_STALL_LIFETIME: '60' },
+    }).calls,
+  );
+  assert.equal(gone.length, 1);
+  assert.equal(typeOf(gone[0]), 'escalation');
+  assert.match(gone[0][gone[0].indexOf('--subject') + 1], /is GONE without reporting/);
+
+  // The card is the one channel that crosses hosts, and `progressOnly` already
+  // decides which cards "must wake the Run" — a DECISION that arrives as
+  // read-when-you-look mail waits exactly as long as no alert at all.
+  const card = sends(
+    invoke({
+      runner: fakeRunner({
+        cursors: [1, 2, 3, 4, 5],
+        cards: ['in-progress\t1/4 · Work · task', 'in-review\t1/4 · DECISION: portails'],
+      }),
+      env: { ORCA_STALL_LIFETIME: '3' },
+    }).calls,
+  );
+  assert.equal(card.length, 1);
+  assert.equal(typeOf(card[0]), 'escalation');
+  assert.match(card[0][card[0].indexOf('--subject') + 1], /published a checkpoint/);
+});
+
+test('a wake that fails to deliver changes nothing but the log', () => {
+  // ADR 0025 fail-open: the watcher mutates nothing and its verdict is not the
+  // notification's. The retry must not quietly downgrade to the non-waking form
+  // either — a second attempt that informs instead of waking is the same silence.
+  const runner = fakeRunner({ cursors: [7, 7, 7, 7, 7], sendFails: 1 });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 2);
+  for (const attempt of sent) assert.equal(typeOf(attempt), 'escalation');
+  assert.match(r.log, /stall alert failed; will retry next tick/);
+  assert.match(r.log, /ALERT sent to run:run_test123; exiting/);
+});

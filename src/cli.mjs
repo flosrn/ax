@@ -19,6 +19,7 @@ import { supabase } from './supabase-guard.mjs';
 import { worktree } from './worktree/index.mjs';
 import { triage } from './triage/index.mjs';
 import { pr } from './pr/index.mjs';
+import { frontier } from './frontier.mjs';
 import { pin } from './pin.mjs';
 
 /**
@@ -49,6 +50,8 @@ const runners = argv => ({
   triage: () => triage(argv.slice(1)),
   // Same again: `gate --pr <n>` carries its own flags, and none is whole-command.
   pr: () => pr(argv.slice(1)),
+  // Same shape as pr: today the verb takes no arguments, and it owns saying so.
+  frontier: () => frontier(argv.slice(1)),
   // One positional version; --dry-run is whole-command but rides argv for symmetry.
   pin: () => pin(argv.slice(1)),
 });

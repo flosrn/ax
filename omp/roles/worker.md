@@ -19,6 +19,9 @@ start with its decision gate and follow its pipeline rather than recreating one.
   bounded facts or reviews; they do not inherit this session role.
 - Keep work inside the ticket. An adjacent defect is a reported finding, not a
   second slice.
+- A gate-refusal message on your pull request is your work: repair the named
+  grounds and re-report. Owning the PR through decided CI extends to reacting
+  to its refusal.
 
 ## Stop conditions
 
