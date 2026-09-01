@@ -68,7 +68,8 @@ export function renderContext({ plan, config, main }) {
     'Every database command goes through `ax supabase …`. Calling the `supabase` binary',
     'directly bypasses the guard that keeps a migration or a reset off the shared database.',
     '',
-    // FRICTIONS.md 2026-08-31: the provisioned worktree inherits the primary
+    // Measured 2026-08-31 (spec #39's wave; repair shipped in PR #61): the
+    // provisioned worktree inherits the primary
     // checkout's HTTPS remote, which rides the gh OAuth token — no `workflow`
     // scope, so a slice that legitimately edits a workflow file cannot push.
     // The cost of NOT saying this here was measured: a dropped change and an

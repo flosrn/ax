@@ -56,15 +56,21 @@ depend on a working tree under live edit.
 
 ## Record
 
-Every handled friction earns an entry in `FRICTIONS.md` — that file's own header
-owns the form and the four verdicts. The record exists because the alternative is
-a silent workaround: one consumer carried "`ax triage ask` is unavailable" in
-durable memory for six minor versions, and the cause took one grep of the runtime
-source once it was finally reported.
+Every friction is an ISSUE on the ax repository (`flosrn/ax`) — reported there
+when no maintainer session is up, stamped there when it is handled. An entry
+carries four things, and the first decides whether the other three are usable:
+the exact argv (and the cwd when it is not the repository root); the raw
+output, never a summary of it; the state expected instead; what it cost in the
+run that hit it.
 
-An entry is written whether the verdict is `fixed`, `refused` or
-`unreproducible`. A record that only holds `fixed` measures how agreeable the
-maintainer was, not how the tool behaves.
+The verdict lands as your comment — `fixed`, `refused` (with the reason and
+the cheaper existing thing) or `unreproducible` — and closing the issue stays
+the operator's call, like every closure. An entry is written whatever the
+outcome: a record that only holds `fixed` measures how agreeable the
+maintainer was, not how the tool behaves. The record exists because the
+alternative is a silent workaround: one consumer carried "`ax triage ask` is
+unavailable" in durable memory for six minor versions, and the cause took one
+grep of the runtime source once it was finally reported.
 
 ## Authority
 

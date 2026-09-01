@@ -23,7 +23,7 @@ const plan = {
 
 const render = () => renderContext({ plan, config: { apps: { web: '.' } }, main: '/tmp/main' });
 
-// FRICTIONS.md 2026-08-31: a worker whose slice touched
+// Measured 2026-08-31 (spec #39's wave, PR #61): a worker whose slice touched
 // `.github/workflows/publish.yml` had its push rejected — the provisioned
 // worktree inherits the HTTPS remote riding the gh OAuth token, which carries
 // no `workflow` scope — and the repair cost a dropped change plus an

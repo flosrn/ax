@@ -243,8 +243,9 @@ to everyone including your next wave, and one consumer carried "`ax triage ask`
 is unavailable" for six minor versions that way.
 
 Send it to the `maintainer` session if one is up (`peer_list` names it),
-otherwise write it into `FRICTIONS.md` in the ax checkout. Either way it carries
-the same four things, and the first decides whether the other three are usable:
+otherwise open an issue on the ax repository (`gh issue create --repo
+flosrn/ax`). Either way it carries the same four things, and the first decides
+whether the other three are usable:
 
 - the exact argv, and the cwd when it is not the repository root;
 - the raw output, never a summary of it;
