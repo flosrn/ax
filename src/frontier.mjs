@@ -40,7 +40,7 @@
 //   3  cannot establish at the declaration level: no checkout, unreadable
 //      config, gh below the floor, tracker unreachable. Never an empty receipt.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { repoPaths } from './config.mjs';
@@ -49,7 +49,6 @@ import { repoSlug } from './gh.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { clean, must, payload, succeeded } from './pr-grounds.mjs';
 import { READY_LABEL } from './triage/spec.mjs';
-import { requestIdFor } from './worker/dispatch.mjs';
 import { defaultStore } from './worker/record.mjs';
 
 const USAGE = 'ax frontier [--dry-run]';
@@ -112,23 +111,39 @@ function frontierQuery(owner, name, numbers) {
 }
 
 /**
- * The dispatch store's answer about one candidate, read-only. Absence is the
- * one clean "no record" answer; an unreadable or malformed record is an
- * inability to establish, never permission to classify (F-001's rule, applied
- * to a read).
+ * The dispatch store's answer about one candidate, read-only — derived from
+ * the request ids dispatches RECORD, never synthesized into one filename.
+ * `requestIdFor(issue, slug)` composes every id as `<issue>-<suffix>` (the
+ * suffix is a human slug or `work`, never the repository), and `--resume`
+ * already stands on that leading component; so membership here is the same
+ * rule: every record whose name begins `<number>-`. Absence is the one clean
+ * "no record" answer; an unreadable or malformed record is an inability to
+ * establish, never permission to classify (F-001's rule, applied to a read).
  */
-function dispatchStateOf(store, request) {
-  const path = join(store, `${request}.json`);
-  if (!existsSync(path)) return { state: 'none' };
+function dispatchStateOf(store, number) {
+  let names;
   try {
-    const record = JSON.parse(readFileSync(path, 'utf8'));
-    const attempts = must(record, 'attempts', 'dispatch record');
-    if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('dispatch record: attempts is not a non-empty list');
-    const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
-    return { state: settled === true ? 'settled' : 'unsettled' };
+    names = readdirSync(store);
   } catch (error) {
-    return { state: 'unreadable', reason: String(error.message ?? error).slice(0, 160), path };
+    if (error?.code === 'ENOENT') return { state: 'none' };
+    return { state: 'unreadable', reason: String(error.message ?? error).slice(0, 160), path: store };
   }
+  const prefix = `${number}-`;
+  let settledSeen = false;
+  for (const name of names.filter(entry => entry.startsWith(prefix) && entry.endsWith('.json')).sort()) {
+    const path = join(store, name);
+    try {
+      const record = JSON.parse(readFileSync(path, 'utf8'));
+      const attempts = must(record, 'attempts', 'dispatch record');
+      if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('dispatch record: attempts is not a non-empty list');
+      const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
+      if (settled !== true) return { state: 'unsettled' };
+      settledSeen = true;
+    } catch (error) {
+      return { state: 'unreadable', reason: String(error.message ?? error).slice(0, 160), path };
+    }
+  }
+  return settledSeen ? { state: 'settled' } : { state: 'none' };
 }
 
 /**
@@ -322,7 +337,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // Dispatch state, read-only from the store. Unsettled → a live attempt
       // owns this ticket; settled with the ticket still open → the attempt
       // ended without a merge, and the loop must SEE that.
-      const dispatched = dispatchStateOf(store, requestIdFor(String(candidate.number), slug));
+      const dispatched = dispatchStateOf(store, candidate.number);
       if (dispatched.state === 'unreadable') {
         unestablished.push({ ...candidate, read: `the dispatch record at ${dispatched.path} is unreadable (${dispatched.reason})`, repair: `cat ${dispatched.path}` });
         continue;

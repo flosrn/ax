@@ -178,16 +178,23 @@ test('a declared provenance contradiction is excluded provenance-refused', () =>
 
 test('an UNSETTLED record is already-dispatched, a settled one on an open ticket is attempt-ended-unmerged — structurally distinct', () => {
   const record = settled => ({ request: 'r', host: 'h', orca: 'orca', createdAt: 'now', attempts: [{ n: 1, settled, phases: [] }] });
-  writeFileSync(join(store, `${requestIdFor('50', SLUG)}.json`), JSON.stringify(record(false)));
-  writeFileSync(join(store, `${requestIdFor('51', SLUG)}.json`), JSON.stringify(record(true)));
+  writeFileSync(join(store, `${requestIdFor('50', '')}.json`), JSON.stringify(record(false)));
+  writeFileSync(join(store, `${requestIdFor('51', 'fix-thing')}.json`), JSON.stringify(record(true)));
+  // A neighbour's record must not leak across the `<issue>-` boundary: #5 is
+  // not #50, and #52's only record is unreadable — an unknown, not a state.
+  writeFileSync(join(store, `${requestIdFor('5', '')}.json`), JSON.stringify(record(false)));
+  writeFileSync(join(store, `${requestIdFor('52', '')}.json`), '{ not json');
   const { code, out } = runFrontier({
-    issues: [issueRow(50), issueRow(51)],
-    graph: { i50: issueNode(), i51: issueNode() },
+    issues: [issueRow(50), issueRow(51), issueRow(52), issueRow(53)],
+    graph: { i50: issueNode(), i51: issueNode(), i52: issueNode(), i53: issueNode() },
   });
   assert.equal(code, 0);
   assert.match(out, /#50 T50 — already-dispatched/);
   assert.match(out, /#51 T51 — attempt-ended-unmerged/);
   assert.match(out, /excluded — 2/);
+  assert.match(out, /CANNOT ESTABLISH — #52: the dispatch record at .*52-work\.json is unreadable/);
+  assert.match(out, /takeable — 1/);
+  assert.match(out, /#53 T53 — no blockers declared/);
 });
 
 test('a ready label applied without write permission is excluded untrusted-labeler', () => {
