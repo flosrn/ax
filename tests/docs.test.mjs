@@ -23,7 +23,7 @@ import { commandNames, renderUsage, subcommandNames } from '../src/commands.mjs'
 import { description, version } from '../src/config.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DOCS = ['README.md', 'AGENTS.md'];
+const DOCS = ['README.md', 'AGENTS.md', 'docs/ownership.md'];
 const read = file => readFileSync(join(ROOT, file), 'utf8');
 
 /**
@@ -134,7 +134,11 @@ test('AGENTS.md routes a prose writer to the dictionary that grades them', () =>
   assert.match(read('AGENTS.md'), /CONTEXT\.md/, 'AGENTS.md never names CONTEXT.md, the naming authority its own prose is graded against');
 });
 
-// ── the routing table's completeness, which is the half a machine can hold ────
+// ── the ownership map's completeness, which is the half a machine can hold ────
+//
+// The map lives in `docs/ownership.md`, linked from AGENTS.md and read on
+// demand — reference, not instruction, so it stays out of every session's
+// window (spec #39's review moved it; the contracts moved with it).
 //
 // Measured 2026-08-26: `src/worker/capability.mjs` was added — a module owning a
 // security boundary — and no table row named it. The omission was defended on
@@ -164,15 +168,15 @@ const modules = dir =>
     entry.isDirectory() ? modules(`${dir}/${entry.name}`) : entry.name.endsWith('.mjs') ? [`${dir}/${entry.name}`] : [],
   );
 
-test('every src module is routed by AGENTS.md, or exempt on purpose', () => {
-  const named = new Set([...read('AGENTS.md').matchAll(ROUTED)].map(match => match[1]));
+test('every src module is routed by the ownership map, or exempt on purpose', () => {
+  const named = new Set([...read('docs/ownership.md').matchAll(ROUTED)].map(match => match[1]));
   const unrouted = modules('src').filter(file => !named.has(file) && !UNROUTED.has(file));
 
-  assert.deepEqual(unrouted, [], 'add a row to the AGENTS.md table, or name the file in UNROUTED with a reason');
+  assert.deepEqual(unrouted, [], 'add a row to the docs/ownership.md table, or name the file in UNROUTED with a reason');
 });
 
-test('no table row points at a module that does not exist', () => {
-  const ghosts = [...read('AGENTS.md').matchAll(ROUTED)].map(match => match[1]).filter(file => !existsSync(join(ROOT, file)));
+test('no map row points at a module that does not exist', () => {
+  const ghosts = [...read('docs/ownership.md').matchAll(ROUTED)].map(match => match[1]).filter(file => !existsSync(join(ROOT, file)));
 
   assert.deepEqual(ghosts, [], 'a renamed or deleted module left its row behind');
 });

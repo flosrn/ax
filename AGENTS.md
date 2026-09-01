@@ -27,48 +27,11 @@ plan value” means the plan is missing a field.
 issued. Recovery replays that recorded call byte for byte. Missing, unreadable or ambiguous state is
 an inability to establish, never permission to mint another identity.
 
-## Read the owning header before changing the rule
+## Before changing a rule
 
-The incident and caveats live beside the implementation. This table routes; it does not duplicate
-them.
-
-| Path | Owns |
-|---|---|
-| `src/delegation.mjs`, `bin/ax.mjs`, `src/cli.mjs` | global command → exact project version → CLI delegation |
-| `src/init.mjs`, `src/doctor.mjs` | project inference, managed wiring, recorded state vs reality |
-| `src/worktree/plan.mjs`, `src/worktree/probes.mjs` | every worktree decision and every machine fact it consumes |
-| `src/worktree/identity.mjs`, `src/worktree/ports.mjs`, `src/worktree/supabase.mjs`, `src/worktree/addressing.mjs` | the rules composed by the plan |
-| `src/worktree/setup.mjs`, `src/worktree/list.mjs`, `src/worktree/clean.mjs`, `src/worktree/remove.mjs`, `src/worktree/doctor.mjs` | the worktree verbs; render and write, never decide |
-| `src/worktree/context.mjs` | `.agent/worktree-context.local.md`, read by a cold agent |
-| `src/worktree/locate.mjs` | proof that a destructive worktree target belongs to ax |
-| `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
-| `src/worker/start.mjs`, `src/worker/dispatch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs` | write-ahead plumbing, the one creation verb, repair and close |
-| `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a DISPATCHED receipt carries |
-| `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes |
-| `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
-| `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |
-| `src/worker/sweep.mjs` | reclaiming processes a dead worktree left behind, by pgid and never by name |
-| `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup — including the AX bundle a child must load before it is dispatched — tracker, placement and parent route |
-| `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication |
-| `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
-| `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
-| `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
-| `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |
-| `src/board.mjs` | the one monotonic writer of a worktree checkpoint |
-| `src/pin.mjs` | exact npm release migration, install proof and doctor; never git |
-| `src/orca-bin.mjs` | Orca binary resolution and JSON receipt parsing for CLI verbs |
-| `src/exec.mjs`, `src/git.mjs`, `src/gh.mjs` | process spawning (status-as-data, one default adapter), root/main derivation, the repository as `gh` names it |
-| `src/redact.mjs` | every authority-token shape, replaced before any verb displays child-authored text |
-| `src/blocks.mjs`, `src/dotenv.mjs`, `src/hash.mjs`, `src/proc.mjs`, `src/supabase-guard.mjs` | managed block edits, env files, deterministic naming, pgid lookup, the shared-database guard |
-| `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
-| `omp/model/index.ts`, `omp/model/activation.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof |
-| `omp/roles/`, `omp/playbooks/` | orchestrator, worker, triage-worker and maintainer contracts |
-| `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
-| `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
-| `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
-| `src/config.mjs`, `src/schema.mjs`, `ax.schema.json` | the per-repository contract and defaults |
-| `src/commands.mjs` | command registry: help sections, visibility, plumbing and generated AGENTS.md lines |
-| `release-please-config.json`, `.release-please-manifest.json`, `.github/workflows/publish.yml` | version, changelog, tag, GitHub Release and OIDC npm publish |
+Every module's doctrine — its incidents, caveats and the rule it enforces — lives in its own
+header, and the header is the authority. Look the file up in `docs/ownership.md`, read its
+header, then patch.
 
 ## Rules a patch has to hold
 
@@ -80,36 +43,9 @@ repo initializes with `apps.web: "."` and no vendor block.
 named option with a real default. That is why both suites run without Docker, bound ports, network,
 Orca or OMP sessions.
 
-**Declare before implementing.** Commands start in `src/commands.mjs`; noun verbs also have one
-`SUBCOMMANDS` table asserted equal to the registry. `src/cli.mjs` throws at startup when a declared
-command has no runner. Give a command an `agentLine` only when every consuming repo should teach it.
-A verb that must keep running but must not be offered is marked `plumbing` (`worker start`,
-`docs/adr/0001`): the marker hides it from the help and from its noun's verb list and changes
-nothing else, because undeclaring it would drop it out of that equality contract.
-
-**The CLI stays flat.** Every command declares the help section it prints under — `PROJECT`,
-`WORKTREE` or `ORCHESTRATION`, declared once as `SECTIONS` in `src/commands.mjs`. A future domain
-(automated checks, architecture rules, context rules) arrives as its own noun plus a section, never
-as a nesting prefix under an existing noun: the `gh` shape, not the `gcloud` shape
-(`docs/adr/0001`). A section is printed because visible commands landed in it, so the Orca gate
-empties `ORCHESTRATION` rather than leaving a heading over blank space.
-
-**Project version is authority.** The global bin only finds the local package. An exact declaration
-with no matching install is a refusal, including for `init`; otherwise the global copy could rewrite
-a project from a version it chose to the version the machine happened to have.
-
-**One OMP bundle per session.** `ax init` registers the installed package root in
-`.omp/settings.json`. Never add a second wrapper under `.omp/extensions/`: duplicate peer receive
-loops consume each other's messages and duplicate reports. The ax repo registers `"."`; consuming
-repos register `"./node_modules/@flosrn/ax"`.
-
-**Session roles are not task agents.** They live under `omp/roles/`, loaded by the AX role
-extension; both `[omp role=worker …]` and `/role orchestrator` resolve without OMP agent or skill
-discovery — never through an OMP `agents/` directory hidden by `disabledAgents`.
-
 **Playbooks are package-internal.** `omp/playbooks/implementation.md` and `triage.md` are generic AX
-procedures. They do not vendor Compound Engineering, Matt Pocock skills, provider IDs or private
-repo paths. Their proof names describe the work: `implementation` and `triage`.
+procedures: no Compound Engineering, no Matt Pocock skills, no provider IDs, no private repo paths.
+Their proof names describe the work: `implementation` and `triage`.
 
 **Every finding names its repair.** Output goes through `src/log.mjs`. A `bad` without a `fix` is a
 finding neither an agent nor a human can act on.
@@ -120,28 +56,8 @@ expected failure, then change production. Prefer real temp git repos over mocked
 **Absence is not zero** (F-028). Read receipts by named key; an absent list is unknown, not empty.
 Never `||` a missing container into a value that authorizes a mutation.
 
-**One assignment, two ways in.** The spec flow publishes its own tickets complete: `to-spec` decides
-the work and `to-tickets` cuts it into tickets that are agent-grabbable by construction, labelled
-`ready-for-agent` at publication — spec-born work is decided work, and triage never runs over it.
-`ax triage` serves the other way in — the on-ramp for inbound work: reported, agent-found, or born
-as a follow-up. `--job triage` decides what such an issue is, `--job brief` writes the Brief for a
-verdict already reached, `--job custom` runs a project's own pass. Both ways in converge on the same
-artifact — an issue labelled `ready-for-agent` carrying a complete assignment: what to build,
-independently observable acceptance criteria, and its blocking edges. Where that assignment LIVES
-follows provenance — the spec flow writes it into the ticket body and posts no comment (`to-tickets`
-has no Agent Brief step); the on-ramp posts it as an Agent Brief. Demanding a Brief comment over
-spec-born work strands a wave exactly as triaging it would. `ax triage dispatch` refuses a triage
-pass over spec-born work, reading the labels a project declares in `triage.provenance` — triage is
-for inbound issues only.
-
 **Proof, not self-report.** Liveness is cursor movement. Completion is a merged PR or the governing
 artifact. Every merge ground runs; nothing stops after the first refusal.
-
-**Destruction proves ownership.** Worktree removal resolves through `src/worktree/locate.mjs`;
-Supabase stop runs behind `ownsStack()`. Guessing a path is never an escape hatch.
-
-**Exit codes belong to the verb** (ADR 0003). `worker gate` fails closed because it authorizes a
-second agent. `board` fails open because a checkpoint hook must not take down the work it observes.
 
 **Orca is readable source, not a black box.** This machine runs a patched Orca fork (ADR 0026);
 the source lives at `~/Code/flosrn/orca` (`upstream` = stablyai/orca). Answer an Orca behavior
@@ -150,9 +66,11 @@ belongs in Orca goes to the fork branch, not to a workaround in ax.
 
 ## Adding a surface
 
-A new **command** needs one registry entry — its name, its help section and its summary — one
-runner, one implementation, and a test that exercises what the generated help or AGENTS.md tells an
-agent to type.
+A new **command** needs one registry entry in `src/commands.mjs` — its name, its help section and
+its summary — one runner, one implementation, and a test that exercises what the generated help or
+AGENTS.md tells an agent to type. A future domain (automated checks, architecture rules, context
+rules) arrives as its own noun plus a help section — the `gh` shape, never a nesting prefix
+(`docs/adr/0001`).
 
 A new **session role** needs a file under `omp/roles/`, an internal playbook when the role has a
 procedure, a role-proof name, and integration coverage for its real activation path. Operator roles
@@ -175,6 +93,7 @@ checkout, declare `"@flosrn/ax": "link:../../flosrn/ax"` in the consumer, then `
 
 ## Domain docs
 
+`docs/ownership.md` (the module → owner map — look a file up before changing its rule) ·
 `CONTEXT.md` (the ratified glossary — read it before writing prose that names a session, a verb or
 an artifact; its `_Avoid_` lines are enforced over this file and README.md by `tests/docs.test.mjs`)
 · `docs/adr/` (this repo's decisions, cited by path; a bare `ADR NNNN` is the harness-wide set under
