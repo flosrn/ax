@@ -120,14 +120,7 @@ function frontierQuery(owner, name, numbers) {
  * "no record" answer; an unreadable or malformed record is an inability to
  * establish, never permission to classify (F-001's rule, applied to a read).
  */
-function dispatchStateOf(store, number) {
-  let names;
-  try {
-    names = readdirSync(store);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return { state: 'none' };
-    return { state: 'unreadable', reason: String(error.message ?? error).slice(0, 160), path: store };
-  }
+function dispatchStateOf(names, store, number) {
   const prefix = `${number}-`;
   let settledSeen = false;
   for (const name of names.filter(entry => entry.startsWith(prefix) && entry.endsWith('.json')).sort()) {
@@ -260,6 +253,17 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
     }
 
     const store = defaultStore(env);
+    // The store listing, read ONCE for the run: the per-candidate question is a
+    // filter over one directory that does not change mid-receipt.
+    let storeNames = [];
+    try {
+      storeNames = readdirSync(store);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        return cannot(`the dispatch store at ${store} is unreadable (${String(error.message ?? error).slice(0, 160)})`, `ls ${store}`);
+      }
+    }
+
     /** One permission read per unique labeler, cached for the run. */
     const permissionCache = new Map();
     const writeAccess = login => {
@@ -337,7 +341,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // Dispatch state, read-only from the store. Unsettled → a live attempt
       // owns this ticket; settled with the ticket still open → the attempt
       // ended without a merge, and the loop must SEE that.
-      const dispatched = dispatchStateOf(store, candidate.number);
+      const dispatched = dispatchStateOf(storeNames, store, candidate.number);
       if (dispatched.state === 'unreadable') {
         unestablished.push({ ...candidate, read: `the dispatch record at ${dispatched.path} is unreadable (${dispatched.reason})`, repair: `cat ${dispatched.path}` });
         continue;

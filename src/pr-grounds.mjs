@@ -8,6 +8,8 @@
 // The grounds' incident history — why each exists, what it measured — lives on
 // each function below, moved intact from the file that paid for it.
 
+import { CONFIG_FILE } from './config.mjs';
+
 export const firstLine = text => String(text ?? '').split('\n')[0].trim();
 
 export const succeeded = out => !out.error && out.status === 0;
@@ -234,6 +236,20 @@ export function threadsGround({ run, owner, name, pr, sha, ciDecided, invocation
 }
 
 /**
+ * A branch resolved to the ref this checkout can actually read: the fetched
+ * `origin/<name>` when it exists, the local branch otherwise, '' when neither
+ * answers. Shared by the git-backed grounds and the declaration guard — the
+ * two resolved the same question with byte-identical loops once, which is one
+ * drift away from resolving it differently.
+ */
+const resolveRef = (gitRun, branch) => {
+  for (const candidate of [`origin/${branch}`, branch]) {
+    if (succeeded(gitRun(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]))) return candidate;
+  }
+  return '';
+};
+
+/**
  * Grounds 3, 4 and 5 — git-backed, one function because they stand on ONE
  * shared measurement: the git-dir check, the ref refresh and the base/head
  * resolution. A prelude failure feeds all three accounts at once (a fetch that
@@ -290,14 +306,8 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
     }
   }
 
-  const resolveRef = branch => {
-    for (const candidate of [`origin/${branch}`, branch]) {
-      if (succeeded(gitRun(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]))) return candidate;
-    }
-    return '';
-  };
-  const baseRef = fetchState === 'failed' ? '' : resolveRef(baseBranch);
-  const headRef = fetchState === 'failed' ? '' : resolveRef(headBranch);
+  const baseRef = fetchState === 'failed' ? '' : resolveRef(gitRun, baseBranch);
+  const headRef = fetchState === 'failed' ? '' : resolveRef(gitRun, headBranch);
 
   if (fetchState === 'failed') {
     // Already reported above; the comparison is deliberately not attempted.
@@ -590,14 +600,8 @@ const canonical = value =>
 export function declarationGround({ git, root, baseBranch, headBranch, pr, slug }) {
   const out = account();
   const gitRun = args => git(args, root);
-  const refOf = name => {
-    for (const candidate of [`origin/${name}`, name]) {
-      if (succeeded(gitRun(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]))) return candidate;
-    }
-    return '';
-  };
-  const baseRef = refOf(baseBranch);
-  const headRef = refOf(headBranch);
+  const baseRef = resolveRef(gitRun, baseBranch);
+  const headRef = resolveRef(gitRun, headBranch);
   if (baseRef === '' || headRef === '') {
     out.unknown(
       `declaration guard: '${baseBranch}' or '${headBranch}' is absent from this checkout, so whether this PR edits prGate is unreadable`,
@@ -614,18 +618,18 @@ export function declarationGround({ git, root, baseBranch, headBranch, pr, slug 
     return out;
   }
   const declarationAt = ref => {
-    const shown = gitRun(['show', `${ref}:ax.config.json`]);
+    const shown = gitRun(['show', `${ref}:${CONFIG_FILE}`]);
     if (succeeded(shown)) {
       try {
         return { ok: true, gate: JSON.parse(String(shown.stdout ?? '')).prGate };
       } catch {
-        return { ok: false, reason: `ax.config.json at ${clean(ref)} is not readable JSON`, repair: `git show ${ref}:ax.config.json` };
+        return { ok: false, reason: `${CONFIG_FILE} at ${clean(ref)} is not readable JSON`, repair: `git show ${ref}:${CONFIG_FILE}` };
       }
     }
     const stderr = String(shown.stderr ?? '');
     // git's two "confirmed absent" answers; anything else is a failed read.
     if (/does not exist|exists on disk, but not in|invalid object name/i.test(stderr)) return { ok: true, gate: undefined };
-    return { ok: false, reason: `git show ${clean(ref)}:ax.config.json failed (${clean(firstLine(stderr))})`, repair: `git show ${ref}:ax.config.json` };
+    return { ok: false, reason: `git show ${clean(ref)}:${CONFIG_FILE} failed (${clean(firstLine(stderr))})`, repair: `git show ${ref}:${CONFIG_FILE}` };
   };
   const before = declarationAt(String(mergeBase.stdout ?? '').trim());
   const after = declarationAt(headRef);
