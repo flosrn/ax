@@ -70,7 +70,7 @@ import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
-import { hostFor, proveHost, repoIdFor } from './hosts.mjs';
+import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
 import { MECHANICS, renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
@@ -376,7 +376,7 @@ export function dispatch(
   if (overridden) {
     return refuse(
       overridden,
-      `ax worker dispatch --issue ${flags.issue}${slug === '' ? '' : ` --slug ${slug}`} --task '${flags.task}' --because '<reason>'`,
+      `ax worker dispatch --issue ${flags.issue}${slug === '' ? '' : ` --slug ${slug}`} --task ${quote(flags.task)} --because '<reason>'`,
     );
   }
 

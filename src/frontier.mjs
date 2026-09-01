@@ -12,7 +12,9 @@
 //   takeable          every blocker closed, no exclusion — dispatchable now
 //   excluded          one NAMED reason each: blocked-by:<refs>, is-spec-parent,
 //                     provenance-refused, already-dispatched,
-//                     attempt-ended-unmerged, untrusted-labeler
+//                     attempt-ended-unmerged, untrusted-labeler,
+//                     no-longer-open, label-removed,
+//                     body-edited-after-label
 //   cannot-establish  the read that failed, named — NEVER folded into either
 //                     list above. Tracker data this verb cannot obtain is an
 //                     inability to establish, not an empty frontier (F-028).
@@ -28,6 +30,37 @@
 // label applied by an actor without repository write permission is excluded —
 // the ticket body would otherwise become verbatim instruction to a worker with
 // no human left in the path.
+//
+// THE CANDIDATE LIST IS READ TO A NAMED CAP (`CANDIDATE_CAP`), and an answer
+// that FILLS the cap is cannot-establish at the declaration level, not a
+// frontier: an unread ticket reads identically to an absent one, and the
+// receipt would silently claim the frontier is the first two hundred rows.
+//
+// THE LIST AND THE BATCHED READ ARE TWO MOMENTS, and the second one decides.
+// A ticket can close, or lose the ready label, between them; the batched read
+// carries `state` and `labels`, so classification requires OPEN and the label
+// still carried — else `no-longer-open` / `label-removed`. It also carries
+// `lastEditedAt`: a body edited AFTER the trusted labeler applied the label is
+// `body-edited-after-label`, because what the labeler vouched for is not what a
+// worker would now read. An unreadable timestamp is cannot-establish, never a
+// freshness verdict; a never-edited issue (`lastEditedAt` null) passes.
+//
+// EVERY READ IS PROVED COMPLETE OR NOTHING: `pageInfo` must be an object with a
+// BOOLEAN `hasNextPage` — absent or malformed pagination is cannot-establish,
+// not a complete page. A DECLARED `triage.provenance` whose `spec`/`inbound`
+// are not lists of strings is cannot-establish too: coercing them to [] turns
+// the provenance gate silently off, which is a declared rule not applied. An
+// UNDECLARED provenance stays not-measured.
+//
+// A dispatch record must NAME ITS OWN FILE (`request` equals the filename
+// stem) and carry a BOOLEAN `settled` — a record that fails either says
+// nothing about this ticket, which is cannot-establish, never a classification.
+//
+// `gh api graphql` prints data AND errors on a partial failure. A non-zero exit
+// whose stdout still carries `data.repository` continues with that payload —
+// the unresolved aliases fall into the per-candidate cannot-establish branch,
+// and the receipt notes the partial answer. Only stdout with NO data collapses
+// the whole run to exit 3.
 //
 // This verb READS and classifies; it never dispatches, never mutates, and
 // consults the dispatch store read-only. gh ≥ 2.97 is the floor — 2.94 added
@@ -57,6 +90,14 @@ const CONFIG_FILE = 'ax.config.json';
 
 /** The gh floor: `parent`/`subIssues` and the dependency fields it stands on. */
 const GH_FLOOR = [2, 97];
+
+/**
+ * The candidate read's cap, NAMED so the receipt can say it. An answer that
+ * fills it proves nothing about the rows beyond it, and an unread ticket reads
+ * identically to an absent one — so a full page is cannot-establish, never a
+ * frontier (F-028).
+ */
+const CANDIDATE_CAP = 200;
 
 /** Case-insensitive label identity — same rule as triage's `sameLabel`. */
 const sameLabel = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
@@ -101,10 +142,11 @@ function frontierQuery(owner, name, numbers) {
   const fields = numbers
     .map(
       n =>
-        `i${n}: issue(number: ${n}) { number state ` +
+        `i${n}: issue(number: ${n}) { number state lastEditedAt ` +
+        `labels(first: 100) { nodes { name } } ` +
         `subIssues(first: 1) { totalCount } ` +
         `blockedBy(first: 50) { nodes { number state } pageInfo { hasNextPage } } ` +
-        `timelineItems(itemTypes: [LABELED_EVENT], last: 100) { nodes { ... on LabeledEvent { label { name } actor { login } } } } }`,
+        `timelineItems(itemTypes: [LABELED_EVENT], last: 100) { nodes { ... on LabeledEvent { createdAt label { name } actor { login } } } } }`,
     )
     .join(' ');
   return `query { repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
@@ -125,11 +167,15 @@ function dispatchStateOf(names, store, number) {
   let settledSeen = false;
   for (const name of names.filter(entry => entry.startsWith(prefix) && entry.endsWith('.json')).sort()) {
     const path = join(store, name);
+    const stem = name.slice(0, -'.json'.length);
     try {
       const record = JSON.parse(readFileSync(path, 'utf8'));
+      const request = must(record, 'request', 'dispatch record');
+      if (String(request) !== stem) throw new Error(`dispatch record: 'request' is ${clean(request)} but the file is named ${stem}`);
       const attempts = must(record, 'attempts', 'dispatch record');
       if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('dispatch record: attempts is not a non-empty list');
       const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
+      if (typeof settled !== 'boolean') throw new Error("last attempt: 'settled' is not a boolean");
       if (settled !== true) return { state: 'unsettled' };
       settledSeen = true;
     } catch (error) {
@@ -140,18 +186,19 @@ function dispatchStateOf(names, store, number) {
 }
 
 /**
- * Who applied the CURRENT ready label — the newest labeled event naming it.
+ * The CURRENT ready label's newest labeled event: who applied it and when.
  * No matching event in the window is an unattributable label, which is an
- * unknown, not a trusted one.
+ * unknown, not a trusted one — and so is an event whose `createdAt` the read
+ * did not carry, once an edit timestamp has to be compared against it.
  */
-function readyLabelerOf(timelineNodes, label) {
-  let labeler = null;
+function readyLabelOf(timelineNodes, label) {
+  let event = { login: null, at: null };
   for (const node of timelineNodes) {
     if (node !== null && typeof node === 'object' && node.label && sameLabel(node.label.name ?? '', label)) {
-      labeler = node.actor?.login ?? null;
+      event = { login: node.actor?.login ?? null, at: node.createdAt ?? null };
     }
   }
-  return labeler;
+  return event;
 }
 
 export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args, at), env = process.env, cwd = process.cwd() } = {}) {
@@ -188,13 +235,29 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
     );
   }
   const provenance = declared.triage?.provenance;
-  const specLabels = Array.isArray(provenance?.spec) ? provenance.spec : [];
-  const inboundLabels = Array.isArray(provenance?.inbound) ? provenance.inbound : [];
+  if (provenance !== undefined) {
+    const listOfStrings = value => Array.isArray(value) && value.every(entry => typeof entry === 'string');
+    const defects = [];
+    if (provenance === null || typeof provenance !== 'object' || Array.isArray(provenance)) defects.push('triage.provenance is not an object');
+    else {
+      for (const key of ['spec', 'inbound']) {
+        if (provenance[key] !== undefined && !listOfStrings(provenance[key])) defects.push(`triage.provenance.${key} is not a list of strings`);
+      }
+    }
+    if (defects.length > 0) {
+      return cannot(
+        `${declared.path} declares a provenance mapping this run cannot use — ${defects.join('; ')} — and coercing it to nothing would turn a DECLARED gate silently off`,
+        `cat ${declared.path}   # repair the mapping, then re-run`,
+      );
+    }
+  }
+  const specLabels = provenance?.spec ?? [];
+  const inboundLabels = provenance?.inbound ?? [];
 
   if (dry) {
     section(`frontier — dry run (nothing read from the tracker)`);
     note(`would probe   gh ≥ ${GH_FLOOR.join('.')} (blockedBy/parent/subIssues floor)`);
-    note(`would list    open issues carrying ${READY_LABEL}`);
+    note(`would list    open issues carrying ${READY_LABEL} (to a cap of ${CANDIDATE_CAP})`);
     note(`would batch   one GraphQL round-trip: blockedBy, subIssues, labeled events per candidate`);
     note(`would cross   the dispatch store read-only: unsettled → already-dispatched, settled → attempt-ended-unmerged`);
     return 0;
@@ -224,12 +287,20 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   // ── Candidates: every OPEN issue carrying the ready label. An unreachable
   // tracker stops here — an empty answer from a failed read is not an empty
   // frontier (F-028).
-  const listed = payload(run(['issue', 'list', '--repo', slug, '--state', 'open', '--label', READY_LABEL, '--json', 'number,title,labels', '--limit', '200']));
+  const listed = payload(
+    run(['issue', 'list', '--repo', slug, '--state', 'open', '--label', READY_LABEL, '--json', 'number,title,labels', '--limit', String(CANDIDATE_CAP)]),
+  );
   if (!listed.ok) {
     return cannot(`'gh issue list --label ${READY_LABEL}' ${listed.reason}`, `gh issue list --repo ${slug} --label ${READY_LABEL}   # read it by hand`);
   }
   if (!Array.isArray(listed.value)) {
     return cannot('gh answered no issue list — an absent container is not an empty one', `gh issue list --repo ${slug} --label ${READY_LABEL}`);
+  }
+  if (listed.value.length >= CANDIDATE_CAP) {
+    return cannot(
+      `the candidate read filled its cap of ${CANDIDATE_CAP} rows, so the ready-labelled set is possibly truncated — the unread remainder can hold a takeable ticket, and an unread ticket reads identically to an absent one`,
+      `gh issue list --repo ${slug} --label ${READY_LABEL} --limit 1000   # read the full set by hand`,
+    );
   }
 
   const candidates = listed.value
@@ -247,9 +318,26 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   if (candidates.length > 0) {
     // ── One batched round-trip: state, sub-issues, blockers and the labeled
     // events, aliased per candidate.
-    const answered = payload(run(['api', 'graphql', '-f', `query=${frontierQuery(owner, name, candidates.map(candidate => candidate.number))}`]));
+    const batched = run(['api', 'graphql', '-f', `query=${frontierQuery(owner, name, candidates.map(candidate => candidate.number))}`]);
+    let answered = payload(batched);
     if (!answered.ok) {
-      return cannot(`the batched blocker read ${answered.reason}`, `gh api graphql   # the aliased blockedBy read failed for every candidate`);
+      // gh prints data AND errors on a partial GraphQL failure, and the plan
+      // requires PER-CANDIDATE classification: a payload that still carries a
+      // repository is used, and the aliases it did not resolve fall into the
+      // per-candidate cannot-establish branch below. Only stdout with no data
+      // at all collapses the whole receipt.
+      let carried;
+      try {
+        carried = JSON.parse(String(batched.stdout ?? ''));
+      } catch {
+        carried = undefined;
+      }
+      const repository = carried?.data?.repository;
+      if (repository === null || repository === undefined || typeof repository !== 'object') {
+        return cannot(`the batched blocker read ${answered.reason}`, `gh api graphql   # the aliased blockedBy read failed for every candidate`);
+      }
+      note(`batched read  answered partially (${answered.reason}) — the aliases it did not resolve are cannot-establish below`);
+      answered = { ok: true, value: carried };
     }
 
     const store = defaultStore(env);
@@ -278,6 +366,33 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       const issue = answered.value?.data?.repository?.[`i${candidate.number}`];
       if (issue === undefined || issue === null) {
         unestablished.push({ ...candidate, read: `the batched read answered nothing for #${candidate.number}`, repair: `gh issue view ${candidate.number} --repo ${slug}` });
+        continue;
+      }
+
+      // The list and this read are two moments, and THIS one decides: a ticket
+      // can close, or lose the label, between them.
+      let state;
+      try {
+        state = String(must(issue, 'state', `issue #${candidate.number}`));
+      } catch (error) {
+        unestablished.push({ ...candidate, read: String(error.message ?? error), repair: `gh issue view ${candidate.number} --repo ${slug} --json state` });
+        continue;
+      }
+      if (state.toUpperCase() !== 'OPEN') {
+        excluded.push({ ...candidate, reason: `no-longer-open (the batched read reports ${clean(state)})` });
+        continue;
+      }
+      const carriedLabels = Array.isArray(issue.labels?.nodes) ? issue.labels.nodes : null;
+      if (carriedLabels === null) {
+        unestablished.push({
+          ...candidate,
+          read: `the label read answered no labels for #${candidate.number}`,
+          repair: `gh issue view ${candidate.number} --repo ${slug} --json labels`,
+        });
+        continue;
+      }
+      if (!carriedLabels.some(label => sameLabel(label?.name ?? '', READY_LABEL))) {
+        excluded.push({ ...candidate, reason: `label-removed (${READY_LABEL} is no longer carried)` });
         continue;
       }
 
@@ -315,8 +430,8 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         });
         continue;
       }
-      const labeler = readyLabelerOf(timeline, READY_LABEL);
-      if (labeler === null) {
+      const readyLabel = readyLabelOf(timeline, READY_LABEL);
+      if (readyLabel.login === null) {
         unestablished.push({
           ...candidate,
           read: `no labeled event attributes ${READY_LABEL} on #${candidate.number} — an unattributable label is an unknown, not a trusted one`,
@@ -324,18 +439,47 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         });
         continue;
       }
-      const trusted = writeAccess(labeler);
+      const trusted = writeAccess(readyLabel.login);
       if (trusted === null) {
         unestablished.push({
           ...candidate,
-          read: `the permission read for ${clean(labeler)} failed`,
-          repair: `gh api repos/${slug}/collaborators/${clean(labeler)}/permission`,
+          read: `the permission read for ${clean(readyLabel.login)} failed`,
+          repair: `gh api repos/${slug}/collaborators/${clean(readyLabel.login)}/permission`,
         });
         continue;
       }
       if (trusted === false) {
-        excluded.push({ ...candidate, reason: `untrusted-labeler (${clean(labeler)} has no write permission)` });
+        excluded.push({ ...candidate, reason: `untrusted-labeler (${clean(readyLabel.login)} has no write permission)` });
         continue;
+      }
+
+      // body-edited-after-label: the trusted labeler vouched for the body AS IT
+      // WAS. An edit after that event is unvouched text, and this verb's whole
+      // point is that a worker never receives one.
+      const lastEditedAt = issue.lastEditedAt ?? null;
+      if (lastEditedAt !== null) {
+        const editedAt = Date.parse(String(lastEditedAt));
+        if (!Number.isFinite(editedAt)) {
+          unestablished.push({
+            ...candidate,
+            read: `the edit timestamp on #${candidate.number} is unreadable (${clean(lastEditedAt)})`,
+            repair: `gh issue view ${candidate.number} --repo ${slug} --json lastEditedAt`,
+          });
+          continue;
+        }
+        const labeledAt = readyLabel.at === null ? Number.NaN : Date.parse(String(readyLabel.at));
+        if (!Number.isFinite(labeledAt)) {
+          unestablished.push({
+            ...candidate,
+            read: `the label event on #${candidate.number} carries no readable createdAt, so an edit cannot be placed before or after it`,
+            repair: `gh api repos/${slug}/issues/${candidate.number}/timeline   # when was the label applied?`,
+          });
+          continue;
+        }
+        if (editedAt > labeledAt) {
+          excluded.push({ ...candidate, reason: `body-edited-after-label (edited ${clean(lastEditedAt)}, label applied ${clean(readyLabel.at)})` });
+          continue;
+        }
       }
 
       // Dispatch state, read-only from the store. Unsettled → a live attempt
@@ -364,7 +508,16 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         unestablished.push({ ...candidate, read: String(error.message ?? error), repair: `gh issue view ${candidate.number} --repo ${slug} --json blockedBy` });
         continue;
       }
-      if (blockerPage.pageInfo?.hasNextPage === true) {
+      const pageInfo = blockerPage.pageInfo;
+      if (pageInfo === null || typeof pageInfo !== 'object' || Array.isArray(pageInfo) || typeof pageInfo.hasNextPage !== 'boolean') {
+        unestablished.push({
+          ...candidate,
+          read: `the blocker read for #${candidate.number} answered malformed pagination (pageInfo.hasNextPage is not a boolean) — an unproved page can hold an open blocker`,
+          repair: `gh issue view ${candidate.number} --repo ${slug} --json blockedBy   # page it by hand`,
+        });
+        continue;
+      }
+      if (pageInfo.hasNextPage) {
         unestablished.push({
           ...candidate,
           read: `the blocker read for #${candidate.number} truncated at 50 (hasNextPage) — the unread remainder can hold an open blocker`,

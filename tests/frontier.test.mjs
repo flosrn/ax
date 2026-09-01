@@ -64,16 +64,29 @@ const capture = fn => {
 const answer = value => ({ status: 0, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr: '' });
 const failure = (stderr = 'boom', status = 1) => ({ status, stdout: '', stderr });
 
+const LABEL_AT = '2026-01-01T00:00:00Z';
+
 /** One aliased GraphQL issue node, in the exact shape the batched read answers. */
-const issueNode = ({ subIssues = 0, blockers = [], labeler = 'flo', labelerEvents } = {}) => ({
-  state: 'OPEN',
+const issueNode = ({
+  state = 'OPEN',
+  labels = [READY],
+  lastEditedAt = null,
+  subIssues = 0,
+  blockers = [],
+  labeler = 'flo',
+  labelAt = LABEL_AT,
+  labelerEvents,
+} = {}) => ({
+  state,
+  lastEditedAt,
+  labels: { nodes: labels.map(name => ({ name })) },
   subIssues: { totalCount: subIssues },
   blockedBy: {
     nodes: blockers.map(([number, state]) => ({ number, state })),
     pageInfo: { hasNextPage: false },
   },
   timelineItems: {
-    nodes: labelerEvents ?? (labeler === null ? [] : [{ label: { name: READY }, actor: { login: labeler } }]),
+    nodes: labelerEvents ?? (labeler === null ? [] : [{ label: { name: READY }, actor: { login: labeler }, createdAt: labelAt }]),
   },
 });
 
@@ -82,14 +95,25 @@ const issueNode = ({ subIssues = 0, blockers = [], labeler = 'flo', labelerEvent
  * aliased nodes keyed `i<number>`; `permissions` the per-login legacy
  * permission strings.
  */
-const ghFor = ({ version = '2.97.0', issues = [], graph = {}, permissions = { flo: 'write' }, listFails = false, graphFails = false } = {}) => {
+const ghFor = ({
+  version = '2.97.0',
+  issues = [],
+  graph = {},
+  permissions = { flo: 'write' },
+  listFails = false,
+  graphFails = false,
+  graphOut,
+} = {}) => {
   const calls = [];
   const gh = args => {
     calls.push(args);
     if (args[0] === '--version') return answer(`gh version ${version} (2026-01-15)\nhttps://github.com/cli/cli/releases`);
     if (args[0] === 'repo' && args[1] === 'view') return answer(`${SLUG}\n`);
     if (args[0] === 'issue' && args[1] === 'list') return listFails ? failure('connect: network is unreachable') : answer(issues);
-    if (args[0] === 'api' && args[1] === 'graphql') return graphFails ? failure('502') : answer({ data: { repository: graph } });
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      if (graphOut !== undefined) return graphOut;
+      return graphFails ? failure('502') : answer({ data: { repository: graph } });
+    }
     if (args[0] === 'api' && /collaborators/.test(args[1])) {
       const login = /collaborators\/([^/]+)\/permission/.exec(args[1])[1];
       const permission = permissions[login];
@@ -177,22 +201,33 @@ test('a declared provenance contradiction is excluded provenance-refused', () =>
 });
 
 test('an UNSETTLED record is already-dispatched, a settled one on an open ticket is attempt-ended-unmerged — structurally distinct', () => {
-  const record = settled => ({ request: 'r', host: 'h', orca: 'orca', createdAt: 'now', attempts: [{ n: 1, settled, phases: [] }] });
-  writeFileSync(join(store, `${requestIdFor('50', '')}.json`), JSON.stringify(record(false)));
-  writeFileSync(join(store, `${requestIdFor('51', 'fix-thing')}.json`), JSON.stringify(record(true)));
+  const record = (request, settled) => ({ request, host: 'h', orca: 'orca', createdAt: 'now', attempts: [{ n: 1, settled, phases: [] }] });
+  const write = (number, suffix, settled) => {
+    const id = requestIdFor(number, suffix);
+    writeFileSync(join(store, `${id}.json`), JSON.stringify(record(id, settled)));
+  };
+  write('50', '', false);
+  write('51', 'fix-thing', true);
   // A neighbour's record must not leak across the `<issue>-` boundary: #5 is
   // not #50, and #52's only record is unreadable — an unknown, not a state.
-  writeFileSync(join(store, `${requestIdFor('5', '')}.json`), JSON.stringify(record(false)));
+  write('5', '', false);
   writeFileSync(join(store, `${requestIdFor('52', '')}.json`), '{ not json');
+  // A record whose `request` does not name its own file, and one whose
+  // `settled` is not a boolean: neither says anything about #54 or #55.
+  writeFileSync(join(store, `${requestIdFor('54', '')}.json`), JSON.stringify(record('somewhere-else', false)));
+  writeFileSync(join(store, `${requestIdFor('55', '')}.json`), JSON.stringify(record(requestIdFor('55', ''), 'true')));
   const { code, out } = runFrontier({
-    issues: [issueRow(50), issueRow(51), issueRow(52), issueRow(53)],
-    graph: { i50: issueNode(), i51: issueNode(), i52: issueNode(), i53: issueNode() },
+    issues: [issueRow(50), issueRow(51), issueRow(52), issueRow(53), issueRow(54), issueRow(55)],
+    graph: { i50: issueNode(), i51: issueNode(), i52: issueNode(), i53: issueNode(), i54: issueNode(), i55: issueNode() },
   });
   assert.equal(code, 0);
   assert.match(out, /#50 T50 — already-dispatched/);
   assert.match(out, /#51 T51 — attempt-ended-unmerged/);
   assert.match(out, /excluded — 2/);
   assert.match(out, /CANNOT ESTABLISH — #52: the dispatch record at .*52-work\.json is unreadable/);
+  assert.match(out, /CANNOT ESTABLISH — #54: the dispatch record at .*54-work\.json is unreadable \(dispatch record: 'request' is somewhere-else but the file is named 54-work\)/);
+  assert.match(out, /CANNOT ESTABLISH — #55: the dispatch record at .*55-work\.json is unreadable \(last attempt: 'settled' is not a boolean\)/);
+  assert.match(out, /cannot establish — 3/);
   assert.match(out, /takeable — 1/);
   assert.match(out, /#53 T53 — no blockers declared/);
 });
@@ -280,4 +315,164 @@ test('an empty candidate list is still a receipt — exit 0, three sections, not
   assert.match(out, /takeable — 0/);
   assert.match(out, /excluded — 0/);
   assert.match(out, /cannot establish — 0/);
+});
+
+// ── Truncation, shape and freshness ─────────────────────────────────────────
+
+test('a candidate list filling the cap is exit 3 naming the possibly-truncated read', () => {
+  const rows = Array.from({ length: 200 }, (_, index) => issueRow(1000 + index));
+  const { code, out, calls } = runFrontier({ issues: rows });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — .*candidate read .*200/);
+  assert.match(out, /→ gh issue list --repo gapilabs\/gapila --label ready-for-agent --limit 1000/);
+  assert.doesNotMatch(out, /takeable — /);
+  const list = calls.find(args => args[0] === 'issue' && args[1] === 'list');
+  assert.equal(list[list.indexOf('--limit') + 1], '200', 'the read requests exactly the named cap');
+});
+
+test('a candidate list one short of the cap is a normal receipt', () => {
+  const rows = Array.from({ length: 199 }, (_, index) => issueRow(1000 + index));
+  const { code, out } = runFrontier({ issues: rows });
+  assert.equal(code, 0);
+  assert.match(out, /candidates {2}199 open issue/);
+  assert.doesNotMatch(out, /truncat/);
+});
+
+test('a DECLARED provenance mapping of the wrong shape is exit 3, never a silently-off gate', () => {
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ triage: { provenance: { spec: 'source:spec' } } }));
+  try {
+    const { code, out } = runFrontier({ issues: [issueRow(110)], graph: { i110: issueNode() } });
+    assert.equal(code, 3);
+    assert.match(out, /CANNOT ESTABLISH — .*triage\.provenance\.spec is not a list of strings/);
+    assert.match(out, /→ cat .*ax\.config\.json/);
+    assert.doesNotMatch(out, /takeable — /);
+  } finally {
+    rmSync(join(root, 'ax.config.json'), { force: true });
+  }
+});
+
+test('a candidate the batched read reports CLOSED is excluded no-longer-open', () => {
+  const { code, out } = runFrontier({ issues: [issueRow(120)], graph: { i120: issueNode({ state: 'CLOSED' }) } });
+  assert.equal(code, 0);
+  assert.match(out, /#120 T120 — no-longer-open/);
+  assert.match(out, /takeable — 0/);
+});
+
+test('a candidate no longer carrying the ready label is excluded label-removed', () => {
+  const { code, out } = runFrontier({ issues: [issueRow(121)], graph: { i121: issueNode({ labels: ['bug'] }) } });
+  assert.equal(code, 0);
+  assert.match(out, /#121 T121 — label-removed/);
+  assert.match(out, /takeable — 0/);
+});
+
+test('the ready label is matched case-insensitively on the batched read', () => {
+  const { code, out } = runFrontier({ issues: [issueRow(122)], graph: { i122: issueNode({ labels: ['Ready-For-Agent'] }) } });
+  assert.equal(code, 0);
+  assert.match(out, /takeable — 1/);
+});
+
+test('a body edited after the ready label was applied is excluded body-edited-after-label', () => {
+  const { code, out } = runFrontier({
+    issues: [issueRow(130)],
+    graph: { i130: issueNode({ lastEditedAt: '2026-02-01T00:00:00Z' }) },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /#130 T130 — body-edited-after-label/);
+  assert.match(out, /takeable — 0/);
+});
+
+test('a body edited BEFORE the ready label is takeable, and a never-edited one too', () => {
+  const edited = runFrontier({ issues: [issueRow(131)], graph: { i131: issueNode({ lastEditedAt: '2025-12-01T00:00:00Z' }) } });
+  assert.equal(edited.code, 0);
+  assert.match(edited.out, /takeable — 1/);
+
+  const never = runFrontier({ issues: [issueRow(132)], graph: { i132: issueNode({ lastEditedAt: null }) } });
+  assert.equal(never.code, 0);
+  assert.match(never.out, /takeable — 1/);
+});
+
+test('an unreadable edit or label timestamp is cannot-establish, never a freshness verdict', () => {
+  const unreadable = runFrontier({ issues: [issueRow(133)], graph: { i133: issueNode({ lastEditedAt: 'whenever' }) } });
+  assert.equal(unreadable.code, 0);
+  assert.match(unreadable.out, /CANNOT ESTABLISH — #133: .*edit timestamp/);
+
+  const noLabelAt = runFrontier({ issues: [issueRow(134)], graph: { i134: issueNode({ lastEditedAt: '2026-02-01T00:00:00Z', labelAt: null }) } });
+  assert.equal(noLabelAt.code, 0);
+  assert.match(noLabelAt.out, /CANNOT ESTABLISH — #134: .*label event/);
+});
+
+test('absent or malformed blocker pagination is cannot-establish, never treated as a complete page', () => {
+  const missing = issueNode({ blockers: [[9, 'CLOSED']] });
+  delete missing.blockedBy.pageInfo;
+  const absent = runFrontier({ issues: [issueRow(140)], graph: { i140: missing } });
+  assert.equal(absent.code, 0);
+  assert.match(absent.out, /cannot establish — 1/);
+  assert.match(absent.out, /CANNOT ESTABLISH — #140: .*pagination/);
+
+  const malformed = issueNode({ blockers: [[9, 'CLOSED']] });
+  malformed.blockedBy.pageInfo = { hasNextPage: 'false' };
+  const wrong = runFrontier({ issues: [issueRow(141)], graph: { i141: malformed } });
+  assert.equal(wrong.code, 0);
+  assert.match(wrong.out, /CANNOT ESTABLISH — #141: .*pagination/);
+});
+
+// ── Partial GraphQL answers ─────────────────────────────────────────────────
+
+test('a partial graphql answer classifies what it carries and cannot-establishes the rest', () => {
+  const stdout = JSON.stringify({
+    data: { repository: { i150: issueNode({ blockers: [[9, 'CLOSED']] }) } },
+    errors: [{ message: 'Something went wrong while executing your query' }],
+  });
+  const { code, out } = runFrontier({
+    issues: [issueRow(150), issueRow(151)],
+    graphOut: { status: 1, stdout, stderr: 'gh: Something went wrong while executing your query' },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /answered partially/);
+  assert.match(out, /takeable — 1/);
+  assert.match(out, /#150 T150 — blockers #9 all closed/);
+  assert.match(out, /CANNOT ESTABLISH — #151: the batched read answered nothing for #151/);
+});
+
+test('a failed graphql answer carrying no data is still exit 3', () => {
+  const { code, out } = runFrontier({
+    issues: [issueRow(152)],
+    graphOut: { status: 1, stdout: JSON.stringify({ errors: [{ message: 'Bad credentials' }] }), stderr: 'gh: Bad credentials' },
+  });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — the batched blocker read/);
+  assert.doesNotMatch(out, /takeable/);
+});
+
+// ── Labeler permission ──────────────────────────────────────────────────────
+
+test('a labeler absent from the permission read is cannot-establish, never untrusted-labeler', () => {
+  const { code, out } = runFrontier({
+    issues: [issueRow(160)],
+    graph: { i160: issueNode({ labeler: 'ghost' }) },
+    permissions: {},
+  });
+  assert.equal(code, 0);
+  assert.match(out, /CANNOT ESTABLISH — #160: the permission read for ghost failed/);
+  assert.match(out, /→ .*collaborators\/ghost\/permission/);
+  assert.doesNotMatch(out, /untrusted-labeler/);
+  assert.match(out, /excluded — 0/);
+});
+
+test("a labeler with 'admin' permission is trusted, 'none' is untrusted-labeler", () => {
+  const admin = runFrontier({ issues: [issueRow(161)], graph: { i161: issueNode({ labeler: 'boss' }) }, permissions: { boss: 'admin' } });
+  assert.equal(admin.code, 0);
+  assert.match(admin.out, /takeable — 1/);
+
+  const none = runFrontier({ issues: [issueRow(162)], graph: { i162: issueNode({ labeler: 'stranger' }) }, permissions: { stranger: 'none' } });
+  assert.equal(none.code, 0);
+  assert.match(none.out, /#162 T162 — untrusted-labeler \(stranger has no write permission\)/);
+});
+
+test('an unattributable ready label is cannot-establish, not a trusted one', () => {
+  const { code, out } = runFrontier({ issues: [issueRow(163)], graph: { i163: issueNode({ labeler: null }) } });
+  assert.equal(code, 0);
+  assert.match(out, /CANNOT ESTABLISH — #163: no labeled event attributes ready-for-agent on #163/);
+  assert.match(out, /takeable — 0/);
+  assert.match(out, /excluded — 0/);
 });

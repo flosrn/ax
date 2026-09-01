@@ -109,6 +109,7 @@ import {
   phaseExit,
   phaseVerdict,
   requestIdOk,
+  attemptSettle,
 } from './record.mjs';
 import { physical, withinPath } from '../worktree/locate.mjs';
 
@@ -928,8 +929,23 @@ export function release(
       // those are two different runtimes, and the pane lives in one of them.
       execute: full => (runner ? runner(full.slice(1)) : createRunner({ bin: full[0] })(full.slice(1))),
     });
-    if (outcome.settled) ok(redactSecrets(outcome.line));
-    else {
+    if (outcome.settled) {
+      ok(redactSecrets(outcome.line));
+      // The release is the attempt's END, and the frontier reads that end from
+      // the DISPATCH record: an unsettled record classifies already-dispatched
+      // (a live attempt), a settled one with its ticket still open classifies
+      // attempt-ended-unmerged. Fail-open: a bookkeeping failure never turns a
+      // settled release into a refusal, but it is named, never swallowed.
+      const entry = index.byDispatch.get(candidate.dispatchId);
+      if (entry?.request) {
+        try {
+          attemptSettle(join(store, `${entry.request}.json`));
+        } catch (error) {
+          note(`the release settled but its dispatch record did not: ${String(error.message ?? error).slice(0, 160)}`);
+          fix(`cat ${join(store, `${entry.request}.json`)}   # settle the last attempt by hand`);
+        }
+      }
+    } else {
       bad(redactSecrets(outcome.line));
       code = 1;
     }

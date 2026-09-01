@@ -341,6 +341,15 @@ test('--task over a ready-for-agent ticket is refused, and --because is the one 
   assert.deepEqual(barred.started, [], 'a refused dispatch creates nothing');
   assert.ok(barred.calls.every(argv => !argv.startsWith('worktree create')));
 
+  // A task carrying a single quote still prints a COPY-RUNNABLE repair: the
+  // interpolation goes through the POSIX quoting helper, never a bare '…'.
+  const quoted = run(['--issue', ISSUE, '--slug', SLUG, '--task', "ship it's decided", '--wait', '0'], {
+    root: ready(),
+    orca: { labels: [READY_LABEL] },
+  });
+  assert.equal(quoted.code, 1);
+  assert.ok(quoted.out.includes("--task 'ship it'\\''s decided'"), 'the printed repair single-quotes the task POSIX-safely');
+
   // Said out loud, the dispatch proceeds — and the reason is recorded with it,
   // because "why was this ticket's own brief overridden" is a question asked
   // weeks later, of the record, by someone who was not in the room.

@@ -269,6 +269,9 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
     if (residualDir !== '') out.unknown(message, repair);
   };
 
+  // Not measured until the prelude below runs: a checkout that is not a git dir
+  // refreshed nothing, and every consumer must read that as unread, not as ok.
+  out.fetchState = 'unread';
   const gitRun = args => git(args, root);
   if (!succeeded(gitRun(['rev-parse', '--git-dir']))) {
     out.unknown('staleness: not inside a git checkout, so ancestry against the base is unreadable', 'cd into the checkout that holds this branch, then re-run');
@@ -289,11 +292,16 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
   // No `origin` at all is a different situation, not a failure: a repository
   // built with `git init` has only local branches, and comparing those is all
   // anyone can mean there. It is said out loud rather than assumed.
-  let fetchState = 'local-only';
+  //
+  // The state of that refresh is CARRIED OUT of this function (`out.fetchState`)
+  // rather than measured twice: the declaration guard reads the same base ref
+  // this prelude fetched, so it must stand on this measurement instead of
+  // probing origin again and possibly answering about a different moment.
+  out.fetchState = 'local-only';
   if (succeeded(gitRun(['remote', 'get-url', 'origin']))) {
     const fetched = gitRun(['fetch', '--quiet', 'origin', baseBranch, headBranch]);
-    fetchState = succeeded(fetched) ? 'ok' : 'failed';
-    if (fetchState === 'failed') {
+    out.fetchState = succeeded(fetched) ? 'ok' : 'failed';
+    if (out.fetchState === 'failed') {
       out.unknown(
         `staleness: could not fetch '${baseBranch}' and '${headBranch}' from origin (${clean(firstLine(fetched.stderr))}), so ancestry would be read from refs that may predate this head`,
         `git fetch origin ${baseBranch} ${headBranch}`,
@@ -305,6 +313,7 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
       out.note('landed-by-content: not decided — the refs could not be refreshed');
     }
   }
+  const fetchState = out.fetchState;
 
   const baseRef = fetchState === 'failed' ? '' : resolveRef(gitRun, baseBranch);
   const headRef = fetchState === 'failed' ? '' : resolveRef(gitRun, headBranch);
@@ -589,23 +598,43 @@ export function closedIssueOf(body) {
  * which misses a value edited without its key appearing in the hunk. An
  * absent file is a confirmed-absent declaration (`undefined`), which compares
  * clean against itself; an unreadable side is an unknown, not a match (F-028).
+ *
+ * THE AFTER SIDE IS THE VALIDATED SHA, not the head BRANCH. Resolving a name
+ * here reintroduced everything the gate's single head resolution exists to
+ * prevent: `origin/<head>` is preferred over the local branch and answers
+ * whatever the last fetch left behind, so a stale — or foreign — ref made the
+ * guard compare a tree nobody is merging, and a PR that weakens `prGate`
+ * reads clean. The gate resolves the head SHA once; this ground takes THAT.
+ *
+ * The base side has no SHA to stand on, so it stands on the refresh instead:
+ * `refsRefreshed` is the gate's reading of gitGrounds' own fetch. An
+ * unrefreshed base ref is exactly the F-033/#1939 hazard applied to the
+ * declaration — the before side would be read from whatever the disk holds —
+ * so it is an unknown here, never a clean note.
  */
-const canonical = value =>
+export const canonical = value =>
   JSON.stringify(value, (key, inner) =>
     inner !== null && typeof inner === 'object' && !Array.isArray(inner)
       ? Object.fromEntries(Object.keys(inner).sort().map(name => [name, inner[name]]))
       : inner,
   );
 
-export function declarationGround({ git, root, baseBranch, headBranch, pr, slug }) {
+export function declarationGround({ git, root, baseBranch, sha, refsRefreshed, pr, slug }) {
   const out = account();
   const gitRun = args => git(args, root);
-  const baseRef = resolveRef(gitRun, baseBranch);
-  const headRef = resolveRef(gitRun, headBranch);
-  if (baseRef === '' || headRef === '') {
+  if (!refsRefreshed) {
     out.unknown(
-      `declaration guard: '${baseBranch}' or '${headBranch}' is absent from this checkout, so whether this PR edits prGate is unreadable`,
-      `git fetch origin ${baseBranch} ${headBranch}`,
+      `declaration guard: the refs could not be refreshed, so '${baseBranch}' may predate this head and the before side of the prGate comparison is unreadable`,
+      `git fetch origin ${baseBranch}`,
+    );
+    return out;
+  }
+  const baseRef = resolveRef(gitRun, baseBranch);
+  const headRef = sha;
+  if (baseRef === '' || !/^[0-9a-f]{40}$/.test(String(headRef))) {
+    out.unknown(
+      `declaration guard: '${baseBranch}' is absent from this checkout, or the validated head SHA is not one, so whether this PR edits prGate is unreadable`,
+      `git fetch origin ${baseBranch}`,
     );
     return out;
   }

@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 
@@ -41,7 +41,15 @@ const P1_BODY =
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
-/** `gh pr view` receipt. `mergeStateStatus: CLEAN` is deliberate: never a ground. */
+/**
+ * `gh pr view` receipt. `mergeStateStatus: CLEAN` is deliberate: never a ground.
+ *
+ * `HEAD_SHA` is a PLACEHOLDER: the declaration guard reads
+ * `<validated sha>:ax.config.json` out of the checkout, so the receipt's head
+ * must be a commit the fixture repository actually holds. `run()` swaps this
+ * exact value for the shape repo's real `feature` tip, and a test that sets
+ * `headRefOid` itself keeps whatever it set.
+ */
 const prView = (over = {}) => ({
   number: 1845,
   headRefOid: HEAD_SHA,
@@ -100,6 +108,9 @@ const DEFAULT_GATE = { aggregate: AGGREGATE };
 const IDENTITY = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
 const git = (cwd, ...args) => execFileSync('git', [...IDENTITY, ...args], { cwd, stdio: 'ignore' });
 
+/** One real commit id out of a fixture repository. */
+const shaOf = (cwd, ref) => execFileSync('git', ['rev-parse', ref], { cwd, encoding: 'utf8' }).trim();
+
 const commit = (cwd, path, content, message) => {
   mkdirSync(dirname(join(cwd, path)), { recursive: true });
   writeFileSync(join(cwd, path), content);
@@ -107,14 +118,29 @@ const commit = (cwd, path, content, message) => {
   git(cwd, 'commit', '-qm', message);
 };
 
-/** A repository whose `main`/`feature` pair reproduces one measured shape. */
-function buildRepo(root, shape) {
+const writeConfig = (root, prGate) =>
+  writeFileSync(
+    join(root, 'ax.config.json'),
+    JSON.stringify({ project: { name: 'fixture' }, apps: { web: 'apps/web' }, vendor: { repo: 'makerkit/kit' }, ...(prGate ? { prGate } : {}) }),
+  );
+
+/**
+ * A repository whose `main`/`feature` pair reproduces one measured shape.
+ *
+ * The declaration is COMMITTED, in the pre-branch commit both sides share: the
+ * merge path refuses a working-tree prGate the head does not carry, and the
+ * declaration guard refuses a prGate this branch edits. A fixture that left
+ * `ax.config.json` untracked would therefore be measuring a declaration nobody
+ * committed — which is the very thing under test, not a background condition.
+ */
+function buildRepo(root, shape, prGate) {
   mkdirSync(root, { recursive: true });
   git(root, 'init', '-q', '-b', 'main');
   // The inherited shape writes the residual directory on the BASE, before the
   // branch point: that is F-039's repository, where the file is present in the
   // tree and is not this branch's record.
   if (shape === 'residual-inherited') commit(root, `${RESIDUAL}/f-001.md`, 'a finding main filed\n', 'main files a residual');
+  writeConfig(root, prGate);
   commit(root, 'README.md', '# fixture\n', 'first');
   git(root, 'checkout', '-q', '-b', 'feature');
 
@@ -144,27 +170,30 @@ function buildRepo(root, shape) {
   return root;
 }
 
-const SHAPES = ['current', 'stale', 'landed', 'residual-stale', 'residual-current', 'residual-inherited'];
 const repos = {};
 let sandbox = '';
+
+/**
+ * The repository for one shape AND one declaration, built on demand and reused.
+ * Keyed by both because the declaration is committed at the branch point: two
+ * tests declaring different prGate values cannot share one checkout.
+ */
+const repoFor = (shape, prGate) => {
+  const key = `${shape}::${JSON.stringify(prGate ?? null)}`;
+  if (!repos[key]) repos[key] = buildRepo(join(sandbox, `r${Object.keys(repos).length}-${shape}`), shape, prGate);
+  return repos[key];
+};
 
 before(() => {
   // realpath up front: os.tmpdir() is a symlink on macOS and git reports
   // physical paths, so `repoPaths` would answer a path these expectations do not
   // hold.
   sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'ax-pr-gate-')));
-  for (const shape of SHAPES) repos[shape] = buildRepo(join(sandbox, shape), shape);
 });
 
 after(() => {
   rmSync(sandbox, { recursive: true, force: true });
 });
-
-const writeConfig = (root, prGate) =>
-  writeFileSync(
-    join(root, 'ax.config.json'),
-    JSON.stringify({ project: { name: 'fixture' }, apps: { web: 'apps/web' }, vendor: { repo: 'makerkit/kit' }, ...(prGate ? { prGate } : {}) }),
-  );
 
 const capture = fn => {
   const written = [];
@@ -211,10 +240,14 @@ const run = (
     store,
     updateBranchFails = false,
     onMerge,
+    onPrView,
   } = {},
 ) => {
-  const root = repos[shape];
+  // The declaration rides the fixture's pre-branch commit, so the working tree
+  // and the head carry the same one — the merging path refuses any other.
+  const root = repoFor(shape, prGate);
   writeConfig(root, prGate);
+  const headSha = shaOf(root, 'feature');
 
   const calls = [];
   const pages = threads ?? [threadPage([])];
@@ -230,10 +263,21 @@ const run = (
     }
     if (verb === 'repo' && target === 'view') return slug === null ? refusedByGh('no remote') : answered(`${slug}\n`);
     if (verb === 'pr' && target === 'view') {
+      // An OBSERVER: a test may inspect on-disk state at the moment of a read
+      // (which lock is held while the read-back runs), never answer for it.
+      if (onPrView) onPrView(args);
       // `prStates` sequences the receipts a replaying run reads; the plain
-      const body = prStates ? prStates[Math.min(prViews, prStates.length - 1)] : receipt === null ? null : (receipt ?? prView());
+      // `receipt` answers every read. The POST-MERGE read-back is a distinct
+      // call (`--json state,mergeCommit,body`), so a run that does not sequence
+      // its states still gets the MERGED answer that read exists to check.
+      const readBack = args.includes('state,mergeCommit,body');
+      const base = receipt === null ? null : (receipt ?? prView());
+      const answer = prStates ? prStates[Math.min(prViews, prStates.length - 1)] : base === null ? null : readBack ? { ...base, state: 'MERGED' } : base;
       prViews += 1;
-      return body === null ? refusedByGh('could not resolve to a Pull Request') : answered(JSON.stringify(body));
+      // The placeholder becomes the fixture's real head: the declaration guard
+      // reads `<sha>:ax.config.json` out of this checkout.
+      const body = answer !== null && answer?.headRefOid === HEAD_SHA ? { ...answer, headRefOid: headSha } : answer;
+      return body === null || body === undefined ? refusedByGh('could not resolve to a Pull Request') : answered(JSON.stringify(body));
     }
     if (verb === 'pr' && target === 'update-branch') return updateBranchFails ? refusedByGh('update failed') : answered('updated\n');
     if (verb === 'pr' && target === 'merge') {
@@ -274,7 +318,7 @@ const run = (
   const storeDir = store ?? mkdtempSync(join(sandbox, 'store-'));
   const env = { HOME: sandbox, ORCA_DISPATCH_STORE: storeDir };
   const result = capture(() => gate([...argv], { gh, git: gitOverride ?? realGit, cwd: root, env, sleep: () => {} }));
-  return { ...result, calls, store: storeDir };
+  return { ...result, calls, store: storeDir, headSha };
 };
 
 const CLEAN = { threads: [threadPage([thread('T1', true)])] };
@@ -337,7 +381,7 @@ test('a head SHA that is not 40 hex characters is never used to validate anythin
   // Surrounding whitespace is NOT one of those cases: every receipt field is
   // trimmed before it is validated, so this is the same commit id and the run
   // proceeds on it.
-  assert.notEqual(run(['--pr', '1845'], { receipt: prView({ headRefOid: `  ${HEAD_SHA}\n` }) }).code, 3);
+  assert.notEqual(run(['--pr', '1845'], { receipt: prView({ headRefOid: `  ${shaOf(repoFor('current', DEFAULT_GATE), 'feature')}\n` }) }).code, 3);
 });
 
 test('a checkout may declare its gate WITHOUT the provisioning contract', () => {
@@ -346,7 +390,7 @@ test('a checkout may declare its gate WITHOUT the provisioning contract', () => 
   // Requiring them to declare a web app, a port range and a vendor remote in
   // order to gate a pull request would be this package asserting a layout it does
   // not own — and this verb reads none of those values.
-  const root = repos.current;
+  const root = repoFor('current', DEFAULT_GATE);
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } }));
   const { code, out } = capture(() =>
     gate(['--pr', '1845'], {
@@ -354,7 +398,7 @@ test('a checkout may declare its gate WITHOUT the provisioning contract', () => 
         const [verb, target] = args;
         if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) return answered(JSON.stringify({ defaultBranchRef: { name: 'main' } }));
         if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
-        if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView()));
+        if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView({ headRefOid: shaOf(root, 'feature') })));
         if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([])));
         if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
         if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
@@ -421,9 +465,9 @@ test('--repo must be owner/repo, and --method accepts only squash and merge', ()
 // ── Ground 1: the declared checks on the exact SHA ──────────────────────────
 
 test('a declared check with no run on the head SHA refuses', () => {
-  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun('some other job', 'success')] } });
+  const { code, out, headSha } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun('some other job', 'success')] } });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — checks: expected aggregate check 'Playwright \(public games\)' has NO run on 3f9a1c27b4d6/);
+  assert.match(out, new RegExp(`REFUSE — checks: expected aggregate check 'Playwright \\(public games\\)' has NO run on ${headSha.slice(0, 12)}`));
   assert.match(out, /→ gh api repos\/gapilabs\/gapila\/commits\/.*check-runs/);
 });
 
@@ -431,9 +475,9 @@ test('F-014: fewer check-runs than another PR is not a missing guard', () => {
   // Two runs here where the fixture set has four. The count is never the
   // measurement: the set depends on the diff, on labels and on bots that decide
   // for themselves whether to run.
-  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun(AGGREGATE, 'success'), checkRun('claude-review', 'neutral')] } });
+  const { code, out, headSha } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun(AGGREGATE, 'success'), checkRun('claude-review', 'neutral')] } });
   assert.equal(code, 0);
-  assert.match(out, /checks: 2 check-run\(s\) reported on 3f9a1c27b4d6/);
+  assert.match(out, new RegExp(`checks: 2 check-run\\(s\\) reported on ${headSha.slice(0, 12)}`));
 });
 
 test('F-031: a declared check concluding neutral refuses — neither success nor failure', () => {
@@ -531,12 +575,12 @@ test('F-028: a GraphQL payload missing its containers raises rather than reading
 });
 
 test('threads read before CI is decided are no observation at all', () => {
-  const { code, out, calls } = run(['--pr', '1845'], {
+  const { code, out, calls, headSha } = run(['--pr', '1845'], {
     threads: [threadPage([thread('T1', true)])],
     checks: { check_runs: [checkRun(AGGREGATE, null, 'queued')] },
   });
   assert.equal(code, 3);
-  assert.match(out, /threads: CI is not decided on 3f9a1c27b4d6e8f0a2c4e6081a3c5e7092b4d6f8 — a thread read now is no observation at all/);
+  assert.match(out, new RegExp(`threads: CI is not decided on ${headSha} — a thread read now is no observation at all`));
   // The proof is the absence of the call: an empty thread read here would look
   // exactly like a clean one (F-031, #1847).
   assert.ok(!calls.some(call => call.startsWith('api graphql')), 'a GraphQL call was issued while CI was undecided');
@@ -793,9 +837,9 @@ test('a tracker pattern that does not compile falls back to the bare refusal, an
 // ── The verdict and the merge ──────────────────────────────────────────────
 
 test('a clean PR passes and reports what it prevents and what it merely detects', () => {
-  const { code, out } = run(['--pr', '1845'], CLEAN);
+  const { code, out, headSha } = run(['--pr', '1845'], CLEAN);
   assert.equal(code, 0);
-  assert.match(out, /PASS — gapilabs\/gapila#1845 is mergeable at 3f9a1c27b4d6e8f0a2c4e6081a3c5e7092b4d6f8\./);
+  assert.match(out, new RegExp(`PASS — gapilabs/gapila#1845 is mergeable at ${headSha}\\.`));
   assert.match(out, /what this run prevents and what it merely detects \(R21\)/);
   assert.match(out, /prevents {2}the declared checks/);
   assert.match(out, /detects {3}the commits landed since the PR opened/);
@@ -820,11 +864,11 @@ test('the next action a PASS prints carries the acknowledgements that PASS stood
 });
 
 test('--merge carries the SHA this run validated, and squash is the default', () => {
-  const { code, calls } = run(['--pr', '1845', '--merge'], CLEAN);
+  const { code, calls, headSha } = run(['--pr', '1845', '--merge'], CLEAN);
   assert.equal(code, 0);
   assert.deepEqual(
     calls.filter(call => call.startsWith('pr merge')),
-    [`pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${HEAD_SHA}`],
+    [`pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${headSha}`],
   );
 });
 
@@ -835,7 +879,7 @@ test('a merge writes its record BEFORE the merge call is issued (KTD4)', () => {
   // leave this null, which is exactly the ordering bug the record exists to
   // remove — a mutation that cannot be replayed because nothing preceded it.
   let atMergeTime = null;
-  const { code } = run(['--pr', '1845', '--merge'], {
+  const { code, headSha } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
     store: storeDir,
     onMerge: () => {
@@ -845,7 +889,7 @@ test('a merge writes its record BEFORE the merge call is issued (KTD4)', () => {
   assert.equal(code, 0);
   assert.ok(atMergeTime !== null, 'the record was on disk before the merge was issued');
   const begun = atMergeTime.attempts[0].phases[0];
-  assert.deepEqual(begun.argv, ['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', HEAD_SHA]);
+  assert.deepEqual(begun.argv, ['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', headSha]);
   assert.equal(begun.exit, null, 'at merge time the phase is begun, not ended');
   assert.ok(Array.isArray(begun.grounds) && begun.grounds.length > 0, 'the per-ground verdicts ride the phase');
   const settled = JSON.parse(readFileSync(recordPath, 'utf8')).attempts[0].phases[0];
@@ -960,7 +1004,7 @@ test('replay against a PR merged at the recorded SHA is replayed-success, with z
     onMerge: args => merges.push(args),
   });
   assert.equal(replayed.code, 0);
-  assert.match(replayed.out, /REPLAYED-SUCCESS — the recorded merge already landed at 3f9a1c27/);
+  assert.match(replayed.out, new RegExp(`REPLAYED-SUCCESS — the recorded merge already landed at ${first.headSha}`));
   assert.deepEqual(merges, [], 'a replayed success issues no mutation');
 });
 
@@ -985,7 +1029,9 @@ test('replay against an open PR whose head moved opens a NEW attempt on the fres
   const storeDir = mkdtempSync(join(sandbox, 'store-'));
   assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir }).code, 0);
   const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
-  const moved = 'bbbb1c27b4d6e8f0a2c4e6081a3c5e7092b4d6f8';
+  // A REAL commit this checkout holds: the declaration guard reads the
+  // validated SHA's own `ax.config.json`, so a fabricated oid is unreadable.
+  const moved = shaOf(repoFor('current', DEFAULT_GATE), 'main');
   const merges = [];
   const replayed = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
@@ -1043,7 +1089,7 @@ test('KTD5: a PR that edits the prGate declaration it is measured by refuses tow
     const [verb, target] = args;
     if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) return answered(JSON.stringify({ defaultBranchRef: { name: 'main' } }));
     if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
-    if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView()));
+    if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView({ headRefOid: shaOf(root, 'feature') })));
     if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
     if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
     if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
@@ -1081,6 +1127,159 @@ test('closure verification has nothing to poll for a declared-tracker body, and 
   assert.equal(code, 0);
   assert.match(out, /closure: the body names no same-repository #N to verify — that ticket moves by hand/);
 });
+
+test('closure reads that all FAILED are not an unclosed issue: the unread read is named, never the ticket', () => {
+  // Five 502s answered nothing about #1786. Reporting "not closed" out of that
+  // sends an operator to a repository setting and a `gh issue close` for a
+  // ticket that may well have closed — F-028 on the closure read.
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, issueStates: [null, null, null, null, null] });
+  assert.equal(code, 3);
+  assert.match(out, /MERGED — gapilabs\/gapila#1845/, 'the merge happened and is reported');
+  assert.match(out, /CANNOT ESTABLISH — the closure read 'gh issue view 1786' never answered/);
+  assert.match(out, /→ gh auth status && gh issue view 1786 --repo gapilabs\/gapila --json state/);
+  assert.doesNotMatch(out, /is not closed after the recorded merge/, 'an unread read is not an unclosed ticket');
+});
+
+test('closure: a read that failed once and then answered CLOSED is merged and delivered', () => {
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, issueStates: [null, 'CLOSED'] });
+  assert.equal(code, 0);
+  assert.match(out, /closure: issue #1786 reads closed — merged and delivered/);
+});
+
+test('a merge call that succeeds while the PR stays OPEN is queued, not merged (auto-merge, merge queue)', () => {
+  // `gh pr merge` exits 0 when it ENABLES auto-merge or enqueues: the mutation
+  // was issued, the merge has not happened. Printing MERGED there publishes a
+  // completion nobody observed.
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, prStates: [prView(), prView({ state: 'OPEN' })] });
+  assert.equal(code, 3);
+  assert.doesNotMatch(out, /MERGED — /, 'a queued PR is never reported merged');
+  assert.match(out, /CANNOT ESTABLISH — the merge was issued and gapilabs\/gapila#1845 reads OPEN, not MERGED/);
+  assert.match(out, /QUEUED, not completed/);
+  assert.match(out, /→ gh pr view 1845 --repo gapilabs\/gapila --json state,mergeCommit/);
+});
+
+test('closure polls the issue the POST-merge body names, not the one captured before the merge', () => {
+  // GitHub closes from the body as it stands at merge time, so a body edited
+  // between validation and merge closes a different ticket than the capture.
+  const { code, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    prStates: [prView(), prView({ state: 'MERGED', body: 'Closes #999' })],
+  });
+  assert.equal(code, 0);
+  const polls = calls.filter(call => call.startsWith('issue view'));
+  assert.deepEqual(polls, [`issue view 999 --repo ${SLUG} --json state`]);
+});
+
+test('two concurrent --merge runs cannot both reissue: a held lock is cannot-establish naming its holder', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const lock = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json.merge.lock');
+  mkdirSync(join(storeDir, 'merge'), { recursive: true });
+  // Written the way acquireLock writes it, with a pid that IS alive: this
+  // process. A sibling gate holding the merge gesture must not be raced.
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), token: 'sibling', at: new Date().toISOString() }));
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir });
+  assert.equal(code, 3);
+  assert.match(out, new RegExp(`CANNOT ESTABLISH — pre-existing lock at .*belongs to ${hostname()} pid ${process.pid}`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a locked gesture issued a second merge');
+  assert.ok(existsSync(lock), "the sibling's lock survived");
+});
+
+test('a reissue re-reads the PR under the lock: a merge that landed while this run waited is not reissued', () => {
+  // The precheck's read predates the lock. A sibling that held it and merged in
+  // between must be observed BEFORE the recorded argv is reissued, or this run
+  // overwrites the recorded receipt of the run that actually merged.
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const first = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, onMerge: () => ({ status: null, stdout: '', stderr: '', error: new Error('transport died') }) });
+  assert.notEqual(first.code, 0);
+  const merges = [];
+  const replayed = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    // precheck: still open · receipt: the same head · under the lock: MERGED
+    prStates: [prView(), prView(), prView({ state: 'MERGED' })],
+    onMerge: args => merges.push([...args]),
+  });
+  assert.equal(replayed.code, 0, replayed.out);
+  assert.match(replayed.out, /REPLAYED-SUCCESS — the recorded merge landed at .* while this run waited for the lock/);
+  assert.deepEqual(merges, [], 'the recorded merge was reissued over a landed merge');
+});
+
+test('the lock outlives the merge call: the post-merge read-back happens while a sibling is still refused', () => {
+  // Releasing at `phaseEnd` leaves the auto-merge window open: a sibling would
+  // acquire while GitHub still answers OPEN and reissue over a merge that is
+  // landing. The read-back and its verdict are part of the same gesture.
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const lock = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json.merge.lock');
+  let heldAtReadBack = null;
+  const { code } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    store: storeDir,
+    onPrView: args => {
+      if (args.includes('state,mergeCommit,body')) heldAtReadBack = existsSync(lock);
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(heldAtReadBack, true, 'the merge lock was released before the read-back');
+  assert.ok(!existsSync(lock), 'the lock was released once the gesture finished');
+});
+
+test('a zero-length claim file is pre-mutation: one merge, one record, never an unreadable-record exit', () => {
+  // The crash window between `claimRecord` and `initRecord` leaves an empty
+  // file. JSON.parsing it called the record unreadable and printed a repair
+  // that would delete a sibling's live claim.
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
+  mkdirSync(join(storeDir, 'merge'), { recursive: true });
+  writeFileSync(recordPath, '');
+  const merges = [];
+  const { code, out, headSha } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, onMerge: args => merges.push([...args]) });
+  assert.equal(code, 0, out);
+  assert.doesNotMatch(out, /is unreadable/);
+  assert.deepEqual(merges, [['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', headSha]]);
+  const record = JSON.parse(readFileSync(recordPath, 'utf8'));
+  assert.equal(record.attempts.length, 1);
+  assert.equal(record.attempts[0].phases.length, 1, 'exactly one recorded mutation');
+});
+
+test('a merging run refuses a prGate the head does not carry: the gate never measures with an uncommitted declaration', () => {
+  const root = join(sandbox, 'worktree-drift');
+  mkdirSync(root, { recursive: true });
+  git(root, 'init', '-q', '-b', 'main');
+  commit(root, 'ax.config.json', JSON.stringify({ prGate: { aggregate: AGGREGATE } }), 'declare the gate');
+  git(root, 'checkout', '-q', '-b', 'feature');
+  commit(root, 'src/a.txt', 'a\n', 'feature work');
+  const calls = [];
+  const gh = args => {
+    calls.push(args.join(' '));
+    const [verb, target] = args;
+    if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) return answered(JSON.stringify({ defaultBranchRef: { name: 'main' } }));
+    if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
+    if (verb === 'pr' && target === 'view') return answered(JSON.stringify({ ...prView({ headRefOid: shaOf(root, 'feature') }), state: 'MERGED' }));
+    if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
+    if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
+    if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
+    if (verb === 'pr' && target === 'merge') return answered('merged\n');
+    if (verb === 'issue' && target === 'view') return answered(JSON.stringify({ state: 'CLOSED' }));
+    return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
+  };
+  const env = { HOME: sandbox, ORCA_DISPATCH_STORE: mkdtempSync(join(sandbox, 'store-')) };
+  const merge = () => capture(() => gate(['--pr', '1845', '--merge'], { gh, git: realGit, cwd: root, env, sleep: () => {} }));
+
+  // Committed and equal: the check says so and changes nothing else.
+  const clean = merge();
+  assert.equal(clean.code, 0, clean.out);
+
+  // Edited in the working tree AFTER the commit: the gate would measure with a
+  // declaration nobody committed.
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ prGate: { checks: ['lint'] } }));
+  calls.length = 0;
+  const drifted = merge();
+  assert.equal(drifted.code, 1);
+  assert.match(drifted.out, /REFUSE — the prGate in .*ax\.config\.json differs from the one committed at HEAD/);
+  assert.match(drifted.out, /→ git diff HEAD -- ax\.config\.json/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a drifting declaration merged anyway');
+});
+
 // ── The noun ───────────────────────────────────────────────────────────────
 
 test('every declared pr verb has a runner, and every runner is declared', () => {

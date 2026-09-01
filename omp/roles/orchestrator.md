@@ -79,7 +79,7 @@ membership derives from this record.
 
 ## Run the implementation loop
 
-Launch one worker per takeable ticket, under the cap:
+Dispatch one worker per takeable ticket, under the cap:
 
 ```bash
 ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>]

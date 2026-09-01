@@ -926,6 +926,21 @@ export function staleClaim(path, callerRun) {
   return { stale: true, foreignRun: recorded };
 }
 
+/**
+ * Close the last attempt WITHOUT opening another — the release verb's
+ * settlement gesture. Until this existed, `settled: true` was written only by
+ * `attemptNew`, so a released-but-unmerged dispatch read as a live attempt
+ * forever and the frontier's `attempt-ended-unmerged` state was unreachable
+ * (validated review finding, 2026-09-01). Idempotent: settling a settled
+ * attempt changes nothing.
+ */
+export function attemptSettle(path) {
+  const rec = load(path);
+  const attempts = must(rec, 'attempts', 'record root');
+  attempts[attempts.length - 1].settled = true;
+  save(rec, path);
+}
+
 /** A replacement is a NEW logical attempt: settle the current one, open the next. */
 export function attemptNew(path) {
   const rec = load(path);

@@ -398,6 +398,11 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).toContain('## Get bearings');
   // The receipt vocabulary, so the session and the verb share one grammar.
   expect(role).toContain('`takeable`');
+  // The heading alone is not the contract: the ORDERED procedure is (validated
+  // review finding — a rewrite could keep the heading and lose the order).
+  expect(role).toMatch(/tracker first/i);
+  expect(role).toContain('ax worker gate <task|request>');
+  expect(role).toMatch(/Dispatch only where the\s+gate proves no live child exists/);
   expect(role).toMatch(/cannot establish.*read to repair, never\s+an empty frontier/s);
   // Overlap arbitration widened to every live pane, not one wave's members.
   expect(role).toMatch(/EVERY live pane/);
