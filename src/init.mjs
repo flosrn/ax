@@ -15,7 +15,13 @@ import { bad, fix, note, ok, section } from './log.mjs';
 export const PIN = version;
 export const BLOCK_ID = 'ax';
 
-/** OMP reads package roots from this project setting and then its `omp.extensions` manifest. */
+/**
+ * OMP reads package roots from this project setting and then its
+ * `omp.extensions` manifest. ONE ax bundle per session, ever: a second wrapper
+ * under `.omp/extensions/` loads the bundle twice, and duplicate peer receive
+ * loops consume each other's messages and duplicate reports. The ax repo
+ * registers `"."`; consuming repos register the installed package root below.
+ */
 export const OMP_SETTINGS = '.omp/settings.json';
 /** The 0.10 wiring; removed only when its bytes prove ax owns it. */
 export const LEGACY_OMP_LOADER = '.omp/extensions/ax.ts';
