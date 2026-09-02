@@ -157,7 +157,7 @@ export const COMMANDS = [
     // The one verb here reads `gh` and `git` only, so unlike `worker` and
     // `triage` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
-    subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
+    subcommands: [['gate --pr <n> [--issue <n>]', 'every ground, executed on the head SHA — 0/1/2/3']],
   },
   {
     name: 'frontier',

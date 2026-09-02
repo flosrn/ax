@@ -91,6 +91,17 @@
 // text the moment anyone edits the description while the gate runs. The
 // read-back above carries `body`, and that is what closure reads.
 //
+// THE CLOSURE IS VERIFIED FOR THE TICKET THAT WAS DISPATCHED. Reading the issue
+// out of the body alone made the gate verify whatever the body named: a worker
+// whose PR says `Closes #11` while #10 was dispatched passed, #11 got the
+// closure check, and #10 plus every ticket blocked by it stayed open with
+// nothing escalating. So the merge is BOUND to a ticket before any ground runs
+// — `--issue` from the caller, or the dispatch record of the PR's branch
+// (`boundTicket` below) — Ground 9 compares that number against what the body
+// closes, and closure verification polls the bound number, never the body's.
+// Unbound while the body closes a ticket here is exit 3: an absent record is
+// unknown, and F-001's rule is that unknown is never permission.
+//
 // THE MERGE GESTURE IS SERIALIZED, not merely claimed. `claimRecord` guards the
 // BIRTH of a record; the reissue path is reached with the record already born,
 // so two concurrent `--merge` runs both read a matching head, both reissue the
@@ -116,7 +127,7 @@
 // nobody can review, which is Ground 8's hazard arriving through the filesystem
 // instead of through a diff. Detector runs are unaffected — they mutate nothing.
 
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CONFIG_FILE, repoPaths } from './config.mjs';
@@ -127,7 +138,7 @@ import {
   ciGround,
   canonical,
   clean,
-  closedIssueOf,
+  closedIssuesOf,
   commitsGround,
   declarationGround,
   firstLine,
@@ -137,10 +148,12 @@ import {
   payload,
   succeeded,
   threadsGround,
+  ticketGround,
 } from './pr-grounds.mjs';
+import { physical } from './worktree/locate.mjs';
 import { acquireLock, argvValue, attemptNew, claimRecord, defaultStore, initRecord, newIdentity, phaseArgv, phaseBegin, phaseCount, phaseEnd } from './worker/record.mjs';
 
-const USAGE = 'ax pr gate --pr <n> [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
+const USAGE = 'ax pr gate --pr <n> [--issue <n>] [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -253,6 +266,126 @@ function committedDeclaration(git, root) {
   return { ok: false, reason: `git show HEAD:${CONFIG_FILE} failed (${clean(firstLine(stderr))})`, repair: `git show HEAD:${CONFIG_FILE}` };
 }
 
+/**
+ * Does this dispatch record claim the branch this PR is merging?
+ *
+ * Two facts a record carries, and no inference beyond them. Its worker-start
+ * phase names the PLACEMENT it dispatched into (`--worktree path:<abs>`), which
+ * answers whenever the gate runs in that tree — the child gating its own PR. And
+ * the request id is the worktree name `worker dispatch` created, which Orca
+ * turns into the branch: the same `head === slug || head endsWith /slug`
+ * predicate `worker release` already proves a landing with, so a branch pushed
+ * from a tree this host no longer holds still names its ticket.
+ *
+ * Anything looser would be a guess, and a guess here binds a merge to the wrong
+ * ticket — which is the defect this whole binding exists to remove.
+ */
+function claimsBranch(rec, { here, branch, request }) {
+  if (branch === request || branch.endsWith(`/${request}`)) return true;
+  if (here === '') return false;
+  for (const attempt of Array.isArray(rec.attempts) ? rec.attempts : []) {
+    for (const phase of Array.isArray(attempt?.phases) ? attempt.phases : []) {
+      if (phase?.name !== 'worker-start' || !Array.isArray(phase.argv)) continue;
+      const selector = argvValue(phase.argv, '--worktree') ?? '';
+      if (selector.startsWith('path:') && physical(selector.slice('path:'.length)) === here) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The ticket this merge is FOR: the caller's `--issue`, or the dispatch record
+ * of this PR's branch.
+ *
+ * `--issue` OUTRANKS the record because the orchestrator merging a ticket is
+ * the authority on which ticket that is; the record is the default for every
+ * other caller, so a worker gating its own PR needs no flag it could get wrong.
+ *
+ * The read is record.mjs's own (F-028, F-001), because what it authorises is a
+ * mutation: a record must NAME its request and the name must agree with the
+ * file it lives in (a stem substituted for an absent `request` would let any
+ * filename bind a merge), a record naming another repository is another
+ * checkout's dispatch, one branch claimed by two tickets is ambiguity and
+ * ambiguity is never last-file-wins, and an unreadable record BLOCKS the
+ * binding even when another record does claim this branch — its own repository,
+ * branch and ticket are unread, so it may be the second claim, and "one
+ * candidate found" is not "one claim exists" (PR #77 review, P1).
+ *
+ * An absent store is the one clean absence: nothing was ever dispatched from
+ * this host. It still binds nothing, and the caller is told which flag says so.
+ */
+function boundTicket({ issue, store, root, branch, slug, invocation }) {
+  const repair = `${invocation('--issue', '<n>')}   # name the ticket this merge delivers`;
+  if (issue !== '') return { ok: true, issue: Number(issue), source: '--issue' };
+
+  let files = [];
+  const unreadable = [];
+  try {
+    files = readdirSync(store, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => entry.name)
+      .sort();
+  } catch (error) {
+    if (error.code !== 'ENOENT') unreadable.push(`the dispatch store ${store} could not be listed (${clean(String(error.message ?? error))})`);
+  }
+
+  const here = physical(root);
+  const bound = new Map();
+  for (const file of files) {
+    const stem = file.slice(0, -'.json'.length);
+    let rec;
+    try {
+      rec = JSON.parse(readFileSync(join(store, file), 'utf8'));
+    } catch (error) {
+      unreadable.push(`${file} is unreadable (${clean(String(error.message ?? error))})`);
+      continue;
+    }
+    if (rec?.request !== stem) {
+      unreadable.push(`${file} names request ${JSON.stringify(rec?.request ?? null)}, which is not ${stem}`);
+      continue;
+    }
+    if (typeof rec.repo === 'string' && rec.repo.trim() !== '' && rec.repo.trim().toLowerCase() !== slug.toLowerCase()) continue;
+    if (!claimsBranch(rec, { here, branch, request: stem })) continue;
+    // A NAMED dispatch (`worker dispatch --name`) has no ticket to bind: its
+    // request id leads with a word, and reading a number out of anywhere else
+    // in it is how `feat/v2-migration-412` binds to 2.
+    const numbered = /^([1-9][0-9]{0,9})-/.exec(stem);
+    if (numbered === null) continue;
+    bound.set(Number(numbered[1]), stem);
+  }
+
+  const seen = [...bound.keys()].sort((a, b) => a - b);
+  const named = unreadable.length === 0 ? '' : ` — and ${unreadable.join('; ')}, so absence here is not an answer either`;
+  if (seen.length > 1) {
+    return {
+      ok: false,
+      reason: `this checkout's dispatch records name ${seen.map(number => `#${number}`).join(' and ')} for branch '${clean(branch)}' — an ambiguous record is never last-file-wins (F-001)${named}`,
+      repair,
+    };
+  }
+  if (seen.length === 0) {
+    return {
+      ok: false,
+      reason: `no dispatch record on this host names the ticket branch '${clean(branch)}' was dispatched for${named}`,
+      repair,
+    };
+  }
+  // ONE candidate is not one claim while any record in this store is unread
+  // (PR #77 review, P1). The unreadable file's repository, branch and ticket
+  // are all unread, so it may be a second claim on this very branch — the
+  // ambiguity above, invisible. Naming it and binding anyway would authorise a
+  // merge over a store this run could not read, which is F-001's rule in the
+  // one direction that mutates.
+  if (unreadable.length > 0) {
+    return {
+      ok: false,
+      reason: `${unreadable.join('; ')} — one record does claim branch '${clean(branch)}' for #${seen[0]}, and a store this run cannot fully read is never proof that nothing else claims it too`,
+      repair,
+    };
+  }
+  return { ok: true, issue: seen[0], source: `dispatch record ${bound.get(seen[0])}` };
+}
+
 export function gate(
   argv = [],
   {
@@ -276,6 +409,14 @@ export function gate(
 
   let pr = '';
   let repoArg = '';
+  /**
+   * The ticket the caller is merging, which outranks every recorded default.
+   * Presence is tracked apart from the value: `--issue` with nothing after it
+   * would otherwise read as "no --issue given" and fall back to the record —
+   * the one place a caller stating the ticket must never be answered by a guess.
+   */
+  let issueArg = '';
+  let issueGiven = false;
   let doMerge = false;
   /** Insertion-ordered, so a reprinted command reads the way it was typed. */
   const acks = new Set();
@@ -288,7 +429,12 @@ export function gate(
     const value = () => argv[(i += 1)] ?? '';
     if (arg === '--pr') pr = value();
     else if (arg === '--repo') repoArg = value();
-    else if (arg === '--merge') doMerge = true;
+    // Presence is recorded beside the value, so a valueless `--issue` is the
+    // usage error below and never a silent fall back to the record.
+    else if (arg === '--issue') {
+      issueGiven = true;
+      issueArg = value();
+    } else if (arg === '--merge') doMerge = true;
     else if (ACK_FLAGS.includes(arg)) acks.add(arg);
     else if (arg === '--method') method = value();
     else if (arg === '--stale-retried') staleRetried = true;
@@ -310,6 +456,7 @@ export function gate(
       'ax pr gate',
       '--pr',
       pr,
+      ...(issueArg === '' ? [] : ['--issue', issueArg]),
       ...(repoArg === '' ? [] : ['--repo', repoArg]),
       ...acks,
       ...(method === 'squash' ? [] : ['--method', method]),
@@ -318,6 +465,7 @@ export function gate(
 
   if (!/^[1-9][0-9]{0,9}$/.test(pr)) return usageError(pr === '' ? 'no --pr given' : `--pr expects a PR number, got "${pr}"`);
   if (repoArg !== '' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repoArg)) return usageError(`--repo expects owner/repo, got "${repoArg}"`);
+  if (issueGiven && !/^[1-9][0-9]{0,9}$/.test(issueArg)) return usageError(`--issue expects an issue number, got "${issueArg}"`);
   // `rebase` is deliberately absent: no policy anywhere asks for it. `merge` (a
   // real merge commit) exists for the one class that must keep upstream SHAs as
   // ancestors of main — upgrade PRs, where a squash silently severs kit ancestry
@@ -394,7 +542,8 @@ export function gate(
   const defaulted = payload(run(['repo', 'view', slug, '--json', 'defaultBranchRef']));
   const defaultBranch = defaulted.ok ? String(defaulted.value?.defaultBranchRef?.name ?? '').trim() : '';
 
-  const store = join(defaultStore(env), 'merge');
+  const dispatchStore = defaultStore(env);
+  const store = join(dispatchStore, 'merge');
   const requestId = `merge-${owner}-${name}-${pr}`;
   const recordPath = join(store, `${requestId}.json`);
 
@@ -403,12 +552,35 @@ export function gate(
    * Bounded re-reads, then an operator escalation: every ticket blocked by an
    * unclosed-but-delivered issue derives from a stale blocker, so the gap must
    * never travel as a note.
+   *
+   * The number polled is the BOUND ticket, never the body's. GitHub closes from
+   * the body as it stands at merge time, so a body edited while this gate ran
+   * closes something else — and polling that something else is how a delivery
+   * of a ticket nobody merged for gets reported as success. The edit is named,
+   * and the ticket this merge was for is what has to read closed.
    */
-  const verifyClosure = body => {
-    const issue = closedIssueOf(body);
-    if (issue === null) {
-      note('closure: the body names no same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
-      return 0;
+  const verifyClosure = (body, binding) => {
+    const named = closedIssuesOf(body);
+    if (!binding.ok) {
+      if (named.length === 0) {
+        note('closure: the body names no same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
+        return 0;
+      }
+      // Reachable on the replay paths alone: a merging run refuses this in
+      // Ground 9, before the mutation. Same wording either way — one binding,
+      // one finding.
+      const account = ticketGround({ binding, closes: named, pr, slug });
+      for (const entry of account.unknowns) {
+        bad(`CANNOT ESTABLISH — ${entry.message}`);
+        if (entry.repair) fix(entry.repair);
+      }
+      return 3;
+    }
+    const issue = binding.issue;
+    if (!named.includes(issue)) {
+      note(
+        `closure: the post-merge body closes ${named.length === 0 ? 'no same-repository issue' : named.map(number => `#${number}`).join(', ')}, not #${issue} — the ticket this merge was for (${binding.source}); GitHub closed from that body, so #${issue} is what must be observed`,
+      );
     }
     // The two outcomes are kept apart: a read that ANSWERED non-closed, and a
     // read that never answered at all. Reporting the second as the first sent
@@ -463,7 +635,7 @@ export function gate(
     }
     if (recordedArgv !== null) {
       const recordedSha = argvValue(recordedArgv, '--match-head-commit') ?? '';
-      const seen = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,body']));
+      const seen = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,headRefName,body']));
       if (!seen.ok) return cannot(`the replay read 'gh pr view ${pr}' ${seen.reason}`, `gh pr view ${pr} --repo ${slug}`);
       const prState = String(seen.value?.state ?? '').toUpperCase();
       const headNow = String(seen.value?.headRefOid ?? '').trim();
@@ -471,7 +643,18 @@ export function gate(
         section(`pr gate — ${slug}#${pr} (replay)`);
         if (recordedSha !== '' && recordedSha === headNow) {
           note(`REPLAYED-SUCCESS — the recorded merge already landed at ${recordedSha}; no second mutation minted`);
-          return verifyClosure(typeof seen.value?.body === 'string' ? seen.value.body : '');
+          // The head branch comes from this same read: a replay resolves its
+          // binding from the branch the PR still names, never from a receipt
+          // this path has not taken yet.
+          const binding = boundTicket({
+            issue: issueArg,
+            store: dispatchStore,
+            root: paths.root,
+            branch: String(seen.value?.headRefName ?? '').trim(),
+            slug,
+            invocation,
+          });
+          return verifyClosure(typeof seen.value?.body === 'string' ? seen.value.body : '', binding);
         }
         bad(
           `REPLAY — ${slug}#${pr} merged OUTSIDE this gate's validated head (recorded ${recordedSha || 'nothing'}, merged ${headNow || 'unread'}); the record must not become false proof of validation`,
@@ -537,6 +720,9 @@ export function gate(
   // one cross-ground fact, ciDecided, travels by signature: threads are read
   // ONLY after CI is decided (F-031).
   const residualDir = typeof loaded.prGate?.residualFindings === 'string' ? loaded.prGate.residualFindings : '';
+  // The binding is resolved ONCE, from the branch this receipt names, and both
+  // Ground 9 and the closure verification below stand on that one answer.
+  const binding = boundTicket({ issue: issueArg, store: dispatchStore, root: paths.root, branch: headBranch, slug, invocation });
   const ci = ciGround({ run, slug, sha, declared, pr });
   const gitOut = gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir });
   const grounds = [
@@ -551,6 +737,7 @@ export function gate(
     declarationGround({ git, root: paths.root, baseBranch, sha, refsRefreshed: ['ok', 'local-only'].includes(gitOut.fetchState), pr, slug }),
     commitsGround({ run, slug, pr, openedAt, ackBody, invocation }),
     keywordGround({ body, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch }),
+    ticketGround({ binding, closes: closedIssuesOf(body), pr, slug }),
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);
@@ -588,6 +775,13 @@ export function gate(
   // ── Staleness self-repair (KTD6): mechanical, once, and only on the merge
   // path — a detector run mutates nothing, and a second staleness refusal
   // routes to the owning worker instead of looping here.
+  //
+  // THE RECURSION STANDS ON AN OBSERVED HEAD MOVE. `gh pr update-branch` exits
+  // 0 once GitHub ACCEPTED the update, not once the head carries it, and the
+  // re-run is the ONE retry this verb has: spent on an unmoved head it
+  // re-measures the very commit that just refused, and reports that second
+  // refusal as if a repair had been attempted. So the head is re-read, and
+  // anything but a different 40-hex commit ends the run here.
   if (doMerge && code === 1 && unknowns.length === 0 && refusals.every(entry => entry.message.startsWith('staleness:'))) {
     if (staleRetried) {
       note('self-repair already ran once — a second staleness refusal routes to the owning worker, not another update (KTD6)');
@@ -599,6 +793,22 @@ export function gate(
         fix(`gh pr update-branch ${pr} --repo ${slug}   # then: ${invocation('--merge')}`);
         return 1;
       }
+      const after = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'headRefOid']));
+      const moved = after.ok ? String(after.value?.headRefOid ?? '').trim() : '';
+      if (!/^[0-9a-f]{40}$/.test(moved)) {
+        return cannot(
+          `self-repair: the head after gh pr update-branch ${pr} is unread (${after.ok ? `the receipt names no 40-hex commit ("${clean(moved)}")` : after.reason}), so whether the update landed is unknown and the one retry this verb has must not be spent on the same commit`,
+          `gh pr view ${pr} --repo ${slug} --json headRefOid   # then: ${invocation('--merge')}`,
+        );
+      }
+      if (moved === sha) {
+        bad(
+          `REFUSE — self-repair: the head is still ${sha} after gh pr update-branch ${pr}, so the update was accepted and has not landed; re-running now would re-measure the commit that just refused and spend this verb's one retry`,
+        );
+        fix(`${invocation('--merge')}   # re-run once the head carries the base`);
+        return 1;
+      }
+      note(`self-repair: the head moved ${sha.slice(0, 12)} -> ${moved.slice(0, 12)}; re-running this gate once against it (KTD6)`);
       return gate([...argv, '--stale-retried'], { gh, git, cwd, env, sleep });
     }
   }
@@ -679,7 +889,7 @@ export function gate(
           const settledHead = String(settled.value?.headRefOid ?? '').trim();
           if (settledState === 'MERGED' && settledHead === sha) {
             note(`REPLAYED-SUCCESS — the recorded merge landed at ${sha} while this run waited for the lock; no second mutation minted`);
-            return verifyClosure(typeof settled.value?.body === 'string' ? settled.value.body : '');
+            return verifyClosure(typeof settled.value?.body === 'string' ? settled.value.body : '', binding);
           }
           if (settledState === 'MERGED') {
             bad(
@@ -747,7 +957,7 @@ export function gate(
       fix(`gh pr view ${pr} --repo ${slug} --json body   # then verify the linked issue by hand`);
       return 3;
     }
-    return verifyClosure(landedBody);
+    return verifyClosure(landedBody, binding);
   } finally {
     // Every path releases: a lock outliving its gesture wedges every later run.
     ownership.release();

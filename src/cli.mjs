@@ -12,6 +12,7 @@ import { board } from './board.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 import { worker } from './worker/index.mjs';
 import { repoPaths, version } from './config.mjs';
+import { versionLine } from './delegation.mjs';
 import { doctor } from './doctor.mjs';
 import { init } from './init.mjs';
 import { fatal } from './log.mjs';
@@ -87,7 +88,9 @@ export function runCli(argv = []) {
     return 0;
   }
   if (['--version', '-v'].includes(command)) {
-    process.stdout.write(`${version}\n`);
+    // The number AND which copy answered — two installs on one machine read
+    // identically otherwise (./delegation.mjs).
+    process.stdout.write(`${versionLine(version)}\n`);
     return 0;
   }
   if (table[command] && !(COMMANDS.find(entry => entry.name === command)?.gated === 'orca' && !orcaAvailable())) {

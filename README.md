@@ -124,6 +124,7 @@ After a merge takes the vendor's side of one of those surfaces, run it again.
 Project facts belong in `ax.config.json`, never in ax source. Ports, app paths, database offsets,
 tracker labels, host placement, merge grounds and vendor ownership all come from that file.
 `ax.schema.json` documents every key; unknown keys are errors so a typo cannot look applied.
+`$comment` is admitted on any object in the file, so the reasoning behind a value lives next to it.
 
 A small repository may need only:
 
