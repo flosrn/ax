@@ -7,7 +7,7 @@
 // implementation. So the implementation is an exported function, and the bin
 // entry is the thing that decides whose implementation runs.
 
-import { COMMANDS, renderUsage, retiredCommand } from './commands.mjs';
+import { COMMANDS, renderCommandHelp, renderUsage, retiredCommand } from './commands.mjs';
 import { board } from './board.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 import { worker } from './worker/index.mjs';
@@ -94,6 +94,22 @@ export function runCli(argv = []) {
     return 0;
   }
   if (table[command] && !(COMMANDS.find(entry => entry.name === command)?.gated === 'orca' && !orcaAvailable())) {
+    // Asking a verb what it does must never run it. `ax init --help` reached
+    // init's runner and rewrote four tracked files of the repository it was
+    // asked from (#69), because argv past the command name went through
+    // untouched. The read is answered from the registry, here, so a verb
+    // registered next month inherits it by being registered (./commands.mjs).
+    //
+    // ONE position, the command's first: past it the argv belongs to whoever
+    // owns it. A noun's verb parses its own arguments and answers its own
+    // `--help` with its own exit codes (`ax triage ask --help`), and every
+    // argument after `ax supabase` is the Supabase CLI's, of which ax claims
+    // not one (./supabase-guard.mjs). Claiming more than the first slot would
+    // make this read swallow a flag that was never ax's to answer.
+    if (['--help', '-h'].includes(argv[1])) {
+      process.stdout.write(renderCommandHelp(command));
+      return 0;
+    }
     return table[command](context) ?? 0;
   }
   // A gated command on a machine without Orca is EXACTLY an unknown command:
