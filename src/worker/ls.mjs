@@ -29,6 +29,15 @@
 // established must refuse, because the caller is about to decide whether it has
 // room for another child.
 //
+// TWO VIEWS, ONE JOIN (#70). The reader is an orchestrator about to dispatch,
+// and it reads two answers: how many panes are live, and which. Measured
+// 2026-09-02, this verb printed 189 records — 263 lines, ≈40 KB — to deliver
+// them, once per dispatch. The default now lists the dispositions that carry a
+// decision (VIVANT and INCONNU) and discloses the MORT count with `--all`, the
+// view that still prints every record. Both views join every record: the count,
+// the F-048 drift and the worker-list comparison are facts about the store, so
+// the flag changes what is SHOWN and never what was established.
+//
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
 //   0  the list was rendered, including the honest "0 record"
 //   2  usage error
@@ -190,9 +199,12 @@ function workerIndex(run) {
 
 export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
   let storeArg = '';
+  let all = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--store') {
+    if (arg === '--all') {
+      all = true;
+    } else if (arg === '--store') {
       i += 1;
       if (argv[i] === undefined) {
         process.stderr.write('ax worker ls: --store needs a value\n');
@@ -200,7 +212,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
       }
       storeArg = argv[i];
     } else {
-      process.stderr.write(`ax worker ls: unknown argument "${arg}" (only --store <dir>)\n`);
+      process.stderr.write(`ax worker ls: unknown argument "${arg}" (only --all and --store <dir>)\n`);
       return 2;
     }
   }
@@ -255,20 +267,17 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   }
   const workers = workerIndex(run);
 
-  const rows = files.map(file => describeRecord(dir, file));
-  const width = key => rows.reduce((max, row) => Math.max(max, String(row[key] ?? '').length), 0);
-  const requestWidth = width('request');
-  const taskWidth = Math.max(width('taskId'), 'no task id'.length);
-  const pad = (text, size) => (text.length >= size ? text : text + ' '.repeat(size - text.length));
-
-  section(`${rows.length} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
-
+  // EVERY record is joined, whatever the view. The capacity count, the F-048
+  // drift and the worker-list comparison are facts about the whole store, and a
+  // flag that narrowed them would make the two views disagree about the machine
+  // — while the count is this verb's entire job.
   let alive = 0;
   let suspects = 0;
   const drift = [];
   const matched = new Set();
 
-  for (const row of rows) {
+  const views = files.map(file => {
+    const row = describeRecord(dir, file);
     const { pane, detail } = paneVerdict(row.handle, row.why, terminals, { host: row.host });
     if (pane === 'VIVANT') alive += 1;
 
@@ -307,6 +316,58 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 
+    // THE F-048 line: a pane the runtime still owns, while Orca's accounting
+    // either does not know it (a `--inject` repair) or calls its terminal
+    // `retained`. Both mean the same thing — that child is invisible to the cap
+    // and to the release sweep, and only a release BY DISPATCH clears it.
+    const disagrees = workers.ok && pane === 'VIVANT' && (entry === undefined || entry.terminalState === 'retained');
+    if (disagrees) drift.push(row);
+
+    // A DEAD ATTEMPT: nothing was established (so the disposition is INCONNU and
+    // stays INCONNU — the listing never relabels a verdict), and the pane this
+    // record DID name is a corpse on a host the receipt read. No capacity, no
+    // overlap. What it still holds is a settlement debt, and the verb that pays
+    // it is #78 rather than this one.
+    const deadAttempt = row.handle === null && leakedVerdict !== null && leakedVerdict.pane === 'MORT';
+
+    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt };
+  });
+
+  // THE DEFAULT VIEW (#70, ruled 2026-09-02). Measured on this machine: 189
+  // records, 263 lines, ≈40 KB into an orchestrator's context on EVERY dispatch
+  // — to deliver the live-pane count (capacity) and the live panes themselves
+  // (overlap arbitration). So the default carries the rows that answer one of
+  // those two, and nothing else:
+  //
+  //   VIVANT                      capacity in use, and the pane to arbitrate against
+  //   INCONNU, host not asked     may be alive and working on a host this list never read
+  //   INCONNU, pane alive         an unsettled worker-start whose terminal is up right now
+  //   INCONNU, no pane named      a write-ahead record; nothing proves it dead either
+  //
+  // Two dispositions answer neither and leave, each disclosed as its own count:
+  // a MORT row (a recorded handle the runtime cannot see), and a dead attempt
+  // (unsettled, its recorded pane a corpse on a host that WAS read). Neither can
+  // be arbitrated against and neither is capacity; a MORT row additionally
+  // names no repair, and a dead attempt's two settlement routes ride with it
+  // into `--all`.
+  //
+  // The tallies above were taken before this split, so both views answer the
+  // same machine: the flag changes what is SHOWN, never what was established.
+  const shown = all ? views : views.filter(view => view.pane !== 'MORT' && !view.deadAttempt);
+  const hidden = views.length - shown.length;
+  const withheldMort = views.filter(view => view.pane === 'MORT').length;
+  const withheldAttempts = views.filter(view => view.deadAttempt).length;
+
+  // The columns are sized on what is PRINTED: padding every line to the widest
+  // request in the store would put the hidden rows' width back into the receipt.
+  const width = key => shown.reduce((max, { row }) => Math.max(max, String(row[key] ?? '').length), 0);
+  const requestWidth = width('request');
+  const taskWidth = Math.max(width('taskId'), 'no task id'.length);
+  const pad = (text, size) => (text.length >= size ? text : text + ' '.repeat(size - text.length));
+
+  section(`${hidden > 0 ? `${shown.length} of ${views.length}` : String(views.length)} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
+
+  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees } of shown) {
     const suffix = leaked === null
       ? ''
       : leakedLive
@@ -314,13 +375,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
         : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
     const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${suffix}`;
 
-    // THE F-048 line: a pane the runtime still owns, while Orca's accounting
-    // either does not know it (a `--inject` repair) or calls its terminal
-    // `retained`. Both mean the same thing — that child is invisible to the cap
-    // and to the release sweep, and only a release BY DISPATCH clears it.
-    const disagrees = workers.ok && pane === 'VIVANT' && (entry === undefined || entry.terminalState === 'retained');
     if (disagrees) {
-      drift.push(row);
       bad(line);
       fix(
         row.dispatchId !== null
@@ -350,6 +405,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
 
   note(`${alive} live pane(s) — this is the cap count`);
   if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
+  // A shortened list says so, one line per class withheld, each with the flag
+  // that lengthens it: an omission a reader cannot see is the same defect as a
+  // count it cannot establish (F-028). The dead-attempt line is also the only
+  // surface that counts a settlement debt, which is why it is a count and not
+  // silence.
+  if (!all && withheldMort > 0) note(`${withheldMort} MORT record(s) not shown — a pane the runtime cannot see names no repair: ax worker ls --all`);
+  if (!all && withheldAttempts > 0) note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker ls --all`);
   if (terminals.omitted) note('hosts were omitted from the terminal-list scope: a pane absent from it is INCONNU here, never MORT');
   if (!workers.ok) {
     bad(workers.reason);

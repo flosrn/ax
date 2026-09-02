@@ -96,7 +96,7 @@ export const COMMANDS = [
       ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
-      ['ls', 'every dispatch record, counted by LIVE PANE (F-048)'],
+      ['ls [--all]', 'capacity and overlap; --all: the MORT and unsettled rows'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 'can this be re-dispatched without a duplicate agent? 0/1/2/3'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
@@ -157,7 +157,7 @@ export const COMMANDS = [
     // The one verb here reads `gh` and `git` only, so unlike `worker` and
     // `triage` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
-    subcommands: [['gate --pr <n>', 'every ground, executed on the head SHA — 0/1/2/3']],
+    subcommands: [['gate --pr <n> [--issue <n>]', 'every ground, executed on the head SHA — 0/1/2/3']],
   },
   {
     name: 'frontier',
