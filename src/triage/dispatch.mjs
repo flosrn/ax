@@ -90,16 +90,47 @@ const declaredCarried = (names, labels) => names.filter(name => labels.some(carr
  * `to-tickets` already did that work with the human in the room. What is left
  * is the two repairs the refusal names — apply the ready label the spec flow
  * owed the ticket, or fix the ticket where `to-tickets` left it incomplete.
+ *
+ * A THIRD CLASS, `findings`, OPT-IN. A finding your own agents filed while
+ * working is inbound in the glossary's sense — it arrived instead of being
+ * planned — but it arrives WITH its measurement: the friction contract carries
+ * argv, raw output, expected state and cost, so the finder is the verifier and
+ * a pass re-measures what is measured. Measured 2026-09-02 on the package's
+ * own checkout: two dozen findings ran through a triage pass and a brief pass
+ * each, hours of sessions for a pile where a third were ten-line repairs a
+ * maintainer closes in an hour, and the passes minted carve-out tickets and a
+ * duplicate. Before this class existed the rule lived in role prose, which is
+ * the state ADR 0001 rejected for spec-born work. The repair names the channel
+ * that owns what was found — a maintainer verdict for the instrument,
+ * `to-tickets` for the product — never another pass. A project that declares
+ * no `findings` keeps the two-class behaviour to the byte.
  */
 export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared }) {
   const spec = declaredCarried(declared?.spec ?? [], labels);
   const inbound = declaredCarried(declared?.inbound ?? [], labels);
-  if (spec.length === 0 && inbound.length === 0) return null;
+  const findings = declaredCarried(declared?.findings ?? [], labels);
+  const carried = [
+    ['spec-born', spec],
+    ['inbound', inbound],
+    ['a finding', findings],
+  ].filter(([, names]) => names.length > 0);
+  if (carried.length === 0) return null;
 
-  if (spec.length > 0 && inbound.length > 0) {
+  if (carried.length > 1) {
     return {
-      bad: `^ carries ${spec.join(', ')} and ${inbound.join(', ')} — one ticket cannot be both spec-born and inbound, and no pass follows from a contradiction`,
+      bad: `^ carries ${carried.map(([, names]) => names.join(', ')).join(' and ')} — one ticket cannot be both ${carried.map(([kind]) => kind).join(' and ')}, and no pass follows from a contradiction`,
       fix: [`gh issue view ${issue} --repo ${slug} --json labels # remove whichever of the two is wrong, then re-dispatch`],
+    };
+  }
+
+  if (LABEL_JOBS.has(job) && findings.length > 0) {
+    return {
+      bad: `^ carries ${findings.join(', ')} — your own agents filed this with its measurement attached, so the finder is the verifier and a ${job} pass would re-measure what is measured`,
+      fix: [
+        `gh issue comment ${issue} --repo ${slug} --body-file <verdict.md> # in the instrument: the maintainer answers it — fixed, refused with the cheaper thing, or unreproducible`,
+        `to-tickets on the amended spec # in the product: the spec flow publishes it ready-for-agent, with the human in the room`,
+        `gh issue edit ${issue} --repo ${slug} --remove-label ${findings[0]} # only if it truly arrived from outside, with no measurement of its own`,
+      ],
     };
   }
 
@@ -658,8 +689,8 @@ export function dispatch(
 const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' : code === 3 ? 'CANNOT-ESTABLISH' : 'REFUSED');
 
 /**
- * State, comment count and title in one read — plus, for every lane that is
- * routed by provenance, the labels and the sub-issue parent.
+ * State, comment count, title and labels in one read — plus, for every lane
+ * that is routed by provenance, the sub-issue parent.
  *
  * EVERY LABEL-APPLYING LANE, and that used to be the retired readiness lane
  * only. The asymmetry is what let a triage pass start on a spec sub-issue: the
@@ -667,6 +698,14 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  * they were looking at. The routed set IS `LABEL_JOBS` rather than a second
  * list kept beside it — the second list had already drifted, so `--job brief`
  * read no labels and the gate ran on an empty set. See `provenanceVerdict`.
+ *
+ * LABELS FOR EVERY JOB, THE PARENT FOR THE ROUTED ONES. The contradiction rule
+ * in `provenanceVerdict` is job-independent — no pass follows from two classes
+ * on one ticket — and it can only hold if every lane sees the labels. Measured
+ * 2026-09-02 on review of the findings class: labels were read in the routed
+ * lanes only, so `--job custom` handed the gate an empty list and dispatched a
+ * contradictory ticket. The parent read stays scoped to the routed lanes: it is
+ * the expensive, capability-gated half, and only the spec branch consumes it.
  *
  * The parent read is best-effort and advisory: a gh older than the sub-issues
  * API fails the WHOLE view when asked for the field (it does not answer with the
@@ -682,7 +721,7 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  */
 function readIssue(gh, repo, issue, job = 'triage') {
   const routed = LABEL_JOBS.has(job);
-  const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments';
+  const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments,labels';
   let out = gh(['issue', 'view', issue, '--repo', repo, '--json', fields]);
   let parentReadable = routed;
   if (routed && !out.error && out.status !== 0 && /unknown json field.*parent/i.test(String(out.stderr ?? ''))) {
@@ -715,9 +754,9 @@ function readIssue(gh, repo, issue, job = 'triage') {
   }
   if (!Array.isArray(body.comments)) return { ok: false, reason: 'gh answered no comments array — an absent container is not an empty one' };
   const meta = { ok: true, state: String(body.state ?? ''), title: String(body.title ?? ''), comments: body.comments.length };
+  if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
+  meta.labels = body.labels.map(label => String(label?.name ?? ''));
   if (routed) {
-    if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
-    meta.labels = body.labels.map(label => String(label?.name ?? ''));
     if (!parentReadable) {
       meta.parent = undefined;
       meta.parentCause = 'capability';

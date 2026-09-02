@@ -86,14 +86,17 @@ to reduce it.
 **DEDUP AT BIRTH, BY CONCEPT.** The redundancy check the triage lane runs before briefing is too late
 for a finding the wave itself files; the search belongs before `gh issue create`.
 
-## What is still prose
+## Enforced, not prose — the third class
 
-ADR 0001 says provenance is enforced by `ax triage dispatch`, not by role text — and it is, for
-spec-born work: `provenanceVerdict` (`src/triage/dispatch.mjs`) reads `triage.provenance.spec` and
-`triage.provenance.inbound` from `ax.config.json`, refuses the first class, admits the second, and
-returns null for a label in neither. Excluding `source:agent-found` from this repository's `inbound`
-list would not refuse it; it would only blind the gate. Refusing it needs a third provenance class
-whose repair names the maintainer channel, and that is a contract change every consumer's config
-adopts — a ruling for the operator, not a patch for a session. Until it lands, the rule above holds
-by the orchestrator's reading of its role, which is exactly the state ADR 0001 rejected for the
-spec-born case.
+ADR 0001 says provenance is enforced by `ax triage dispatch`, not by role text. For spec-born work it
+was; for findings it was prose until the operator ruled (2026-09-02) for a third, opt-in class.
+`triage.provenance.findings` names the labels meaning "your own agents filed this with its
+measurement attached"; `provenanceVerdict` (`src/triage/dispatch.mjs`) refuses a triage or brief
+pass over one and names the owning channel as the repair — a maintainer verdict comment for the
+instrument, `to-tickets` for the product — and refuses two classes on one ticket as a contradiction
+without picking a side. `ax frontier` reads the same class only for the contradiction: a finding that
+reached the ready label on its own is takeable, because the class routes passes, never
+implementation. Removing a label from `inbound` was never the fix — a label in no class returns
+null, which would only have blinded the gate. This repository declares `source:agent-found` as a
+finding; a consumer that declares nothing keeps the two-class behaviour to the byte, which is the
+opt-in the ruling chose over a contract change every config adopts at once.

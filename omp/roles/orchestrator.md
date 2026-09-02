@@ -45,10 +45,12 @@ already carries argv, raw output, expected state and cost, so the finder is the
 verifier and a pass re-measures what is measured. Route it to whoever owns what
 was found — the maintainer channel when the finding is in the instrument ("When
 ax itself is the problem"), where it comes back as a verdict comment (`fixed`,
-`refused`, `unreproducible`); the spec flow when it is in the product. This is
-YOUR reading, not the verb's: `ax triage dispatch` refuses only what the
-project's provenance declares spec-born and admits the rest, so nothing stops
-you but this paragraph until a provenance class for findings lands. Measured
+`refused`, `unreproducible`); the spec flow when it is in the product. The
+verb enforces it where the project opts in: a label the project declares under
+`triage.provenance.findings` makes `ax triage dispatch` refuse a triage or
+brief pass and name that route as the repair; a project that declares no such
+class keeps its findings in the triage lane, and this paragraph is then the
+only thing that stops you. Measured
 once on the package's own checkout: two dozen agent-found frictions ran through
 a triage pass and a brief pass each, hours of sessions for a pile where a third
 were ten-line repairs a maintainer closes in an hour — and the passes minted

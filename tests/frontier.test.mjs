@@ -200,6 +200,35 @@ test('a declared provenance contradiction is excluded provenance-refused', () =>
   }
 });
 
+test('a finding that reached the ready label is takeable — the findings class routes passes, never implementation', () => {
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ triage: { provenance: { spec: ['source:spec'], inbound: ['source:report'], findings: ['source:found'] } } }));
+  try {
+    const { code, out } = runFrontier({
+      issues: [issueRow(41, 'T41', [READY, 'source:found'])],
+      graph: { i41: issueNode({ labels: [READY, 'source:found'] }) },
+    });
+    assert.equal(code, 0);
+    assert.match(out, /takeable — 1/);
+    assert.doesNotMatch(out, /provenance-refused/);
+  } finally {
+    rmSync(join(root, 'ax.config.json'), { force: true });
+  }
+});
+
+test('a finding declared inbound too is a contradiction the frontier excludes provenance-refused', () => {
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ triage: { provenance: { spec: ['source:spec'], inbound: ['source:report'], findings: ['source:found'] } } }));
+  try {
+    const { code, out } = runFrontier({
+      issues: [issueRow(42, 'T42', [READY, 'source:report', 'source:found'])],
+      graph: { i42: issueNode({ labels: [READY, 'source:report', 'source:found'] }) },
+    });
+    assert.equal(code, 0);
+    assert.match(out, /#42 T42 — provenance-refused \(carries source:report and source:found at once\)/);
+  } finally {
+    rmSync(join(root, 'ax.config.json'), { force: true });
+  }
+});
+
 test('an UNSETTLED record is already-dispatched, a settled one on an open ticket is attempt-ended-unmerged — structurally distinct', () => {
   const record = (request, settled) => ({ request, host: 'h', orca: 'orca', createdAt: 'now', attempts: [{ n: 1, settled, phases: [] }] });
   const write = (number, suffix, settled) => {
