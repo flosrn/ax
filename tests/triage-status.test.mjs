@@ -164,6 +164,31 @@ const run = (argv, { root = repo(), orca = fakeOrca(), store } = {}) => {
   return { ...result, root, orcaCalls: orca.calls };
 };
 
+// 0.16.0 retired `--brief` on this verb in favour of `--oneline`, and published
+// the contract that every retired name refuses with the replacement named. The
+// flag fell through the unknown-argument branch instead, which names the wrong
+// name and no right one.
+test('the retired --brief is refused BY NAME, with --oneline named as the repair', () => {
+  const root = repo();
+  const orca = fakeOrca();
+  const r = run(['--issue', '7', '--brief'], { root, orca });
+  assert.equal(r.code, 2, 'the argument lane already answers 2 here');
+  assert.match(r.out, /--brief/);
+  const usageAt = r.out.indexOf('ax triage status');
+  const repairAt = r.out.indexOf('--oneline');
+  assert.ok(repairAt !== -1 && repairAt < r.out.lastIndexOf('ax triage status'), 'the replacement is named above the usage line');
+  assert.ok(usageAt !== -1);
+  assert.deepEqual(orca.calls, [], 'no binary is consulted for an argument that already refuses');
+});
+
+test('an unknown argument that is NOT retired keeps its message on triage status', () => {
+  const root = repo();
+  const r = run(['--issue', '7', '--breif'], { root });
+  assert.equal(r.code, 2);
+  assert.match(r.out, /unknown argument "--breif"/);
+  assert.ok(!/retired/.test(r.out), 'a name absent from the map buys no repair');
+});
+
 test('a question keyed by the pane handle is printed with its id', () => {
   const root = repo();
   record(root);

@@ -18,6 +18,7 @@ import { paneVerdict, readPane, terminalInventory } from '../worker/pane.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { defaultStore, heldRepaired, report, workerPane } from '../worker/record.mjs';
+import { retiredFlagRepair } from '../worker/dispatch.mjs';
 import { answer } from './answer.mjs';
 import { ask } from './ask.mjs';
 import { dispatch } from './dispatch.mjs';
@@ -190,6 +191,15 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     else if (arg === '--oneline') oneline = true;
     else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else {
+      // The retired name is refused BY NAME, with its replacement above the
+      // usage line, from the one map that holds every retired flag
+      // (`../worker/dispatch.mjs`). A name absent from it is merely unknown and
+      // keeps the message below, with no invented repair.
+      const repair = retiredFlagRepair('triage status', arg);
+      if (repair !== '') {
+        process.stderr.write(`ax triage status: ${arg} was retired and is not aliased — ${repair} is the flag now\n\n  pass ${repair} where you passed ${arg}\n\n${USAGE}\n`);
+        return 2;
+      }
       process.stderr.write(`ax triage status: unknown argument "${arg}"\n${USAGE}\n`);
       return 2;
     }
@@ -295,8 +305,11 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
   // beside it on the same command line (`--brief --job triage` asked nothing
   // about briefs), the same collision `ax worker dispatch --notes` was renamed
   // out of. `--oneline` says what it renders and claims no vocabulary. The old
-  // name is not aliased: it lands on the unknown-argument refusal above, which
-  // prints the usage naming this one.
+  // name is not aliased, and it is refused BY NAME: `--brief` lands on the
+  // retired-flag map (`../worker/dispatch.mjs`), which names `--oneline` as the
+  // repair above the usage line. A usage line alone was not the answer — 0.16.0
+  // promised every retired name would name its replacement, and #98 measured
+  // both retired flags answering a bare unknown-argument refusal instead.
   if (oneline) {
     const rows = [];
     for (const issue of expanded) {
