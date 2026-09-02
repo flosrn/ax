@@ -18,12 +18,21 @@
 // Delegation imports the local package's CLI implementation, never its
 // `bin/ax.mjs`: that file is the delegating entry, and handing argv back to it
 // is how a version loop starts.
+//
+// WHICH of those two copies answered is a fact `ax --version` discloses, and it
+// has to be: the collision above has a silent form. This machine ran a symlink
+// into a development checkout and a package-manager global at the same time,
+// they drifted a full minor apart, and neither said so — the symlink served
+// whatever branch the checkout happened to be on. So the version line names
+// its origin (`installOrigin`), and the number stays its FIRST token, because
+// a hook verifying a consumer's pin is the other reader of that line.
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { PACKAGE_NAME, repoPaths } from './config.mjs';
+import { currentBranch } from './git.mjs';
 import { bad, fix, note } from './log.mjs';
 
 /** The package directory of the copy currently executing. */
@@ -73,6 +82,17 @@ export const installCommand = at => (at.includes("'") ? `pnpm install --dir ${at
 const selfVersion = self => readManifest(join(self, 'package.json'))?.version ?? 'latest';
 
 /**
+ * The roots a project declaration may come from: this checkout, then the
+ * primary checkout behind it. Injectable — every caller here takes `roots` so
+ * a decision can be reached without a git repository.
+ */
+const candidateRoots = (cwd, roots) => {
+  if (roots) return roots;
+  const { root, main } = repoPaths(cwd);
+  return [root, main].filter(Boolean);
+};
+
+/**
  * Decide whose implementation answers this invocation.
  *
  * The candidate roots are this checkout and the primary checkout behind it, in
@@ -96,10 +116,7 @@ const selfVersion = self => readManifest(join(self, 'package.json'))?.version ??
  * running the test.
  */
 export function resolveDelegation({ cwd = process.cwd(), self = SELF_DIR, roots } = {}) {
-  const candidates = roots ?? (() => {
-    const { root, main } = repoPaths(cwd);
-    return [root, main].filter(Boolean);
-  })();
+  const candidates = candidateRoots(cwd, roots);
 
   const seen = new Set();
   const rows = [];
@@ -214,4 +231,55 @@ export async function runDelegated(decision, argv, { load = entry => import(path
     return 1;
   }
   return (await local.runCli(argv)) ?? 0;
+}
+
+/**
+ * Where the copy that is EXECUTING came from. Three origins, and no fourth:
+ *
+ *   checkout — outside any `node_modules`: a development checkout, named with
+ *              the branch it sits on. A `link:` pin and a globally linked
+ *              checkout both land here, which is the point — that is the
+ *              install whose contents move under you between two invocations.
+ *   project  — it IS an install this checkout, or the primary one behind it,
+ *              declared. The path printed is the one the repo pinned.
+ *   global   — inside a `node_modules` no candidate root claims.
+ *
+ * The directory is symlink-resolved FIRST, because every install a package
+ * manager writes is a link into a content-addressed store, and the store path
+ * is what says whether a project put it there. `real(declared)` resolves the
+ * project's own link the same way, so the two comparands are both physical.
+ *
+ * `branch` is null when git names none — a detached HEAD, or a directory that
+ * is no repository at all. Nothing is inferred from the directory's name: a
+ * checkout called `feat-75` is not evidence of the branch it has checked out,
+ * and a wrong branch here is worse than an absent one.
+ */
+export function installOrigin({ cwd = process.cwd(), self = SELF_DIR, roots, branchOf = currentBranch } = {}) {
+  const path = real(self);
+  if (!path.split(sep).includes('node_modules')) {
+    return { kind: 'checkout', path, branch: branchOf(path) ?? null };
+  }
+  for (const root of candidateRoots(cwd, roots)) {
+    const declared = join(root, 'node_modules', PACKAGE_NAME);
+    if (real(declared) === path) return { kind: 'project', path: declared, root };
+  }
+  return { kind: 'global', path };
+}
+
+/**
+ * The one line `ax --version` prints.
+ *
+ * THE VERSION IS FIELD ONE and stays there: `ax --version | cut -d' ' -f1` is
+ * how a hook verifies a consumer's pin, and this line grew a second half around
+ * a number that already had readers.
+ *
+ * Under delegation this renders in the DELEGATED copy — its own manifest
+ * version, its own package directory — so the line names the ax that actually
+ * answered rather than the one that was typed.
+ */
+export function versionLine(version, origin = installOrigin()) {
+  if (origin.kind === 'checkout') {
+    return `${version} — checkout ${origin.branch === null ? '' : `${origin.branch} `}at ${origin.path}`;
+  }
+  return `${version} — ${origin.kind} install at ${origin.path}`;
 }
