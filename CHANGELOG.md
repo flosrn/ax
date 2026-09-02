@@ -8,6 +8,24 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.18.0](https://github.com/flosrn/ax/compare/v0.17.0...v0.18.0) (2026-09-02)
+
+
+### Features
+
+* answer --help as a read on every verb, from the registry ([#87](https://github.com/flosrn/ax/issues/87)) ([f66a666](https://github.com/flosrn/ax/commit/f66a6663049f936879aba55c31e9c070561e92f6)), closes [#71](https://github.com/flosrn/ax/issues/71)
+* **cli:** name where the running ax came from in --version ([#81](https://github.com/flosrn/ax/issues/81)) ([51e9b6d](https://github.com/flosrn/ax/commit/51e9b6da8d77f5e1d11aec76e5318448b6470a14))
+* **plan:** the project plan knows a self-hosted checkout and partial adoption ([#85](https://github.com/flosrn/ax/issues/85)) ([0ae8593](https://github.com/flosrn/ax/commit/0ae85935771f0d190b869962eabd962c2ffdad78))
+* **pr gate:** bind closure verification to the dispatched ticket ([#77](https://github.com/flosrn/ax/issues/77)) ([bcf24b1](https://github.com/flosrn/ax/commit/bcf24b130856112dbc9431739b7cb6e557fb5585))
+* **worker:** ls answers capacity first, archaeology behind --all ([#82](https://github.com/flosrn/ax/issues/82)) ([a59d75d](https://github.com/flosrn/ax/commit/a59d75d7388b76a688469c151a1fc3f9ceffa088))
+* **worker:** ls asks the declared hosts instead of reporting them omitted ([#91](https://github.com/flosrn/ax/issues/91)) ([16700d8](https://github.com/flosrn/ax/commit/16700d8cb010a3198d8ad1166fdc5de15aee99d2))
+
+
+### Bug Fixes
+
+* **config:** drop the $comment the dispatch section does not admit ([28f1018](https://github.com/flosrn/ax/commit/28f1018b58a556392e59944ec18aca7790f52f40))
+* **schema:** admit a reserved annotation on any object, and refuse with the shape ([#79](https://github.com/flosrn/ax/issues/79)) ([dd223b5](https://github.com/flosrn/ax/commit/dd223b5b42c773d7b33c565ea8073b9ec35ed8be)), closes [#73](https://github.com/flosrn/ax/issues/73)
+
 ## [0.17.0](https://github.com/flosrn/ax/compare/v0.16.0...v0.17.0) (2026-09-01)
 
 
