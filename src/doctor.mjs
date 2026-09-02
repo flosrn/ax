@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote, version } from './config.mjs';
 import { EXACT_VERSION } from './delegation.mjs';
-import { LEGACY_OMP_LOADER, OMP_SETTINGS, ompExtensionRoot, retiredConfigKeyFixes } from './init.mjs';
+import { LEGACY_OMP_LOADER, OMP_SETTINGS, retiredConfigKeyFixes } from './init.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
+import { CONTRACTS, planProject, readManifest } from './plan.mjs';
 import { worktreeFindings } from './worktree/doctor.mjs';
 
 /**
@@ -33,7 +34,7 @@ export function doctor(cwd = process.cwd()) {
 
   note(isWorktree ? `worktree of ${main}` : 'primary checkout');
 
-  const { config, errors, exists } = loadConfig(root);
+  const { config, errors, exists, declared } = loadConfig(root);
   if (!exists) {
     fail(`${CONFIG_FILE} is missing — no project plan can be derived`, 'ax init');
     return failures;
@@ -49,19 +50,58 @@ export function doctor(cwd = process.cwd()) {
   }
   ok(`${CONFIG_FILE}: ${config.project.display}, dev ports ${config.ports.dev[0]}-${config.ports.dev[1]}`);
 
-  // 1. The bootstrap, because every other command is reached through it.
+  // The project plan, derived once from this checkout's own manifest and the
+  // contracts its configuration declares (./plan.mjs). Everything below grades a
+  // recorded value against one of its fields — which is what makes a finding
+  // repairable by the verb that writes the plan, and what keeps two states off
+  // the findings list entirely: the checkout that IS the package, and a contract
+  // this project never adopted.
+  const manifest = readManifest(root);
+  const plan = planProject({ manifest, declared });
+
+  // NOT ADOPTED IS NOT A FINDING. gapila declares `prGate` and nothing else, by
+  // design: it provisions itself and asks ax for the merge gate only. Grading
+  // the provisioning contract there produced five findings, every one naming
+  // `ax init` as the repair for a contract nobody opted into — advice that, if
+  // followed, changes a project against its own decision. So the contract is
+  // reported as unadopted, with the verb that adopts it, and nothing it covers
+  // is measured. An unrun check is never a passed one either: the lines below
+  // simply do not run, and the report says so.
+  if (!plan.adopted.provisioning) {
+    const provisioning = CONTRACTS.find(contract => contract.id === 'provisioning');
+    const adopted = CONTRACTS.filter(contract => plan.adopted[contract.id]).map(contract => `${contract.name} (${contract.declaration})`);
+    const declares = adopted.length > 0 ? `${adopted.join(', ')} and no "${provisioning.declaration}"` : 'no contract at all';
+    note(`${provisioning.name} — NOT ADOPTED here: ${CONFIG_FILE} declares ${declares}, so NONE of it is measured — ${provisioning.covers}`);
+    fix(`${provisioning.verb}   # adopt it — declares "${provisioning.declaration}" and writes everything that contract covers`);
+    return failures;
+  }
+
+  // 1. The bootstrap, because every other command is reached through it — except
+  //    in the checkout that publishes ax, where the shim would exec
+  //    `node_modules/.bin/ax` and no package is an install of itself.
   const bootstrapPath = join(root, 'bin', 'ax');
-  const shipped = readFileSync(assetPath('bootstrap', 'ax'), 'utf8');
-  if (!existsSync(bootstrapPath)) fail('bin/ax is missing — no committed project-local bootstrap exists', 'ax init');
-  else if (readFileSync(bootstrapPath, 'utf8') !== shipped) fail('bin/ax differs from the version this ax ships', 'ax init');
-  else if (!(statSync(bootstrapPath).mode & 0o111)) fail('bin/ax is not executable', 'chmod +x bin/ax');
-  else ok('bin/ax resolves this checkout, then the primary one');
+  if (!plan.bootstrap) {
+    if (existsSync(bootstrapPath)) {
+      fail(
+        `bin/ax exists and this checkout IS ${PACKAGE_NAME} — that shim execs node_modules/.bin/ax, an install of this very package`,
+        'rm bin/ax',
+      );
+    } else {
+      note(`this checkout IS ${PACKAGE_NAME} — it reaches its own CLI through the "bin" field it publishes, so no shim and no self-pin belong here`);
+    }
+  } else {
+    const shipped = readFileSync(assetPath('bootstrap', 'ax'), 'utf8');
+    if (!existsSync(bootstrapPath)) fail('bin/ax is missing — no committed project-local bootstrap exists', 'ax init');
+    else if (readFileSync(bootstrapPath, 'utf8') !== shipped) fail('bin/ax differs from the version this ax ships', 'ax init');
+    else if (!(statSync(bootstrapPath).mode & 0o111)) fail('bin/ax is not executable', 'chmod +x bin/ax');
+    else ok('bin/ax resolves this checkout, then the primary one');
+  }
 
   // 2. OMP loads the package root, then reads this release's own
   //    `omp.extensions` manifest. The settings file is shared with the project:
   //    grade the one array entry ax owns, never the whole document.
   const settingsPath = join(root, ...OMP_SETTINGS.split('/'));
-  const expectedExtension = ompExtensionRoot(root);
+  const expectedExtension = plan.ompExtension;
   if (!existsSync(settingsPath)) {
     fail(`${OMP_SETTINGS} is missing — OMP loads no ax package in this project`, 'ax init');
   } else {
@@ -88,10 +128,17 @@ export function doctor(cwd = process.cwd()) {
   }
 
   // 3. The managed touchpoints in files the vendor also owns.
-  const manifestPath = join(root, 'package.json');
-  const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : {};
   const pinned = getJsonPath(manifest, `devDependencies.${PACKAGE_NAME}`);
-  if (getJsonPath(manifest, 'scripts.ax') !== './bin/ax') fail('package.json: scripts.ax does not point at ./bin/ax', 'ax init');
+  if (!plan.pin) {
+    // A self-pin is a recorded value the plan refuses, so it IS graded — the
+    // state `ax init` used to write here and no install could ever resolve.
+    if (pinned !== undefined) {
+      fail(`package.json pins ${PACKAGE_NAME} ${pinned} in the checkout that publishes it — no install resolves a package as its own dependency`, `remove devDependencies["${PACKAGE_NAME}"] from package.json`);
+    }
+    if (getJsonPath(manifest, 'scripts.ax') !== undefined) {
+      fail(`package.json declares scripts.ax in the checkout that publishes ${PACKAGE_NAME} — it would call a bootstrap this plan does not write`, 'remove scripts.ax from package.json');
+    }
+  } else if (getJsonPath(manifest, 'scripts.ax') !== './bin/ax') fail('package.json: scripts.ax does not point at ./bin/ax', 'ax init');
   else if (!pinned) fail(`package.json: no ${PACKAGE_NAME} version pinned`, 'ax init');
   // A git pin resolves outside the registry and outside the lockfile's version
   // arithmetic, so the global CLI cannot tell which version it would delegate

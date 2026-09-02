@@ -26,6 +26,7 @@ import { setJsonPath } from './blocks.mjs';
 import { PACKAGE_NAME, repoPaths } from './config.mjs';
 import { run as execRun } from './exec.mjs';
 import { bad, fix, note, ok, raw } from './log.mjs';
+import { planProject } from './plan.mjs';
 
 const USAGE = 'ax pin <X.Y.Z|vX.Y.Z> [--dry-run]';
 
@@ -78,6 +79,16 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
   } catch (error) {
     return refuse(`package.json unreadable: ${String(error.message ?? error)}`);
+  }
+  // THE CHECKOUT THAT PUBLISHES ax HAS NO PIN TO MOVE, and `ax init` writes
+  // none there by plan (./plan.mjs). The generic "declares no pin → ax init"
+  // refusal below would therefore name a verb that will not write it: advice
+  // that cannot come true is the same dead end as a finding with no fix.
+  if (planProject({ manifest }).selfHosted) {
+    return refuse(
+      `this checkout IS ${PACKAGE_NAME} — its version is decided by the release, not by a pin, and a package cannot depend on itself`,
+      `ax pin ${target}   # from the project that CONSUMES ax — this one publishes it`,
+    );
   }
   const current = manifest.devDependencies?.[PACKAGE_NAME];
   if (typeof current !== 'string') {

@@ -451,6 +451,113 @@ test('a config still carrying the launch block is told the block is dispatch now
   assert.equal(doctor(dir), 0);
 });
 
+// ── the two states the project plan had no field for ─────────────────────────
+//
+// Both were doctor findings that could not be phrased as "recorded value vs
+// plan value", which by this repository's own rule means the plan was missing
+// fields rather than that the verbs needed a special case.
+
+const capture = fn => {
+  const written = [];
+  const stdout = process.stdout.write;
+  process.stdout.write = chunk => (written.push(String(chunk)), true);
+  try {
+    return { code: fn(), out: written.join('') };
+  } finally {
+    process.stdout.write = stdout;
+  }
+};
+
+// The checkout IS the package. Before the plan knew that, `ax init` on this
+// shape wrote `devDependencies["@flosrn/ax"]` — a dependency on itself, which
+// no install can resolve — plus `scripts.ax` and a `bin/ax` shim whose whole
+// job is to exec `node_modules/.bin/ax`, i.e. the very package the checkout
+// already is. `doctor` then graded all three and called the result coherent.
+test('the package repository neither pins itself nor carries the bootstrap shim', () => {
+  const own = mkdtempSync(join(tmpdir(), 'ax-self-hosted-'));
+  try {
+    mkdirSync(join(own, 'node_modules'), { recursive: true });
+    writeFileSync(join(own, 'package.json'), JSON.stringify({ name: '@flosrn/ax', bin: { ax: './bin/ax.mjs' } }, null, 2));
+    execFileSync('git', ['init', '-q'], { cwd: own, stdio: 'ignore' });
+
+    assert.equal(init(own), 0);
+
+    const manifest = JSON.parse(readFileSync(join(own, 'package.json'), 'utf8'));
+    assert.equal(manifest.devDependencies?.['@flosrn/ax'], undefined, 'a package does not depend on itself');
+    assert.equal(manifest.scripts?.ax, undefined, 'no script points at a shim that is not written');
+    assert.equal(existsSync(join(own, 'bin', 'ax')), false);
+
+    // The schema pointer follows the same fact: `./node_modules/@flosrn/ax/`
+    // cannot exist in the checkout that publishes it.
+    const written = JSON.parse(readFileSync(join(own, 'ax.config.json'), 'utf8'));
+    assert.equal(written.$schema, './ax.schema.json');
+    assert.deepEqual(JSON.parse(readFileSync(join(own, '.omp', 'settings.json'), 'utf8')).extensions, ['.']);
+
+    const graded = capture(() => doctor(own));
+    assert.equal(graded.code, 0);
+    assert.match(graded.out, /this checkout IS @flosrn\/ax/);
+    assert.doesNotMatch(graded.out, /bin\/ax is missing/, 'a shim the plan does not want is not a missing shim');
+    assert.doesNotMatch(graded.out, /no @flosrn\/ax version pinned/);
+
+    // And the same field grades the drift: the state `ax init` used to write
+    // here is now a finding with its own repair, not a passing check.
+    writeFileSync(join(own, 'package.json'), JSON.stringify({ ...manifest, scripts: { ax: './bin/ax' }, devDependencies: { '@flosrn/ax': '0.17.0' } }, null, 2));
+    mkdirSync(join(own, 'bin'), { recursive: true });
+    writeFileSync(join(own, 'bin', 'ax'), '#!/usr/bin/env sh\n');
+    const drifted = capture(() => doctor(own));
+    assert.equal(drifted.code, 3);
+    assert.match(drifted.out, /bin\/ax exists and this checkout IS @flosrn\/ax/);
+    assert.match(drifted.out, /→ rm bin\/ax/);
+    assert.match(drifted.out, /pins @flosrn\/ax 0\.17\.0 in the checkout that publishes it/);
+    assert.match(drifted.out, /declares scripts\.ax in the checkout that publishes/);
+  } finally {
+    rmSync(own, { recursive: true, force: true });
+  }
+});
+
+// gapila adopts the merge gate and nothing else, by design: it provisions
+// itself and asks ax for one thing only. Before the plan knew which contracts a
+// configuration declares, that project was red on every provisioning check
+// forever — five findings, all naming `ax init`, none of them true.
+test('a project that declares only prGate reports provisioning as not adopted, and is coherent', () => {
+  const gateOnly = mkdtempSync(join(tmpdir(), 'ax-gate-only-'));
+  try {
+    mkdirSync(join(gateOnly, 'node_modules'), { recursive: true });
+    writeFileSync(join(gateOnly, 'package.json'), JSON.stringify({ name: 'gate-only' }, null, 2));
+    writeFileSync(
+      join(gateOnly, 'ax.config.json'),
+      `${JSON.stringify({ project: { name: 'gate-only' }, prGate: { checks: ['CI'] } }, null, 2)}\n`,
+    );
+    execFileSync('git', ['init', '-q'], { cwd: gateOnly, stdio: 'ignore' });
+
+    const graded = capture(() => doctor(gateOnly));
+    assert.equal(graded.code, 0, 'a contract nobody adopted is not an incoherent checkout');
+    assert.match(graded.out, /provisioning — NOT ADOPTED here/);
+    assert.match(graded.out, /→ ax init/, 'the finding names the verb that adopts it');
+    assert.match(graded.out, /merge gate/, 'and what this project does adopt');
+    // None of the provisioning checks ran: an unadopted contract is unmeasured,
+    // not passed and not failed.
+    assert.doesNotMatch(graded.out, /bin\/ax is missing/);
+    assert.doesNotMatch(graded.out, /OMP loads no ax package/);
+    assert.doesNotMatch(graded.out, /apps\.web/);
+
+    // The named verb has to make its own advice true: after `ax init` the
+    // configuration DECLARES the contract, so the same checks are graded.
+    assert.equal(init(gateOnly), 0);
+    const adopted = JSON.parse(readFileSync(join(gateOnly, 'ax.config.json'), 'utf8'));
+    assert.equal(adopted.apps.web, '.', 'ax init declares the contract it provisions');
+    assert.deepEqual(adopted.prGate, { checks: ['CI'] }, 'and leaves every other declaration alone');
+
+    const after = capture(() => doctor(gateOnly));
+    assert.equal(after.code, 0);
+    assert.doesNotMatch(after.out, /NOT ADOPTED/);
+    assert.match(after.out, /bin\/ax resolves this checkout/);
+  } finally {
+    rmSync(gateOnly, { recursive: true, force: true });
+  }
+});
+
+
 test('outside a git repository, doctor says so instead of scanning upwards', () => {
   const orphan = mkdtempSync(join(tmpdir(), 'ax-orphan-'));
   assert.equal(doctor(orphan), 1);
