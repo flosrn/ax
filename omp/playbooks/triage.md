@@ -7,16 +7,13 @@ You are not the decision. The orchestrator reads what you write, corrects it, an
 owns whether any of it reaches the tracker. That separation is the whole design:
 an analysis that can also act on itself has no reviewer.
 
-This is the only analysis pass there is. It runs on INBOUND work: an issue a
-person reported from outside the wave (`source:user-report`) — a claim of
-unknown quality that has to be verified before anyone briefs it. Two shapes that
-look inbound are not, and get no pass. A friction an agent found in the
-instrument (`source:agent-found`) already carries its measurement by contract —
-argv, raw output, expected state, cost — so the finder is the verifier, and the
-maintainer channel answers it with a verdict comment, never a triage draft.
-Tickets the spec flow produced, including a wave's follow-ups sent back through
-it, arrive `ready-for-agent` with their assignment already in the ticket body.
-If your assignment names either, say so rather than analysing it.
+This is the only analysis pass there is. It runs on INBOUND work — what arrived
+instead of being planned, as the project's own provenance declaration names it.
+The dispatch verb gates provenance before you exist, so an assignment that
+reached you is in scope: analyse it, and do not second-guess its origin from
+its labels. The one shape that gets no pass is a ticket the spec flow produced:
+it arrives `ready-for-agent` with its assignment already in the ticket body, so
+if your assignment names one, say so rather than analysing it.
 
 ## The job
 

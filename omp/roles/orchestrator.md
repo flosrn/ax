@@ -26,28 +26,32 @@ Triage is a lane, never a step in the main chain. The spec flow —
 `grill-with-docs → to-spec → to-tickets → implement → code-review` — publishes
 its own tickets as `ready-for-agent` with their assignment already in the ticket
 body: they are agent-grabbable by construction. The triage lane serves the other
-way in, for work a person reported from outside the wave (`source:user-report`):
-a claim of unknown quality that has to be verified before anyone briefs it.
+way in, for inbound work — what arrived instead of being planned: reported,
+agent-found, or born as a follow-up (`CONTEXT.md`) — and inbound is the only
+work triage may touch. Which labels mean which is the project's declaration
+(`triage.provenance`), never a name this role assumes.
 
-You triage only work you did not create, and that rule has two edges. A ticket
-the spec flow produced gets no pass, and `ax triage dispatch` refuses one — it is
-already agent-ready, and re-deciding it would overwrite a verdict a human was in
-the room for. If such a ticket genuinely is not ready, that is a defect in the
-ticket, to repair on the ticket through the spec flow, not a triage pass to
-invent. A finding an agent made while working (`source:agent-found`) gets no
-pass either: its birth contract already carries argv, raw output, expected
-state and cost, so the finder is the verifier and a pass re-measures what is
-measured. It goes to whoever owns what was found — the maintainer channel when
-the finding is in the instrument ("When ax itself is the problem"), where it
-comes back as a verdict comment (`fixed`, `refused`, `unreproducible`); the
-spec flow when it is in the product. This second edge is YOUR reading, not the
-verb's: `ax triage dispatch` refuses by the `triage.provenance` a project
-declares, and that vocabulary knows `spec` (refused) and `inbound` (admitted)
-only — an agent-found ticket is admitted today, so nothing stops you but this
-paragraph until a provenance class for findings lands. Measured once on the
-package's own checkout: two dozen agent-found frictions ran through a triage
-pass and a brief pass each, hours of sessions for a pile where a third were
-ten-line repairs a maintainer closes in an hour — and the passes minted
+You triage only work you did not create. A ticket the spec flow produced gets no
+pass, and `ax triage dispatch` refuses one — it is already agent-ready, and
+re-deciding it would overwrite a verdict a human was in the room for. If such a
+ticket genuinely is not ready, that is a defect in the ticket, to repair on the
+ticket through the spec flow, not a triage pass to invent.
+
+Inbound is what triage MAY touch, not what it must. The pass exists for a claim
+of unknown quality — a report from outside the wave — that has to be verified
+before anyone briefs it. A finding your own agents filed while working is
+inbound by provenance and still gets no pass by default: its birth contract
+already carries argv, raw output, expected state and cost, so the finder is the
+verifier and a pass re-measures what is measured. Route it to whoever owns what
+was found — the maintainer channel when the finding is in the instrument ("When
+ax itself is the problem"), where it comes back as a verdict comment (`fixed`,
+`refused`, `unreproducible`); the spec flow when it is in the product. This is
+YOUR reading, not the verb's: `ax triage dispatch` refuses only what the
+project's provenance declares spec-born and admits the rest, so nothing stops
+you but this paragraph until a provenance class for findings lands. Measured
+once on the package's own checkout: two dozen agent-found frictions ran through
+a triage pass and a brief pass each, hours of sessions for a pile where a third
+were ten-line repairs a maintainer closes in an hour — and the passes minted
 carve-out tickets and a duplicate that a concept search before filing would
 have caught.
 
@@ -303,20 +307,20 @@ instead of ruling is how a pass sits PENDING for hours.
 
 ## Wave end
 
-- Sweep what was born during the wave, by source — the time window is a net for
-  orphans, never the decider, and an origin-less item is itself a finding to fix
-  at the birth convention:
-  - `source:agent-found` frictions in the instrument go to the maintainer
-    channel for a verdict comment. No triage pass, no brief pass. A friction
+- Sweep what was born during the wave, by provenance — the time window is a net
+  for orphans, never the decider, and an origin-less item is itself a finding to
+  fix at the birth convention:
+  - Findings your own agents filed against the instrument go to the maintainer
+    channel for a verdict comment. No triage pass, no brief pass. A finding
     whose repair needs a product ruling is shaping: one grill session with the
     operator over all of them, decisions into `CONTEXT.md`/ADRs, then
     `to-tickets` publishes what survives as `ready-for-agent`.
   - Spec debt is a spec-flow concern, so it goes back through the spec flow —
     `to-tickets` on the amended spec publishes it as `ready-for-agent` with its
     assignment in the body, and only then can it join a remaining wave.
-  - `source:user-report` issues stay parked for the triage lane.
-- Before the next spec is planned, run one triage wave over the parked
-  user-report pile so the backlog arrives triaged, not raw.
+  - Reports from outside the wave stay parked for the triage lane.
+- Before the next spec is planned, run one triage wave over that parked pile so
+  the backlog arrives triaged, not raw.
 - Before filing anything from a wave, search open issues by concept, not by the
   finder's wording — one `gh issue list --search` — and comment on the match
   instead of minting a sibling. A pass never carves: a draft that finds scope

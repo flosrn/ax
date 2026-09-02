@@ -57,15 +57,20 @@ triage wave while triaging the previous wave's findings.
 
 ## Fix
 
-Prose only, in two files, in the commit that carries this entry:
+Prose only, in two package-internal files, in the commit that carries this entry. Neither names a
+label: which strings mean inbound or spec-born is the consuming project's `triage.provenance`, and
+`CONTEXT.md`'s ratified definition of Inbound (reported, agent-found, follow-up) is left intact —
+what changed is the ROUTE, not the vocabulary.
 
-- `omp/playbooks/triage.md`: inbound is `source:user-report`. A finding an agent made while working
-  and a spec-born ticket both get no pass; the child says so instead of analysing.
-- `omp/roles/orchestrator.md`: the lane definition excludes `source:agent-found`; a finding goes to
-  whoever owns what was found — the maintainer channel for the instrument, the spec flow for the
-  product. Wave end sweeps by source, not by time window; searches open issues by concept before
-  filing; never carves mid-wave — a draft names scope beyond its ticket and the operator decides
-  through `to-tickets`.
+- `omp/playbooks/triage.md`: the child analyses whatever assignment reached it — the dispatch verb
+  gated provenance before the child existed — and refuses only a spec-born ticket. Review of the
+  first draft (Codex, P1) caught the earlier wording, which had the bundled child refusing on
+  ax-specific label literals a consumer never declared.
+- `omp/roles/orchestrator.md`: inbound is what triage MAY touch, not what it must. A finding your own
+  agents filed gets no pass by default; it goes to whoever owns what was found — the maintainer
+  channel for the instrument, the spec flow for the product. Wave end sweeps by provenance, not by
+  time window; searches open issues by concept before filing; never carves mid-wave — a draft names
+  scope beyond its ticket and the operator decides through `to-tickets`.
 
 ## The rules this paid for
 
