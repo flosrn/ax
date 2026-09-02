@@ -68,7 +68,9 @@ belongs in Orca goes to the fork branch, not to a workaround in ax.
 
 A new **command** needs one registry entry in `src/commands.mjs` — its name, its help section and
 its summary — one runner, one implementation, and a test that exercises what the generated help or
-AGENTS.md tells an agent to type. A future domain (automated checks, architecture rules, context
+AGENTS.md tells an agent to type. Its `--help` arrives with the registration and is never parsed in
+the runner: `src/cli.mjs` answers the flag in the command's first slot from the registry, so asking
+a verb what it does cannot run it. A future domain (automated checks, architecture rules, context
 rules) arrives as its own noun plus a help section — the `gh` shape, never a nesting prefix
 (`docs/adr/0001`).
 

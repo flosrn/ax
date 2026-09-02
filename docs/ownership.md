@@ -42,5 +42,5 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
 | `src/config.mjs`, `src/schema.mjs`, `ax.schema.json` | the per-repository contract and defaults |
-| `src/commands.mjs` | command registry: help sections, visibility, plumbing and generated AGENTS.md lines |
+| `src/commands.mjs` | command registry: help sections, the per-verb help read, visibility, plumbing and generated AGENTS.md lines |
 | `release-please-config.json`, `.release-please-manifest.json`, `.github/workflows/publish.yml` | version, changelog, tag, GitHub Release and OIDC npm publish |

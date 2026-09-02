@@ -154,9 +154,14 @@ export function resolveCli({ appDir, root, env = process.env, isExecutable = exe
  * Run the Supabase CLI, promoting this checkout first when the command would
  * otherwise write to a database other checkouts are reading.
  *
- * Every argument belongs to the CLI; `ax` claims no flag of its own here,
- * because a wrapper that swallowed one would make `--help` mean two different
- * things depending on who typed it. The two knobs are environment variables.
+ * Every argument here belongs to the CLI, with exactly one exception ax now
+ * claims: `--help` (or `-h`) in the FIRST slot, answered by `runCli` before
+ * this function is reached, because asking a verb what it does must never run
+ * it (#71, ./cli.mjs). Nothing further is claimed — a flag past that slot would
+ * mean two things depending on who typed it — and the Supabase CLI's own help
+ * stays one gesture away as `ax supabase help`, which `commandNeedsIsolation`
+ * answers false for and this wrapper forwards untouched. The two knobs are
+ * environment variables.
  *
  * Everything that touches the machine arrives through `deps`, so the sequencing
  * can be tested without a container, a port or a real CLI.
