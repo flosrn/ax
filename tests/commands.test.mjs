@@ -321,6 +321,10 @@ test('an unknown command exits 2 and prints the help', () => {
 });
 
 test('help and version answer without a repository', () => {
-  assert.match(run(['--version']).out.trim(), /^\d+\.\d+\.\d+$/);
+  // The version line grew a second half — which copy answered — and the number
+  // stays field one, because that is what a hook reads to verify a pin.
+  const line = run(['--version']).out.trim();
+  assert.match(line, /^\d+\.\d+\.\d+ /);
+  assert.match(line, / — (checkout|project install|global install) /, 'the line must say where this copy came from');
   assert.match(run([]).out, /^Usage$/m);
 });

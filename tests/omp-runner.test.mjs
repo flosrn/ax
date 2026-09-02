@@ -10,5 +10,7 @@ const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).ver
 
 test('the OMP bundle invokes this package CLI, not PATH or a global ax', () => {
   const out = execFileSync(process.execPath, [join(ROOT, 'omp', 'ax-run.mjs'), '--version'], { cwd: ROOT, encoding: 'utf8' });
-  assert.equal(out.trim(), VERSION);
+  // Field one, not the whole line: `--version` also discloses which copy
+  // answered, and this asserts WHICH ax ran — the version is that proof.
+  assert.equal(out.trim().split(' ')[0], VERSION);
 });
