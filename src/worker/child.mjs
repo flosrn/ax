@@ -19,7 +19,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { PACKAGE_NAME } from '../config.mjs';
-import { OMP_PACKAGE_ROOT, OMP_SETTINGS, ompExtensionRoot } from '../init.mjs';
+import { OMP_SETTINGS } from '../init.mjs';
+import { ompExtensionRoot } from '../plan.mjs';
 import { defaultExec } from '../exec.mjs';
 
 /**
@@ -206,7 +207,7 @@ export function pinIdentity(worktree, { exec = defaultExec } = {}) {
  * perfectly healthy foreign extension — both of which produce the same
  * unequipped child. And the mirror error costs a dispatch: a foreign extension
  * this project owns and has not installed is not ax's floor to enforce. So
- * exactly one thing is graded, and it is identified by ../init.mjs's own rule
+ * exactly one thing is graded, and it is identified by ../plan.mjs's own rule
  * (`ompExtensionRoot`: `.` for the ax checkout, the installed root everywhere
  * else) rather than by a second copy of that string — a self-hosted dispatch is
  * registered as `"."` and must not be refused as unwired.

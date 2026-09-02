@@ -304,6 +304,63 @@ export function retiredCommand(name, verb = '') {
 export const WIDTH = 96;
 
 /**
+ * ONE command as the help prints it: its name and summary, then the verbs and
+ * flags indented under it.
+ *
+ * `width` is the left column, measured on the SET being printed and passed in
+ * rather than decided here — inside a section it is the widest name there, and
+ * a command asked for its own help has nothing to align against, so it is its
+ * own. One renderer, so `ax help` and `ax <command> --help` cannot drift into
+ * two descriptions of one verb.
+ */
+function commandBlock(command, width) {
+  const lines = [`  ${command.name.padEnd(width)}  ${command.summary}`];
+
+  // Each command's verbs and flags align among THEMSELVES, not against every
+  // other command's. One global column let the widest flag in the registry
+  // (`--vendor <owner>/<repo>`) push unrelated descriptions past 96 columns,
+  // where they wrap in a split pane — the exact laddering this help was
+  // rewritten to avoid.
+  //
+  // A PLUMBING verb is skipped here and nowhere else (`plumbingSubcommands`):
+  // it is still declared, still dispatched, and still the only recovery there
+  // is — it just stops competing for a gesture the help offers once.
+  const hidden = plumbingSubcommands(command.name);
+  const declared = (command.subcommands ?? []).filter(([usage]) => !hidden.includes(usage.split(' ')[0]));
+  const inner = [...declared, ...(command.options ?? [])];
+  const innerWidth = Math.max(...inner.map(([name]) => name.length), 0);
+
+  for (const [name, description] of inner) {
+    lines.push(`  ${' '.repeat(width)}  ${dim(`${name.padEnd(innerWidth)}  ${description}`)}`);
+  }
+
+  return lines;
+}
+
+/**
+ * What one command does, answered without running it.
+ *
+ * `ax init --help` RAN init: it rewrote four tracked files of the repository it
+ * was asked from (#69), because argv past the command name reached the runner
+ * untouched. So the read is composed here, from registry data alone, and
+ * `runCli` answers it before any runner is reached — a verb inherits the read
+ * by being registered, never by remembering to parse a flag.
+ *
+ * It is the command's own section and nothing else: the whole usage answers a
+ * question nobody asked, and the section heading plus the block is text
+ * `ax help` already shows, letter for letter but for the left column.
+ *
+ * The GATE stays the caller's. `runCli` decides whether a command exists on
+ * this machine, and asks for this text only once it has. A name the registry
+ * does not carry reads back as null, which is that caller's usage-error path.
+ */
+export function renderCommandHelp(name) {
+  const command = COMMANDS.find(entry => entry.name === name);
+  if (!command) return null;
+  return [bold(command.section), ...commandBlock(command, command.name.length), ''].join('\n');
+}
+
+/**
  * Help composed on the command NAME, never on a usage string.
  *
  * `init [--vendor <owner>/<repo>] [--dry-run]` as a left column is 42
@@ -327,6 +384,7 @@ export function renderUsage(version, availability = {}) {
     '',
     bold('Usage'),
     '  ax <command> [options]',
+    `  ${dim('ax <command> --help — what one command does, without running it')}`,
   ];
 
   for (const section of SECTIONS) {
@@ -346,28 +404,7 @@ export function renderUsage(version, availability = {}) {
     // different section, which is width spent on nothing a reader is comparing.
     const width = Math.max(...members.map(command => command.name.length));
 
-    for (const command of members) {
-      lines.push(`  ${command.name.padEnd(width)}  ${command.summary}`);
-
-      // Each command's verbs and flags align among THEMSELVES, not against
-      // every other command's. One global column let the widest flag in the
-      // registry (`--vendor <owner>/<repo>`) push unrelated descriptions past
-      // 96 columns, where they wrap in a split pane — the exact laddering this
-      // help was rewritten to avoid.
-      //
-      // A PLUMBING verb is skipped here and nowhere else
-      // (`plumbingSubcommands`): it is still declared, still dispatched, and
-      // still the only recovery there is — it just stops competing for a
-      // gesture the help offers once.
-      const hidden = plumbingSubcommands(command.name);
-      const declared = (command.subcommands ?? []).filter(([usage]) => !hidden.includes(usage.split(' ')[0]));
-      const inner = [...declared, ...(command.options ?? [])];
-      const innerWidth = Math.max(...inner.map(([name]) => name.length), 0);
-
-      for (const [name, description] of inner) {
-        lines.push(`  ${' '.repeat(width)}  ${dim(`${name.padEnd(innerWidth)}  ${description}`)}`);
-      }
-    }
+    for (const command of members) lines.push(...commandBlock(command, width));
   }
 
   lines.push('', bold('Config'), `  ${dim('ax.config.json at the repository root — every key is documented in ax.schema.json')}`, '');

@@ -8,6 +8,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | Path | Owns |
 |---|---|
 | `src/delegation.mjs`, `bin/ax.mjs`, `src/cli.mjs` | global command → exact project version → CLI delegation |
+| `src/plan.mjs` | what a project SHOULD carry: the checkout that publishes ax, and which contracts its configuration adopted |
 | `src/init.mjs`, `src/doctor.mjs` | project inference, managed wiring, recorded state vs reality |
 | `src/worktree/plan.mjs`, `src/worktree/probes.mjs` | every worktree decision and every machine fact it consumes |
 | `src/worktree/identity.mjs`, `src/worktree/ports.mjs`, `src/worktree/supabase.mjs`, `src/worktree/addressing.mjs` | the rules composed by the plan |
@@ -42,5 +43,5 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
 | `src/config.mjs`, `src/schema.mjs`, `ax.schema.json` | the per-repository contract and defaults |
-| `src/commands.mjs` | command registry: help sections, visibility, plumbing and generated AGENTS.md lines |
+| `src/commands.mjs` | command registry: help sections, the per-verb help read, visibility, plumbing and generated AGENTS.md lines |
 | `release-please-config.json`, `.release-please-manifest.json`, `.github/workflows/publish.yml` | version, changelog, tag, GitHub Release and OIDC npm publish |

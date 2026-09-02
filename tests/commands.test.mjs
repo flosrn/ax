@@ -5,6 +5,8 @@
 // `pnpm ax debug-as` before either existed.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -26,9 +28,9 @@ import {
 import { agentsBody } from '../src/init.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
-const run = (args, env = {}) => {
+const run = (args, env = {}, cwd) => {
   try {
-    return { status: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, ...env } }) };
+    return { status: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8', cwd, env: { ...process.env, ...env } }) };
   } catch (error) {
     return { status: error.status, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
   }
@@ -327,4 +329,98 @@ test('help and version answer without a repository', () => {
   assert.match(line, /^\d+\.\d+\.\d+ /);
   assert.match(line, / — (checkout|project install|global install) /, 'the line must say where this copy came from');
   assert.match(run([]).out, /^Usage$/m);
+});
+
+// ── --help is a read on every verb ───────────────────────────────────────────
+// `ax init --help` RAN init: it rewrote four tracked files of the repository it
+// was asked from, on a machine whose operator was only asking what the verb
+// does (#69). Asking a verb what it does must never run it, and the guarantee
+// is STRUCTURAL — `runCli` answers the flag from the registry before any runner
+// is reached, so a verb registered next month inherits it by being registered.
+
+/** A committed temp repository, so `git status --porcelain` starts empty. */
+const cleanRepo = () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-verb-help-')));
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'help-consumer' }, null, 2)}\n`);
+  git('add', '-A');
+  git('-c', 'user.email=ax@example.com', '-c', 'user.name=ax', 'commit', '-qm', 'baseline');
+  return root;
+};
+
+/** Padding is the help's layout, not its text: the words are what is compared. */
+const squeeze = line => plain(line).replace(/[ \t]+/g, ' ').trim();
+
+test('every verb answers --help as a read: exit 0, nothing written, its own section', () => {
+  const root = cleanRepo();
+  const porcelain = () => execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
+  // The machine state is FORCED to the one where every registry entry is
+  // visible: a gated noun absent from this machine would pass by not existing.
+  const shown = new Set(plain(run(['help'], HAS_ORCA).out).split('\n').map(squeeze));
+
+  try {
+    for (const command of visibleCommands({ orca: true })) {
+      for (const flag of ['--help', '-h']) {
+        const asked = `ax ${command.name} ${flag}`;
+        const result = run([command.name, flag], HAS_ORCA, root);
+
+        assert.equal(result.status, 0, `${asked} exited ${result.status} instead of answering`);
+        assert.equal(porcelain(), '', `${asked} wrote to the working tree — asking a verb what it does ran it`);
+
+        // Every line is a line `ax help` already shows: the help is composed
+        // once, from the registry, so the two can never drift apart.
+        for (const line of plain(result.out).split('\n').filter(text => text.trim() !== '')) {
+          assert.ok(shown.has(squeeze(line)), `${asked} prints "${squeeze(line)}", which ax help does not show`);
+        }
+
+        // ITS section, not the whole usage. `help` is the exception it declares
+        // itself: its summary is "this text", so the whole text is its answer.
+        if (command.runnerless) {
+          assert.match(result.out, /^Usage$/m, `${asked} must still print the whole help`);
+          continue;
+        }
+        assert.doesNotMatch(result.out, /^Usage$/m, `${asked} printed the whole usage instead of its own section`);
+        assert.deepEqual(sectionsOf(result.out), { [command.section]: [command.name] }, `${asked} printed a command other than itself`);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a verb’s help carries the verbs and flags it declares, and never its plumbing', () => {
+  const help = plain(run(['worker', '--help'], HAS_ORCA).out);
+  assert.match(help, /^ {2}worker {2}dispatch agents/m, 'the noun answers with its own summary line');
+  assert.match(help, /^ +dispatch --issue <ref> +a ticket/m, 'a declared verb is missing from the noun’s own help');
+  assert.doesNotMatch(help, /^ +start\b/m, 'the plumbing verb is advertised where the whole help hides it');
+
+  const init = plain(run(['init', '--help']).out);
+  assert.match(init, /^ +--vendor <owner>\/<repo> +upstream kit/m, 'a declared flag is missing from the command’s own help');
+});
+
+test('the help flag past the first slot belongs to whoever owns that argv', () => {
+  // A noun's verb parses its own arguments and answers its own `--help` with
+  // its own exit codes, so ax claims the flag in ONE position: the command's
+  // first. Claiming more would swallow a flag that is not ax's — every argument
+  // after `ax supabase` belongs to the Supabase CLI (./supabase-guard.mjs).
+  const verb = run(['triage', 'ask', '--help'], HAS_ORCA);
+  assert.equal(verb.status, 0);
+  assert.match(verb.out, /ax triage ask --issue/, 'the verb no longer answers its own help');
+  assert.doesNotMatch(plain(verb.out), /^ORCHESTRATION$/m, 'the noun’s section answered a question the verb owns');
+});
+
+test('an unknown verb with --help is still the usage-error path', () => {
+  for (const flag of ['--help', '-h']) {
+    const result = run(['deploy', flag]);
+    assert.equal(result.status, 2, `ax deploy ${flag} answered instead of refusing`);
+    assert.match(result.out, /unknown command "deploy"/);
+    assert.match(result.out, /^Usage$/m);
+  }
+
+  // A gated noun on a machine that resolves no Orca does not exist there, and
+  // the help read cannot be the one thing that makes it exist.
+  const gated = run(['worker', '--help'], NO_ORCA);
+  assert.equal(gated.status, 2);
+  assert.match(gated.out, /unknown command "worker"/);
 });

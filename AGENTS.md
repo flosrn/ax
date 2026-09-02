@@ -18,10 +18,11 @@ node bin/ax.mjs          # the command surface this machine can answer
 3. **Orchestrate the work** — `src/worker/`, `src/triage/`, `src/pr-gate.mjs`, plus the peer/report/
    checkpoint extensions under `omp/`. Record mutations, route messages, verify artifacts, recover.
 
-**The plan** — `src/worktree/plan.mjs`. `planWorktree()` decides a worktree's target state once, as
-a pure function. `setup` writes that plan; `doctor` derives the same plan and compares. A new rule
-goes in the plan, not in either verb. A doctor finding that cannot be phrased as “recorded value vs
-plan value” means the plan is missing a field.
+**The plan** — `src/plan.mjs` for a project, `src/worktree/plan.mjs` for a worktree. Each decides a
+target state once, as a pure function. `init` and `setup` write their plan; `doctor` derives the
+same plan and compares. A new rule goes in the plan, not in either verb. A doctor finding that
+cannot be phrased as “recorded value vs plan value” means the plan is missing a field — that is how
+the project plan learned which checkout publishes ax, and which contracts a repository adopted.
 
 **The record** — `src/worker/record.mjs`. Every live orchestration mutation is written before it is
 issued. Recovery replays that recorded call byte for byte. Missing, unreadable or ambiguous state is
@@ -68,7 +69,9 @@ belongs in Orca goes to the fork branch, not to a workaround in ax.
 
 A new **command** needs one registry entry in `src/commands.mjs` — its name, its help section and
 its summary — one runner, one implementation, and a test that exercises what the generated help or
-AGENTS.md tells an agent to type. A future domain (automated checks, architecture rules, context
+AGENTS.md tells an agent to type. Its `--help` arrives with the registration and is never parsed in
+the runner: `src/cli.mjs` answers the flag in the command's first slot from the registry, so asking
+a verb what it does cannot run it. A future domain (automated checks, architecture rules, context
 rules) arrives as its own noun plus a help section — the `gh` shape, never a nesting prefix
 (`docs/adr/0001`).
 
