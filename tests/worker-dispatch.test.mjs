@@ -236,7 +236,11 @@ test('a project that declares no entry point must be given --task', () => {
   const bare = run(['--issue', ISSUE, '--slug', SLUG], { root });
   assert.equal(bare.code, 1);
   assert.match(bare.out, /declares no dispatch entry point/);
-  assert.match(bare.out, /dispatch\.entry/);
+  // A key PATH says which setting is missing and not what to write: `dispatch`
+  // may not exist at all in this file, and `dispatch.entry "<verb>"` is not
+  // something any config accepts if pasted. So the repair is the JSON to paste.
+  assert.match(bare.out, /\{ "dispatch": \{ "entry": "<verb>" \} \}/);
+  assert.match(bare.out, /--task/, 'the other route out stays named on the same line');
 
   provisioned(root, `${ISSUE}-${SLUG}`);
   const told = run(['--issue', ISSUE, '--slug', SLUG, '--task', '/plan GAP-353', '--wait', '0'], { root });
