@@ -113,8 +113,15 @@ its completion label.
 The child stops with an open PR and decided CI. Merge only through the gate:
 
 ```bash
-ax pr gate --pr <N> --merge [--method merge]
+ax pr gate --pr <N> --issue <ticket> --merge [--method merge]
 ```
+
+`--issue` is the ticket you are merging — the one you dispatched, not whatever
+the PR body happens to name. The gate verifies that ticket closed, so a body
+that closes a different number is refused before the merge instead of leaving
+your ticket open with its dependents blocked forever. Omit it only where the
+gate can read the branch's own dispatch record; pass it whenever you are the one
+deciding the merge, which is every merge in this loop.
 
 Without `--merge` the command is a detector. A manual merge after it discards the
 head-SHA binding that closes the race between validation and mutation. When every

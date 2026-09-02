@@ -567,18 +567,94 @@ export function keywordGround({ body, tracker, pr, slug, baseBranch = '', defaul
 }
 
 /**
- * The issue a merged PR will close, when GitHub itself will do the closing:
- * the FIRST recognised closing construct, and only a bare `#N` in this same
- * repository. A qualified `owner/repo#N` or a full URL is a real closing
- * target too, but it closes in ANOTHER repository — the caller verifying
- * closure has nothing to poll here, and saying `null` sends it to the
- * "moves by hand" note instead of polling the wrong tracker.
+ * EVERY issue a merged PR will close in THIS repository, ascending.
+ *
+ * GitHub acts on every recognised construct in a body, not on the first one:
+ * `Closes #999` followed by `Closes #1786` closes both. Reading only the first
+ * made Ground 9 refuse a body that does close the dispatched ticket — a
+ * round-trip charged for a merge that was correct (PR #77 review, P2). A
+ * comma-separated tail is NOT a second construct: GitHub wants the keyword
+ * before each reference, so `Closes #1, #2` closes #1 alone, and this regex
+ * says the same.
+ *
+ * Only bare `#N` is collected. A qualified `owner/repo#N` or a full URL is a
+ * real closing target too, but it closes in ANOTHER repository — the caller
+ * verifying closure has nothing to poll here, so leaving it out is what sends
+ * that caller to the "moves by hand" note instead of polling the wrong tracker.
  */
-export function closedIssueOf(body) {
-  const matched = new RegExp(`\\b(?:${KEYWORDS})\\b\\s*:?\\s+(${TARGET})`, 'i').exec(String(body ?? ''));
-  if (!matched) return null;
-  const bare = /^#(\d+)$/.exec(matched[1]);
-  return bare ? Number(bare[1]) : null;
+export function closedIssuesOf(body) {
+  const found = new Set();
+  for (const matched of String(body ?? '').matchAll(new RegExp(`\\b(?:${KEYWORDS})\\b\\s*:?\\s+(${TARGET})`, 'gi'))) {
+    const bare = /^#(\d+)$/.exec(matched[1]);
+    if (bare) found.add(Number(bare[1]));
+  }
+  return [...found].sort((left, right) => left - right);
+}
+
+/**
+ * Ground 9. The closure this merge is verified against is the ticket that was
+ * DISPATCHED, not the one the body happens to name.
+ *
+ * Deferred by decision at PR #65 review (Codex thread, Known Residuals 1), and
+ * the hazard is one keystroke wide: a worker whose PR says `Closes #11` while
+ * #10 was dispatched passes every ground above, #11 gets the closure check the
+ * gate performs after merging, and #10 — plus every ticket blocked by it —
+ * stays OPEN forever. Nothing escalates, because the closure verification
+ * itself reported success: the frontier keeps deriving those dependents as
+ * `blocked-by` and never re-derives them as takeable, so the subgraph stalls
+ * silently. Ground 7 cannot see it either: `Closes #11` is a keyword GitHub
+ * acts on, which is all that ground asks.
+ *
+ * The binding arrives from the CALLER (`--issue`, the orchestrator naming the
+ * ticket it is merging) or from the dispatch record of the PR's branch, and
+ * `boundTicket` in pr-gate.mjs owns that read. Here it is only compared:
+ *  - the set CONTAINS it: a note, and closure verification then polls that
+ *    number. Sibling closures are named, never refused — a body may deliver
+ *    more than one ticket, and GitHub closes every construct it recognises
+ *    (PR #77 review, P2).
+ *  - the set is non-empty and does NOT contain it: a REFUSAL, so it lands
+ *    before the mutation rather than after it, where a merged PR cannot be
+ *    un-merged.
+ *  - bound with nothing closing in this repository: also a refusal — the
+ *    dispatched ticket would stay open, which is the same stall by omission.
+ *  - unbound while the body DOES close a ticket here: an inability to
+ *    establish, never a pass. That is F-001's rule applied to a read: an
+ *    absent record is unknown, and unknown must not become "the body must be
+ *    right". A caller who knows better says so with `--issue`.
+ *
+ * A body that closes nothing here AND no binding is not this ground's
+ * business: nothing closes, nothing was claimed, and Ground 7 already owns
+ * whether that body may merge at all.
+ */
+export function ticketGround({ binding, closes, pr, slug }) {
+  const out = account();
+  const named = closes.map(issue => `#${issue}`).join(', ');
+  if (!binding.ok) {
+    if (closes.length === 0) return out;
+    out.unknown(`ticket binding: this PR's body closes ${named}, and ${binding.reason}`, binding.repair);
+    return out;
+  }
+  const bound = binding.issue;
+  if (closes.length === 0) {
+    out.refuse(
+      `ticket binding: this merge is for #${bound} (${binding.source}), and the body closes no same-repository issue, so #${bound} would stay open after it — every ticket blocked by #${bound} then derives from a stale blocker`,
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #${bound}", or merge by hand if this PR is not that ticket's delivery`,
+    );
+    return out;
+  }
+  if (!closes.includes(bound)) {
+    out.refuse(
+      `ticket binding: this merge is for #${bound} (${binding.source}), but the body closes ${named} — merging would close ${named} and leave #${bound} open, and every ticket blocked by #${bound} keeps deriving from a stale blocker`,
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # make the body close #${bound}, or re-run naming the ticket this PR really delivers`,
+    );
+    return out;
+  }
+  const siblings = closes.filter(issue => issue !== bound);
+  out.note(
+    `ticket binding: the body closes #${bound}, the ticket this merge is for (${binding.source})` +
+      (siblings.length === 0 ? '' : `; it also closes ${siblings.map(issue => `#${issue}`).join(', ')}, which GitHub closes too`),
+  );
+  return out;
 }
 
 /**
