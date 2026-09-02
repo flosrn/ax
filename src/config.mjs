@@ -51,26 +51,39 @@ export function repoPaths(from = process.cwd()) {
 /**
  * Read and validate `ax.config.json`.
  *
- * Returns `{ path, exists, config, errors }` rather than throwing: `ax doctor`
- * has to report an invalid config as a finding with a fix, not die on it.
+ * Returns `{ path, exists, config, declared, errors }` rather than throwing:
+ * `ax doctor` has to report an invalid config as a finding with a fix, not die
+ * on it.
+ *
+ * `declared` is the root keys the FILE carries, before `applyDefaults` — which
+ * is a different question from what `config` holds, and the only one that can
+ * answer which contracts this project adopted (`./plan.mjs`). `apps` has a
+ * schema default, so `config.apps` is set for every project that loads; a
+ * defaulted value is not a declaration, and reading adoption off `config` would
+ * make every repository look like it asked for everything. Empty whenever no
+ * config was read — callers branch on `exists` and on `errors` first, and an
+ * absent file declares nothing rather than declaring nothing knowably (F-028
+ * cuts the other way here: there is no receipt to be missing, only a file that
+ * is not there).
  */
 export function loadConfig(repoRoot) {
   const path = join(repoRoot, CONFIG_FILE);
-  if (!existsSync(path)) return { path, exists: false, config: null, errors: [] };
+  if (!existsSync(path)) return { path, exists: false, config: null, declared: [], errors: [] };
 
   let raw;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
-    return { path, exists: true, config: null, errors: [`${CONFIG_FILE}: not valid JSON (${error.message})`] };
+    return { path, exists: true, config: null, declared: [], errors: [`${CONFIG_FILE}: not valid JSON (${error.message})`] };
   }
 
   const errors = validate(raw, schema);
-  if (errors.length > 0) return { path, exists: true, config: null, errors };
+  const declared = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw) : [];
+  if (errors.length > 0) return { path, exists: true, config: null, declared, errors };
 
   const config = applyDefaults(raw, schema);
   config.project.display ??= config.project.name;
-  return { path, exists: true, config, errors: [] };
+  return { path, exists: true, config, declared, errors: [] };
 }
 
 /**
