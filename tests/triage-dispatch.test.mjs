@@ -1287,6 +1287,25 @@ test('a finding declared inbound too is a contradiction, refused without picking
   assert.match(r.out, /remove whichever/, 'the repair is to fix the contradiction, not to resolve it here');
 });
 
+// The contradiction rule is job-independent — "no pass follows from a
+// contradiction" — so the custom lane has to SEE the labels too. Review of the
+// first draft (Codex, P2) caught that `readIssue` asked for labels only in the
+// label-applying lanes, which handed this branch an empty list under
+// `--job custom` and dispatched the contradictory ticket. Labels are now read
+// for every job; only the parent read stays scoped to the routed lanes.
+test('a custom pass on a ticket carrying two provenance classes is refused as well', () => {
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  const instruction = join(root, 'q.txt');
+  writeFileSync(instruction, 'Measure the boot time\n');
+  const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], {
+    root,
+    issues: { 7: 'OPEN|0|a|source:agent-found;source:user-report|null' },
+  });
+  assert.equal(r.code, 1, 'no pass follows from a contradiction, a bounded one included');
+  assert.match(r.out, /remove whichever/);
+  assert.ok(r.calls.every(line => !line.includes('worker-start')), 'nothing was dispatched');
+});
+
 test('a project that declares no findings class keeps admitting the same ticket', () => {
   const r = run(['--issue', '7', '--dry-run'], {
     root: repo({ provenance: PROVENANCE }),

@@ -689,8 +689,8 @@ export function dispatch(
 const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' : code === 3 ? 'CANNOT-ESTABLISH' : 'REFUSED');
 
 /**
- * State, comment count and title in one read — plus, for every lane that is
- * routed by provenance, the labels and the sub-issue parent.
+ * State, comment count, title and labels in one read — plus, for every lane
+ * that is routed by provenance, the sub-issue parent.
  *
  * EVERY LABEL-APPLYING LANE, and that used to be the retired readiness lane
  * only. The asymmetry is what let a triage pass start on a spec sub-issue: the
@@ -698,6 +698,14 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  * they were looking at. The routed set IS `LABEL_JOBS` rather than a second
  * list kept beside it — the second list had already drifted, so `--job brief`
  * read no labels and the gate ran on an empty set. See `provenanceVerdict`.
+ *
+ * LABELS FOR EVERY JOB, THE PARENT FOR THE ROUTED ONES. The contradiction rule
+ * in `provenanceVerdict` is job-independent — no pass follows from two classes
+ * on one ticket — and it can only hold if every lane sees the labels. Measured
+ * 2026-09-02 on review of the findings class: labels were read in the routed
+ * lanes only, so `--job custom` handed the gate an empty list and dispatched a
+ * contradictory ticket. The parent read stays scoped to the routed lanes: it is
+ * the expensive, capability-gated half, and only the spec branch consumes it.
  *
  * The parent read is best-effort and advisory: a gh older than the sub-issues
  * API fails the WHOLE view when asked for the field (it does not answer with the
@@ -713,7 +721,7 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  */
 function readIssue(gh, repo, issue, job = 'triage') {
   const routed = LABEL_JOBS.has(job);
-  const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments';
+  const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments,labels';
   let out = gh(['issue', 'view', issue, '--repo', repo, '--json', fields]);
   let parentReadable = routed;
   if (routed && !out.error && out.status !== 0 && /unknown json field.*parent/i.test(String(out.stderr ?? ''))) {
@@ -746,9 +754,9 @@ function readIssue(gh, repo, issue, job = 'triage') {
   }
   if (!Array.isArray(body.comments)) return { ok: false, reason: 'gh answered no comments array — an absent container is not an empty one' };
   const meta = { ok: true, state: String(body.state ?? ''), title: String(body.title ?? ''), comments: body.comments.length };
+  if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
+  meta.labels = body.labels.map(label => String(label?.name ?? ''));
   if (routed) {
-    if (!Array.isArray(body.labels)) return { ok: false, reason: 'gh answered no labels array — an absent container is not an empty one' };
-    meta.labels = body.labels.map(label => String(label?.name ?? ''));
     if (!parentReadable) {
       meta.parent = undefined;
       meta.parentCause = 'capability';
