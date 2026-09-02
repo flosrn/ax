@@ -360,9 +360,12 @@ export function dispatch(
       );
     }
   } else if (flags.task === '' && entry === '') {
+    // The repair is the JSON, not the key path: `dispatch` may not exist in this
+    // file at all, so `dispatch.entry "<verb>"` names a setting without saying
+    // where it goes, and is accepted by nothing if pasted as printed.
     return refuse(
       'this project declares no dispatch entry point, so there is no instruction to give the child',
-      'ax.config.json: dispatch.entry "<verb>"   # or pass --task "<instruction>"',
+      'ax.config.json: { "dispatch": { "entry": "<verb>" } }   # or pass --task "<instruction>"',
     );
   }
   const instruction = named ? flags.task || `${entry} ${flags.name}`.trim() : flags.task || `${entry} ${ticket.id}`;
