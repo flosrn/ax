@@ -9,13 +9,13 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { installCommand, resolveDelegation, runDelegated } from '../src/delegation.mjs';
+import { installCommand, installOrigin, resolveDelegation, runDelegated, versionLine } from '../src/delegation.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SELF_VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
@@ -38,6 +38,31 @@ function project({ pinned = '1.2.3', install = '1.2.3', split = true, body } = {
     if (split) writeFileSync(join(dir, 'src', 'cli.mjs'), body ?? 'export const runCli = () => 0;\n');
   }
   return root;
+}
+
+const IDENTITY = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
+
+/**
+ * A RUNNABLE copy of this package at a chosen version — src, schema, manifest
+ * and bin entry, nothing stubbed.
+ *
+ * The two tests that read a version LINE cannot use the stub install above:
+ * what they assert is what this package's own code prints about itself, and a
+ * `runCli` written by the test would print whatever the test decided. `src/`
+ * carries no dependency of its own, so a copy of it plus the schema its config
+ * reads at load is a complete install.
+ */
+function axPackage({ version = '1.2.3', at } = {}) {
+  const dir = at ?? temp();
+  mkdirSync(join(dir, 'bin'), { recursive: true });
+  cpSync(join(REPO, 'src'), join(dir, 'src'), { recursive: true });
+  cpSync(join(REPO, 'ax.schema.json'), join(dir, 'ax.schema.json'));
+  cpSync(join(REPO, 'bin', 'ax.mjs'), join(dir, 'bin', 'ax.mjs'));
+  writeFileSync(
+    join(dir, 'package.json'),
+    `${JSON.stringify({ name: '@flosrn/ax', version, description: 'a copy under test', type: 'module', bin: { ax: './bin/ax.mjs' } }, null, 2)}\n`,
+  );
+  return dir;
 }
 
 const capture = async fn => {
@@ -208,4 +233,78 @@ test('the real bin entry delegates: a project pinned elsewhere gets its own ax',
 
 test('inside ax itself, ax is its own tooling and nothing delegates', () => {
   assert.equal(resolveDelegation({ cwd: REPO, command: 'doctor' }).mode, 'self');
+});
+
+// ── which of the two copies answered, which is what `ax --version` discloses ──
+//
+// The collision at the top of this file has a silent form, and it is the one
+// that cost a full minor: this machine ran a symlink into a development
+// checkout AND a package-manager global, they drifted apart, and neither said
+// so — the symlink served whatever branch the checkout happened to be on.
+
+test('a checkout names its branch; an install names WHICH install it is', () => {
+  const checkout = temp();
+  execFileSync('git', ['init', '-q', '-b', 'feat/known'], { cwd: checkout });
+  execFileSync('git', [...IDENTITY, 'commit', '-qm', 'init', '--allow-empty'], { cwd: checkout });
+  assert.deepEqual(installOrigin({ self: checkout, roots: [] }), { kind: 'checkout', path: checkout, branch: 'feat/known' });
+
+  // A directory git cannot answer for names no branch rather than guessing one
+  // from its own name.
+  assert.equal(installOrigin({ self: temp(), roots: [] }).branch, null);
+
+  const root = project();
+  const installed = join(root, 'node_modules', '@flosrn', 'ax');
+  assert.deepEqual(installOrigin({ self: installed, roots: [root] }), { kind: 'project', path: installed, root });
+
+  // THE SAME BYTES, seen from a project that did not put them there, are a
+  // global install — that pair is the whole point of the disclosure.
+  assert.equal(installOrigin({ self: installed, roots: [project()] }).kind, 'global');
+});
+
+test('the first token of the version line stays the bare version', () => {
+  const origins = [
+    { kind: 'checkout', path: '/w/ax', branch: 'feat/x' },
+    { kind: 'checkout', path: '/w/ax', branch: null },
+    { kind: 'project', path: '/w/app/node_modules/@flosrn/ax', root: '/w/app' },
+    { kind: 'global', path: '/g/node_modules/@flosrn/ax' },
+  ];
+  for (const origin of origins) {
+    const line = versionLine('0.0.9', origin);
+    // A hook verifying a consumer's pin reads field one, and that reader
+    // existed before this line carried anything else.
+    assert.equal(line.split(' ')[0], '0.0.9', `${origin.kind}: field one must still be the version`);
+    assert.doesNotMatch(line, /\n/, `${origin.kind}: one line`);
+    assert.ok(line.includes(origin.path), `${origin.kind}: the path is what a hook checks against its pin`);
+  }
+
+  assert.match(versionLine('0.0.9', origins[0]), /checkout feat\/x at /);
+  assert.match(versionLine('0.0.9', origins[1]), /checkout at /);
+  assert.match(versionLine('0.0.9', origins[2]), /project install at /);
+  assert.match(versionLine('0.0.9', origins[3]), /global install at /);
+});
+
+test('run from a checkout, the real entry names the branch that checkout is on', () => {
+  const copy = axPackage({ version: '9.9.9' });
+  execFileSync('git', ['init', '-q', '-b', 'feat/known'], { cwd: copy });
+  execFileSync('git', [...IDENTITY, 'commit', '-qm', 'init', '--allow-empty'], { cwd: copy });
+  // A directory declaring nothing, so this copy answers for itself.
+  const elsewhere = temp();
+
+  const out = execFileSync('node', [join(copy, 'bin', 'ax.mjs'), '--version'], { cwd: elsewhere, encoding: 'utf8' });
+  assert.equal(out.trim(), `9.9.9 — checkout feat/known at ${copy}`);
+
+  rmSync(copy, { recursive: true, force: true });
+  rmSync(elsewhere, { recursive: true, force: true });
+});
+
+test('the DELEGATED version is the one reported, never the copy that was typed', () => {
+  const root = project({ install: null });
+  const installed = axPackage({ version: '1.2.3', at: join(root, 'node_modules', '@flosrn', 'ax') });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+
+  const out = execFileSync('node', [join(REPO, 'bin', 'ax.mjs'), '--version'], { cwd: root, encoding: 'utf8' });
+  assert.equal(out.trim(), `1.2.3 — project install at ${installed}`);
+  assert.notEqual(out.split(' ')[0], SELF_VERSION, 'the global copy reported its own number, which is the drift this discloses');
+
+  rmSync(root, { recursive: true, force: true });
 });

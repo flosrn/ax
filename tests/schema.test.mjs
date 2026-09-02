@@ -41,6 +41,40 @@ test('a typo is an error, never a silently ignored key', () => {
   assert.match(errors[0], /unknown key "port"/);
 });
 
+// `$comment` is a reserved JSON-Schema annotation, and a project annotates the
+// SECTION whose reasoning it is explaining. Listing it per object is how it came
+// to be admitted under `prGate` and refused under `dispatch` — so the rule is
+// structural: reserved annotations are admitted at every object level, including
+// inside a keyed map, where the value would otherwise be validated as an entry
+// of that map (`dispatch.hosts: expected object, got string`).
+test('a reserved annotation is admitted at every object level, not per object', () => {
+  const annotated = {
+    ...minimal(),
+    $comment: 'why this repository is configured this way',
+    dispatch: {
+      $comment: 'why the entry point is this verb and not another',
+      entry: '/work',
+      hosts: {
+        $comment: 'why this fleet has exactly one remote host',
+        vps: { $comment: 'why the floors on this host are these', ssh: 'orca@vps' },
+      },
+    },
+  };
+  assert.deepEqual(validate(annotated, schema), []);
+});
+
+test('an annotation is a string, and every other unknown key is still refused by name', () => {
+  assert.deepEqual(validate({ ...minimal(), $schema: './ax.schema.json' }, schema), []);
+
+  const typo = validate({ ...minimal(), dispatch: { $comments: 'plural' } }, schema);
+  assert.equal(typo.length, 1);
+  assert.match(typo[0], /dispatch: unknown key "\$comments"/);
+
+  const notText = validate({ ...minimal(), dispatch: { $comment: 42 } }, schema);
+  assert.equal(notText.length, 1);
+  assert.match(notText[0], /dispatch: "\$comment" is an annotation, expected string, got integer/);
+});
+
 test('a project name that would break a Docker id is rejected', () => {
   const errors = validate({ ...minimal(), project: { name: 'OFMChat' } }, schema);
   assert.match(errors.join(), /project\.name.*does not match/);
