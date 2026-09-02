@@ -15,6 +15,8 @@
     "checks": ["pnpm test"]
   },
   "dispatch": {
+    "$comment": "The child is the worker role: the marker ax writes into the assignment activates it, and the implementation playbook it autoloads is its execution contract. The entry therefore only names the verb, never a procedure — a procedure here would be a second one beside the playbook. No `contract`: ax writes its own mechanics-only pilot contract, and this repository has nothing to add to it.",
+    "entry": "Implement this ticket end-to-end as the worker: the injected implementation playbook is your execution contract — red-first, open the pull request, hold it through decided CI, report to your orchestrator, never merge.",
     "hosts": {
       "gapicore": {
         "ssh": "orca@vps",
