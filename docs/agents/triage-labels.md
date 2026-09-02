@@ -8,13 +8,14 @@ any name here; someone may have changed the set.
 
 ## Groups
 
-Every triage pass fills three groups. A pass that leaves one empty has not
-finished. Names are exact label strings, colon and no space where a prefix
-exists.
+Every triage pass fills **category** and **source**. **state** is filled with
+exactly one label except for the one verdict below. A pass that leaves
+category or source empty, or that writes two state labels, has not finished.
+Names are exact label strings, colon and no space where a prefix exists.
 
 | Group | Labels | Rule |
 | --- | --- | --- |
-| state | `needs-triage` · `needs-info` · `ready-for-agent` · `ready-for-human` · `wontfix` | exactly one; the pass moves the issue from `needs-triage` to what it concluded |
+| state | `needs-triage` · `needs-info` · `ready-for-agent` · `ready-for-human` · `wontfix` | exactly one **directive**, except: a triage pass that concludes `ready-for-agent` writes **no** state `Labels:` line and **no** `Remove labels:` line. The body opens with `Verdict: ready-for-agent — brief pass next`. The issue keeps `needs-triage` until the `brief` publication moves it. That is the only exception; it is finished when category, source and the `Verdict:` line are present. |
 | category | `bug` · `enhancement` · `documentation` · `question` | exactly one; GitHub's default set, already on the repo |
 | source | `source:agent-found` · `source:user-report` · `source:roadmap` | already on the issue at birth — keep it, never add a second |
 
@@ -71,9 +72,11 @@ Close: yes                           only with wontfix; you recommend, the opera
 A directive carries label NAMES ONLY — never a group name, never a
 parenthetical. `Labels: state → needs-info` and `Remove labels: needs-triage
 (superseded)` both name no label that exists and are refused at publish. The
-justification goes in the body, one line per group. A state transition is
-always both lines: adding `needs-info` without removing `needs-triage` leaves
-two state labels on the issue.
+justification goes in the body, one line per group. A state transition that
+*does* apply a state label is always both lines: adding `needs-info` without
+removing `needs-triage` leaves two state labels on the issue. The
+`ready-for-agent` exception above is the opposite: **zero** state directives,
+because the brief publication is the transition.
 
 ## What the body carries, in order
 
@@ -82,7 +85,8 @@ two state labels on the issue.
 3. The shape of the fix and its `Module:` line.
 4. What the issue leaves undecided — each item either ruled here, asked of the
    orchestrator (`Q<n>:` line, then wait), or the reason for `ready-for-human`.
-5. One line per group naming why that label.
+5. One line per group naming why that label. For the `ready-for-agent`
+   exception, the state line explains why `needs-triage` is kept.
 
 An issue born by another session already carries the four reporter fields —
 argv, raw output, expected, cost. Quote the argv when you reproduce; never
