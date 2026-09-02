@@ -163,6 +163,28 @@ function sendOk(out) {
   return out.status === 0 && out.receipt?.ok === true;
 }
 
+/**
+ * Orca refused the alert BECAUSE OF WHAT THE DISPATCH IS, not because the send
+ * failed. The CLI turns `lifecycle.action === 'rejected'` into a non-zero exit
+ * whose error carries the lifecycle code, and the three codes below all mean
+ * one thing for a watcher: no active Dispatch stands behind this sender any
+ * more, so there is nothing left to supervise. The rejected message is still
+ * RECORDED on the Run as a `status` — which is why this must never be retried.
+ *
+ * Measured 2026-09-02 on the package's own checkout: two watchers on brief
+ * dispatches that had settled `failed` alerted after the silence window, were
+ * refused `sender_not_assignee`, and retried every tick for ten hours — six
+ * hundred rejected escalations, each delivered to the orchestrator's pane and
+ * each pre-empting the tool call it was in. Only a transport failure (the
+ * runtime unreachable, no receipt at all) is worth the next tick.
+ */
+const LIFECYCLE_REFUSALS = new Set(['sender_not_assignee', 'task_dispatch_mismatch', 'dispatch_capability_invalid']);
+
+const sendRefused = out => {
+  const code = out.receipt?.ok === false ? String(out.receipt.error?.code ?? '') : '';
+  return LIFECYCLE_REFUSALS.has(code) ? code : '';
+};
+
 // THE DELIVERY FORM OF EVERY ALERT IN THIS FILE.
 //
 // Addressing was never the gap: all three alerts already reach the dispatching
@@ -447,6 +469,10 @@ export function stall(
           log(`GONE alert sent to run:${fields.run}; exiting.`);
           return 0;
         }
+        if (sendRefused(sent)) {
+          log(`Orca refused the alert: ${sendRefused(sent)} — no active Dispatch is left to supervise; exiting.`);
+          return 0;
+        }
         log('gone alert failed; will retry next tick.');
       }
 
@@ -501,6 +527,9 @@ export function stall(
                 cardsSent += 1;
                 cardSeen = card;
                 log(`card change #${cardsSent} sent to run:${fields.run}`);
+              } else if (sendRefused(sent)) {
+                log(`Orca refused the alert: ${sendRefused(sent)} — no active Dispatch is left to supervise; exiting.`);
+                return 0;
               } else log('card alert failed; keeping the previous baseline so the unchanged card retries next tick.');
             }
           }
@@ -512,6 +541,10 @@ export function stall(
         const sent = alertStall(run, fields, parsed.request, silent, state.label, lastSignal);
         if (sendOk(sent)) {
           log(`ALERT sent to run:${fields.run}; exiting.`);
+          return 0;
+        }
+        if (sendRefused(sent)) {
+          log(`Orca refused the alert: ${sendRefused(sent)} — no active Dispatch is left to supervise; exiting.`);
           return 0;
         }
         log('stall alert failed; will retry next tick.');
