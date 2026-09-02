@@ -195,6 +195,20 @@ test('a link: pin — the dev workflow — is refused by name, not overwritten',
   assert.equal(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).devDependencies['@flosrn/ax'], 'link:../../flosrn/ax');
 });
 
+// The package's own checkout has no pin to move, and after the plan learned
+// what a self-hosted checkout is, `ax init` deliberately writes none there. So
+// the generic "declares no @flosrn/ax pin → ax init" refusal became advice that
+// cannot come true: it sends the operator to a verb that will not write it.
+test('the package own checkout is refused by name, never sent to ax init for a pin it will not write', () => {
+  const root = repo({ manifest: false });
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: '@flosrn/ax', version: '0.17.0' }, null, 2)}\n`);
+  const r = run(['v0.6.6'], { root });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /this checkout IS @flosrn\/ax/);
+  assert.doesNotMatch(r.out, /ax init/, 'ax init writes no self-pin, so it is not the repair');
+  assert.equal(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).devDependencies, undefined);
+});
+
 test('already on the version re-proves disk and doctor without reinstalling', () => {
   const root = repo();
   installAs(root, '0.5.2');

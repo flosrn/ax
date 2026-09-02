@@ -6,6 +6,7 @@ import { agentLines } from './commands.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, vendorRemote, version } from './config.mjs';
 import { EXACT_VERSION } from './delegation.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
+import { planProject, readManifest } from './plan.mjs';
 
 // An exact npm version, not a git tag and not a range: ax is published to the
 // registry now, so the pin a project carries is the version its lockfile
@@ -25,7 +26,6 @@ export const BLOCK_ID = 'ax';
 export const OMP_SETTINGS = '.omp/settings.json';
 /** The 0.10 wiring; removed only when its bytes prove ax owns it. */
 export const LEGACY_OMP_LOADER = '.omp/extensions/ax.ts';
-export const OMP_PACKAGE_ROOT = `./node_modules/${PACKAGE_NAME}`;
 export const LEGACY_OMP_LOADER_SOURCE = [
   '// Written by `ax init`. Edit ax, not this file — `ax doctor` reports drift here',
   '// and `ax init` rewrites it.',
@@ -81,8 +81,15 @@ export const agentsBody = () =>
     'that needs one of those values reads it from there rather than restating it.',
   ].join('\n');
 
+/** The app roots ax manages here, inferred from the layout on disk. */
+function inferApps(root) {
+  const apps = { web: existsSync(join(root, 'apps', 'web')) ? 'apps/web' : '.' };
+  if (existsSync(join(root, 'apps', 'e2e'))) apps.e2e = 'apps/e2e';
+  return apps;
+}
+
 /** Infer what can be inferred; refuse to guess what must be decided. */
-function inferConfig(root, explicitVendor) {
+function inferConfig(root, { vendor: explicitVendor, plan }) {
   const packagePath = join(root, 'package.json');
   const manifest = existsSync(packagePath) ? JSON.parse(readFileSync(packagePath, 'utf8')) : {};
   const rawName = typeof manifest.name === 'string' && manifest.name.trim() !== '' ? manifest.name : basename(root);
@@ -93,17 +100,17 @@ function inferConfig(root, explicitVendor) {
     .replace(/^-+|-+$/g, '');
   if (!name) return { error: `cannot infer project.name from package.json or the repository directory — write ${CONFIG_FILE} by hand` };
 
-  const apps = { web: existsSync(join(root, 'apps', 'web')) ? 'apps/web' : '.' };
-  if (existsSync(join(root, 'apps', 'e2e'))) apps.e2e = 'apps/e2e';
-
   // Vendor ownership is one optional repo shape. Detect MakerKit when present;
   // a plain repository has no upstream tree to guard and needs no empty
   // placeholder pretending otherwise.
   const vendor = explicitVendor ?? (vendorRemote(root, 'makerkit/next-supabase-saas-kit-turbo') ? 'makerkit/next-supabase-saas-kit-turbo' : null);
   const config = {
-    $schema: `./node_modules/${PACKAGE_NAME}/ax.schema.json`,
+    // The plan's pointer, not a literal: `./node_modules/@flosrn/ax/` cannot
+    // exist in the checkout that publishes it, and a $schema nothing resolves
+    // silently costs an editor every completion this file is written with.
+    $schema: plan.schemaRef,
     project: { name },
-    apps,
+    apps: inferApps(root),
   };
   if (vendor !== null) config.vendor = { repo: vendor };
   return { config };
@@ -122,17 +129,7 @@ function writeFile(path, content, { dryRun, mode, root }) {
   return exists ? 'updated' : 'created';
 }
 
-/** The package root OMP loads: source for ax itself, installed bytes everywhere else. */
-export function ompExtensionRoot(root) {
-  try {
-    const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-    return manifest.name === PACKAGE_NAME ? '.' : OMP_PACKAGE_ROOT;
-  } catch {
-    return OMP_PACKAGE_ROOT;
-  }
-}
-
-function wireOmp(root, { dryRun }) {
+function wireOmp(root, { dryRun, plan }) {
   const path = join(root, ...OMP_SETTINGS.split('/'));
   let settings = {};
   if (existsSync(path)) {
@@ -161,7 +158,7 @@ function wireOmp(root, { dryRun }) {
     legacy = 'removed';
   }
 
-  const expected = ompExtensionRoot(root);
+  const expected = plan.ompExtension;
   let found = false;
   const normalized = [];
   for (const entry of extensions) {
@@ -255,7 +252,6 @@ export function init(root, { dryRun = false, vendor } = {}) {
     return 1;
   }
 
-
   const existing = loadConfig(root);
   if (existing.exists && existing.errors.length > 0) {
     bad(`${CONFIG_FILE} — invalid, leaving it untouched`);
@@ -266,8 +262,16 @@ export function init(root, { dryRun = false, vendor } = {}) {
     for (const repair of retiredConfigKeyFixes(existing.errors)) fix(repair);
     return 1;
   }
+
+  // The plan, once, before anything is written: whether this checkout IS the
+  // package, and which contracts the configuration already declares
+  // (./plan.mjs). `ax init` is the verb that ADOPTS the provisioning contract,
+  // so it never skips work because a contract is unadopted — the adoption field
+  // tells it what it still has to DECLARE.
+  const plan = planProject({ manifest: readManifest(root), declared: existing.declared });
+
   if (!existing.exists) {
-    const inferred = inferConfig(root, vendor);
+    const inferred = inferConfig(root, { vendor, plan });
     if (inferred.error) {
       bad(`${CONFIG_FILE} — ${inferred.error}`);
       if (inferred.hint) fix(inferred.hint);
@@ -275,15 +279,47 @@ export function init(root, { dryRun = false, vendor } = {}) {
     }
     report(CONFIG_FILE, writeFile(existing.path, `${JSON.stringify(inferred.config, null, 2)}\n`, { dryRun, root }));
   } else {
-    note(`${CONFIG_FILE} — already valid`);
+    // The two values in a DECLARED config that this plan owns, brought back to
+    // it. Everything else is the project's and is copied through untouched, in
+    // its own key order.
+    //
+    // `apps`, because THE DECLARATION IS THE ADOPTION: provisioning the files
+    // while leaving `apps` undeclared would have `ax doctor` report the
+    // contract as unadopted immediately after running the verb it names as the
+    // way to adopt it — advice that cannot come true.
+    //
+    // `$schema`, because it is a plan value too, and one an older release of
+    // this verb wrote wrong. Corrected only where the key EXISTS: absent is not
+    // drift, and inventing a key the project never declared is not a repair
+    // (`ax doctor` grades it on the same rule).
+    const raw = JSON.parse(readFileSync(existing.path, 'utf8'));
+    const next = {};
+    for (const [key, value] of Object.entries(raw)) {
+      next[key] = key === '$schema' ? plan.schemaRef : value;
+      if (key === 'project' && !plan.adopted.provisioning) next.apps = inferApps(root);
+    }
+    if (!plan.adopted.provisioning) next.apps ??= inferApps(root);
+
+    const touched = [];
+    if (next.$schema !== raw.$schema) touched.push('$schema');
+    if (next.apps !== raw.apps) touched.push('apps — provisioning adopted');
+    if (touched.length === 0) {
+      note(`${CONFIG_FILE} — already valid`);
+    } else {
+      report(`${CONFIG_FILE} (${touched.join(', ')})`, writeFile(existing.path, `${JSON.stringify(next, null, 2)}\n`, { dryRun, root }));
+    }
   }
 
-  report('bin/ax', writeFile(join(root, 'bin', 'ax'), readFileSync(assetPath('bootstrap', 'ax'), 'utf8'), { dryRun, mode: 0o755, root }));
+  // The shim execs the INSTALLED CLI, so the checkout that publishes ax cannot
+  // carry one: it would resolve `node_modules/.bin/ax`, an install of itself.
+  if (plan.bootstrap) {
+    report('bin/ax', writeFile(join(root, 'bin', 'ax'), readFileSync(assetPath('bootstrap', 'ax'), 'utf8'), { dryRun, mode: 0o755, root }));
+  }
 
   // Register the PACKAGE ROOT, not a wrapper file. OMP uses the package's
   // `omp.extensions` manifest, and this same root exposes everything ax ships
   // as one version. Existing project settings and native extensions survive.
-  const omp = wireOmp(root, { dryRun });
+  const omp = wireOmp(root, { dryRun, plan });
   if (omp.error) {
     bad(omp.error);
     fix(`repair ${OMP_SETTINGS}, then re-run ax init`);
@@ -312,6 +348,8 @@ export function init(root, { dryRun = false, vendor } = {}) {
   if (!existsSync(packagePath)) {
     bad('package.json — not found, so no project-local ax version can be pinned');
     failed = true;
+  } else if (!plan.bootstrap && !plan.pin) {
+    note(`package.json — this checkout IS ${PACKAGE_NAME}: no scripts.ax, and no pin pointing back at itself`);
   } else {
     const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
     const pinPath = `devDependencies.${PACKAGE_NAME}`;
@@ -319,9 +357,9 @@ export function init(root, { dryRun = false, vendor } = {}) {
     const preservePin =
       typeof currentPin === 'string' &&
       (EXACT_VERSION.test(currentPin) || currentPin.startsWith('link:') || currentPin.startsWith('file:'));
-    const migratePin = !preservePin;
+    const migratePin = plan.pin && !preservePin;
     const touched = [
-      setJsonPath(manifest, 'scripts.ax', './bin/ax'),
+      plan.bootstrap ? setJsonPath(manifest, 'scripts.ax', './bin/ax') : false,
       migratePin ? setJsonPath(manifest, pinPath, PIN) : false,
     ].filter(Boolean);
     if (touched.length === 0) {
