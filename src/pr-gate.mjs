@@ -138,7 +138,7 @@ import {
   ciGround,
   canonical,
   clean,
-  closedIssueOf,
+  closedIssuesOf,
   commitsGround,
   declarationGround,
   firstLine,
@@ -306,9 +306,10 @@ function claimsBranch(rec, { here, branch, request }) {
  * file it lives in (a stem substituted for an absent `request` would let any
  * filename bind a merge), a record naming another repository is another
  * checkout's dispatch, one branch claimed by two tickets is ambiguity and
- * ambiguity is never last-file-wins, and an unreadable record is named in the
- * answer rather than skipped — otherwise "no record" cannot be told apart from
- * "a record this run could not parse".
+ * ambiguity is never last-file-wins, and an unreadable record BLOCKS the
+ * binding even when another record does claim this branch — its own repository,
+ * branch and ticket are unread, so it may be the second claim, and "one
+ * candidate found" is not "one claim exists" (PR #77 review, P1).
  *
  * An absent store is the one clean absence: nothing was ever dispatched from
  * this host. It still binds nothing, and the caller is told which flag says so.
@@ -366,6 +367,19 @@ function boundTicket({ issue, store, root, branch, slug, invocation }) {
     return {
       ok: false,
       reason: `no dispatch record on this host names the ticket branch '${clean(branch)}' was dispatched for${named}`,
+      repair,
+    };
+  }
+  // ONE candidate is not one claim while any record in this store is unread
+  // (PR #77 review, P1). The unreadable file's repository, branch and ticket
+  // are all unread, so it may be a second claim on this very branch — the
+  // ambiguity above, invisible. Naming it and binding anyway would authorise a
+  // merge over a store this run could not read, which is F-001's rule in the
+  // one direction that mutates.
+  if (unreadable.length > 0) {
+    return {
+      ok: false,
+      reason: `${unreadable.join('; ')} — one record does claim branch '${clean(branch)}' for #${seen[0]}, and a store this run cannot fully read is never proof that nothing else claims it too`,
       repair,
     };
   }
@@ -546,9 +560,9 @@ export function gate(
    * and the ticket this merge was for is what has to read closed.
    */
   const verifyClosure = (body, binding) => {
-    const named = closedIssueOf(body);
+    const named = closedIssuesOf(body);
     if (!binding.ok) {
-      if (named === null) {
+      if (named.length === 0) {
         note('closure: the body names no same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
         return 0;
       }
@@ -563,9 +577,9 @@ export function gate(
       return 3;
     }
     const issue = binding.issue;
-    if (named !== issue) {
+    if (!named.includes(issue)) {
       note(
-        `closure: the post-merge body closes ${named === null ? 'no same-repository issue' : `#${named}`}, not #${issue} — the ticket this merge was for (${binding.source}); GitHub closed from that body, so #${issue} is what must be observed`,
+        `closure: the post-merge body closes ${named.length === 0 ? 'no same-repository issue' : named.map(number => `#${number}`).join(', ')}, not #${issue} — the ticket this merge was for (${binding.source}); GitHub closed from that body, so #${issue} is what must be observed`,
       );
     }
     // The two outcomes are kept apart: a read that ANSWERED non-closed, and a
@@ -723,7 +737,7 @@ export function gate(
     declarationGround({ git, root: paths.root, baseBranch, sha, refsRefreshed: ['ok', 'local-only'].includes(gitOut.fetchState), pr, slug }),
     commitsGround({ run, slug, pr, openedAt, ackBody, invocation }),
     keywordGround({ body, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch }),
-    ticketGround({ binding, closes: closedIssueOf(body), pr, slug }),
+    ticketGround({ binding, closes: closedIssuesOf(body), pr, slug }),
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);

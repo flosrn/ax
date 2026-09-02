@@ -961,6 +961,30 @@ test('a record that names no ticket binds nothing: a named dispatch is not a tic
   assert.match(out, /CANNOT ESTABLISH — ticket binding: this PR's body closes #1786, and no dispatch record on this host names the ticket/);
 });
 
+test("a store full of OTHER branches' dispatches binds nothing: the record has to claim THIS branch", () => {
+  // The store is host-global — many tickets, many branches, one directory. A
+  // lookup that took "the only record" (or the first) would bind this merge to
+  // whichever dispatch happens to sit there, which is the defect one directory
+  // over: the closure check would run against a ticket nobody merged for.
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  writeRecord(storeDir, { request: '4242-elsewhere', worktree: join(sandbox, 'some-other-worktree') });
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, record: null });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — ticket binding: this PR's body closes #1786, and no dispatch record on this host names the ticket branch 'feature' was dispatched for/);
+  assert.doesNotMatch(out, /#4242/, "another branch's dispatch was read as this one's binding");
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a merge stood on a foreign record');
+});
+
+test('a record for this branch in ANOTHER repository is another checkout, and binds nothing', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const root = repoFor('current', DEFAULT_GATE);
+  writeRecord(storeDir, { request: '4242-work', worktree: root, repo: 'goodluckagency/ofmchat' });
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, store: storeDir, record: null });
+  assert.equal(code, 3);
+  assert.match(out, /no dispatch record on this host names the ticket branch 'feature' was dispatched for/);
+  assert.doesNotMatch(out, /#4242/, "another repository's dispatch bound this merge");
+});
+
 test('two dispatch records claiming this branch for different tickets is ambiguous, never last-file-wins', () => {
   const storeDir = mkdtempSync(join(sandbox, 'store-'));
   const root = repoFor('current', DEFAULT_GATE);
@@ -978,6 +1002,37 @@ test('an unreadable record is named, and absence beside it is never read as an a
   const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, record: null });
   assert.equal(code, 3);
   assert.match(out, /1786-work\.json is unreadable/);
+});
+
+test('an unreadable record BESIDE a matching one binds nothing: it may be the second claim (PR #77 review, P1)', () => {
+  // The unreadable file's repository, branch and ticket are all unread, so it
+  // may be a second claim on this very branch — the ambiguity two lines above,
+  // invisible. Answering "one candidate, therefore bound" authorises a merge
+  // over a store this run could not read: F-001's rule in the one direction
+  // that mutates.
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const root = repoFor('current', DEFAULT_GATE);
+  writeRecord(storeDir, { request: '1786-work', worktree: root });
+  writeFileSync(join(storeDir, '4242-work.json'), '{ this is not json');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, record: null });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — ticket binding: .*4242-work\.json is unreadable/);
+  assert.match(out, /→ ax pr gate --pr 1845 --issue <n>/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a merge stood on a store this run could not read');
+});
+
+test('every closing construct counts, not just the first: a body closing both closes both (PR #77 review, P2)', () => {
+  // GitHub closes EVERY recognised construct in the body. Reading only the
+  // first made this ground refuse a body that does close the dispatched ticket,
+  // which is a round-trip charged for a merge that was correct.
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    receipt: prView({ body: 'Closes #999\n\nCloses #1786' }),
+  });
+  assert.equal(code, 0, out);
+  assert.match(out, /ticket binding: the body closes #1786, the ticket this merge is for \(dispatch record 1786-work\)/);
+  assert.match(out, /it also closes #999/);
+  assert.deepEqual(calls.filter(call => call.startsWith('issue view')), [`issue view 1786 --repo ${SLUG} --json state`]);
 });
 
 test('a bound ticket the body closes nothing for is refused: the dispatched ticket would stay open', () => {

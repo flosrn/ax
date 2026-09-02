@@ -28,8 +28,8 @@ tags:
 ## Problem
 
 `ax pr gate` verifies, after merging, that the ticket the PR closes actually closed — the
-subgraph-halt property the frontier depends on. It took the ticket number from one place: the PR
-body, through `closedIssueOf(body)`.
+subgraph-halt property the frontier depends on. It took the ticket number from one place: the first
+closing keyword in the PR body (`closedIssueOf`, now `closedIssuesOf`).
 
 The body is written by the worker being checked. A worker dispatched for #10 whose PR says
 `Closes #11` passed every ground, and the gate then verified #11 — a real, unrelated, possibly
