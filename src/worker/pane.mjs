@@ -180,35 +180,62 @@ export function terminalInventory(run, { environment = '' } = {}) {
  * refused to close a corpse whose PR was already merged, and the record stayed
  * unclosable for as long as that unrelated remote slept.
  *
- * So ONE narrow exception, and deliberately no more: `host === ''` is a dispatch
- * this machine issued with no `--on`, and a receipt that explicitly names
- * `local` among the hosts it read has therefore covered that pane's runtime.
- * An absent handle is then a corpse (F-003), whatever else was omitted.
+ * ONE RULE COVERS BOTH VOCABULARIES: a list that says it read `local` covers the
+ * runtime that ANSWERED it, and the caller says which runtime that was.
  *
- * REMOTE ROWS ARE UNTOUCHED. A record names its host by ENVIRONMENT NAME
- * (`--on gapicore`) while the receipt namespaces runtimes (`runtime:<uuid>`);
- * those are two vocabularies and no mapping between them is established here.
- * Matching them loosely would prove a remote pane dead on a coincidence of
- * substrings, and this verdict authorises closing panes.
+ *  - `host === ''` is a dispatch this machine issued with no `--on`, so the
+ *    answering runtime is this one.
+ *  - `asked: true` is a caller stating that this inventory is what `host` itself
+ *    answered — `terminal list --environment <host>`, which is served BY that
+ *    host's runtime. Measured on this Mac, 2026-09-02, against the declared
+ *    `gapicore` (environment id `7930a317-…`, runtime `1468aeea-…`):
+ *
+ *      terminal list --json                        _meta.runtimeId 682e09fd-… (local)
+ *        hostScope {"hostIds":["local"],"omittedHostIds":["runtime:7930a317-…"]}
+ *      terminal list --environment gapicore --json _meta.runtimeId 1468aeea-… (gapicore)
+ *        hostScope {"hostIds":["local"],"omittedHostIds":[]}
+ *
+ *    `local` in the second reply is GAPICORE's local: the remote runtime
+ *    answered for its own scope and omitted nothing. So `asked` does not mean
+ *    "trust the caller", it means "read `local` as that host's local".
+ *
+ * An absent handle is then a corpse (F-003) whatever else was omitted. A reply
+ * that does NOT name `local` among the hosts it read has covered something else,
+ * and covers no pane here — INCONNU, in the safe direction.
+ *
+ * What is never established here is a mapping between a record's environment
+ * name (`--on gapicore`) and the runtime ids a receipt namespaces
+ * (`runtime:<uuid>`): matching those on a coincidence of substrings would prove
+ * a remote pane dead by accident, and this verdict authorises closing panes. The
+ * ask replaces that guess with a question put to the host itself.
  *
  * AND `host` HAS NO DEFAULT, on purpose. `''` is a caller ASSERTING "this record
  * dispatched locally"; an absent `host` is a caller that has not established the
  * owner, and that must keep the conservative answer rather than inherit the
  * exception through a default nobody chose.
  */
-export function paneVerdict(handle, why, terminals, { host } = {}) {
+export function paneVerdict(handle, why, terminals, { host, asked = false } = {}) {
   if (handle === null) return { pane: 'INCONNU', detail: why };
+  // AN INVENTORY THAT REFUSED answers for no pane. A host was named and could
+  // not be asked — no declaration reaches it, or its list did not come back —
+  // and that is an absence of information, never an absence of a pane (F-028).
+  // The REASON is the caller's to disclose ONCE per host: a row repeating it per
+  // record is the receipt `ls` was shortened out of (#70).
+  if (terminals.ok === false) return { pane: 'INCONNU', detail: `${handle} is on '${host}', a host that could not be asked` };
   const terminal = terminals.byHandle.get(handle);
   if (terminal === undefined) {
-    const localProven = host === '' && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
-    if (terminals.omitted && !localProven) {
-      return { pane: 'INCONNU', detail: `${handle} is not in this host's terminal list, and hosts are omitted from its scope` };
+    const covered = (asked || host === '') && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
+    if (!covered) {
+      if (terminals.omitted) return { pane: 'INCONNU', detail: `${handle} is not in this host's terminal list, and hosts are omitted from its scope` };
+      if (asked) return { pane: 'INCONNU', detail: `${handle} is on '${host}', whose list did not say it read that host's own scope` };
     }
     return {
       pane: 'MORT',
-      detail: localProven && terminals.omitted
-        ? `${handle} is unknown to the local runtime, which this list did read (only remote hosts were omitted)`
-        : `${handle} is unknown to the runtime`,
+      detail: covered && asked
+        ? `${handle} is unknown to '${host}', the host that answered for its own panes`
+        : covered && terminals.omitted
+          ? `${handle} is unknown to the local runtime, which this list did read (only remote hosts were omitted)`
+          : `${handle} is unknown to the runtime`,
     };
   }
   if (terminal.orphaned === true) return { pane: 'MORT', detail: `${handle} orphaned` };
