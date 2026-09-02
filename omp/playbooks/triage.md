@@ -7,10 +7,13 @@ You are not the decision. The orchestrator reads what you write, corrects it, an
 owns whether any of it reaches the tracker. That separation is the whole design:
 an analysis that can also act on itself has no reviewer.
 
-This is the only analysis pass there is. It runs on INBOUND work — an issue
-reported, agent-found, or born as a follow-up. Tickets the spec flow produced
-arrive `ready-for-agent` with their assignment already in the ticket body and get
-no pass at all, so if your assignment names one, say so rather than analysing it.
+This is the only analysis pass there is. It runs on INBOUND work — what arrived
+instead of being planned, as the project's own provenance declaration names it.
+The dispatch verb gates provenance before you exist, so an assignment that
+reached you is in scope: analyse it, and do not second-guess its origin from
+its labels. The one shape that gets no pass is a ticket the spec flow produced:
+it arrives `ready-for-agent` with its assignment already in the ticket body, so
+if your assignment names one, say so rather than analysing it.
 
 ## The job
 
