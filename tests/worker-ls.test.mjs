@@ -221,7 +221,12 @@ test('an unsettled pane that is GONE is still named, with the two routes that do
   ]);
   const run = fakeRunner({ terminals: [], workers: [] });
 
-  const { code, out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  // This is a DEAD ATTEMPT (#70, ruled 2026-09-02): unsettled, and the pane it
+  // recorded is a corpse on the local runtime this list read. It answers
+  // neither capacity nor overlap, so it leaves the default listing for a
+  // disclosed count — and everything it has ever named, verdict and both
+  // routes, is one flag away and unchanged.
+  const { code, out, lineWith } = capture(() => ls(['--all'], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
   assert.equal(code, 0);
   const line = lineWith('55-work');
   assert.match(line, /pane INCONNU .*no usable receipt yet/, 'nothing is established, and that is still the verdict');
@@ -229,6 +234,11 @@ test('an unsettled pane that is GONE is still named, with the two routes that do
   assert.match(out, /ax worker tail 55-work/);
   assert.match(out, /ax worker transcript 55-work/, 'a session outlives its pane, and one verb reads it');
   assert.match(out, /0 live pane\(s\)/, 'naming a dead pane is not counting it');
+
+  const def = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  assert.doesNotMatch(def.out, /55-work/, 'and the default view carries the count instead of the row');
+  assert.match(def.out, /1 unsettled record\(s\) whose pane is MORT — ax worker ls --all/);
+  assert.match(def.out, /0 live pane\(s\)/, 'the cap count is the same count in both views');
 });
 
 test('a truncated terminal list is cannot-establish: a partial list cannot prove a pane is dead', () => {
@@ -324,34 +334,77 @@ test('#70: the default receipt lists the panes that carry a decision, --all keep
   assert.doesNotMatch(all.out, /MORT record\(s\) not shown/, 'nothing is hidden under --all, so nothing is disclosed');
 });
 
-test('#70: what the default hides carries no hint — every route still prints, in both views', () => {
+test('#70: a dead attempt leaves the default as a count; an unasked host keeps its row', () => {
   const dir = store();
-  // The 55-work shape: a worker-start that never settled, its recorded pane
-  // long closed. Its own verdict is INCONNU, not MORT — nothing was
-  // established — so it stays in the default view with the two routes that
-  // need no pane. That is the invariant hiding MORT rows rests on.
-  writeRecord(dir, '55-work', [
+  // The RULING of 2026-09-02, round 1 on this PR. The two answers this verb
+  // owes are capacity and overlap, and the two INCONNU shapes differ on both:
+  //
+  //  - `unasked-1` dispatched onto a host this terminal list never read, so its
+  //    pane may be alive and working. It carries overlap. It stays.
+  //  - `dead-attempt-1` is a worker-start that never settled, and the pane it
+  //    did record is MORT on the LOCAL runtime this list DID read. It is a dead
+  //    attempt with a settlement debt (#78) — no capacity, no overlap — so it
+  //    leaves the default as one disclosed line, hints and all.
+  //
+  // Its DISPOSITION is untouched: still INCONNU, because nothing about that
+  // record was ever established. Only the listing changes.
+  writeRecord(dir, 'unasked-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_u1', handle: 'term_elsewhere' }) }], { on: 'gapicore' });
+  writeRecord(dir, 'dead-attempt-1', [
     { name: 'task-create', receipt: taskCreated('task_55') },
     {
       name: 'worker-start',
-      receipt: { ok: true, result: { taskId: 'task_55', dispatchId: 'ctx_55', state: 'failed', stage: 'dispatch_input', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_55' }] } },
+      receipt: { ok: true, result: { taskId: 'task_55', dispatchId: 'ctx_55', state: 'failed', stage: 'dispatch_input', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_gone' }] } },
     },
   ]);
-  writeRecord(dir, 'dead-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_d1', handle: 'term_d1' }) }]);
-  const orca = () => fakeRunner({ terminals: [], workers: [] });
+  writeRecord(dir, 'live-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_l1', handle: 'term_l1' }) }]);
+
+  const orca = () => fakeRunner({ terminals: [pane('term_l1')], omittedHostIds: ['runtime:7930a317'], workers: [] });
 
   const shown = capture(() => ls([], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir } }));
-  assert.equal(paneRows(shown.out).length, 1, 'the MORT record goes, the unestablished one stays');
-  assert.match(shown.out, /ax worker tail 55-work/);
-  assert.match(shown.out, /ax worker transcript 55-work/);
+  assert.equal(shown.code, 0);
+  assert.equal(paneRows(shown.out).length, 2, `the live pane and the unasked host, nothing else:\n${shown.out}`);
+  assert.match(shown.out, /live-1 .*pane VIVANT/);
+  assert.match(shown.out, /unasked-1 .*pane INCONNU/, 'a host this call never asked cannot answer for its panes');
+  assert.doesNotMatch(shown.out, /dead-attempt-1/, 'a dead attempt carries neither answer');
+  assert.doesNotMatch(shown.out, /ax worker tail|ax worker transcript/, 'and its settlement routes go with it');
+  assert.match(shown.out, /1 unsettled record\(s\) whose pane is MORT — ax worker ls --all/, 'collapsed to one line, with the view that has it');
+  assert.match(shown.out, /1 live pane\(s\) — this is the cap count/);
 
   const all = capture(() => ls(['--all'], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir } }));
-  assert.match(all.out, /ax worker tail 55-work/, 'the hints are the same hints under --all');
-  assert.match(all.out, /ax worker transcript 55-work/);
-  const lines = all.out.split('\n');
-  const dead = lines.findIndex(line => line.includes('dead-1'));
-  assert.ok(dead !== -1, 'the MORT record is in this view');
-  assert.doesNotMatch(lines[dead + 1] ?? '', /^ {6}→/, 'and it carries no repair line — which is what makes hiding it safe');
+  assert.equal(paneRows(all.out).length, 3, 'every record is still one row here');
+  const line = all.out.split('\n').find(l => l.includes('dead-attempt-1')) ?? '';
+  assert.match(line, /pane INCONNU/, 'the disposition is NOT relabelled by the listing');
+  assert.match(line, /term_gone, MORT/, 'the recorded pane is named, as it always was');
+  assert.match(all.out, /ax worker tail dead-attempt-1/, 'the two routes that need no pane live here now');
+  assert.match(all.out, /ax worker transcript dead-attempt-1/);
+  assert.match(all.out, /1 live pane\(s\) — this is the cap count/, 'the cap count is the same count in both views');
+  assert.doesNotMatch(all.out, /unsettled record\(s\) whose pane is MORT — ax/, 'nothing is withheld here, so nothing is disclosed');
+});
+
+test('#70: an unsettled record whose pane may still be alive is never collapsed', () => {
+  const dir = store();
+  // The two unsettled shapes that are NOT a dead attempt, and neither may be
+  // reduced to a count: `alive-leak` recorded a pane that is up right now
+  // (unproven association, so it is inspected and never released — F-028), and
+  // `unasked-leak` recorded one on a host this list never read. Both are
+  // possible capacity in use, which is the question the reader came with.
+  writeRecord(dir, 'alive-leak', [
+    { name: 'worker-start', exit: 1, receipt: { ok: true, result: { taskId: 't1', dispatchId: 'ctx_a', state: 'failed', stage: 'agent_readiness', effects: [{ kind: 'terminal', role: 'agent', action: 'reused_agent_terminal', id: 'term_alive' }] } } },
+  ]);
+  writeRecord(dir, 'unasked-leak', [
+    { name: 'worker-start', exit: 1, receipt: { ok: true, result: { taskId: 't2', dispatchId: 'ctx_b', state: 'failed', stage: 'agent_readiness', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_remote' }] } } },
+  ], { on: 'gapicore' });
+  // And the record that names no pane at all: a write-ahead entry whose
+  // mutation never came back. Nothing proves it dead, so nothing hides it.
+  writeRecord(dir, 'inflight-1', [{ name: 'worker-start' }]);
+
+  const run = fakeRunner({ terminals: [pane('term_alive')], omittedHostIds: ['runtime:7930a317'], workers: [] });
+  const { out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  assert.equal(paneRows(out).length, 3, `all three are unestablished, and none of them is a corpse:\n${out}`);
+  assert.match(out, /term_alive, ALIVE right now/);
+  assert.match(out, /worker-show --dispatch ctx_a/, 'the suspect is still routed to an inspection');
+  assert.doesNotMatch(out, /unsettled record\(s\) whose pane is MORT/, 'no dead attempt here, so no count line');
+  assert.match(out, /0 live pane\(s\)/, 'unproven is still never counted as capacity in use');
 });
 
 test('a REMOTE handle absent while its host is omitted is INCONNU, never MORT (measured hostScope, 2026-08-22)', () => {

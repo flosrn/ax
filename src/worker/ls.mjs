@@ -323,21 +323,40 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     const disagrees = workers.ok && pane === 'VIVANT' && (entry === undefined || entry.terminalState === 'retained');
     if (disagrees) drift.push(row);
 
-    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees };
+    // A DEAD ATTEMPT: nothing was established (so the disposition is INCONNU and
+    // stays INCONNU — the listing never relabels a verdict), and the pane this
+    // record DID name is a corpse on a host the receipt read. No capacity, no
+    // overlap. What it still holds is a settlement debt, and the verb that pays
+    // it is #78 rather than this one.
+    const deadAttempt = row.handle === null && leakedVerdict !== null && leakedVerdict.pane === 'MORT';
+
+    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt };
   });
 
-  // THE DEFAULT VIEW (#70). Measured 2026-09-02: 189 records, 263 lines, ≈40 KB
-  // into an orchestrator's context on EVERY dispatch — to deliver the three
-  // summary lines it reads, the live-pane count (capacity) and the live panes
-  // themselves (overlap arbitration). A MORT row is a recorded handle the
-  // runtime cannot see, and it is the one disposition that carries no repair:
-  // every route printed below hangs off a live pane (the F-048 release), a live
-  // unsettled terminal (`worker-show`), or a record that established no pane at
-  // all — and that last one is INCONNU, which stays. So the default hides
-  // corpses and withholds nothing, `--all` keeps the archaeology unchanged, and
-  // the tallies above were taken before the split.
-  const shown = all ? views : views.filter(view => view.pane !== 'MORT');
+  // THE DEFAULT VIEW (#70, ruled 2026-09-02). Measured on this machine: 189
+  // records, 263 lines, ≈40 KB into an orchestrator's context on EVERY dispatch
+  // — to deliver the live-pane count (capacity) and the live panes themselves
+  // (overlap arbitration). So the default carries the rows that answer one of
+  // those two, and nothing else:
+  //
+  //   VIVANT                      capacity in use, and the pane to arbitrate against
+  //   INCONNU, host not asked     may be alive and working on a host this list never read
+  //   INCONNU, pane alive         an unsettled worker-start whose terminal is up right now
+  //   INCONNU, no pane named      a write-ahead record; nothing proves it dead either
+  //
+  // Two dispositions answer neither and leave, each disclosed as its own count:
+  // a MORT row (a recorded handle the runtime cannot see), and a dead attempt
+  // (unsettled, its recorded pane a corpse on a host that WAS read). Neither can
+  // be arbitrated against and neither is capacity; a MORT row additionally
+  // names no repair, and a dead attempt's two settlement routes ride with it
+  // into `--all`.
+  //
+  // The tallies above were taken before this split, so both views answer the
+  // same machine: the flag changes what is SHOWN, never what was established.
+  const shown = all ? views : views.filter(view => view.pane !== 'MORT' && !view.deadAttempt);
   const hidden = views.length - shown.length;
+  const withheldMort = views.filter(view => view.pane === 'MORT').length;
+  const withheldAttempts = views.filter(view => view.deadAttempt).length;
 
   // The columns are sized on what is PRINTED: padding every line to the widest
   // request in the store would put the hidden rows' width back into the receipt.
@@ -386,9 +405,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
 
   note(`${alive} live pane(s) — this is the cap count`);
   if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
-  // A shortened list says so, with the flag that lengthens it: an omission a
-  // reader cannot see is the same defect as a count it cannot establish (F-028).
-  if (hidden > 0) note(`${hidden} MORT record(s) not shown — a pane the runtime cannot see names no repair: ax worker ls --all`);
+  // A shortened list says so, one line per class withheld, each with the flag
+  // that lengthens it: an omission a reader cannot see is the same defect as a
+  // count it cannot establish (F-028). The dead-attempt line is also the only
+  // surface that counts a settlement debt, which is why it is a count and not
+  // silence.
+  if (!all && withheldMort > 0) note(`${withheldMort} MORT record(s) not shown — a pane the runtime cannot see names no repair: ax worker ls --all`);
+  if (!all && withheldAttempts > 0) note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker ls --all`);
   if (terminals.omitted) note('hosts were omitted from the terminal-list scope: a pane absent from it is INCONNU here, never MORT');
   if (!workers.ok) {
     bad(workers.reason);
