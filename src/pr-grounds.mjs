@@ -582,6 +582,64 @@ export function closedIssueOf(body) {
 }
 
 /**
+ * Ground 9. The closure this merge is verified against is the ticket that was
+ * DISPATCHED, not the one the body happens to name.
+ *
+ * Deferred by decision at PR #65 review (Codex thread, Known Residuals 1), and
+ * the hazard is one keystroke wide: a worker whose PR says `Closes #11` while
+ * #10 was dispatched passes every ground above, #11 gets the closure check the
+ * gate performs after merging, and #10 — plus every ticket blocked by it —
+ * stays OPEN forever. Nothing escalates, because the closure verification
+ * itself reported success: the frontier keeps deriving those dependents as
+ * `blocked-by` and never re-derives them as takeable, so the subgraph stalls
+ * silently. Ground 7 cannot see it either: `Closes #11` is a keyword GitHub
+ * acts on, which is all that ground asks.
+ *
+ * The binding arrives from the CALLER (`--issue`, the orchestrator naming the
+ * ticket it is merging) or from the dispatch record of the PR's branch, and
+ * `boundTicket` in pr-gate.mjs owns that read. Here it is only compared:
+ *
+ *  - equal: a note, and closure verification then polls that number.
+ *  - different: a REFUSAL, so it lands before the mutation rather than after
+ *    it, where a merged PR cannot be un-merged.
+ *  - bound with nothing closing in this repository: also a refusal — the
+ *    dispatched ticket would stay open, which is the same stall by omission.
+ *  - unbound while the body DOES close a ticket here: an inability to
+ *    establish, never a pass. That is F-001's rule applied to a read: an
+ *    absent record is unknown, and unknown must not become "the body must be
+ *    right". A caller who knows better says so with `--issue`.
+ *
+ * A body that closes nothing here AND no binding is not this ground's
+ * business: nothing closes, nothing was claimed, and Ground 7 already owns
+ * whether that body may merge at all.
+ */
+export function ticketGround({ binding, closes, pr, slug }) {
+  const out = account();
+  if (!binding.ok) {
+    if (closes === null) return out;
+    out.unknown(`ticket binding: this PR's body closes #${closes}, and ${binding.reason}`, binding.repair);
+    return out;
+  }
+  const bound = binding.issue;
+  if (closes === null) {
+    out.refuse(
+      `ticket binding: this merge is for #${bound} (${binding.source}), and the body closes no same-repository issue, so #${bound} would stay open after it — every ticket blocked by #${bound} then derives from a stale blocker`,
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #${bound}", or merge by hand if this PR is not that ticket's delivery`,
+    );
+    return out;
+  }
+  if (closes !== bound) {
+    out.refuse(
+      `ticket binding: this merge is for #${bound} (${binding.source}), but the body closes #${closes} — merging would close #${closes} and leave #${bound} open, and every ticket blocked by #${bound} keeps deriving from a stale blocker`,
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # make the body close #${bound}, or re-run naming the ticket this PR really delivers`,
+    );
+    return out;
+  }
+  out.note(`ticket binding: the body closes #${bound}, the ticket this merge is for (${binding.source})`);
+  return out;
+}
+
+/**
  * Ground 8. The declaration guard: a PR must not weaken the gate that
  * measures it.
  *

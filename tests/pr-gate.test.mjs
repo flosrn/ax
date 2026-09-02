@@ -125,6 +125,49 @@ const writeConfig = (root, prGate) =>
   );
 
 /**
+ * The dispatch record that BINDS a PR to the ticket it was dispatched for,
+ * written the way `initRecord`/`phaseBegin` write it — the gate reads it with
+ * record.mjs's own strictness, so `request` must equal the file's stem and only
+ * a `worker-start` phase may name a placement.
+ *
+ * `worktree` is the local placement selector (`--worktree path:<abs>`), which is
+ * how a dispatch records WHERE it put the branch; a record written without one
+ * is matched by its request id against the PR's head branch instead.
+ */
+const writeRecord = (storeDir, { request, worktree = '', repo = SLUG } = {}) => {
+  mkdirSync(storeDir, { recursive: true });
+  const path = join(storeDir, `${request}.json`);
+  writeFileSync(
+    path,
+    JSON.stringify({
+      request,
+      host: hostname(),
+      orca: 'orca',
+      createdAt: OPENED,
+      ...(repo === null ? {} : { repo }),
+      attempts: [
+        {
+          n: 1,
+          settled: false,
+          phases: [
+            {
+              name: 'worker-start',
+              identity: '11111111-1111-4111-8111-111111111111',
+              argv: ['orchestration', 'worker-start', '--task', 'task_1', ...(worktree === '' ? [] : ['--worktree', `path:${worktree}`]), '--json'],
+              receiptPath: null,
+              receipt: null,
+              exit: null,
+              beganAt: OPENED,
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  return path;
+};
+
+/**
  * A repository whose `main`/`feature` pair reproduces one measured shape.
  *
  * The declaration is COMMITTED, in the pre-branch commit both sides share: the
@@ -221,6 +264,10 @@ const realGit = (args, at) => defaultExec('git', args, at);
  * from an empty payload and is tested as one. `threads` is a LIST of pages, so
  * pagination is modelled by the sequence the stub hands back. `git` may be
  * wrapped to fail one call and delegate the rest to the real repository.
+ *
+ * `record` is the dispatch record that binds this PR to its ticket: by default
+ * a dispatch for #1786 placed in THIS checkout, which is what the fixture body
+ * closes. `record: null` models a PR no dispatch on this host recorded.
  */
 const run = (
   argv,
@@ -238,6 +285,7 @@ const run = (
     issueStates = ['CLOSED'],
     prStates,
     store,
+    record = { request: '1786-work' },
     updateBranchFails = false,
     onMerge,
     onPrView,
@@ -317,6 +365,11 @@ const run = (
   // record into the next as a phantom replay.
   const storeDir = store ?? mkdtempSync(join(sandbox, 'store-'));
   const env = { HOME: sandbox, ORCA_DISPATCH_STORE: storeDir };
+  // The dispatch record lives in the store ROOT (the merge namespace is the
+  // `merge/` subdirectory below it), and its default placement is this
+  // checkout: the fixture's branch is the one a dispatch for #1786 would have
+  // put here.
+  if (record !== null) writeRecord(storeDir, { worktree: root, ...record });
   const result = capture(() => gate([...argv], { gh, git: gitOverride ?? realGit, cwd: root, env, sleep: () => {} }));
   return { ...result, calls, store: storeDir, headSha };
 };
@@ -393,7 +446,9 @@ test('a checkout may declare its gate WITHOUT the provisioning contract', () => 
   const root = repoFor('current', DEFAULT_GATE);
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } }));
   const { code, out } = capture(() =>
-    gate(['--pr', '1845'], {
+    // `--issue` because this run injects no dispatch store: the caller names the
+    // ticket it is gating, which is the orchestrator's own gesture.
+    gate(['--pr', '1845', '--issue', '1786'], {
       gh: args => {
         const [verb, target] = args;
         if (verb === 'repo' && target === 'view' && args.includes('defaultBranchRef')) return answered(JSON.stringify({ defaultBranchRef: { name: 'main' } }));
@@ -775,6 +830,9 @@ test('a declared tracker turns the false "no intent" line into the actionable on
     ...CLEAN,
     prGate: { aggregate: AGGREGATE, tracker: { name: 'Linear', pattern: 'GAP-[0-9]+' } },
     receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }),
+    // Tracked in Linear: no ax dispatch record binds a GitHub ticket here, so
+    // this run is about the keyword line alone.
+    record: null,
   });
   assert.equal(code, 0);
   assert.match(out, /closing keyword: no GitHub keyword, but the body names Linear 'GAP-380' — GitHub closes nothing there, so that ticket moves by hand/);
@@ -832,6 +890,105 @@ test('a tracker pattern that does not compile falls back to the bare refusal, an
   assert.equal(code, 1);
   assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
   assert.doesNotMatch(out, /moves by hand/);
+});
+
+// ── Ground 9: the ticket this merge is FOR ──────────────────────────────────
+
+test('a PR body that closes another ticket than the one dispatched is refused before any merge', () => {
+  // The whole defect: the gate verified closure of whatever the body named, so
+  // a worker whose PR said `Closes #999` while #1786 was dispatched passed —
+  // #999 got the closure check, and #1786 plus everything blocked by it stayed
+  // blocked forever, because the frontier never re-derives a ticket that never
+  // closed.
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, receipt: prView({ body: 'Closes #999' }) });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — ticket binding: this merge is for #1786 .*, but the body closes #999/);
+  assert.match(out, /→ gh pr edit 1845 --repo gapilabs\/gapila --body-file -/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'the wrong ticket was merged for');
+  assert.ok(!calls.some(call => call.startsWith('issue view')), 'the wrong issue was polled for closure');
+});
+
+test('--issue outranks the dispatch record: the orchestrator names the ticket it merges', () => {
+  // The record binds #1786; a caller merging the ticket the body names says so,
+  // and the flag is what the record's default cannot override.
+  const explicit = run(['--pr', '1845', '--issue', '999', '--merge'], { ...CLEAN, receipt: prView({ body: 'Closes #999' }) });
+  assert.equal(explicit.code, 0, explicit.out);
+  assert.match(explicit.out, /ticket binding: the body closes #999, the ticket this merge is for \(--issue\)/);
+  assert.deepEqual(explicit.calls.filter(call => call.startsWith('issue view')), [`issue view 999 --repo ${SLUG} --json state`]);
+  // And it outranks it the other way too: the flag disagreeing with the body
+  // refuses, whatever the record says.
+  const crossed = run(['--pr', '1845', '--issue', '1786', '--merge'], { ...CLEAN, receipt: prView({ body: 'Closes #999' }) });
+  assert.equal(crossed.code, 1);
+  assert.match(crossed.out, /REFUSE — ticket binding: this merge is for #1786 \(--issue\), but the body closes #999/);
+});
+
+test('--issue expects a ticket number, and never a bare word', () => {
+  assert.equal(run(['--pr', '1845', '--issue']).code, 2);
+  assert.equal(run(['--pr', '1845', '--issue', '0']).code, 2);
+  assert.equal(run(['--pr', '1845', '--issue', '#1786']).code, 2);
+  assert.match(run(['--pr', '1845', '--issue', 'the-one']).out, /--issue expects an issue number/);
+});
+
+test('the record BINDS by request id when the branch carries it, without a placement to read', () => {
+  // A dispatch whose worktree this host no longer holds — or one placed on
+  // another host — still names its ticket: the request id is the worktree name
+  // `ax worker dispatch --issue 1786 --slug chat` created, and the branch
+  // carries it (the predicate `ax worker release` proves a landing with).
+  const root = repoFor('current', DEFAULT_GATE);
+  git(root, 'branch', '-f', 'feat/1786-chat', 'feature');
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    record: { request: '1786-chat', worktree: '' },
+    receipt: prView({ headRefName: 'feat/1786-chat' }),
+  });
+  assert.equal(code, 0, out);
+  assert.match(out, /ticket binding: the body closes #1786, the ticket this merge is for \(dispatch record 1786-chat\)/);
+});
+
+test('neither --issue nor a readable record is cannot-establish, never a silent pass', () => {
+  // F-001's rule applied to a read: an absent record is UNKNOWN, and unknown
+  // must not become "the body must be right".
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, record: null });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — ticket binding: this PR's body closes #1786, and no dispatch record on this host names the ticket branch 'feature' was dispatched for/);
+  assert.match(out, /→ ax pr gate --pr 1845 --issue <n>/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'an unbound merge mutated');
+});
+
+test('a record that names no ticket binds nothing: a named dispatch is not a ticket number', () => {
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, record: { request: 'readiness-sweep' } });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — ticket binding: this PR's body closes #1786, and no dispatch record on this host names the ticket/);
+});
+
+test('two dispatch records claiming this branch for different tickets is ambiguous, never last-file-wins', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const root = repoFor('current', DEFAULT_GATE);
+  writeRecord(storeDir, { request: '1786-work', worktree: root });
+  writeRecord(storeDir, { request: '4242-work', worktree: root });
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, record: null });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — ticket binding: this PR's body closes #1786, and this checkout's dispatch records name #1786 and #4242 for branch 'feature'/);
+  assert.match(out, /→ ax pr gate --pr 1845 --issue <n>/);
+});
+
+test('an unreadable record is named, and absence beside it is never read as an answer', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  writeFileSync(join(storeDir, '1786-work.json'), '{ this is not json');
+  const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir, record: null });
+  assert.equal(code, 3);
+  assert.match(out, /1786-work\.json is unreadable/);
+});
+
+test('a bound ticket the body closes nothing for is refused: the dispatched ticket would stay open', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    prGate: { aggregate: AGGREGATE, tracker: { name: 'Linear', pattern: 'GAP-[0-9]+' } },
+    receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }),
+  });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — ticket binding: this merge is for #1786 .*, and the body closes no same-repository issue/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
 });
 
 // ── The verdict and the merge ──────────────────────────────────────────────
@@ -905,7 +1062,9 @@ test('--method merge lands a real merge commit, and squash never appears', () =>
 });
 
 test('--merge on a refusal mutates nothing', () => {
-  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'stale' });
+  // An unresolved thread rather than staleness: staleness alone has its own
+  // self-repair path (KTD6), which ends the run before this line is reached.
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { threads: [threadPage([thread('T1', false)])] });
   assert.equal(code, 1);
   assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a refusing verdict issued a merge');
@@ -941,6 +1100,7 @@ test('every ground is reported, none short-circuited by another', () => {
     /REFUSE — threads: unresolved thread T_p1/,
     /REFUSE — residual findings: this branch wrote docs\/residual/,
     /REFUSE — commits since open \[DETECTOR\]/,
+    /REFUSE — ticket binding: this merge is for #1786/,
     /REFUSE — closing keyword: 'Ferme #1786'/,
     /checks: 4 check-run\(s\) reported/,
     /staleness: feature carries main/,
@@ -948,7 +1108,7 @@ test('every ground is reported, none short-circuited by another', () => {
   ]) {
     assert.match(out, ground);
   }
-  assert.equal(out.match(/✗ REFUSE — /g).length, 4);
+  assert.equal(out.match(/✗ REFUSE — /g).length, 5);
 });
 
 test('a refusal outranks an inability to establish when both apply', () => {
@@ -1047,11 +1207,44 @@ test('replay against an open PR whose head moved opens a NEW attempt on the fres
   assert.equal(record.attempts[0].settled, true);
 });
 
-test('KTD6: staleness as the only refusing ground updates the branch and re-runs once; the second refusal routes', () => {
-  // First run sees the stale shape; the harness cannot move the fixture repo
-  // mid-run, so the retried run refuses on staleness AGAIN — which is exactly
-  // the second-refusal path: one update-branch, then routing, never a loop.
+test('KTD6 rider: an update-branch the head did not follow refuses instead of recursing', () => {
+  // `gh pr update-branch` returns before GitHub has moved the head, and the
+  // recursion is the ONE retry this verb gets. Spending it on an unchanged head
+  // re-runs every ground against the very commit that just refused, and reports
+  // the second refusal as if a repair had been attempted.
   const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'stale' });
+  assert.equal(code, 1);
+  assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
+  assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
+  assert.match(out, /REFUSE — self-repair: the head is still .* after gh pr update-branch/);
+  assert.doesNotMatch(out, /self-repair already ran once/, 'the one retry was spent on an unmoved head');
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
+});
+
+test('KTD6 rider: a head that cannot be re-read is cannot-establish, never a spent retry', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    shape: 'stale',
+    // receipt, then the post-update head read fails.
+    prStates: [prView(), null],
+  });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — self-repair: the head after gh pr update-branch 1845 is unread/);
+  assert.match(out, /→ gh pr view 1845 --repo gapilabs\/gapila --json headRefOid/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('KTD6: staleness as the only refusing ground updates the branch and re-runs once; the second refusal routes', () => {
+  // The head MOVED, so the one retry buys a real re-measurement. The fixture
+  // repository cannot move with it, so the retried run refuses on staleness
+  // again — which is exactly the second-refusal path: one update, then routing.
+  const moved = shaOf(repoFor('stale', DEFAULT_GATE), 'main');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    shape: 'stale',
+    // receipt · the head after the update · the retried run's own receipt
+    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
+  });
   assert.equal(code, 1);
   assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
   assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
@@ -1123,6 +1316,10 @@ test('closure verification has nothing to poll for a declared-tracker body, and 
     prGate: { aggregate: AGGREGATE, tracker: { name: 'Linear', pattern: 'GAP-[0-9]+' } },
     receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }),
     issueStates: [null],
+    // A repository that tracks in Linear has no ax dispatch record binding a
+    // GitHub ticket to this branch: nothing here closes on GitHub, and nothing
+    // claims a GitHub ticket is owed.
+    record: null,
   });
   assert.equal(code, 0);
   assert.match(out, /closure: the body names no same-repository #N to verify — that ticket moves by hand/);
@@ -1158,16 +1355,23 @@ test('a merge call that succeeds while the PR stays OPEN is queued, not merged (
   assert.match(out, /→ gh pr view 1845 --repo gapilabs\/gapila --json state,mergeCommit/);
 });
 
-test('closure polls the issue the POST-merge body names, not the one captured before the merge', () => {
-  // GitHub closes from the body as it stands at merge time, so a body edited
-  // between validation and merge closes a different ticket than the capture.
-  const { code, calls } = run(['--pr', '1845', '--merge'], {
+test('a body edited to close another ticket while the gate ran polls the BOUND ticket, and names the edit', () => {
+  // GitHub closes from the body as it stands at merge time, so the post-merge
+  // read is the one that says what closed. It is not what this merge was FOR:
+  // #1786 was dispatched, #999 is what the edited body closes, and polling #999
+  // would report a delivery of a ticket nobody merged for.
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
     prStates: [prView(), prView({ state: 'MERGED', body: 'Closes #999' })],
+    issueStates: ['OPEN'],
   });
-  assert.equal(code, 0);
-  const polls = calls.filter(call => call.startsWith('issue view'));
-  assert.deepEqual(polls, [`issue view 999 --repo ${SLUG} --json state`]);
+  assert.equal(code, 3);
+  assert.match(out, /closure: the post-merge body closes #999, not #1786 — the ticket this merge was for/);
+  assert.match(out, /CANNOT ESTABLISH — issue #1786 is not closed after the recorded merge/);
+  assert.deepEqual(
+    calls.filter(call => call.startsWith('issue view')),
+    Array.from({ length: 5 }, () => `issue view 1786 --repo ${SLUG} --json state`),
+  );
 });
 
 test('two concurrent --merge runs cannot both reissue: a held lock is cannot-establish naming its holder', () => {
@@ -1263,6 +1467,7 @@ test('a merging run refuses a prGate the head does not carry: the gate never mea
     return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
   };
   const env = { HOME: sandbox, ORCA_DISPATCH_STORE: mkdtempSync(join(sandbox, 'store-')) };
+  writeRecord(env.ORCA_DISPATCH_STORE, { request: '1786-work', worktree: root });
   const merge = () => capture(() => gate(['--pr', '1845', '--merge'], { gh, git: realGit, cwd: root, env, sleep: () => {} }));
 
   // Committed and equal: the check says so and changes nothing else.
