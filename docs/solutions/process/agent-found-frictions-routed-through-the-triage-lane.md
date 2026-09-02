@@ -1,0 +1,94 @@
+---
+title: Frictions the wave's own agents found were routed through the triage lane, which re-verified measured reports and minted tickets
+date: 2026-09-02
+category: process
+module: omp/roles/orchestrator.md, omp/playbooks/triage.md, src/triage/dispatch.mjs
+problem_type: process
+component: orchestration
+severity: medium
+symptoms:
+  - "26 `source:agent-found` issues (#78–#103) filed during one dogfood wave, every one already carrying argv, raw output, expected state and cost per the friction contract"
+  - "13 triage passes and 7 brief passes dispatched over them — about three hours of opus sessions — before a single repair landed"
+  - "Three tickets carved out mid-pass (#78→#102, #88→#98, #84→#103) and one duplicate (#50 / #95) that an open-issue search by concept would have caught"
+  - "Ten of the 26 were ten-line repairs (`--brief`→`--notes` hint, a wrong log line, an idempotent label reapplied) that a maintainer closes in an hour with a verdict comment"
+  - "One triage pass (#95) ran a 2/48 reproduction under 8-way load — root-cause work the brief and the implementation each redo"
+root_cause: lane_widened_to_own_findings
+resolution_type: doc_fix
+related_components:
+  - triage-lane
+  - maintainer-channel
+  - birth-convention
+tags:
+  - triage-is-an-on-ramp
+  - finder-is-the-verifier
+  - ceremony-vs-value
+  - carve-out
+  - dedup-by-concept
+---
+# Agent-found frictions routed through the triage lane
+
+## Problem
+
+`omp/playbooks/triage.md` and `omp/roles/orchestrator.md` defined the triage lane as serving
+"work that was reported, agent-found, or born as a follow-up". Two of those three are work the wave
+itself created. The triage on-ramp exists for a claim of unknown quality — a person's report from
+outside — whose first job is to be verified before anyone briefs it (the doctrine this package
+adapted it from says so in one line: it is only for issues you did not create, and running it over
+your own tickets is wasted work). A friction an agent finds in the instrument is the opposite shape:
+the birth contract ("When ax itself is the problem", `orchestrator.md`) already requires argv, raw
+output, expected state and cost, so the finder is the verifier and a triage pass re-measures what is
+measured.
+
+Two rules in the same role then collided. "When ax itself is the problem" sends a friction to the
+`maintainer` session for a verdict comment. "Wave end" said: sweep the follow-ups, park them, and
+"before the next spec is planned, run one triage wave over the parked pile". No maintainer session
+was up during the wave, the pile grew to 26, and the wave-end rule fired the triage wave over it.
+
+## What it cost
+
+Measured 2026-09-02 on the package's own checkout (wave dogfood-1 → triage-1): 13 triage passes,
+7 brief passes, 6 `ready-for-human` verdicts each awaiting an operator ruling, ~3 hours of sessions.
+Three carve-outs (#78→#102, #88→#98, #84→#103) — a decomposition the operator never approved, which
+is `to-tickets`'s job — and one duplicate (#50/#95). One pass did root-cause work (#95, a real lost
+update in the dispatch record) that belongs to the session that takes the ticket, not to the one
+that classifies it. And the ceremony's own cost surfaced as more frictions: #97 (proof window),
+#100 (release leaves the pane alive), #101 (publish reapplies a birth label) were found by the
+triage wave while triaging the previous wave's findings.
+
+## Fix
+
+Prose only, in two files, in the commit that carries this entry:
+
+- `omp/playbooks/triage.md`: inbound is `source:user-report`. A finding an agent made while working
+  and a spec-born ticket both get no pass; the child says so instead of analysing.
+- `omp/roles/orchestrator.md`: the lane definition excludes `source:agent-found`; a finding goes to
+  whoever owns what was found — the maintainer channel for the instrument, the spec flow for the
+  product. Wave end sweeps by source, not by time window; searches open issues by concept before
+  filing; never carves mid-wave — a draft names scope beyond its ticket and the operator decides
+  through `to-tickets`.
+
+## The rules this paid for
+
+**THE FINDER IS THE VERIFIER.** A report that arrives with its measurement attached is not a claim
+to verify but a verdict to give. Routing it through a verification pass costs the pass and produces
+nothing the report did not already carry.
+
+**A PASS NEVER CARVES.** Splitting scope is a decision the operator makes with the granularity in
+front of them (`to-tickets`). A worker or orchestrator that files a sibling mid-pass has decided it
+alone, and the sibling then needs its own pass — the ticket count grows by the very mechanism meant
+to reduce it.
+
+**DEDUP AT BIRTH, BY CONCEPT.** The redundancy check the triage lane runs before briefing is too late
+for a finding the wave itself files; the search belongs before `gh issue create`.
+
+## What is still prose
+
+ADR 0001 says provenance is enforced by `ax triage dispatch`, not by role text — and it is, for
+spec-born work: `provenanceVerdict` (`src/triage/dispatch.mjs`) reads `triage.provenance.spec` and
+`triage.provenance.inbound` from `ax.config.json`, refuses the first class, admits the second, and
+returns null for a label in neither. Excluding `source:agent-found` from this repository's `inbound`
+list would not refuse it; it would only blind the gate. Refusing it needs a third provenance class
+whose repair names the maintainer channel, and that is a contract change every consumer's config
+adopts — a ruling for the operator, not a patch for a session. Until it lands, the rule above holds
+by the orchestrator's reading of its role, which is exactly the state ADR 0001 rejected for the
+spec-born case.
