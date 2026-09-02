@@ -127,6 +127,37 @@ export const trackerRepoOf = url => {
 export const retiredKnobs = (env = {}) =>
   ['AX_LAUNCH_TICK', 'AX_LAUNCH_SEE_WAIT', 'AX_LAUNCH_EQUIP_WAIT', 'AX_LAUNCH_SPEC_DIR'].filter(name => (env[name] ?? '') !== '');
 
+/**
+ * The FLAGS this vocabulary retired, refused BY NAME rather than fallen through
+ * as unknown arguments — the argument-lane twin of `retiredKnobs` above.
+ *
+ * 0.16.0 renamed both flags and published the contract that "every retired name
+ * refuses with the replacement named rather than falling back silently". Three
+ * layers paid it — the retired VERB (`worker launch` → `dispatch`, in
+ * `../commands.mjs`), the retired ENV knobs (above, `capOf`, `roleWaitOf`) and
+ * the retired CONFIG keys (`retiredConfigKeyFixes`, shared by `init` and
+ * `doctor` so neither can name a repair the other does not). The flag layer did
+ * not: `--brief` landed on `unknown argument "--brief"` and a usage line, which
+ * names the wrong name and never the right one.
+ *
+ * Keyed on the VERB-AND-FLAG pair, because the same retired name has a
+ * different repair per verb: `--brief` → `--notes` here, `--brief` →
+ * `--oneline` on `ax triage status` (`../triage/index.mjs`, the second reader).
+ * One source, two answers, so a third retired flag is one entry rather than two
+ * edits in two files that can then disagree.
+ *
+ * A name absent from this map is NOT retired and buys no repair (F-028): it
+ * keeps each verb's own `unknown argument "<arg>"` refusal, unchanged. Neither
+ * verb ever ACCEPTS a retired name — the refusal is the whole deliverable.
+ */
+export const RETIRED_FLAGS = {
+  'worker dispatch': { '--brief': '--notes' },
+  'triage status': { '--brief': '--oneline' },
+};
+
+/** The live flag a retired one became, or '' when that verb never retired the name. */
+export const retiredFlagRepair = (verb, flag) => RETIRED_FLAGS[verb]?.[flag] ?? '';
+
 export function dispatch(
   argv = [],
   {
@@ -220,7 +251,15 @@ export function dispatch(
       i += 1;
       if (argv[i] === undefined) return usageError(`${arg} expects a value`);
       flags[NAMED[arg]] = argv[i];
-    } else return usageError(`unknown argument "${arg}"`);
+    } else {
+      // A retired flag is named, with its replacement, before the fall-through
+      // can call it merely unknown. The value behind it is never consumed and
+      // never read: the NAME is what refuses, so `--brief <path>` answers the
+      // same whether the path exists or not.
+      const repair = retiredFlagRepair('worker dispatch', arg);
+      if (repair !== '') return usageError(`${arg} was retired and is not aliased — ${repair} is the flag now`, `pass ${repair} where you passed ${arg}`);
+      return usageError(`unknown argument "${arg}"`);
+    }
   }
 
   // `--run` is kept parseable ONLY to answer the operator who was told to pass

@@ -344,8 +344,115 @@ test('a release in flight and a release Orca cannot account for are not "already
   // in both places at once.
   assert.match(r.out, /1 kept/);
   assert.match(r.out, /ctx_unknown.*cannot account for an earlier release/);
-  assert.match(r.out, /worker-show --dispatch ctx_unknown/);
+  assert.match(r.out, /--retry-request/, 'the repair is an action, not a look');
   assert.doesNotMatch(r.out, /release state unknown/);
+});
+
+// ── what the receipt said, and what ax printed of it ─────────────────────────
+//
+// #100: a `release_unknown` receipt carries `lastError` (what Orca did and did
+// not confirm) and `recovery` (what Orca prescribes). ax printed neither, so the
+// operator got `exit 1: Orca cannot account for this release` — no reason — and
+// a repair line that only INSPECTED. A `worker-show` is a look, not an action.
+
+const LAST_ERROR =
+  'The agent terminal was closed but its process could not be confirmed stopped: a follow-up stop was issued but its outcome could not be verified.';
+const RECOVERY = 'Inspect the worker with worker-show, then repeat worker-release with the same --retry-request. Never substitute a broad terminal close.';
+
+const unknownReceipt = (result = {}) => ({
+  status: 1,
+  stdout: JSON.stringify({
+    ok: true,
+    result: { dispatchId: 'ctx_ru', state: 'release_unknown', processAction: 'closed_agent_terminal', archive: { status: 'captured' }, ...result },
+  }),
+  stderr: '',
+});
+
+/** A release record on disk, in the namespace this verb writes: `<store>/release/<ctx>.json`. */
+function releaseRecord(dir, dispatchId, result) {
+  mkdirSync(join(dir, 'release'), { recursive: true });
+  writeFileSync(
+    join(dir, 'release', `${dispatchId}.json`),
+    JSON.stringify({
+      request: `release-${dispatchId}`,
+      host: 'test',
+      orca: 'stub-orca',
+      createdAt: '2026-08-20T10:00:00.000Z',
+      attempts: [
+        {
+          n: 1,
+          settled: false,
+          phases: [
+            {
+              name: 'worker-release',
+              identity: 'id-1',
+              argv: ['stub-orca', 'orchestration', 'worker-release', '--dispatch', dispatchId, '--retry-request', 'id-1', '--json'],
+              exit: 1,
+              receipt: { ok: true, result: { dispatchId, state: 'release_unknown', processAction: 'closed_agent_terminal', ...result } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+}
+
+test('a release_unknown prints the reason and the recovery its own receipt carried', () => {
+  const r = run(['--close', '--dispatch', 'ctx_ru', '--no-proof'], {
+    orca: {
+      workers: [worker('ctx_ru')],
+      terminals: [terminal('term_ctx_ru')],
+      releaseReceipts: { ctx_ru: unknownReceipt({ lastError: LAST_ERROR, recovery: RECOVERY }) },
+    },
+  });
+
+  assert.equal(r.code, 1);
+  assert.ok(r.out.includes(LAST_ERROR), 'the sentence Orca wrote, verbatim');
+  assert.ok(r.out.includes(RECOVERY), 'and the recovery it prescribes, verbatim');
+  // Every finding names its repair, and the recorded recovery defeats itself:
+  // the request is already completed in Orca's ledger, so repeating the same
+  // `--retry-request` is served from it. Only a FRESH identity re-enters the
+  // release, and ax may not mint one (F-001) — so the repair is the operator's
+  // command, named rather than implied.
+  assert.match(r.out, /--retry-request/);
+  assert.ok(!/^\s*→ orca orchestration worker-show --dispatch ctx_ru --json\s*$/m.test(r.out), 'a worker-show alone is a look, not a repair');
+  // The identity is minted by the runtime ax already requires, never by a
+  // utility the host may lack: review of the first draft (Codex, P2) measured
+  // `uuidgen` absent on a minimal Linux, where the repair would have printed
+  // `command not found`, substituted an empty value and invoked Orca with an
+  // invalid --retry-request.
+  assert.match(r.out, /node -p "require\('crypto'\)\.randomUUID\(\)"/, 'the fresh identity comes from node');
+  assert.doesNotMatch(r.out, /uuidgen/);
+});
+
+test('a release_unknown receipt carrying neither field says so, rather than printing nothing', () => {
+  const r = run(['--close', '--dispatch', 'ctx_ru', '--no-proof'], {
+    orca: { workers: [worker('ctx_ru')], terminals: [terminal('term_ctx_ru')], releaseReceipts: { ctx_ru: unknownReceipt() } },
+  });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /no reason given by the runtime/);
+});
+
+test('a swept release_unknown row names the reason its recorded receipt carried', () => {
+  const dir = store();
+  releaseRecord(dir, 'ctx_unknown', { lastError: LAST_ERROR, recovery: RECOVERY });
+  const r = run(['--all'], { dir, orca: { workers: [worker('ctx_unknown', { terminalState: 'release_unknown' })] } });
+
+  assert.match(r.out, /1 kept/);
+  assert.ok(r.out.includes(LAST_ERROR));
+  assert.ok(r.out.includes(RECOVERY));
+  assert.match(r.out, /--retry-request/);
+});
+
+test('a swept release_unknown with no recorded receipt says the reason cannot be read here', () => {
+  // F-028: this host having no release record is not the runtime having given no
+  // reason, and the two must not print the same sentence.
+  const r = run(['--all'], { orca: { workers: [worker('ctx_unknown', { terminalState: 'release_unknown' })] } });
+
+  assert.match(r.out, /1 kept/);
+  assert.match(r.out, /no release receipt/);
+  assert.doesNotMatch(r.out, /no reason given by the runtime/);
 });
 
 test('a context-only dispatch owns no terminal to release, and says so instead of churning', () => {

@@ -77,6 +77,16 @@
 // and never a re-mint — it means another caller owns that release, and the safe
 // move is that caller's record.
 //
+// A `release_unknown` IS A SCAR THIS VERB CANNOT CLEAR, AND IT SAYS WHY (#100)
+// Both sites that report one — the live release's non-zero exit and the swept
+// row — print the receipt's own `lastError` and `recovery` verbatim, and name
+// the operator's fresh-identity call as the repair. Orca's own prescription
+// (repeat with the SAME `--retry-request`) defeats itself: `release_unknown` is
+// a returned result, so the request is completed in the mutation ledger and
+// every later call is replayed from it. The escape needs a new identity, which
+// the rule above forbids ax from minting, so the honest repair is a command the
+// operator runs — never a `worker-show`, which is a look and not an action.
+//
 // DEFAULT IS A REPORT. Nothing closes without --close.
 //
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
@@ -171,6 +181,73 @@ const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
 const landed = detail => ({ landed: true, detail });
 const missing = detail => ({ landed: false, detail });
+
+/**
+ * What a `release_unknown` receipt SAID, and the repair that is honest about it.
+ *
+ * Measured on #100: the receipt Orca answered carried both `lastError` ("the
+ * agent terminal was closed but its process could not be confirmed stopped …")
+ * and `recovery` (Orca's own instruction), and this verb printed neither — the
+ * operator read `exit 1: Orca cannot account for this release`, no reason, and a
+ * repair line that only INSPECTED. A `worker-show` is a look, not an action, and
+ * this repository's rule is that every finding names its repair.
+ *
+ * Both fields are printed VERBATIM. They are the runtime's sentences about a
+ * mutation ax cannot re-enter, and paraphrasing them here would put a third
+ * account of one event beside the receipt and the resource row.
+ *
+ * A receipt carrying NEITHER field is a receipt with no reason in it, and it
+ * says so: silence would read as "ax dropped it", which is exactly the defect
+ * this pays off. That sentence is NOT reused for a release this host never
+ * recorded — an unread receipt is not an unexplained one (F-028), so the two
+ * have separate wordings.
+ *
+ * THE REPAIR, and why it is not the receipt's own `recovery`. Orca prescribes
+ * repeating the release with the SAME `--retry-request`, but `release_unknown`
+ * is a returned result rather than a throw, so the mutation executor recorded
+ * the request as completed and serves every later call from its ledger
+ * (`replayed: true`) without re-entering the release. Its own advice defeats
+ * itself. The server-side escape is one identity away — `requestWorkerTerminalRelease`
+ * accepts a row in `unknown` — and ax may not mint that identity: F-001, stated
+ * in this file's header, is why a recovery replays the recorded request byte for
+ * byte. So the honest repair is the operator's own fresh-identity call, named
+ * rather than implied, beside the inspection that shows the state it is in.
+ */
+const NO_REASON = 'no reason given by the runtime';
+
+const UNREAD_REASON = 'no release receipt on this host to read a reason from';
+
+const receiptReason = result => {
+  const lastError = String(result?.lastError ?? '').trim();
+  const recovery = String(result?.recovery ?? '').trim();
+  if (lastError === '' && recovery === '') return NO_REASON;
+  return [lastError, recovery === '' ? '' : `Orca's recovery: ${recovery}`].filter(part => part !== '').join(' · ');
+};
+
+const releaseRepair = dispatchId =>
+  `orca orchestration worker-release --dispatch ${dispatchId} --retry-request "$(node -p "require('crypto').randomUUID()")" --json   # a FRESH identity is the only thing that re-enters this release: the recorded one is completed in Orca's ledger and is replayed from it, and ax may not mint a second identity (F-001). node mints it because ax already requires node and nothing else is guaranteed on the host. Read it first with orca orchestration worker-show --dispatch ${dispatchId} --json`;
+
+/**
+ * The result of the last recorded `worker-release` phase for this dispatch, or
+ * null when this host has no readable record of one. Read from the record this
+ * verb writes itself (`<store>/release/<dispatch>.json`), because a swept row
+ * comes from `worker-list`, which reports the STATE and not the sentence.
+ */
+function recordedReleaseResult(dir, dispatchId) {
+  let rec;
+  try {
+    rec = JSON.parse(readFileSync(join(dir, `${dispatchId}.json`), 'utf8'));
+  } catch {
+    return null;
+  }
+  const phases = rec?.attempts?.[rec.attempts.length - 1]?.phases ?? [];
+  for (const phase of [...phases].reverse()) {
+    if (phase?.name !== 'worker-release') continue;
+    const result = phase.receipt?.result;
+    if (result !== null && typeof result === 'object') return result;
+  }
+  return null;
+}
 
 /**
  * Orca's own worker inventory. The handle is read from BOTH keys it has been
@@ -520,8 +597,8 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
   if (outcome.exit !== 0) {
     return {
       settled: false,
-      line: `${detail}  — exit ${outcome.exit}: Orca cannot account for this release`,
-      repair: `orca orchestration worker-show --dispatch ${dispatchId} --json`,
+      line: `${detail}  — exit ${outcome.exit}: Orca cannot account for this release: ${receiptReason(result)}`,
+      repair: releaseRepair(dispatchId),
     };
   }
   return { settled: true, line: detail, repair: '' };
@@ -673,9 +750,18 @@ export function release(
     if (row.terminalState === 'release_unknown') {
       // Printed and KEPT rather than tallied: it is the one not-offered state an
       // operator has to chase, so it belongs to the rows that carry a repair.
+      //
+      // The row itself carries the STATE and not the sentence, so the reason is
+      // read from the release record this verb wrote when it made the call
+      // (`receiptReason` / `recordedReleaseResult`). A release this host never
+      // recorded says that instead — an unread receipt is not an unexplained
+      // one (F-028).
+      const recorded = recordedReleaseResult(join(store, RELEASE_NS), row.dispatchId);
       keep(
-        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · Orca cannot account for an earlier release`,
-        `orca orchestration worker-show --dispatch ${row.dispatchId} --json`,
+        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · Orca cannot account for an earlier release: ${
+          recorded === null ? UNREAD_REASON : receiptReason(recorded)
+        }`,
+        releaseRepair(row.dispatchId),
       );
       continue;
     }

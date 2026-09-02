@@ -230,6 +230,35 @@ test('an unreadable --notes file is refused before the ticket is even read', () 
   assert.deepEqual(r.calls, [], 'nothing is read when the arguments already refuse');
 });
 
+test('the retired --brief is refused BY NAME, with --notes named as the repair', () => {
+  // 0.16.0 renamed the flag and published the contract that "every retired name
+  // refuses with the replacement named rather than falling back silently". The
+  // verb, env and config layers pay it; this flag answered a bare
+  // unknown-argument usage line, so the operator was told which name is wrong
+  // and never which one is right.
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--brief', '/tmp/nope.md']);
+  assert.equal(r.code, 2, 'the argument lane already answers 2 here, and callers branch on it');
+  assert.match(r.out, /--brief/);
+  const usageAt = r.out.indexOf('ax worker dispatch (--issue');
+  const repairAt = r.out.indexOf('--notes');
+  assert.ok(repairAt !== -1 && usageAt !== -1 && repairAt < usageAt, 'the replacement is named ABOVE the usage line, not merely listed inside it');
+  assert.deepEqual(r.calls, [], 'no binary is consulted for an argument that already refuses');
+  assert.deepEqual(r.started, []);
+
+  // The value that follows a retired flag is never consumed and never read: the
+  // flag is what refuses, whether the path exists or not.
+  const alone = run(['--issue', ISSUE, '--slug', SLUG, '--brief']);
+  assert.equal(alone.code, 2);
+  assert.ok(alone.out.indexOf('--notes') < alone.out.indexOf('ax worker dispatch (--issue'));
+});
+
+test('an unknown argument that is NOT retired keeps its message, with no invented repair', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--breif', '/tmp/nope.md']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /unknown argument "--breif"/);
+  assert.ok(!/retired/.test(r.out), 'a name absent from the map buys no repair');
+});
+
 test('a project that declares no entry point must be given --task', () => {
   const root = repo();
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' } }));

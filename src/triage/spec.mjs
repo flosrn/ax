@@ -140,7 +140,7 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
       `Then triage issue #${issue} (issue://${issue}).`,
       `Write your verdict to ${draft}. It opens with directive lines, then the comment body a human will read on the issue months from now, with your justification at one line per group.`,
       `A directive carries label NAMES ONLY — never a group name, never a parenthetical: \`Labels: <name>[, <name>…]\`, repeatable so one line per group stays cheap to correct; \`Remove labels: <name>[, <name>…]\` for the labels your transition supersedes; \`Close: yes\` if you conclude wontfix, and say why — you are recommending it, not doing it.`,
-      `Leaving a group empty means you have not finished. Every name is checked against this repository's own label list before anything is applied, so \`Labels: state → needs-info\` and \`Remove labels: needs-triage (superseded)\` are both refused: they name no label that exists.`,
+      `Leaving a group empty means you have not finished. Every name is checked twice before anything is applied — against this repository's own label list, so \`Labels: state → needs-info\` and \`Remove labels: needs-triage (superseded)\` are both refused for naming no label that exists, and against what the issue ALREADY CARRIES, so naming a provenance label it wears at birth, or asking to remove a label it does not have, is refused as a directive that would change nothing.`,
       nothing,
       asking,
       'Report when the draft is FINAL — which means it carries no open question.',

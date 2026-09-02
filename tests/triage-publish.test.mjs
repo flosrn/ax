@@ -22,10 +22,25 @@ import { status } from '../src/triage/index.mjs';
 
 const REPO = 'acme/widgets';
 
-function repo() {
+/**
+ * `provenance` declares `triage.provenance` the way a consuming repository does
+ * — the group whose doctrine says a birth label is kept and never applied a
+ * second time. Omitted, this project declares no provenance vocabulary and
+ * publish gates nothing on carried labels.
+ */
+function repo({ provenance, config } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-triage-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
-  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'widgets' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' } }));
+  writeFileSync(
+    join(root, 'ax.config.json'),
+    config ??
+      JSON.stringify({
+        project: { name: 'widgets' },
+        apps: { web: 'apps/web' },
+        vendor: { repo: 'owner/kit' },
+        ...(provenance ? { triage: { provenance } } : {}),
+      }),
+  );
   return root;
 }
 
@@ -36,7 +51,16 @@ const draft = (root, name, text) => {
 };
 
 /** Every label the fake repository has. A name outside this set is refused locally. */
-const REPO_LABELS = ['category/bug', 'priority/P2', 'domains/api', 'state/wontfix', 'needs-triage', 'needs-info'];
+const REPO_LABELS = [
+  'category/bug',
+  'priority/P2',
+  'domains/api',
+  'state/wontfix',
+  'needs-triage',
+  'needs-info',
+  'source:agent-found',
+  'source:user-report',
+];
 
 /**
  * A `gh` that records every call and answers per verb from a table.
@@ -48,14 +72,18 @@ const REPO_LABELS = ['category/bug', 'priority/P2', 'domains/api', 'state/wontfi
  *
  * `issue view` is answered because publish reads what the tracker ALREADY
  * carries before it adds to it. The default is an issue with no comments, last
- * moved long before any draft here is written — the two absences that authorize
- * a first publication.
+ * moved long before any draft here is written — the absences that authorize a
+ * first publication — and born `needs-triage`, as every inbound issue is,
+ * because a remove of a label the issue does not carry is refused in every
+ * repository and the existing transitions all remove that one. `carried`
+ * overrides it for the tests about redundant directives.
  */
 function fakeGh({
   labels = { status: 0 },
   comment = { status: 0 },
   labelList = null,
   comments = [],
+  carried = ['needs-triage'],
   updatedAt = '2020-01-01T00:00:00.000Z',
   issueView = null,
 } = {}) {
@@ -68,7 +96,7 @@ function fakeGh({
       if (args[0] === 'label' && args[1] === 'list') {
         return labelList ?? { status: 0, stdout: JSON.stringify(REPO_LABELS.map(name => ({ name }))), stderr: '' };
       }
-      if (args[1] === 'view') return issueView ?? { status: 0, stdout: JSON.stringify({ comments, updatedAt }), stderr: '' };
+      if (args[1] === 'view') return issueView ?? { status: 0, stdout: JSON.stringify({ comments, labels: carried.map(name => ({ name })), updatedAt }), stderr: '' };
       if (args[1] === 'edit') return { stdout: '', stderr: '', ...labels };
       if (args[1] === 'comment') return { stdout: '', stderr: '', ...comment };
       return { status: 0, stdout: '', stderr: '' };
@@ -349,6 +377,155 @@ test('an unknown name on the REMOVE side is refused too, because a wrong remove 
   assert.deepEqual(mutations(r.calls), [], 'nothing was removed on a guess');
 });
 
+// ── what the ISSUE already carries, not just what the repository has ─────────
+//
+// The vocabulary check above answers which labels EXIST. It cannot answer which
+// of them are on this issue, and publish held no view of that at all — so three
+// published comments restated a birth `source:` label the label doctrine
+// forbids adding a second time (#101), and a `Remove labels:` line naming
+// something the issue does not carry was the same silent no-op in the other
+// direction.
+
+const PROVENANCE = { spec: ['source:roadmap'], inbound: ['source:agent-found', 'source:user-report'] };
+
+test('a Labels: line naming a provenance label the issue already carries refuses', () => {
+  // The reported case, verbatim: the drafts of #89, #92 and #96 each named
+  // `source:agent-found` while the issue wore it from birth.
+  const root = repo({ provenance: PROVENANCE });
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: category/bug, source:agent-found\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:agent-found/, 'the refusal names the label');
+  assert.match(r.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'and the draft line to correct');
+  assert.deepEqual(mutations(r.calls), [], 'nothing was applied and nothing was posted');
+});
+
+test('a Labels: line naming a DIFFERENT provenance label than the one the issue was born with refuses', () => {
+  // Review of the first draft (Codex, P1): the check compared the draft's name
+  // to the same name on the issue, so `source:user-report` on an issue born
+  // `source:agent-found` passed and GitHub would have carried two provenance
+  // labels — the exact state the doctrine forbids ("never a second").
+  const root = repo({ provenance: PROVENANCE });
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: category/bug, source:user-report\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:user-report/, 'the refusal names the label the draft adds');
+  assert.match(r.out, /source:agent-found/, 'and the one the issue was born with');
+  assert.match(r.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(mutations(r.calls), [], 'nothing was applied and nothing was posted');
+});
+
+test('a Remove labels: line naming a label the issue does not carry refuses', () => {
+  const root = repo({ provenance: PROVENANCE });
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['category/bug'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /needs-triage/);
+  assert.match(r.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('a stale Remove labels: still refuses under --republish — the directive does nothing either way', () => {
+  // The cost this ruling accepted: a corrected draft re-published after the
+  // earlier publication already removed `needs-triage` names a directive that
+  // is now a no-op, and the repair is to delete the line.
+  const root = repo({ provenance: PROVENANCE });
+  draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nIt reproduces.\n');
+  const r = run(['--issue', '7', '--republish'], { root, answers: { carried: ['needs-info'] } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /needs-triage/);
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('a redundant CATEGORY name is disclosed and published — only provenance forbids a second name', () => {
+  const root = repo({ provenance: PROVENANCE });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['category/bug'] } });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /category\/bug/);
+  assert.match(r.out, /already carries/, 'the run says so rather than hiding a directive that changes nothing');
+  assert.equal(mutations(r.calls).length, 2, 'the publication still lands: one edit, one comment');
+});
+
+test('the redundant-provenance refusal holds under --dry-run: the read happens in the preflight', () => {
+  const root = repo({ provenance: PROVENANCE });
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:agent-found\n\nIt reproduces.\n');
+  const r = run(['--issue', '7', '--dry-run'], { root, answers: { carried: ['source:agent-found'] } });
+  assert.equal(r.code, 1);
+  assert.ok(!r.out.includes('would run: gh issue edit'), 'a dry run reports the refusal instead of offering to publish');
+});
+
+test('one refused issue publishes none of its siblings', () => {
+  const root = repo({ provenance: PROVENANCE });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nFine.\n');
+  draft(root, 'triage-acme-widgets-8', 'Labels: source:agent-found\n\nRedundant.\n');
+  const r = run(['--issue', '7', '--issue', '8'], { root, answers: { carried: ['source:agent-found'] } });
+  assert.equal(r.code, 1);
+  assert.deepEqual(mutations(r.calls), [], 'not even the good issue was published');
+});
+
+test('an issue view with no labels array is an inability to establish, not an issue with no labels', () => {
+  // F-028, and the absence being established here is the one that authorizes a
+  // mutation. The wording has to differ from "the issue carries it already", or
+  // an operator cannot tell an unread issue from a redundant directive.
+  const root = repo({ provenance: PROVENANCE });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], {
+    root,
+    answers: { issueView: { status: 0, stdout: JSON.stringify({ comments: [], updatedAt: '2020-01-01T00:00:00.000Z' }), stderr: '' } },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /labels/);
+  assert.match(r.out, /could not be read/);
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('a repository that declares no provenance vocabulary gates no ADD, and still refuses a remove that would do nothing', () => {
+  // The repository is input, and an absent declaration is not a rule (F-028):
+  // the provenance gate on the add side needs a vocabulary to name provenance,
+  // so it is off. The remove gate needs only the issue's live labels, which
+  // publish reads regardless — so the child's promise (`spec.mjs`: "asking to
+  // remove a label it does not have is refused") holds in every repository.
+  // Review of the first draft (Codex, P2) caught the gate switched off wholesale.
+  const root = repo();
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:agent-found\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found'] } });
+  assert.equal(r.code, 0, 'a redundant add is not graded without a vocabulary that names provenance');
+  assert.equal(mutations(r.calls).length, 2);
+
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nIt reproduces.\n');
+  const r2 = run(['--issue', '7'], { root, answers: { carried: ['category/bug'] } });
+  assert.equal(r2.code, 1, 'a remove of a label the issue does not carry is refused with or without a vocabulary');
+  assert.match(r2.out, /needs-triage/);
+  assert.match(r2.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(mutations(r2.calls), []);
+});
+
+test('a config that exists and does not parse refuses, rather than reading as "no provenance declared"', () => {
+  const root = repo({ config: '{ "project": { "name": "widgets" },,,' });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /ax\.config\.json/);
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('label identity is compared case-insensitively and trimmed, by the comparator the package already has', () => {
+  // A config that writes `Source:Agent-Found` names the same tracker label as a
+  // carried `source:agent-found`: GitHub label names are case-insensitively
+  // unique, and byte-exact matching has already cost this package a wrong lane.
+  const root = repo({ provenance: { inbound: [' Source:Agent-Found '] } });
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:agent-found\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['SOURCE:Agent-Found'] } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:agent-found/i);
+  assert.deepEqual(mutations(r.calls), []);
+});
+
 test('a draft that both applies and removes one label is a contradiction, not a transition', () => {
   const root = repo();
   draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-info\n\nIt reproduces.\n');
@@ -413,7 +590,7 @@ test('--repo reads the TARGET repository\'s labels, not the checkout it is run f
     // The tracker read is asked of the TARGET too — the same one-repository
     // invariant as the vocabulary above: a duplicate check against the wrong
     // issue is worse than none.
-    if (args[1] === 'view') return { status: 0, stdout: JSON.stringify({ comments: [], updatedAt: '2020-01-01T00:00:00.000Z' }), stderr: '' };
+    if (args[1] === 'view') return { status: 0, stdout: JSON.stringify({ comments: [], labels: [], updatedAt: '2020-01-01T00:00:00.000Z' }), stderr: '' };
     return { status: 0, stdout: '', stderr: '' };
   };
 

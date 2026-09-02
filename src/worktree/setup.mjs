@@ -27,7 +27,23 @@ import { probeAll, readWorktreeRecord } from './probes.mjs';
 import { promoteFromPlan } from './supabase.mjs';
 
 /** Runtime paths that exist in every worktree and belong in none of its diffs. */
-const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
+export const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
+
+/**
+ * The receipt for paths this run newly excluded, and it names the scope git
+ * implements rather than the one an operator would assume.
+ *
+ * `excludePaths` writes the file `git rev-parse --git-path info/exclude`
+ * resolves, which from a linked worktree is the MAIN checkout's
+ * `.git/info/exclude` — common state, shared by every checkout of the
+ * repository. `../git.mjs` chooses that file on purpose (these paths are local
+ * state, identical in every worktree) and there is no worktree-scoped exclude
+ * to write instead. This line said `in this worktree only` until #99, so an
+ * operator reading it believed a worktree-local ignore had landed, and then
+ * watched dirt appear or vanish on a checkout they never touched.
+ */
+export const excludeReceipt = added =>
+  `git ignores ${added.join(', ')} for this repository — every checkout of it, via the main checkout's .git/info/exclude`;
 
 /**
  * `cwd` is injected for one caller: `ax worker dispatch` places a worktree and
@@ -101,7 +117,7 @@ function apply({ plan, config, root, main }) {
   }
 
   const added = excludePaths(root, RUNTIME_PATHS);
-  if (added.length > 0) ok(`git ignores ${added.join(', ')} in this worktree only`);
+  if (added.length > 0) ok(excludeReceipt(added));
   if (installHooks(root, '.githooks')) ok('hooks point at the tracked .githooks');
 
   let changed = 0;
