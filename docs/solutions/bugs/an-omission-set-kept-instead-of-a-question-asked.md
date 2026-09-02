@@ -76,6 +76,28 @@ that host does not carry now reads `pane MORT · term_… is unknown to 'gapicor
 answered for its own panes`, and a record on an undeclared host reads
 `host 'nowhere' could not be asked …` with `hostFor`'s repair — no `--environment` call made for it.
 
+## What the first review round paid for
+
+Asking a second source introduces a way to LOSE an answer the first one already gave. The initial
+review of the change routed every remote row through the per-host ask, including rows whose handle
+the first, unscoped list already carried — so a transient failure on that ask turned a pane the
+same invocation had observed alive into INCONNU, and dropped the cap count that authorises the next
+dispatch. Worse, a successful ask that did not carry the handle would have called that same
+observed pane MORT.
+
+The repair is the asymmetry this module is built on, made explicit: **presence and absence are not
+symmetric.** A handle an inventory CARRIES is proven alive by that inventory whatever scope it read
+— a terminal list can carry a pane whose execution host is not local — while only ABSENCE needs a
+scope that covers the pane. So liveness is a union over every answer this invocation collected, and
+only death requires a covering one. The ask is therefore spent exactly where the first list cannot
+decide, which also removes a round trip per write-ahead record (no handle, so nothing for a host to
+answer about).
+
+The generalisable form: **a later read may add an answer, never retract one.** When you widen a
+verdict from one source to several, order them so a failure in a source you added can only leave
+the verdict where it was, never move it toward the destructive value — here MORT, which authorises
+closing a pane.
+
 ## The rule for this bug
 
 **An omission has to be earned: before rendering "unknown", spend the reachable source you already

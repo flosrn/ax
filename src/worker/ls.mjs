@@ -223,16 +223,35 @@ function workerIndex(run) {
  * there. An orchestrator arbitrating overlap then had to treat a working remote
  * child as an unknown.
  *
- * Asked ONCE per host, and only for a host a record actually names: a store with
- * no remote record reads no config and makes no extra call, and a declared host
- * no record mentions has no row to classify — this verb counts records, never
- * machines.
+ * Asked ONCE per host, and only where the answer can still change a row: a store
+ * with no remote record reads no config and makes no extra call, a declared host
+ * no record mentions has no row to classify (this verb counts records, never
+ * machines), and a record that named no pane has nothing for a host to answer
+ * about.
+ *
+ * LIVENESS IS A UNION, DEATH NEEDS A COVERING ANSWER — round 1 of review on
+ * PR #91, and the asymmetry pane.mjs is built on. A handle an inventory CARRIES
+ * is proven alive BY that inventory whatever scope it read (a terminal list can
+ * carry a pane whose execution host is not local), while absence is the only
+ * thing a covering scope is required to read. So the first, unscoped list
+ * decides whenever it can, and the host is asked only where it cannot: a
+ * transient failure on that ask can then never take back a pane this very
+ * invocation observed, nor drop the cap count that authorises the next dispatch.
  *
  * A host that could not be asked is a NAMED refusal carrying the reason it
  * answered, never an empty inventory (F-028): its panes stay INCONNU, and only
  * the caller discloses why — once, not once per row.
+ *
+ * THE DECLARATION IS THE ONLY AUTHORITY over a host name, and deliberately so.
+ * The dispatch store is host-global (record.mjs), so a record another project
+ * wrote may name a host this checkout does not declare, and that row stays
+ * INCONNU — a disclosed undercount, filed as its own ticket rather than fixed
+ * here: hosts come from ax.config.json (AGENTS.md), and hostFor refuses an
+ * undeclared name so no floor is ever inherited by a repo that did not declare
+ * it. Widening that to a second, machine-global authority is a doctrine change
+ * with an owner, not a review round's licence.
  */
-function hostReader(run, cwd) {
+function hostReader(run, cwd, local) {
   const asked = new Map();
   let declaration;
 
@@ -262,15 +281,19 @@ function hostReader(run, cwd) {
 
   return {
     /**
-     * The inventory that answers for ONE record's pane, plus whether that answer
-     * came from the host itself — which is what lets an absence there be a
-     * corpse rather than an omission (see paneVerdict).
+     * The verdict for ONE recorded handle, and whether the answer behind it came
+     * from the host itself — which is what lets an absence be a corpse rather
+     * than an omission (see paneVerdict).
      */
-    scopeFor(local, host) {
-      if (host === undefined || host === '') return { inventory: local, asked: false };
+    verdictFor(handle, why, host) {
+      // No handle: nothing a host could answer about. Presence in the first
+      // list: proven alive, and no scope can take that back.
+      if (handle === null || local.byHandle.has(handle) || host === undefined || host === '') {
+        return { verdict: paneVerdict(handle, why, local, { host }), asked: false };
+      }
       if (!asked.has(host)) asked.set(host, scopeOf(host));
       const scope = asked.get(host);
-      return { inventory: scope, asked: scope.ok === true };
+      return { verdict: paneVerdict(handle, why, scope, { host, asked: scope.ok === true }), asked: scope.ok === true };
     },
     /** Every host that was asked and could not answer, with what it answered. */
     unaskable: () => [...asked].filter(([, scope]) => scope.ok !== true),
@@ -356,15 +379,15 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   let unplaced = 0;
   const drift = [];
   const matched = new Set();
-  const hosts = hostReader(run, cwd);
+  const hosts = hostReader(run, cwd, terminals);
 
   const views = files.map(file => {
     const row = describeRecord(dir, file);
-    // EACH PANE IS JUDGED BY ITS OWN HOST (#76). The local list answers for a
-    // local dispatch and for a record whose placement is unknown; a record that
-    // names a host is judged by what that host said about itself.
-    const scope = hosts.scopeFor(terminals, row.host);
-    const { pane, detail } = paneVerdict(row.handle, row.why, scope.inventory, { host: row.host, asked: scope.asked });
+    // EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first list
+    // decides a local dispatch, an unknown placement, and any handle it already
+    // carries; a remote handle it does not carry is put to that host itself.
+    const { verdict } = hosts.verdictFor(row.handle, row.why, row.host);
+    const { pane, detail } = verdict;
     if (pane === 'VIVANT') alive += 1;
     // A row left unknowable by the LOCAL list's own omission — a record whose
     // placement no phase could name, so no host could be asked for it. That is
@@ -402,8 +425,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     // 2026-08-25 on 55-work and 56-work, whose recorded panes were in the
     // receipt all along.
     const leaked = row.unsettled ?? null;
-    const leakedScope = leaked === null ? null : hosts.scopeFor(terminals, leaked.host);
-    const leakedVerdict = leaked === null ? null : paneVerdict(leaked.handle, '', leakedScope.inventory, { host: leaked.host, asked: leakedScope.asked });
+    const leakedVerdict = leaked === null ? null : hosts.verdictFor(leaked.handle, '', leaked.host).verdict;
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 

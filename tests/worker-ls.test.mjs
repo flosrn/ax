@@ -557,7 +557,70 @@ test('#76: with no config to read, a remote pane is unknowable and says why', ()
   assert.match(out, /far-1 .*pane INCONNU/);
   assert.match(out, /host 'gapicore' could not be asked/);
   assert.doesNotMatch(out, /pane MORT/);
-  assert.deepEqual(run.calls.filter(args => args.includes('--environment')), [], 'a host with no declaration is never guessed at');
+  assert.deepEqual(run.calls.filter(args => args.includes('--environment')), [], 'a host neither source can name is never guessed at');
+});
+
+// ── round 1 of review on PR #91 ──────────────────────────────────────────────
+
+test('#91: a pane the first list already carries survives a host that stops answering', () => {
+  const dir = store();
+  // THE P1 FINDING. Presence and absence are not symmetric (pane.mjs): a handle
+  // an inventory CARRIES is proven alive by that inventory, whatever scope it
+  // read, while only absence needs a scope that covers the pane. A terminal list
+  // can carry a pane whose execution host is not local — Orca's own CLI test
+  // shows a row with `executionHostId: 'ssh:box-1'` — so discarding that
+  // positive proof because the per-host ask then failed would take back a pane
+  // THIS invocation had already observed, and drop the cap count that authorises
+  // the next dispatch.
+  writeRecord(dir, 'far-live', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_fl', handle: 'term_far_live' }) }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [pane('term_far_live')], omittedHostIds: ['runtime:7930a317'], hosts: { gapicore: { fail: 'ssh_unreachable' } } });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('far-live'), /pane VIVANT/, 'a pane this run saw is not un-seen by a host that went quiet');
+  assert.match(out, /1 live pane\(s\) — this is the cap count/);
+  assert.deepEqual(run.calls.filter(args => args.includes('--environment')), [], 'and the ask is spent only where the first list cannot answer');
+  assert.doesNotMatch(out, /could not be asked/, 'a host whose answer would change nothing is no omission');
+});
+
+test('#91: a record that named no pane spends no ask on its host', () => {
+  const dir = store();
+  // A write-ahead record has no handle to classify, so the host's answer cannot
+  // change its row — and a round trip per such record is a cost with no reader.
+  writeRecord(dir, 'inflight-far', [{ name: 'worker-start' }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [], hosts: { gapicore: { terminals: [] } } });
+
+  const { lineWith, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('inflight-far'), /pane INCONNU .*no usable receipt yet/);
+  assert.deepEqual(run.calls.filter(args => args.includes('--environment')), []);
+});
+
+test('#91: the declaration is the ONLY authority for a host name, and its absence is disclosed', () => {
+  const dir = store();
+  // THE P2 FINDING, and the reason it stays a finding rather than a fix here.
+  // The dispatch store is host-global (record.mjs), so a record another project
+  // wrote can name a host this checkout does not declare — and it stays INCONNU,
+  // which undercounts capacity for that record.
+  //
+  // Widening the authority is not this ticket's to take: hosts come from
+  // ax.config.json (AGENTS.md), and hosts.mjs refuses an undeclared name so a
+  // floor is never inherited by a repo that did not declare it. Orca's own
+  // environment registry would answer host-globally, and adopting it as a
+  // second authority is a doctrine change with an owner — filed as a follow-up,
+  // not decided inside this slice.
+  //
+  // What this pins is that the gap is honest in both directions: the row is
+  // INCONNU and never MORT, the reason is disclosed with its repair, and no
+  // scoped read is issued for a name this project did not declare.
+  writeRecord(dir, 'other-project', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_op', handle: 'term_op' }) }], { on: 'someone-elses-host' });
+  const run = fakeRunner({ terminals: [], hosts: { 'someone-elses-host': { terminals: [pane('term_op')] } } });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('other-project'), /pane INCONNU/, 'an undeclared host is not asked, so its pane stays unknowable');
+  assert.doesNotMatch(out, /pane MORT/, 'and it is never demoted to a corpse on an unread host');
+  const line = out.split('\n').find(l => l.includes("host 'someone-elses-host' could not be asked")) ?? '';
+  assert.match(line, /not a host this project declared/, 'the refusal carries hostFor’s repair');
+  assert.match(line, /dispatch\.hosts\.someone-elses-host/, 'naming the exact key to declare');
+  assert.deepEqual(run.calls.filter(args => args.includes('--environment')), [], 'an undeclared name is never passed to a scoped read, whatever Orca may know');
 });
 
 test('a REMOTE handle on a host that cannot be asked is INCONNU, never MORT (measured hostScope, 2026-08-22)', () => {
