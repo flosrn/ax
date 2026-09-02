@@ -27,6 +27,28 @@ const SUPPORTED = new Set([
   'default',
 ]);
 
+/**
+ * Reserved JSON-Schema annotations, admitted wherever an object is — including
+ * inside a keyed map, where `additionalProperties` would otherwise validate the
+ * annotation as an entry of that map (`dispatch.hosts: expected object, got
+ * string`).
+ *
+ * Structural, because the alternative was measured: admission was hand-listed
+ * per object, so `prGate.$comment` loaded and the identical `dispatch.$comment`
+ * was refused as an unknown key. A project annotates the SECTION whose reasoning
+ * it is recording, and which sections those are is not something this file can
+ * enumerate in advance.
+ *
+ * ax.schema.json still declares `$comment` under `prGate` and `prGate.tracker`,
+ * and those declarations are now documentation only: they say what a comment
+ * THERE is for, and they are what an editor validating ax.config.json against
+ * the schema reads. Nothing here depends on them.
+ *
+ * An annotation that is not a string is refused by name rather than admitted:
+ * `$comment: {...}` is a section someone meant to nest and did not.
+ */
+const ANNOTATIONS = new Set(['$comment', '$schema']);
+
 const typeOf = value => {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -108,6 +130,15 @@ export function validate(value, schema, path = '') {
       const childSchema = schema.properties?.[key];
       if (childSchema) {
         errors.push(...validate(child, childSchema, path ? `${path}.${key}` : key));
+        continue;
+      }
+      if (ANNOTATIONS.has(key)) {
+        // Before `additionalProperties`, both readings of it: a closed object
+        // must not refuse the annotation, and a keyed map must not validate it
+        // as one of its entries.
+        if (typeof child !== 'string') {
+          errors.push(`${where}: "${key}" is an annotation, expected string, got ${typeOf(child)}`);
+        }
         continue;
       }
       if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
