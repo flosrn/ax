@@ -29,7 +29,8 @@
     "labels": "docs/agents/triage-labels.md",
     "provenance": {
       "spec": ["source:roadmap"],
-      "inbound": ["source:agent-found", "source:user-report"]
+      "inbound": ["source:user-report"],
+      "findings": ["source:agent-found"]
     }
   }
 }

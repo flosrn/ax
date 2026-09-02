@@ -247,7 +247,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
     const defects = [];
     if (provenance === null || typeof provenance !== 'object' || Array.isArray(provenance)) defects.push('triage.provenance is not an object');
     else {
-      for (const key of ['spec', 'inbound']) {
+      for (const key of ['spec', 'inbound', 'findings']) {
         if (provenance[key] !== undefined && !listOfStrings(provenance[key])) defects.push(`triage.provenance.${key} is not a list of strings`);
       }
     }
@@ -260,6 +260,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   }
   const specLabels = provenance?.spec ?? [];
   const inboundLabels = provenance?.inbound ?? [];
+  const findingsLabels = provenance?.findings ?? [];
 
   if (dry) {
     section(`frontier — dry run (nothing read from the tracker)`);
@@ -417,13 +418,15 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       }
 
       // provenance-refused: the repository's own vocabulary contradicts itself
-      // on this ticket — spec-born AND inbound at once. Only measured where the
-      // mapping is declared; an undeclared ground is NOT measured (the
-      // repository is input).
-      const spec = specLabels.filter(declaredName => carriedLabels.some(carried => sameLabel(declaredName, carried?.name ?? '')));
-      const inbound = inboundLabels.filter(declaredName => carriedLabels.some(carried => sameLabel(declaredName, carried?.name ?? '')));
-      if (spec.length > 0 && inbound.length > 0) {
-        excluded.push({ ...candidate, reason: `provenance-refused (carries ${spec[0]} and ${inbound[0]} at once)` });
+      // on this ticket — two of spec-born, inbound and finding at once. Only
+      // measured where the mapping is declared; an undeclared ground is NOT
+      // measured (the repository is input). A finding that reached the ready
+      // label on its own is takeable: the `findings` class routes PASSES away
+      // from a ticket, never its implementation.
+      const carriedOf = declaredNames => declaredNames.filter(declaredName => carriedLabels.some(carried => sameLabel(declaredName, carried?.name ?? '')));
+      const classes = [carriedOf(specLabels), carriedOf(inboundLabels), carriedOf(findingsLabels)].filter(names => names.length > 0);
+      if (classes.length > 1) {
+        excluded.push({ ...candidate, reason: `provenance-refused (carries ${classes[0][0]} and ${classes[1][0]} at once)` });
         continue;
       }
 

@@ -1225,6 +1225,76 @@ test('an INBOUND ticket is legitimate in the brief lane — a brief distils the 
   assert.equal(r.code, 0, 'a brief follows the inbound triage pass that already ran');
 });
 
+// ── provenance: a finding your own agents filed ──────────────────────────────
+//
+// A third declared class. Inbound in the glossary's sense — it arrived instead
+// of being planned — but it arrives WITH its measurement: the birth contract for
+// a finding carries argv, raw output, expected state and cost, so the finder is
+// the verifier and a triage or brief pass re-measures what is measured. Measured
+// 2026-09-02 on the package's own checkout: two dozen findings ran through a
+// triage pass and a brief pass each, hours of sessions for a pile where a third
+// were ten-line repairs a maintainer closes in an hour, and the passes minted
+// carve-out tickets and a duplicate. The route is the channel that owns what was
+// found, and the verb names it instead of offering a pass. Opt-in: a project
+// that declares no `findings` keeps the two-class behaviour to the byte.
+
+const PROVENANCE_FINDINGS = { spec: ['source:roadmap'], inbound: ['source:user-report'], findings: ['source:agent-found'] };
+
+test('a finding your own agents filed is refused in the triage lane, and the repair is the channel that owns it', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|worker dispatch --brief falls through|source:agent-found|null' },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:agent-found/);
+  assert.match(r.out, /finder is the verifier/);
+  assert.match(r.out, /maintainer/, 'the instrument route is named');
+  assert.match(r.out, /to-tickets/, 'the product route is named');
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --remove-label source:agent-found/);
+  assert.doesNotMatch(r.out, /--add-label ready-for-agent/, 'no lane is offered in its place');
+  assert.ok(r.calls.every(line => !line.includes('worker-start')), 'nothing was dispatched');
+});
+
+test('the brief lane refuses a finding for the same reason — it applies labels too', () => {
+  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|2|worker dispatch --brief falls through|source:agent-found|null' },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:agent-found/);
+  assert.match(r.out, /a brief pass would re-measure/);
+});
+
+test('a custom pass applies no label, so a finding is not refused there', () => {
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  const instruction = join(root, 'q.txt');
+  writeFileSync(instruction, 'Measure the boot time\n');
+  const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], {
+    root,
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+  });
+  assert.equal(r.code, 0, 'a bounded question about a finding decides nothing about it');
+});
+
+test('a finding declared inbound too is a contradiction, refused without picking a side', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found;source:user-report|null' },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:agent-found/);
+  assert.match(r.out, /source:user-report/);
+  assert.match(r.out, /remove whichever/, 'the repair is to fix the contradiction, not to resolve it here');
+});
+
+test('a project that declares no findings class keeps admitting the same ticket', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE }),
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+  });
+  assert.equal(r.code, 0, 'an undeclared class is not an inferred one');
+});
+
 // A tracker label name is case-insensitively unique on GitHub, so comparing the
 // declared name to the carried one byte-exactly buys nothing and costs the gate:
 // a config that wrote `Source:Roadmap`, or left a trailing space, produced an

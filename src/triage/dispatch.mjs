@@ -90,16 +90,47 @@ const declaredCarried = (names, labels) => names.filter(name => labels.some(carr
  * `to-tickets` already did that work with the human in the room. What is left
  * is the two repairs the refusal names — apply the ready label the spec flow
  * owed the ticket, or fix the ticket where `to-tickets` left it incomplete.
+ *
+ * A THIRD CLASS, `findings`, OPT-IN. A finding your own agents filed while
+ * working is inbound in the glossary's sense — it arrived instead of being
+ * planned — but it arrives WITH its measurement: the friction contract carries
+ * argv, raw output, expected state and cost, so the finder is the verifier and
+ * a pass re-measures what is measured. Measured 2026-09-02 on the package's
+ * own checkout: two dozen findings ran through a triage pass and a brief pass
+ * each, hours of sessions for a pile where a third were ten-line repairs a
+ * maintainer closes in an hour, and the passes minted carve-out tickets and a
+ * duplicate. Before this class existed the rule lived in role prose, which is
+ * the state ADR 0001 rejected for spec-born work. The repair names the channel
+ * that owns what was found — a maintainer verdict for the instrument,
+ * `to-tickets` for the product — never another pass. A project that declares
+ * no `findings` keeps the two-class behaviour to the byte.
  */
 export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared }) {
   const spec = declaredCarried(declared?.spec ?? [], labels);
   const inbound = declaredCarried(declared?.inbound ?? [], labels);
-  if (spec.length === 0 && inbound.length === 0) return null;
+  const findings = declaredCarried(declared?.findings ?? [], labels);
+  const carried = [
+    ['spec-born', spec],
+    ['inbound', inbound],
+    ['a finding', findings],
+  ].filter(([, names]) => names.length > 0);
+  if (carried.length === 0) return null;
 
-  if (spec.length > 0 && inbound.length > 0) {
+  if (carried.length > 1) {
     return {
-      bad: `^ carries ${spec.join(', ')} and ${inbound.join(', ')} — one ticket cannot be both spec-born and inbound, and no pass follows from a contradiction`,
+      bad: `^ carries ${carried.map(([, names]) => names.join(', ')).join(' and ')} — one ticket cannot be both ${carried.map(([kind]) => kind).join(' and ')}, and no pass follows from a contradiction`,
       fix: [`gh issue view ${issue} --repo ${slug} --json labels # remove whichever of the two is wrong, then re-dispatch`],
+    };
+  }
+
+  if (LABEL_JOBS.has(job) && findings.length > 0) {
+    return {
+      bad: `^ carries ${findings.join(', ')} — your own agents filed this with its measurement attached, so the finder is the verifier and a ${job} pass would re-measure what is measured`,
+      fix: [
+        `gh issue comment ${issue} --repo ${slug} --body-file <verdict.md> # in the instrument: the maintainer answers it — fixed, refused with the cheaper thing, or unreproducible`,
+        `to-tickets on the amended spec # in the product: the spec flow publishes it ready-for-agent, with the human in the room`,
+        `gh issue edit ${issue} --repo ${slug} --remove-label ${findings[0]} # only if it truly arrived from outside, with no measurement of its own`,
+      ],
     };
   }
 
