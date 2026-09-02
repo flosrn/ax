@@ -121,6 +121,12 @@ test('an unresolvable exclude file is ANNOUNCED, and the mandate is still writte
   // Every finding names its repair.
   assert.match(result.notes.join('\n'), /remove it before committing/);
   assert.ok(existsSync(join(s.worktree, MANDATE_REL)));
+  // The note described the file as "this worktree's git exclude file" while the
+  // repair it prints in the same sentence resolves the REPOSITORY's shared
+  // `info/exclude` — there is no worktree-scoped exclude. The announcement now
+  // describes the file its own repair names.
+  assert.doesNotMatch(result.notes.join('\n'), /this worktree's git exclude/);
+  assert.match(result.notes.join('\n'), /repository/);
 });
 
 test('a relative exclude answer is treated as unresolved, not appended to blindly', () => {

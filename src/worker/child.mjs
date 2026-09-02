@@ -99,7 +99,11 @@ const defaultWrite = (path, content) => {
  * still silent.
  *
  * An unresolvable exclude file is ANNOUNCED, never silent: the operator has to
- * know the mandate will otherwise ride along in the child's pull request.
+ * know the mandate will otherwise ride along in the child's pull request. The
+ * announcement names the REPOSITORY's shared exclude file, which is the one its
+ * own printed repair resolves: `info/exclude` is common state, so there is no
+ * worktree-scoped exclude and a note claiming one (#99) describes a file git
+ * does not have.
  */
 export function writeMandate(worktree, { exec = defaultExec, write = defaultWrite } = {}) {
   const notes = [];
@@ -110,7 +114,7 @@ export function writeMandate(worktree, { exec = defaultExec, write = defaultWrit
 
   if (out?.status !== 0 || !exclude.startsWith('/')) {
     notes.push(
-      `advisor mandate written, but this worktree's git exclude file could not be resolved, so ${MANDATE_REL} is NOT hidden from git — remove it before committing, or add it by hand: printf '${MANDATE_REL}\\n' >> "$(git -C ${worktree} rev-parse --path-format=absolute --git-path info/exclude)"`,
+      `advisor mandate written, but the repository's shared git exclude file could not be resolved, so ${MANDATE_REL} is NOT hidden from git — remove it before committing, or add it by hand: printf '${MANDATE_REL}\\n' >> "$(git -C ${worktree} rev-parse --path-format=absolute --git-path info/exclude)"`,
     );
     return { written: true, hidden: false, notes };
   }
