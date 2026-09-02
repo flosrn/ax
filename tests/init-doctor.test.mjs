@@ -515,6 +515,60 @@ test('the package repository neither pins itself nor carries the bootstrap shim'
   }
 });
 
+// Caught in review on #85. `$schema` is a value the plan DECIDES and `ax init`
+// WRITES, so the rule this whole change rests on applies to it too: a plan
+// value no verb compares is a value that can be wrong in silence. A checkout
+// carrying a config an older `ax init` wrote — or a project that renamed
+// itself into the package — kept `./node_modules/@flosrn/ax/ax.schema.json`,
+// which resolves to nothing there, while both verbs exited 0 and the editor
+// silently lost every completion the file is written with.
+test('a $schema pointer the plan does not want is drift, and ax init repairs it', () => {
+  const stale = mkdtempSync(join(tmpdir(), 'ax-stale-schema-'));
+  try {
+    mkdirSync(join(stale, 'node_modules'), { recursive: true });
+    writeFileSync(join(stale, 'package.json'), JSON.stringify({ name: '@flosrn/ax' }, null, 2));
+    execFileSync('git', ['init', '-q'], { cwd: stale, stdio: 'ignore' });
+
+    // Provisioned first, so the pointer is the ONLY value under test: an
+    // unprovisioned fixture is legitimately red on the blocks and the OMP
+    // registration, and would prove nothing about $schema.
+    const config = { $schema: './ax.schema.json', project: { name: 'ax' }, apps: { web: '.' }, prGate: { checks: ['CI'] } };
+    writeFileSync(join(stale, 'ax.config.json'), `${JSON.stringify(config, null, 2)}\n`);
+    assert.equal(init(stale), 0);
+    assert.equal(doctor(stale), 0);
+
+    // The pointer an older `ax init` wrote here, and no other change.
+    writeFileSync(
+      join(stale, 'ax.config.json'),
+      `${JSON.stringify({ ...config, $schema: './node_modules/@flosrn/ax/ax.schema.json' }, null, 2)}\n`,
+    );
+    const graded = capture(() => doctor(stale));
+    assert.equal(graded.code, 1);
+    assert.match(graded.out, /\$schema points at \.\/node_modules\/@flosrn\/ax\/ax\.schema\.json/);
+    assert.match(graded.out, /→ ax init/);
+
+    // The named verb repairs exactly that value, and nothing else in the file.
+    assert.equal(init(stale), 0);
+    const repaired = JSON.parse(readFileSync(join(stale, 'ax.config.json'), 'utf8'));
+    assert.equal(repaired.$schema, './ax.schema.json');
+    assert.deepEqual(repaired.prGate, { checks: ['CI'] });
+    assert.deepEqual(repaired.apps, { web: '.' });
+    assert.deepEqual(Object.keys(repaired), ['$schema', 'project', 'apps', 'prGate'], 'the project’s own key order survives');
+    assert.equal(doctor(stale), 0);
+
+    // ABSENT IS NOT DRIFT. `$schema` is optional, and a config that never
+    // declared one has no recorded value to disagree with the plan.
+    writeFileSync(join(stale, 'ax.config.json'), `${JSON.stringify({ project: { name: 'ax' }, apps: { web: '.' } }, null, 2)}\n`);
+    const bare = capture(() => doctor(stale));
+    assert.equal(bare.code, 0);
+    assert.doesNotMatch(bare.out, /\$schema/);
+    assert.equal(init(stale), 0);
+    assert.equal(JSON.parse(readFileSync(join(stale, 'ax.config.json'), 'utf8')).$schema, undefined, 'ax init does not invent a key the project never declared');
+  } finally {
+    rmSync(stale, { recursive: true, force: true });
+  }
+});
+
 // gapila adopts the merge gate and nothing else, by design: it provisions
 // itself and asks ax for one thing only. Before the plan knew which contracts a
 // configuration declares, that project was red on every provisioning check

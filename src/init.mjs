@@ -278,22 +278,36 @@ export function init(root, { dryRun = false, vendor } = {}) {
       return 1;
     }
     report(CONFIG_FILE, writeFile(existing.path, `${JSON.stringify(inferred.config, null, 2)}\n`, { dryRun, root }));
-  } else if (!plan.adopted.provisioning) {
-    // THE DECLARATION IS THE ADOPTION. Provisioning the files while leaving
-    // `apps` undeclared would have `ax doctor` report this contract as
-    // unadopted immediately after running the verb it names as the way to adopt
-    // it — advice that cannot come true. Every other declaration is the
-    // project's, and is copied through untouched, in its own order.
-    const raw = JSON.parse(readFileSync(existing.path, 'utf8'));
-    const adopted = {};
-    for (const [key, value] of Object.entries(raw)) {
-      adopted[key] = value;
-      if (key === 'project') adopted.apps = inferApps(root);
-    }
-    adopted.apps ??= inferApps(root);
-    report(`${CONFIG_FILE} (apps — provisioning adopted)`, writeFile(existing.path, `${JSON.stringify(adopted, null, 2)}\n`, { dryRun, root }));
   } else {
-    note(`${CONFIG_FILE} — already valid`);
+    // The two values in a DECLARED config that this plan owns, brought back to
+    // it. Everything else is the project's and is copied through untouched, in
+    // its own key order.
+    //
+    // `apps`, because THE DECLARATION IS THE ADOPTION: provisioning the files
+    // while leaving `apps` undeclared would have `ax doctor` report the
+    // contract as unadopted immediately after running the verb it names as the
+    // way to adopt it — advice that cannot come true.
+    //
+    // `$schema`, because it is a plan value too, and one an older release of
+    // this verb wrote wrong. Corrected only where the key EXISTS: absent is not
+    // drift, and inventing a key the project never declared is not a repair
+    // (`ax doctor` grades it on the same rule).
+    const raw = JSON.parse(readFileSync(existing.path, 'utf8'));
+    const next = {};
+    for (const [key, value] of Object.entries(raw)) {
+      next[key] = key === '$schema' ? plan.schemaRef : value;
+      if (key === 'project' && !plan.adopted.provisioning) next.apps = inferApps(root);
+    }
+    if (!plan.adopted.provisioning) next.apps ??= inferApps(root);
+
+    const touched = [];
+    if (next.$schema !== raw.$schema) touched.push('$schema');
+    if (next.apps !== raw.apps) touched.push('apps — provisioning adopted');
+    if (touched.length === 0) {
+      note(`${CONFIG_FILE} — already valid`);
+    } else {
+      report(`${CONFIG_FILE} (${touched.join(', ')})`, writeFile(existing.path, `${JSON.stringify(next, null, 2)}\n`, { dryRun, root }));
+    }
   }
 
   // The shim execs the INSTALLED CLI, so the checkout that publishes ax cannot

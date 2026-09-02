@@ -59,6 +59,20 @@ export function doctor(cwd = process.cwd()) {
   const manifest = readManifest(root);
   const plan = planProject({ manifest, declared });
 
+  // The `$schema` pointer is a plan value `ax init` writes, so it is compared
+  // like every other one. It resolves nothing at runtime and everything in an
+  // editor, which is exactly why it went wrong in silence: on a checkout that
+  // publishes ax, an older release of that verb wrote
+  // `./node_modules/@flosrn/ax/…`, a path that cannot exist there, and both
+  // verbs exited 0 over it (caught in review on #85).
+  //
+  // ABSENT IS NOT DRIFT. The key is optional, and a config that never declared
+  // one has no recorded value to disagree with the plan — reporting it would be
+  // this package demanding a line it does not own.
+  if (config.$schema !== undefined && config.$schema !== plan.schemaRef) {
+    fail(`${CONFIG_FILE}: $schema points at ${config.$schema}, and the plan for this checkout is ${plan.schemaRef}`, 'ax init');
+  }
+
   // NOT ADOPTED IS NOT A FINDING. gapila declares `prGate` and nothing else, by
   // design: it provisions itself and asks ax for the merge gate only. Grading
   // the provisioning contract there produced five findings, every one naming
