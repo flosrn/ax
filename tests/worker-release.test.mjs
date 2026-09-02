@@ -416,6 +416,13 @@ test('a release_unknown prints the reason and the recovery its own receipt carri
   // command, named rather than implied.
   assert.match(r.out, /--retry-request/);
   assert.ok(!/^\s*→ orca orchestration worker-show --dispatch ctx_ru --json\s*$/m.test(r.out), 'a worker-show alone is a look, not a repair');
+  // The identity is minted by the runtime ax already requires, never by a
+  // utility the host may lack: review of the first draft (Codex, P2) measured
+  // `uuidgen` absent on a minimal Linux, where the repair would have printed
+  // `command not found`, substituted an empty value and invoked Orca with an
+  // invalid --retry-request.
+  assert.match(r.out, /node -p "require\('crypto'\)\.randomUUID\(\)"/, 'the fresh identity comes from node');
+  assert.doesNotMatch(r.out, /uuidgen/);
 });
 
 test('a release_unknown receipt carrying neither field says so, rather than printing nothing', () => {

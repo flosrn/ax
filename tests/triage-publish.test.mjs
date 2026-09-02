@@ -71,18 +71,19 @@ const REPO_LABELS = [
  * both an unknown name and a `gh` that cannot answer at all.
  *
  * `issue view` is answered because publish reads what the tracker ALREADY
- * carries before it adds to it. The default is an issue with no comments and no
- * labels, last moved long before any draft here is written — the absences that
- * authorize a first publication. `carried` is the live label set a directive is
- * graded against; it answers `[]` for every existing case and the tests about
- * redundant directives override it.
+ * carries before it adds to it. The default is an issue with no comments, last
+ * moved long before any draft here is written — the absences that authorize a
+ * first publication — and born `needs-triage`, as every inbound issue is,
+ * because a remove of a label the issue does not carry is refused in every
+ * repository and the existing transitions all remove that one. `carried`
+ * overrides it for the tests about redundant directives.
  */
 function fakeGh({
   labels = { status: 0 },
   comment = { status: 0 },
   labelList = null,
   comments = [],
-  carried = [],
+  carried = ['needs-triage'],
   updatedAt = '2020-01-01T00:00:00.000Z',
   issueView = null,
 } = {}) {
@@ -400,6 +401,22 @@ test('a Labels: line naming a provenance label the issue already carries refuses
   assert.deepEqual(mutations(r.calls), [], 'nothing was applied and nothing was posted');
 });
 
+test('a Labels: line naming a DIFFERENT provenance label than the one the issue was born with refuses', () => {
+  // Review of the first draft (Codex, P1): the check compared the draft's name
+  // to the same name on the issue, so `source:user-report` on an issue born
+  // `source:agent-found` passed and GitHub would have carried two provenance
+  // labels — the exact state the doctrine forbids ("never a second").
+  const root = repo({ provenance: PROVENANCE });
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: category/bug, source:user-report\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:user-report/, 'the refusal names the label the draft adds');
+  assert.match(r.out, /source:agent-found/, 'and the one the issue was born with');
+  assert.match(r.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(mutations(r.calls), [], 'nothing was applied and nothing was posted');
+});
+
 test('a Remove labels: line naming a label the issue does not carry refuses', () => {
   const root = repo({ provenance: PROVENANCE });
   const path = draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nIt reproduces.\n');
@@ -467,13 +484,25 @@ test('an issue view with no labels array is an inability to establish, not an is
   assert.deepEqual(mutations(r.calls), []);
 });
 
-test('a repository that declares no provenance vocabulary gates nothing', () => {
-  // The repository is input, and an absent declaration is not a rule (F-028).
+test('a repository that declares no provenance vocabulary gates no ADD, and still refuses a remove that would do nothing', () => {
+  // The repository is input, and an absent declaration is not a rule (F-028):
+  // the provenance gate on the add side needs a vocabulary to name provenance,
+  // so it is off. The remove gate needs only the issue's live labels, which
+  // publish reads regardless — so the child's promise (`spec.mjs`: "asking to
+  // remove a label it does not have is refused") holds in every repository.
+  // Review of the first draft (Codex, P2) caught the gate switched off wholesale.
   const root = repo();
-  draft(root, 'triage-acme-widgets-7', 'Labels: source:agent-found\nRemove labels: needs-triage\n\nIt reproduces.\n');
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:agent-found\n\nIt reproduces.\n');
   const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found'] } });
-  assert.equal(r.code, 0);
+  assert.equal(r.code, 0, 'a redundant add is not graded without a vocabulary that names provenance');
   assert.equal(mutations(r.calls).length, 2);
+
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: needs-info\nRemove labels: needs-triage\n\nIt reproduces.\n');
+  const r2 = run(['--issue', '7'], { root, answers: { carried: ['category/bug'] } });
+  assert.equal(r2.code, 1, 'a remove of a label the issue does not carry is refused with or without a vocabulary');
+  assert.match(r2.out, /needs-triage/);
+  assert.match(r2.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(mutations(r2.calls), []);
 });
 
 test('a config that exists and does not parse refuses, rather than reading as "no provenance declared"', () => {

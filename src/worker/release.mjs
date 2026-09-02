@@ -225,7 +225,7 @@ const receiptReason = result => {
 };
 
 const releaseRepair = dispatchId =>
-  `orca orchestration worker-release --dispatch ${dispatchId} --retry-request "$(uuidgen)" --json   # a FRESH identity is the only thing that re-enters this release: the recorded one is completed in Orca's ledger and is replayed from it, and ax may not mint a second identity (F-001). Read it first with orca orchestration worker-show --dispatch ${dispatchId} --json`;
+  `orca orchestration worker-release --dispatch ${dispatchId} --retry-request "$(node -p "require('crypto').randomUUID()")" --json   # a FRESH identity is the only thing that re-enters this release: the recorded one is completed in Orca's ledger and is replayed from it, and ax may not mint a second identity (F-001). node mints it because ax already requires node and nothing else is guaranteed on the host. Read it first with orca orchestration worker-show --dispatch ${dispatchId} --json`;
 
 /**
  * The result of the last recorded `worker-release` phase for this dispatch, or

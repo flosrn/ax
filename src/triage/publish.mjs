@@ -183,9 +183,11 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   //
   // A config that exists and does not parse is an inability to establish, not a
   // declaration of nothing: read as "no provenance declared" it would silently
-  // switch the gate below off. A repository that declares no provenance gates
-  // nothing at all — an absent declaration is not a rule (F-028), and this verb
-  // publishes for repositories that never adopted the group.
+  // switch the add-side gate below off. A repository that declares no
+  // provenance grades no ADD — an absent declaration is not a rule (F-028), and
+  // this verb publishes for repositories that never adopted the group — while a
+  // remove of a label the issue does not carry is graded everywhere, from the
+  // live labels alone.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (loaded.exists && loaded.errors.length > 0) {
     return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
@@ -328,30 +330,32 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // directive out would reverse that rule and hide the draft that has to be
     // corrected. The repair names the line to delete.
     //
-    // Two directions, one read. A `Labels:` name the issue already carries is
-    // graded for the PROVENANCE group only — that is the one group whose
-    // doctrine forbids a second name, and a redundant category or state name is
-    // disclosed below instead. A `Remove labels:` name the issue does NOT carry
-    // is the same no-op in the other direction, for any group. Both gates are
-    // off entirely for a repository that declares no provenance vocabulary: an
-    // absent declaration is not a rule (F-028), and such a repository publishes
-    // exactly as it did before.
-    if (declared.length > 0) {
-      const redundantAdds = draft.labels.filter(
-        name => declaredCarried([name], declared).length > 0 && tracker.carried.some(carried => sameLabel(name, carried)),
-      );
-      const absentRemoves = draft.remove.filter(name => !tracker.carried.some(carried => sameLabel(name, carried)));
-      if (redundantAdds.length > 0 || absentRemoves.length > 0) {
-        for (const name of redundantAdds) {
-          bad(`#${issue} names ${name} on its Labels: line, and the issue already carries it — a provenance label is kept as born, never applied a second time`);
-        }
-        for (const name of absentRemoves) {
-          bad(`#${issue} asks to remove ${name}, which the issue does not carry — that directive does nothing`);
-        }
-        fix(`edit ${draft.path} # delete ${[...redundantAdds, ...absentRemoves].join(', ')} from its directive line — publish applies exactly what a draft names, so it refuses one that would change nothing rather than dropping it`);
-        blocked = true;
-        continue;
+    // Two directions, one read. A `Labels:` name in the PROVENANCE group is
+    // refused when the issue was born with ANY declared provenance name — the
+    // same one or another — because that is the one group whose doctrine
+    // forbids a second name; a redundant category or state name is disclosed
+    // below instead. Comparing the draft's name to the same name on the issue
+    // was the first draft's mistake (review, 2026-09-02): it let a second
+    // provenance name through, which is the exact state the rule exists to
+    // prevent. The add-side gate needs the vocabulary to know which names ARE
+    // provenance, so it is off for a repository that declares none — an absent
+    // declaration is not a rule (F-028). A `Remove labels:` name the issue does
+    // NOT carry is the same no-op in the other direction, for any group, and it
+    // needs only the live labels this verb already read: it is graded in every
+    // repository, which is what the child is told (`spec.mjs`).
+    const bornWith = declared.length > 0 ? declaredCarried(declared, tracker.carried) : [];
+    const redundantAdds = bornWith.length === 0 ? [] : draft.labels.filter(name => declaredCarried([name], declared).length > 0);
+    const absentRemoves = draft.remove.filter(name => !tracker.carried.some(carried => sameLabel(name, carried)));
+    if (redundantAdds.length > 0 || absentRemoves.length > 0) {
+      for (const name of redundantAdds) {
+        bad(`#${issue} names ${name} on its Labels: line, and the issue was born with ${bornWith.join(', ')} — a provenance label is kept as born, never joined by a second`);
       }
+      for (const name of absentRemoves) {
+        bad(`#${issue} asks to remove ${name}, which the issue does not carry — that directive does nothing`);
+      }
+      fix(`edit ${draft.path} # delete ${[...redundantAdds, ...absentRemoves].join(', ')} from its directive line — publish applies exactly what a draft names, so it refuses one that would change nothing rather than dropping it`);
+      blocked = true;
+      continue;
     }
     // A redundant name in a group whose doctrine permits it publishes, and is
     // said out loud so the operator can see a directive that changed nothing.
