@@ -37,8 +37,14 @@ and the draft says so.
   operator, and the draft says which.
 - `ready-for-agent` — the fix is decided at the resolution of acceptance
   criteria a test could be written against, and it touches nothing an operator
-  has to rule on. ONLY the `brief` publication applies this label — a `triage`
-  pass that concludes it recommends it and stops.
+  has to rule on. A `triage` draft that concludes it does NOT write
+  `ready-for-agent` in a `Labels:` line and writes no `Remove labels:` line:
+  `publish` would apply the label comment-first without an Agent Brief, and an
+  inbound issue wearing `ready-for-agent` with no Brief is the mislabel every
+  launcher trips on. Instead the body opens with `Verdict: ready-for-agent —
+  brief pass next`, the issue keeps `needs-triage`, and the `brief` publication
+  (`ax triage publish --issue <n> --job brief`) posts the Brief, applies the
+  label and removes `needs-triage` in one pass — the only path that applies it.
 - `ready-for-human` — the fix needs a ruling this repository's doctrine reserves
   to a person: a module header's rule reversed, a cross-verb contract (release,
   repair, stall, triage status and ls answering one question the same way), a
