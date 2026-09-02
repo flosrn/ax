@@ -54,10 +54,15 @@ const LABEL_JOBS = new Set(['triage', 'brief']);
  * vocabulary". So the gate returned null and the wrong lane started. The
  * messages still print the DECLARED name that matched, because that is the
  * string an operator has to go and correct.
+ *
+ * Exported because `./publish.mjs` grades a draft's directives against the
+ * labels an issue already carries, which is the same question about the same
+ * vocabulary. A second comparator there would be a second grammar for label
+ * identity, and the two would drift.
  */
-const sameLabel = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+export const sameLabel = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-const declaredCarried = (names, labels) => names.filter(name => labels.some(carried => sameLabel(name, carried)));
+export const declaredCarried = (names, labels) => names.filter(name => labels.some(carried => sameLabel(name, carried)));
 
 /**
  * Whether a ticket's ORIGIN forbids the requested job, when the repository

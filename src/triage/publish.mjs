@@ -13,6 +13,11 @@
 //     nothing — it never composes, never guesses a missing group
 //   * it reads every draft before the first `gh` call, so a batch cannot land
 //     half applied
+//   * it grades each directive against what the issue ALREADY CARRIES, read on
+//     that same tracker read: a `Labels:` name in the PROVENANCE group the
+//     issue already wears, or a `Remove labels:` name it does not wear, is a
+//     directive that changes nothing and it refuses the batch rather than
+//     dropping the name — dropping would be composing (#101)
 //   * it asks the TRACKER whether this publication already landed there, and
 //     refuses a second one unless `--republish` says so out loud (ofmchat #98)
 //   * it NEVER closes an issue. A child may recommend wontfix; closing is the
@@ -23,7 +28,7 @@
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
-import { repoPaths } from '../config.mjs';
+import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { bad, dim, fix, note, raw, section, warn } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
@@ -31,6 +36,7 @@ import { repoSlug } from '../gh.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
 import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
 import { draftDirFor, passesIn, readDraft, requestFor } from './draft.mjs';
+import { declaredCarried, sameLabel } from './dispatch.mjs';
 import { REFINE_REMOVED, READY_LABEL } from './spec.mjs';
 
 const USAGE = 'ax triage publish --issue N [--issue M …] [--job triage|brief] [--pass N] [--repo <owner/repo>] [--republish] [--dry-run]';
@@ -170,6 +176,23 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     );
   }
 
+  // The PROVENANCE vocabulary, which is the one label group whose doctrine
+  // forbids a second name ("already on the issue at birth — keep it, never add
+  // a second"). Read from the repository's own config, because the taxonomy is
+  // the repository's and never this package's.
+  //
+  // A config that exists and does not parse is an inability to establish, not a
+  // declaration of nothing: read as "no provenance declared" it would silently
+  // switch the gate below off. A repository that declares no provenance gates
+  // nothing at all — an absent declaration is not a rule (F-028), and this verb
+  // publishes for repositories that never adopted the group.
+  const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+  if (loaded.exists && loaded.errors.length > 0) {
+    return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
+  }
+  const provenance = loaded.config?.triage?.provenance ?? {};
+  const declared = [...(provenance.spec ?? []), ...(provenance.inbound ?? [])];
+
   // ── every draft read before the first mutation ────────────────────────────
   section(`drafts — ${slug} (job: ${job})`);
   const ready = [];
@@ -287,10 +310,53 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     const tracker = trackerState(gh, { slug, issue, marker: DISCLAIMER_BY_JOB[job], body: draft.body });
     if (!tracker.ok) {
       bad(`#${issue} what this issue already carries could not be read: ${tracker.reason} — and an unread issue reads exactly like an untouched one (F-028)`);
-      fix(`gh issue view ${issue} --repo ${slug} --json comments # then re-run once it answers`);
+      fix(`gh issue view ${issue} --repo ${slug} --json comments,labels # then re-run once it answers`);
       blocked = true;
       continue;
     }
+
+    // ── does either directive already have its effect? ───────────────────────
+    //
+    // The vocabulary check above answers which labels EXIST. It cannot answer
+    // which of them are ON this issue, and until #101 nothing here could: three
+    // published comments restated a `source:` label the issue wore at birth,
+    // which `docs/agents/triage-labels.md` forbids ("already on the issue at
+    // birth — keep it, never add a second"), and publish reported it as applied.
+    //
+    // It REFUSES rather than dropping the name. This verb applies exactly what
+    // the draft names and never composes (see the header), so filtering a
+    // directive out would reverse that rule and hide the draft that has to be
+    // corrected. The repair names the line to delete.
+    //
+    // Two directions, one read. A `Labels:` name the issue already carries is
+    // graded for the PROVENANCE group only — that is the one group whose
+    // doctrine forbids a second name, and a redundant category or state name is
+    // disclosed below instead. A `Remove labels:` name the issue does NOT carry
+    // is the same no-op in the other direction, for any group. Both gates are
+    // off entirely for a repository that declares no provenance vocabulary: an
+    // absent declaration is not a rule (F-028), and such a repository publishes
+    // exactly as it did before.
+    if (declared.length > 0) {
+      const redundantAdds = draft.labels.filter(
+        name => declaredCarried([name], declared).length > 0 && tracker.carried.some(carried => sameLabel(name, carried)),
+      );
+      const absentRemoves = draft.remove.filter(name => !tracker.carried.some(carried => sameLabel(name, carried)));
+      if (redundantAdds.length > 0 || absentRemoves.length > 0) {
+        for (const name of redundantAdds) {
+          bad(`#${issue} names ${name} on its Labels: line, and the issue already carries it — a provenance label is kept as born, never applied a second time`);
+        }
+        for (const name of absentRemoves) {
+          bad(`#${issue} asks to remove ${name}, which the issue does not carry — that directive does nothing`);
+        }
+        fix(`edit ${draft.path} # delete ${[...redundantAdds, ...absentRemoves].join(', ')} from its directive line — publish applies exactly what a draft names, so it refuses one that would change nothing rather than dropping it`);
+        blocked = true;
+        continue;
+      }
+    }
+    // A redundant name in a group whose doctrine permits it publishes, and is
+    // said out loud so the operator can see a directive that changed nothing.
+    const idle = draft.labels.filter(name => tracker.carried.some(carried => sameLabel(name, carried)));
+    if (idle.length > 0) note(`#${issue} already carries ${dim(idle.join(', '))} — applied again, which GitHub answers idempotently`);
     // The exact-bytes refusal comes FIRST because it is the more convincing one
     // and the one that needs no marker: this draft's rendering is already on the
     // issue, whichever wording published it. It is what closes the pre-0.15
@@ -554,15 +620,23 @@ function repoLabels(gh, slug) {
  *   also the exact hazard a leftover draft carries — re-publishing the same
  *   bytes — so it is a string comparison and never an inference.
  *
+ *   `carried` — the label NAMES the issue wears right now. Read on this same
+ *   call rather than a second one, so a batch pays nothing new for it: it is
+ *   what lets a directive be graded against the issue instead of against the
+ *   repository's vocabulary, which knows which labels exist and nothing about
+ *   which are on this issue (#101).
+ *
  * Every way `gh` fails to answer returns `ok: false` with the reason, and the
  * caller refuses on it. An unreadable issue is an inability to establish absence,
  * never an issue with nothing on it (F-028) — and the absence being established
- * here is the one that authorizes a mutation. An answer that IS readable and
- * carries an empty `comments` array is a real answer, and it authorizes.
+ * here is the one that authorizes a mutation. That is why a missing `labels`
+ * array is a refusal and not an empty set. An answer that IS readable and
+ * carries an empty `comments` or `labels` array is a real answer, and it
+ * authorizes.
  */
 function trackerState(gh, { slug, issue, marker, body }) {
-  const unknown = reason => ({ ok: false, reason, mine: [], verbatim: [], movedAt: null });
-  const out = gh(['issue', 'view', issue, '--repo', slug, '--json', 'comments,updatedAt']);
+  const unknown = reason => ({ ok: false, reason, mine: [], verbatim: [], carried: [], movedAt: null });
+  const out = gh(['issue', 'view', issue, '--repo', slug, '--json', 'comments,labels,updatedAt']);
   if (out.error) return unknown(`gh could not run: ${String(out.error.message ?? out.error)}`);
   if (out.status !== 0) return unknown(`gh refused — ${firstLine(out.stderr) || `exit ${out.status}`}`);
   let answer;
@@ -572,6 +646,7 @@ function trackerState(gh, { slug, issue, marker, body }) {
     return unknown('gh answered something that is not JSON');
   }
   if (!Array.isArray(answer?.comments)) return unknown(`gh answered no comments array for #${issue}`);
+  if (!Array.isArray(answer?.labels)) return unknown(`gh answered no labels array for #${issue}, so what this issue carries could not be read`);
   const movedAt = Date.parse(String(answer?.updatedAt ?? ''));
   const published = RENDERINGS.map(disclaimer => normalize(`${disclaimer}\n\n${body}`));
   const where = comment => ({ url: String(comment?.url ?? ''), createdAt: String(comment?.createdAt ?? '') });
@@ -580,6 +655,7 @@ function trackerState(gh, { slug, issue, marker, body }) {
     mine: answer.comments.filter(comment => String(comment?.body ?? '').includes(marker)).map(where),
     verbatim: answer.comments.filter(comment => published.includes(normalize(comment?.body))).map(where),
     movedAt: Number.isFinite(movedAt) ? movedAt : null,
+    carried: answer.labels.map(label => String(label?.name ?? '')).filter(name => name !== ''),
   };
 }
 
