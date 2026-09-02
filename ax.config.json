@@ -25,6 +25,8 @@
     }
   },
   "triage": {
+    "$comment": "`labels` is the group vocabulary a triage child fills — three groups on the labels this tracker already carries, plus a `Module:` body line from docs/ownership.md in place of a domain label. Declared 2026-09-02 when the first triage wave was refused for its absence.",
+    "labels": "docs/agents/triage-labels.md",
     "provenance": {
       "spec": ["source:roadmap"],
       "inbound": ["source:agent-found", "source:user-report"]
