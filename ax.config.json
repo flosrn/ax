@@ -22,5 +22,11 @@
         "sessions": "/home/orca/.omp/agent/sessions"
       }
     }
+  },
+  "triage": {
+    "provenance": {
+      "spec": ["source:roadmap"],
+      "inbound": ["source:agent-found", "source:user-report"]
+    }
   }
 }
