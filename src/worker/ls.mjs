@@ -8,12 +8,16 @@
 // from that list inherits both bugs. The truth that no repair path can forge is
 // the PANE: a terminal handle the runtime still owns and has not orphaned.
 //
-// So this verb joins THREE sources and shows their disagreement rather than
+// So this verb joins FOUR sources and shows their disagreement rather than
 // picking a winner silently:
 //   1. the local dispatch store (src/worker/record.mjs) — which requests exist,
-//      and which agent terminal each one was recorded to have opened;
+//      which agent terminal each one was recorded to have opened, and on which
+//      host it was dispatched;
 //   2. `orca terminal list --json` — liveness per handle, `orphaned` = dead;
-//   3. `orca orchestration worker-list --json` — Orca's own accounting, printed
+//   3. `orca terminal list --environment <host> --json`, once per host a record
+//      names — that host's own inventory, asked because `dispatch.hosts.<host>`
+//      in ax.config.json is what says how to reach it (#76);
+//   4. `orca orchestration worker-list --json` — Orca's own accounting, printed
 //      FOR COMPARISON ONLY, never as the count.
 // A live pane whose worker-list entry is absent or `retained` is exactly the
 // F-048 shape, and it is reported as a failure with the release that repairs it.
@@ -24,6 +28,14 @@
 // `terminals` array is a refusal, not an empty machine. And measured 2026-08-22
 // on this Mac, `terminal list` carries `hostScope.omittedHostIds`: when hosts
 // are omitted, a handle missing from the list is UNKNOWN, not dead.
+//
+// THE OMISSION SET IS EARNED, NOT ASSUMED (#76). Every remote pane used to read
+// INCONNU behind "hosts were omitted from the terminal-list scope" — honest, and
+// avoidable: the project's declaration already carried how to reach that host.
+// Each host a record names is therefore asked for its own inventory, and only
+// what could NOT be asked is disclosed, with the reason each answered. A host
+// that answered classifies its own panes: present is capacity, and absent from
+// the list that host itself gave is a corpse there (see pane.mjs `asked`).
 //
 // This verb is FAIL-CLOSED, unlike `ax board`: a count that cannot be
 // established must refuse, because the caller is about to decide whether it has
@@ -47,8 +59,10 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
+import { hostFor } from './hosts.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore } from './record.mjs';
 
@@ -197,7 +211,73 @@ function workerIndex(run) {
   return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length };
 }
 
-export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
+/**
+ * THE HOSTS A RECORD NAMES, asked for their own inventory.
+ *
+ * A record dispatched with `--on <env>` names its host by the name the project
+ * declared it under, and `dispatch.hosts.<env>` is what says how ax reaches it —
+ * so that host's OWN terminal list is available, and it answers for its panes.
+ * Before this, the enquiry stopped at the local list's `omittedHostIds`: every
+ * remote pane read INCONNU with "hosts were omitted from the terminal-list
+ * scope", which is honest and was avoidable, since the declaration was right
+ * there. An orchestrator arbitrating overlap then had to treat a working remote
+ * child as an unknown.
+ *
+ * Asked ONCE per host, and only for a host a record actually names: a store with
+ * no remote record reads no config and makes no extra call, and a declared host
+ * no record mentions has no row to classify — this verb counts records, never
+ * machines.
+ *
+ * A host that could not be asked is a NAMED refusal carrying the reason it
+ * answered, never an empty inventory (F-028): its panes stay INCONNU, and only
+ * the caller discloses why — once, not once per row.
+ */
+function hostReader(run, cwd) {
+  const asked = new Map();
+  let declaration;
+
+  const declarations = () => {
+    if (declaration !== undefined) return declaration;
+    const paths = repoPaths(cwd);
+    if (paths.root === null) {
+      declaration = { ok: false, reason: `${cwd} is not inside a repository, so nothing declares how to reach a host` };
+      return declaration;
+    }
+    const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+    if (!loaded.exists) declaration = { ok: false, reason: `no ax.config.json under ${paths.root}, so no host is declared here` };
+    else if (loaded.errors.length > 0) declaration = { ok: false, reason: `ax.config.json is invalid, so its host declarations cannot be read: ${loaded.errors[0]}` };
+    else declaration = { ok: true, config: loaded.config };
+    return declaration;
+  };
+
+  const scopeOf = name => {
+    const declared = declarations();
+    if (!declared.ok) return { ok: false, reason: declared.reason };
+    const found = hostFor(declared.config, name);
+    // The declaration is the transport: without one there is no call to make,
+    // and a bare guess at a host name is exactly what `hostFor` refuses.
+    if (!found.ok) return { ok: false, reason: found.reason };
+    return terminalInventory(run, { environment: name });
+  };
+
+  return {
+    /**
+     * The inventory that answers for ONE record's pane, plus whether that answer
+     * came from the host itself — which is what lets an absence there be a
+     * corpse rather than an omission (see paneVerdict).
+     */
+    scopeFor(local, host) {
+      if (host === undefined || host === '') return { inventory: local, asked: false };
+      if (!asked.has(host)) asked.set(host, scopeOf(host));
+      const scope = asked.get(host);
+      return { inventory: scope, asked: scope.ok === true };
+    },
+    /** Every host that was asked and could not answer, with what it answered. */
+    unaskable: () => [...asked].filter(([, scope]) => scope.ok !== true),
+  };
+}
+
+export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env, cwd = process.cwd() } = {}) {
   let storeArg = '';
   let all = false;
   for (let i = 0; i < argv.length; i += 1) {
@@ -273,13 +353,23 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   // — while the count is this verb's entire job.
   let alive = 0;
   let suspects = 0;
+  let unplaced = 0;
   const drift = [];
   const matched = new Set();
+  const hosts = hostReader(run, cwd);
 
   const views = files.map(file => {
     const row = describeRecord(dir, file);
-    const { pane, detail } = paneVerdict(row.handle, row.why, terminals, { host: row.host });
+    // EACH PANE IS JUDGED BY ITS OWN HOST (#76). The local list answers for a
+    // local dispatch and for a record whose placement is unknown; a record that
+    // names a host is judged by what that host said about itself.
+    const scope = hosts.scopeFor(terminals, row.host);
+    const { pane, detail } = paneVerdict(row.handle, row.why, scope.inventory, { host: row.host, asked: scope.asked });
     if (pane === 'VIVANT') alive += 1;
+    // A row left unknowable by the LOCAL list's own omission — a record whose
+    // placement no phase could name, so no host could be asked for it. That is
+    // the only case the blanket disclosure below still explains.
+    if ((row.host === undefined || row.host === '') && pane === 'INCONNU' && row.handle !== null && terminals.omitted) unplaced += 1;
 
     let state;
     let entry;
@@ -312,7 +402,8 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     // 2026-08-25 on 55-work and 56-work, whose recorded panes were in the
     // receipt all along.
     const leaked = row.unsettled ?? null;
-    const leakedVerdict = leaked === null ? null : paneVerdict(leaked.handle, '', terminals, { host: leaked.host });
+    const leakedScope = leaked === null ? null : hosts.scopeFor(terminals, leaked.host);
+    const leakedVerdict = leaked === null ? null : paneVerdict(leaked.handle, '', leakedScope.inventory, { host: leaked.host, asked: leakedScope.asked });
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 
@@ -340,7 +431,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   // those two, and nothing else:
   //
   //   VIVANT                      capacity in use, and the pane to arbitrate against
-  //   INCONNU, host not asked     may be alive and working on a host this list never read
+  //   INCONNU, host unaskable     may be alive on a host nothing here can ask (#76)
   //   INCONNU, pane alive         an unsettled worker-start whose terminal is up right now
   //   INCONNU, no pane named      a write-ahead record; nothing proves it dead either
   //
@@ -412,7 +503,20 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   // silence.
   if (!all && withheldMort > 0) note(`${withheldMort} MORT record(s) not shown — a pane the runtime cannot see names no repair: ax worker ls --all`);
   if (!all && withheldAttempts > 0) note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker ls --all`);
-  if (terminals.omitted) note('hosts were omitted from the terminal-list scope: a pane absent from it is INCONNU here, never MORT');
+  // THE OMISSION SET, now only what it really is (#76): the hosts that could
+  // NOT be asked, each with the reason it answered — a host that answered
+  // classified its own panes and is no omission at all. One line per host and
+  // never per row: the reason is a fact about the host, and repeating it per
+  // record is the receipt this verb was shortened out of (#70).
+  for (const [host, scope] of hosts.unaskable()) {
+    note(`host '${host}' could not be asked, so its panes stay INCONNU, never MORT: ${scope.reason}`);
+  }
+  // And the residue no declaration can reach: a record whose own phase never
+  // named a placement, absent from a list that omits hosts. Nothing says which
+  // host to ask for it, so the scope itself is the disclosure.
+  if (unplaced > 0) {
+    note(`${unplaced} recorded pane(s) name no placement, and this list omits ${terminals.omittedHosts.join(', ')}: absent from it is INCONNU here, never MORT`);
+  }
   if (!workers.ok) {
     bad(workers.reason);
     fix('orca orchestration worker-list --json   # the comparison column is missing; the pane count above still stands');

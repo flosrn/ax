@@ -5,7 +5,8 @@
 // (claimRecord/initRecord/phaseBegin/phaseEnd — no mocked filesystem: the store
 // is where the defects live), injected runner, fully offline.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -14,6 +15,20 @@ import { ls } from '../src/worker/ls.mjs';
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
 
 const store = () => mkdtempSync(join(tmpdir(), 'ax-worker-ls-'));
+
+/**
+ * A real checkout whose `ax.config.json` declares the hosts passed here — the
+ * only thing that tells this verb how to reach a host, and therefore whether a
+ * remote pane can be asked about at all. `repo()` with nothing declared is the
+ * machine every pre-#76 test ran on.
+ */
+function repo(hosts = {}) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-worker-ls-repo-')));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  const dispatch = Object.keys(hosts).length === 0 ? {} : { dispatch: { entry: '/entry', hosts } };
+  writeFileSync(join(dir, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, ...dispatch }));
+  return dir;
+}
 
 /**
  * A record written exactly the way a dispatch writes one: write-ahead, then the
@@ -62,8 +77,18 @@ const taskCreated = (taskId = 'task_aaa') => ({ ok: true, result: { task: { id: 
  * An Orca answering the three reads this verb joins. `terminalFail` and
  * `workerFail` are the two very different unreadabilities: one is the witness,
  * the other is only the suspect.
+ *
+ * `hosts` is the fourth read (#76): the inventory a DECLARED host gives of
+ * itself, keyed by the environment name a record dispatched with. Its shape is
+ * the MEASURED one — `terminal list --environment gapicore --json` is served by
+ * that environment's own runtime (`_meta.runtimeId` 1468aeea-…, gapicore's, next
+ * to 682e09fd-… for the unscoped call on this Mac, 2026-09-02) and answers
+ * `hostScope {"hostIds":["local"],"omittedHostIds":[]}`: `local` there is the
+ * REMOTE's local. `hostIds` is overridable so the conservative direction — a
+ * reply that never claims to have read its own scope — can be pinned too. An
+ * environment absent from `hosts`, or one carrying `fail`, could not answer.
  */
-function fakeRunner({ terminals = [], omittedHostIds = [], workers = [], ready = true, terminalFail = false, workerFail = false } = {}) {
+function fakeRunner({ terminals = [], omittedHostIds = [], workers = [], ready = true, terminalFail = false, workerFail = false, hosts = {} } = {}) {
   const calls = [];
   const run = args => {
     calls.push(args);
@@ -73,6 +98,28 @@ function fakeRunner({ terminals = [], omittedHostIds = [], workers = [], ready =
         : { status: 0, stdout: '', stderr: '', receipt: { ok: true, result: { runtime: { reachable: false } } } };
     }
     if (args[0] === 'terminal' && args[1] === 'list') {
+      const at = args.indexOf('--environment');
+      if (at !== -1) {
+        const name = args[at + 1];
+        const host = hosts[name];
+        if (host === undefined || host.fail !== undefined) {
+          const detail = host?.fail ?? 'unknown_environment';
+          return { status: 1, stdout: '', stderr: detail, receipt: { unparseable: detail, error: 'x' } };
+        }
+        return {
+          status: 0,
+          stdout: '',
+          stderr: '',
+          receipt: {
+            ok: true,
+            result: {
+              terminals: host.terminals ?? [],
+              hostScope: { hostIds: host.hostIds ?? ['local'], omittedHostIds: host.omittedHostIds ?? [] },
+              totalCount: (host.terminals ?? []).length,
+            },
+          },
+        };
+      }
       return terminalFail
         ? { status: 1, stdout: '', stderr: 'runtime_unavailable', receipt: { unparseable: 'runtime_unavailable', error: 'x' } }
         : {
@@ -322,7 +369,10 @@ test('#70: the default receipt lists the panes that carry a decision, --all keep
 
   // The three lines the orchestrator reads before every dispatch.
   assert.match(shown.out, /1 live pane\(s\) — this is the cap count/);
-  assert.match(shown.out, /hosts were omitted from the terminal-list scope/);
+  // NOT the blanket omission line: every record here is local, this list read
+  // `local`, so the omitted remote runtime explains no row on this machine
+  // (#76 — the line is now per host, and only for a host that bears on a pane).
+  assert.doesNotMatch(shown.out, /omitted from the terminal-list scope/);
   assert.match(shown.out, /worker-list reports 1 entry\(ies\), 0 of them with no local record/, 'the join covers every record, shown or not');
 
   const all = capture(() => ls(['--all'], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir } }));
@@ -330,7 +380,7 @@ test('#70: the default receipt lists the panes that carry a decision, --all keep
   assert.equal(paneRows(all.out).length, 4, 'the archaeology stays reachable, unchanged');
   for (const dead of ['dead-1', 'dead-2', 'dead-3']) assert.match(all.out, new RegExp(`${dead}.*pane MORT`));
   assert.match(all.out, /1 live pane\(s\) — this is the cap count/, 'the capacity line is the same line in both views');
-  assert.match(all.out, /hosts were omitted from the terminal-list scope/, 'so is the omission disclosure');
+  assert.doesNotMatch(all.out, /omitted from the terminal-list scope/, 'and it stays absent in both views');
   assert.doesNotMatch(all.out, /MORT record\(s\) not shown/, 'nothing is hidden under --all, so nothing is disclosed');
 });
 
@@ -348,6 +398,10 @@ test('#70: a dead attempt leaves the default as a count; an unasked host keeps i
   //
   // Its DISPOSITION is untouched: still INCONNU, because nothing about that
   // record was ever established. Only the listing changes.
+  //
+  // `unasked-1`'s host is a host THIS PROJECT DOES NOT DECLARE (#76), which is
+  // the only remaining way a host cannot be asked: nothing in the config says
+  // how to reach it, so its panes stay unknowable.
   writeRecord(dir, 'unasked-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_u1', handle: 'term_elsewhere' }) }], { on: 'gapicore' });
   writeRecord(dir, 'dead-attempt-1', [
     { name: 'task-create', receipt: taskCreated('task_55') },
@@ -359,18 +413,20 @@ test('#70: a dead attempt leaves the default as a count; an unasked host keeps i
   writeRecord(dir, 'live-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_l1', handle: 'term_l1' }) }]);
 
   const orca = () => fakeRunner({ terminals: [pane('term_l1')], omittedHostIds: ['runtime:7930a317'], workers: [] });
+  const undeclared = repo();
 
-  const shown = capture(() => ls([], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir } }));
+  const shown = capture(() => ls([], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir }, cwd: undeclared }));
   assert.equal(shown.code, 0);
   assert.equal(paneRows(shown.out).length, 2, `the live pane and the unasked host, nothing else:\n${shown.out}`);
   assert.match(shown.out, /live-1 .*pane VIVANT/);
-  assert.match(shown.out, /unasked-1 .*pane INCONNU/, 'a host this call never asked cannot answer for its panes');
+  assert.match(shown.out, /unasked-1 .*pane INCONNU/, 'a host this call could not ask cannot answer for its panes');
+  assert.match(shown.out, /host 'gapicore' could not be asked.*not a host this project declared/, 'and the omission names that host, with what it answered');
   assert.doesNotMatch(shown.out, /dead-attempt-1/, 'a dead attempt carries neither answer');
   assert.doesNotMatch(shown.out, /ax worker tail|ax worker transcript/, 'and its settlement routes go with it');
   assert.match(shown.out, /1 unsettled record\(s\) whose pane is MORT — ax worker ls --all/, 'collapsed to one line, with the view that has it');
   assert.match(shown.out, /1 live pane\(s\) — this is the cap count/);
 
-  const all = capture(() => ls(['--all'], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir } }));
+  const all = capture(() => ls(['--all'], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir }, cwd: undeclared }));
   assert.equal(paneRows(all.out).length, 3, 'every record is still one row here');
   const line = all.out.split('\n').find(l => l.includes('dead-attempt-1')) ?? '';
   assert.match(line, /pane INCONNU/, 'the disposition is NOT relabelled by the listing');
@@ -386,7 +442,7 @@ test('#70: an unsettled record whose pane may still be alive is never collapsed'
   // The two unsettled shapes that are NOT a dead attempt, and neither may be
   // reduced to a count: `alive-leak` recorded a pane that is up right now
   // (unproven association, so it is inspected and never released — F-028), and
-  // `unasked-leak` recorded one on a host this list never read. Both are
+  // `unasked-leak` recorded one on a host that cannot be asked. Both are
   // possible capacity in use, which is the question the reader came with.
   writeRecord(dir, 'alive-leak', [
     { name: 'worker-start', exit: 1, receipt: { ok: true, result: { taskId: 't1', dispatchId: 'ctx_a', state: 'failed', stage: 'agent_readiness', effects: [{ kind: 'terminal', role: 'agent', action: 'reused_agent_terminal', id: 'term_alive' }] } } },
@@ -399,7 +455,7 @@ test('#70: an unsettled record whose pane may still be alive is never collapsed'
   writeRecord(dir, 'inflight-1', [{ name: 'worker-start' }]);
 
   const run = fakeRunner({ terminals: [pane('term_alive')], omittedHostIds: ['runtime:7930a317'], workers: [] });
-  const { out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  const { out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
   assert.equal(paneRows(out).length, 3, `all three are unestablished, and none of them is a corpse:\n${out}`);
   assert.match(out, /term_alive, ALIVE right now/);
   assert.match(out, /worker-show --dispatch ctx_a/, 'the suspect is still routed to an inspection');
@@ -407,16 +463,114 @@ test('#70: an unsettled record whose pane may still be alive is never collapsed'
   assert.match(out, /0 live pane\(s\)/, 'unproven is still never counted as capacity in use');
 });
 
-test('a REMOTE handle absent while its host is omitted is INCONNU, never MORT (measured hostScope, 2026-08-22)', () => {
+// ── the declared hosts (#76): a host that can be reached can be asked ────────
+
+/** A host declaration is exactly what says how to reach that host. */
+const declared = { gapicore: { ssh: 'orca@vps' } };
+
+test('#76: a declared host answers for its own panes, and they are capacity', () => {
+  const dir = store();
+  // Two children on one declared host. Before this, both read INCONNU with
+  // "hosts were omitted" — the local list cannot see a remote pane, and the
+  // enquiry stopped there although the declaration says how to reach it.
+  writeRecord(dir, 'far-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f1', handle: 'term_far1' }) }], { on: 'gapicore' });
+  writeRecord(dir, 'far-2', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f2', handle: 'term_far2' }) }], { on: 'gapicore' });
+  writeRecord(dir, 'local-live', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_l1', handle: 'term_l1' }) }]);
+
+  const run = fakeRunner({
+    terminals: [pane('term_l1')],
+    omittedHostIds: ['runtime:7930a317'],
+    hosts: { gapicore: { terminals: [pane('term_far1'), pane('term_far2')] } },
+    workers: [],
+  });
+  const { code, out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+
+  assert.equal(code, 0);
+  assert.match(lineWith('far-1'), /pane VIVANT/, 'the host said this pane is up, so it is up');
+  assert.match(lineWith('far-2'), /pane VIVANT/);
+  assert.match(out, /3 live pane\(s\) — this is the cap count/, 'a live pane on an asked host is capacity in use');
+  assert.doesNotMatch(out, /could not be asked/, 'a host that answered is no omission at all');
+  assert.doesNotMatch(out, /omitted from the terminal-list scope/, 'and no row is left leaning on the local list’s omission');
+
+  const scoped = run.calls.filter(args => args.includes('--environment'));
+  assert.deepEqual(scoped, [['terminal', 'list', '--environment', 'gapicore', '--json']], 'asked once, by the name the record dispatched with');
+});
+
+test('#76: a pane the declared host does not know is a corpse on that host', () => {
+  const dir = store();
+  // The host itself answered, about its OWN scope: `terminal list --environment
+  // gapicore` is served by gapicore's runtime, which reported `hostIds:
+  // ["local"]` — its local — and omitted nothing (measured 2026-09-02, see
+  // fakeRunner). A handle that runtime does not carry is a corpse THERE.
+  writeRecord(dir, 'far-gone', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_fg', handle: 'term_far_gone' }) }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [], omittedHostIds: ['runtime:7930a317'], hosts: { gapicore: { terminals: [pane('term_other')] } } });
+
+  const { out, lineWith } = capture(() => ls(['--all'], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('far-gone'), /pane MORT/, 'the host that owns that pane says it has no such pane');
+  assert.match(lineWith('far-gone'), /gapicore/, 'and the row names which host answered');
+  assert.match(out, /0 live pane\(s\)/);
+});
+
+test('#76: a host answering about something other than its own scope proves no death', () => {
+  const dir = store();
+  // The conservative direction, and the reason `asked` is not "trust the
+  // caller": if a scoped reply ever stops naming the scope it read, absence in
+  // it establishes nothing — and this verdict is what authorises closing panes.
+  writeRecord(dir, 'far-maybe', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_fm', handle: 'term_far_maybe' }) }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [], hosts: { gapicore: { terminals: [], hostIds: ['runtime:somewhere-else'] } } });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('far-maybe'), /pane INCONNU/, 'an answer about another scope is not an answer about this pane');
+  assert.match(lineWith('far-maybe'), /did not say it read that host's own scope/);
+  assert.doesNotMatch(out, /pane MORT/);
+});
+
+test('#76: a declared host that cannot answer keeps its panes INCONNU, reason named once', () => {
+  const dir = store();
+  // The whole point of the omission set: a host that was asked and could not
+  // say leaves its panes unknowable. Two records on it, ONE disclosure line —
+  // a reason repeated per row is the receipt #70 shortened.
+  writeRecord(dir, 'far-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f1', handle: 'term_far1' }) }], { on: 'gapicore' });
+  writeRecord(dir, 'far-2', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f2', handle: 'term_far2' }) }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [], omittedHostIds: [], hosts: { gapicore: { fail: 'ssh_unreachable' } } });
+
+  const { code, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.equal(code, 0, 'a host that will not answer is not a count that cannot be established');
+  assert.match(out, /far-1 .*pane INCONNU/);
+  assert.match(out, /far-2 .*pane INCONNU/);
+  assert.doesNotMatch(out, /pane MORT/, 'a host that did not answer never demotes a pane to a corpse');
+  const disclosures = out.split('\n').filter(line => line.includes("host 'gapicore' could not be asked"));
+  assert.equal(disclosures.length, 1, `one line per host, never per row:\n${out}`);
+  assert.match(disclosures[0], /ssh_unreachable/, 'with the reason that host answered (F-004: the raw diagnostic survives)');
+  assert.match(out, /0 live pane\(s\)/);
+});
+
+test('#76: with no config to read, a remote pane is unknowable and says why', () => {
+  const dir = store();
+  // A store read from outside any checkout: nothing declares a host, so no
+  // host can be reached, and the rows say that instead of implying a scope.
+  writeRecord(dir, 'far-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f1', handle: 'term_far1' }) }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [], omittedHostIds: [] });
+
+  const { code, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: tmpdir() }));
+  assert.equal(code, 0);
+  assert.match(out, /far-1 .*pane INCONNU/);
+  assert.match(out, /host 'gapicore' could not be asked/);
+  assert.doesNotMatch(out, /pane MORT/);
+  assert.deepEqual(run.calls.filter(args => args.includes('--environment')), [], 'a host with no declaration is never guessed at');
+});
+
+test('a REMOTE handle on a host that cannot be asked is INCONNU, never MORT (measured hostScope, 2026-08-22)', () => {
   const dir = store();
   // The record says where it dispatched, which is what makes this a statement
-  // about a pane on the omitted host rather than about any absent handle.
+  // about a pane on another host rather than about any absent handle. Nothing
+  // declares `gapicore` here, so #76's ask cannot happen either.
   writeRecord(dir, 'remote-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_r', handle: 'term_elsewhere' }) }], { on: 'gapicore' });
   const run = fakeRunner({ terminals: [], omittedHostIds: ['runtime:7930a317'] });
 
-  const { lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  const { lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
   assert.match(lineWith('remote-1'), /pane INCONNU/);
-  assert.match(lineWith('remote-1'), /is not one this call proved it read|hosts are omitted/, 'not reading a host is not seeing its pane dead');
+  assert.match(lineWith('remote-1'), /could not be asked|hosts are omitted/, 'not reading a host is not seeing its pane dead');
 });
 
 test('a LOCAL handle is not made unknowable by an omitted REMOTE host', () => {
