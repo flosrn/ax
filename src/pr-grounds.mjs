@@ -455,7 +455,20 @@ export function prCommits({ run, slug, pr }) {
       const commit = must(entry, 'commit', 'a PR commit');
       const when = Date.parse(must(must(commit, 'committer', 'commit'), 'date', 'committer'));
       if (Number.isNaN(when)) throw new Error('a PR commit carries a committer date that is not a date');
-      return { sha: String(must(entry, 'sha', 'a PR commit')), message: String(must(commit, 'message', 'commit')), when };
+      // The PARENTS are the third thing standing on this payload (#90): Ground
+      // 6's shape rule asks how many a post-open commit has and which one the
+      // base reaches, and this endpoint has always carried them. Read by name
+      // like every other field — an absent list is an unread shape, never a
+      // commit with no parents, and defaulting it to `[]` would make every
+      // commit read as a non-merge and quietly disable the rule.
+      const parents = must(entry, 'parents', 'a PR commit');
+      if (!Array.isArray(parents)) throw new Error("a PR commit's 'parents' is not a list");
+      return {
+        sha: String(must(entry, 'sha', 'a PR commit')),
+        message: String(must(commit, 'message', 'commit')),
+        when,
+        parents: parents.map(parent => String(must(parent, 'sha', "a PR commit's parent"))),
+      };
     });
     return { ok: true, commits };
   } catch (error) {
@@ -529,20 +542,126 @@ export function mergePolicy({ run, slug }) {
  * The payload arrives already read (`prCommits`): this ground and the closing
  * channel stand on ONE fetch, and each names its own inability over it rather
  * than sharing one sentence about two different questions.
+ *
+ * ONE SHAPE IS EXEMPT, AND IT IS EXEMPT BY MEASUREMENT: a clean merge FROM the
+ * base. #90 measured the cost of not having it — the gate's own staleness
+ * self-repair ran `gh pr update-branch`, the merge that produced was committed
+ * after the PR opened, and this ground then listed and refused that very
+ * commit, printing an `--ack-body` repair the caller could not have satisfied
+ * because the commit did not exist when they typed the command. The merge of
+ * #87 went to a worker for a body edit whose only content was the gate's own
+ * footprint.
+ *
+ * KTD9's premise is what fails there, not KTD9: a body written before a commit
+ * existed cannot describe it, and base movement is not work the body was ever
+ * meant to describe. So the exemption is not a suppressor anyone can pass — it
+ * is a PREDICATE ON THE COMMIT, all three parts read, none assumed:
+ *
+ *   1. exactly two parents,
+ *   2. the second one reachable from the base ref, and
+ *   3. `git diff-tree --cc` EMPTY — the merge carries nothing that is not
+ *      already in one of its parents.
+ *
+ * Re-derived on every run and remembered nowhere, so it holds identically in
+ * the process that minted the commit, in the owning worker's fresh gate run,
+ * and in a resumed merge; a worker's own clean `git merge origin/<base>` is the
+ * same shape and gets the same answer. Part 3 is why the rule cannot be used to
+ * smuggle work: a conflict resolution or an evil merge carries content of its
+ * own, so it is work, refuses, and is named as one. THE READS ARE READS — a
+ * base ref this checkout cannot resolve, or a `--cc` that cannot answer, leaves
+ * the shape undecided, and undecided is not exempt (F-028).
+ *
+ * The rejected alternative, named so it is not re-invented: having the
+ * self-repair append `--ack-body` to its own re-run. That suppresses the
+ * detector for EVERY post-open commit, including the caller-authored ones the
+ * body genuinely fails to describe — a one-commit exemption turned into a
+ * blanket bypass of the ground.
  */
-export function commitsGround({ commits, slug, pr, openedAt, ackBody, invocation }) {
+export function commitsGround({ commits, git, root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation }) {
   const out = account();
   if (!commits.ok) {
     out.unknown(`commits since open: ${commits.reason}`, commits.repair);
     return out;
   }
-  const late = commits.commits.filter(entry => entry.when > openedAt).map(entry => entry.sha.slice(0, 12));
-  if (late.length === 0) out.note('commits since open: none — the body describes every commit on the branch');
-  else if (ackBody) out.note(`commits since open: ${late.length} acknowledged via --ack-body (${late.join(' ')})`);
-  else {
+  // The FULL sha rides each row — the shape is measured against the commit
+  // graph, which a 12-character prefix cannot address — and the prefix is
+  // derived where it is printed.
+  const late = commits.commits.filter(entry => entry.when > openedAt);
+  const short = sha => String(sha).slice(0, 12);
+  const ackRepair = `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`;
+  if (late.length === 0) {
+    out.note('commits since open: none — the body describes every commit on the branch');
+    return out;
+  }
+  if (ackBody) {
+    // The caller answered for the whole list, so nothing here refuses and no
+    // shape needs measuring: a git read whose failure could only produce a
+    // refusal on an already-acknowledged run is a read this ground must not
+    // make.
+    out.note(`commits since open: ${late.length} acknowledged via --ack-body (${late.map(entry => short(entry.sha)).join(' ')})`);
+    return out;
+  }
+
+  const gitRun = args => git(args, root);
+  // Resolved ONCE, and only because a two-parent commit is asking: a PR with no
+  // post-open merge costs this ground no git read at all.
+  const merges = late.filter(entry => entry.parents.length === 2);
+  const baseRef = merges.length === 0 || !refsRefreshed ? '' : resolveRef(gitRun, baseBranch);
+  const undecided = reason => ({ kind: 'undecided', reason });
+  const shapeOf = entry => {
+    if (baseRef === '') {
+      return undecided(
+        refsRefreshed
+          ? `'${baseBranch}' cannot be read here, so whether its second parent is base movement is unmeasurable`
+          : `the refs could not be refreshed, so '${baseBranch}' cannot be read here and whether its second parent is base movement is unmeasurable`,
+      );
+    }
+    const second = entry.parents[1];
+    const reaches = gitRun(['merge-base', '--is-ancestor', second, baseRef]);
+    // git answers this question with 1, and everything else — a missing object
+    // above all — with a failure that is not an answer.
+    if (!succeeded(reaches) && reaches.status !== 1) {
+      return undecided(`'git merge-base --is-ancestor ${short(second)} ${baseRef}' could not answer (${clean(firstLine(reaches.stderr)) || `exit ${reaches.status}`})`);
+    }
+    if (!succeeded(reaches)) return { kind: 'work', why: `is a merge of ${short(second)}, which ${baseRef} does not reach — another branch merged in is work, not base movement` };
+    const carried = gitRun(['diff-tree', '--cc', '--no-commit-id', entry.sha]);
+    if (!succeeded(carried)) {
+      return undecided(`'git diff-tree --cc ${short(entry.sha)}' could not answer (${clean(firstLine(carried.stderr)) || `exit ${carried.status}`})`);
+    }
+    if (String(carried.stdout ?? '').trim() !== '') {
+      return { kind: 'work', why: `merges ${baseRef} and carries content neither parent has ('git diff-tree --cc' is not empty), so it is work under a merge commit, not base movement` };
+    }
+    return { kind: 'exempt' };
+  };
+
+  const exempt = [];
+  const plain = [];
+  for (const entry of late) {
+    if (entry.parents.length !== 2) {
+      plain.push(entry);
+      continue;
+    }
+    const shape = shapeOf(entry);
+    if (shape.kind === 'exempt') exempt.push(entry);
+    else if (shape.kind === 'work') {
+      out.refuse(`commits since open [DETECTOR]: ${short(entry.sha)} ${shape.why}`, ackRepair);
+    } else {
+      out.refuse(
+        `commits since open: ${short(entry.sha)} landed after the PR opened and ${shape.reason}, so whether it is base movement or work is undecided — unknown is not exempt (F-028)`,
+        `git fetch origin ${baseBranch} ${headBranch}   # then: ${invocation()}`,
+      );
+    }
+  }
+  if (exempt.length > 0) {
+    out.note(
+      `commits since open: ${exempt.length} base merge${exempt.length === 1 ? '' : 's'} — exempt: ${exempt.map(entry => short(entry.sha)).join(' ')} ` +
+        `(clean merge of ${baseRef}: two parents, the second one the base reaches, and no content of its own — base movement, which no body written before it could describe)`,
+    );
+  }
+  if (plain.length > 0) {
     out.refuse(
-      `commits since open [DETECTOR]: ${late.length} commit(s) landed after the PR was opened (${late.join(' ')})`,
-      `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`,
+      `commits since open [DETECTOR]: ${plain.length} commit(s) landed after the PR was opened (${plain.map(entry => short(entry.sha)).join(' ')})`,
+      ackRepair,
     );
   }
   return out;

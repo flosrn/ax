@@ -95,18 +95,42 @@ const threadPage = (nodes, hasNextPage = false, endCursor = null) => ({
 });
 
 /**
+ * One row of the PR commits payload. `parents` is read by name like every other
+ * field (F-028, #90): Ground 6's shape rule asks how many parents a post-open
+ * commit has, so a fixture that omitted them would be an unread payload, not a
+ * commit with none. One parent is an ordinary commit; the rows that model a
+ * merge name both.
+ */
+const commitRow = (sha, message, date, parents = ['0'.repeat(40)]) => ({
+  sha,
+  commit: { message, committer: { date } },
+  parents: parents.map(parent => ({ sha: parent })),
+});
+
+/**
  * Two commits, `lateCount` of them landed after the PR was opened (KTD9's
  * ground). Every message is INERT: a fixture that quoted a closing construct
  * would arm it against the gate reading these very messages (#86), so the rows
  * that need one pass it in explicitly.
  */
 const prCommits = (lateCount, messages = []) => {
-  const rows = [{ sha: 'aaaaaaaaaaaa1111', commit: { message: messages[0] ?? 'feature work', committer: { date: '2026-08-09T09:00:00Z' } } }];
+  const rows = [commitRow('aaaaaaaaaaaa1111', messages[0] ?? 'feature work', '2026-08-09T09:00:00Z')];
   for (let i = 0; i < lateCount; i += 1) {
     // Distinct in the first TWELVE characters, which is all the gate prints.
-    rows.push({ sha: `bbbbbbbbbb${i}${i}3333`, commit: { message: messages[i + 1] ?? `later work ${i}`, committer: { date: '2026-08-09T11:00:00Z' } } });
+    rows.push(commitRow(`bbbbbbbbbb${i}${i}3333`, messages[i + 1] ?? `later work ${i}`, '2026-08-09T11:00:00Z'));
   }
   return rows;
+};
+
+/**
+ * A real commit of a fixture repository, as the PR commits payload reports it —
+ * its own SHA and its own parents, which is what Ground 6's shape rule measures
+ * against the commit graph (#90).
+ */
+const realCommitRow = (root, ref, date = '2026-08-09T11:00:00Z') => {
+  const read = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  const sha = read(['rev-parse', ref]);
+  return commitRow(sha, read(['log', '-1', '--format=%s', sha]), date, read(['show', '-s', '--format=%P', sha]).split(' '));
 };
 
 /**
@@ -244,6 +268,20 @@ function buildRepo(root, shape, prGate) {
     commit(root, 'src/a.txt', 'a\n', 'work');
     commit(root, `${RESIDUAL}/f-001.md`, 'a finding\n', 'file a residual last');
   }
+  // #90's two shapes: a branch whose post-open commit is a CLEAN merge of the
+  // base — the footprint `gh pr update-branch` leaves, and the same thing a
+  // worker's own `git merge origin/main` leaves — either already on the head
+  // (`base-merge`) or on the ref the self-repair moves the head to while
+  // `feature` itself stays behind (`stale-merged`, the reported run).
+  if (shape === 'base-merge' || shape === 'stale-merged') {
+    commit(root, 'src/a.txt', 'a\n', 'feature work');
+    git(root, 'checkout', '-q', 'main');
+    commit(root, 'src/b.txt', 'b\n', 'the base moved');
+    if (shape === 'stale-merged') git(root, 'checkout', '-q', '-b', 'updated', 'feature');
+    else git(root, 'checkout', '-q', 'feature');
+    git(root, 'merge', '-q', '--no-ff', '-m', "Merge branch 'main' into feature", 'main');
+    git(root, 'checkout', '-q', 'feature');
+  }
   return root;
 }
 
@@ -337,6 +375,11 @@ const run = (
   let page = 0;
   let issuePoll = 0;
   let prViews = 0;
+  // The commits payload may be a FUNCTION of how many times it has been read:
+  // the staleness self-repair re-runs the whole gate, and the second run reads
+  // a branch the update-branch call has moved (#90). A plain list answers every
+  // read, as before.
+  let commitReads = 0;
 
   const gh = args => {
     calls.push(args.join(' '));
@@ -390,7 +433,9 @@ const run = (
       return answered(JSON.stringify(checks === undefined ? { check_runs: greenChecks() } : checks));
     }
     if (verb === 'api' && target.includes('/pulls/')) {
-      return commits === null ? refusedByGh('HTTP 502') : answered(JSON.stringify(commits ?? prCommits(0)));
+      const rows = typeof commits === 'function' ? commits(commitReads) : commits;
+      commitReads += 1;
+      return rows === null ? refusedByGh('HTTP 502') : answered(JSON.stringify(rows ?? prCommits(0)));
     }
     // The merge-message policy (#86). `null` is the read that failed, which is
     // an inability to establish and never "the body is the only channel".
@@ -839,6 +884,77 @@ test('a commits call that fails, or a payload missing its named keys, is cannot-
   assert.match(out, /commits since open: a PR commit: 'commit' is absent from the payload/);
 });
 
+test('#90: a clean base merge as the only post-open commit passes with no --ack-body, in a fresh process', () => {
+  // Criterion 2: nothing carried the SHA here — no record, no option, no flag.
+  // A fresh invocation re-derives the shape from the commit graph, which is why
+  // the owning worker's own gate run answers what the self-repair's run did.
+  const root = repoFor('base-merge', DEFAULT_GATE);
+  const merge = shaOf(root, 'feature');
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'base-merge', commits: [...prCommits(0), realCommitRow(root, 'feature')] });
+  assert.equal(code, 0, out);
+  assert.match(out, new RegExp(`commits since open: 1 base merge — exempt: ${merge.slice(0, 12)}`));
+  assert.doesNotMatch(out, /REFUSE — commits since open/, 'the gate refused base movement it could have minted itself');
+  assert.doesNotMatch(out, /--ack-body/, 'a repair the caller cannot satisfy was printed anyway');
+  assert.match(out, /grounds — \d+ reported, 0 unread, 0 refused/);
+});
+
+test('#90: the staleness self-repair no longer refuses the commit it just created', () => {
+  // The reported run, reproduced: the caller's command carries no --ack-body
+  // because the PR had no post-open commit when they typed it, `gh pr
+  // update-branch` then mints the merge, and the ONE re-run this verb has must
+  // not spend itself refusing that commit. The fixture repository cannot move
+  // with the head, so the re-run still refuses on staleness — which is the
+  // correct second event, and the only one left.
+  const root = repoFor('stale-merged', DEFAULT_GATE);
+  const moved = shaOf(root, 'updated');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    shape: 'stale-merged',
+    // receipt · the head after the update · the retried run's own receipt
+    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
+    // The caller's run sees no post-open commit; the re-run reads the merge the
+    // update-branch call left behind.
+    commits: reads => (reads === 0 ? prCommits(0) : [...prCommits(0), realCommitRow(root, 'updated')]),
+  });
+  assert.equal(code, 1);
+  assert.match(out, /self-repair: staleness is the only refusing ground/);
+  assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
+  assert.match(out, new RegExp(`commits since open: 1 base merge — exempt: ${moved.slice(0, 12)}`));
+  assert.doesNotMatch(out, /REFUSE — commits since open/);
+  assert.doesNotMatch(out, /--ack-body/, 'the merge went back to a worker for a body edit describing the gate\'s own commit');
+  // Criterion 7: the commits ground is reported, not refused, and the run's
+  // one remaining refusal is untouched.
+  assert.match(out, /grounds — \d+ reported, 0 unread, 1 refused/);
+  assert.match(out, /REFUSE — staleness/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
+});
+
+test('#90: a caller-authored commit beside the exempt base merge still demands the acknowledgement', () => {
+  const root = repoFor('base-merge', DEFAULT_GATE);
+  const merge = shaOf(root, 'feature');
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'base-merge', commits: [...prCommits(1), realCommitRow(root, 'feature')] });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — commits since open \[DETECTOR\]: 1 commit\(s\) landed after the PR was opened \(bbbbbbbbbb00\)/);
+  assert.doesNotMatch(out, new RegExp(`REFUSE.*${merge.slice(0, 12)}`), 'the exempt merge is named in a refusal');
+  assert.match(out, /--ack-body/);
+  assert.match(out, /commits since open: 1 base merge — exempt/);
+});
+
+test('#90: --stale-retried suppresses nothing, and no CLI surface names a SHA to exempt', () => {
+  // The rejected alternative was to let the recursion acknowledge its own
+  // argv, and the rejected carrier was a SHA on this flag. Both would make the
+  // detector suppressible from the command line for commits the body genuinely
+  // fails to describe, so the flag stays a bare boolean that decides one thing
+  // only: whether the one retry was already spent.
+  const flagged = run(['--pr', '1845', '--stale-retried'], { ...CLEAN, commits: prCommits(2) });
+  assert.equal(flagged.code, 1);
+  assert.match(flagged.out, /REFUSE — commits since open \[DETECTOR\]: 2 commit\(s\) landed after the PR was opened \(bbbbbbbbbb00 bbbbbbbbbb11\)/);
+
+  const valued = run(['--pr', '1845', '--stale-retried', HEAD_SHA], { ...CLEAN, commits: prCommits(2) });
+  assert.equal(valued.code, 2);
+  assert.match(valued.out, new RegExp(`unknown argument "${HEAD_SHA}"`));
+});
+
 // ── Ground 7: the closing keyword ──────────────────────────────────────────
 
 test('F-018: a French closing keyword counts as missing, and is named', () => {
@@ -1131,11 +1247,7 @@ test('#86: --merge without --method evaluates the squash channels alone — the 
 // Ground 7 asks, and Ground 9's comparison set came from that body alone.
 
 /** Two commits, both older than the PR, so only the channel is under test. */
-const twoEarlyCommits = messages =>
-  messages.map((message, index) => ({
-    sha: `${'abcdef'.repeat(2)}${index}${index}${index}${index}`,
-    commit: { message, committer: { date: '2026-08-09T09:00:00Z' } },
-  }));
+const twoEarlyCommits = messages => messages.map((message, index) => commitRow(`${'abcdef'.repeat(2)}${index}${index}${index}${index}`, message, '2026-08-09T09:00:00Z'));
 
 test('#86: a commit message closing another ticket refuses under COMMIT_MESSAGES, before the merge', () => {
   const { code, out, calls } = run(['--pr', '1845', '--merge'], {
@@ -1253,7 +1365,7 @@ test('#86: an unread merge-message policy is cannot-establish, with the repair n
 
 test('#86: a commit list this run cannot prove complete leaves the channel unread, never empty', () => {
   const page = [];
-  for (let i = 0; i < 100; i += 1) page.push({ sha: String(i).padStart(40, '0'), commit: { message: `fix: ${i}`, committer: { date: '2026-08-09T09:00:00Z' } } });
+  for (let i = 0; i < 100; i += 1) page.push(commitRow(String(i).padStart(40, '0'), `fix: ${i}`, '2026-08-09T09:00:00Z'));
   const { code, out } = run(['--pr', '1845', '--merge'], { ...CLEAN, policy: MESSAGES_POLICY, commits: page });
   assert.equal(code, 3);
   assert.match(out, /CANNOT ESTABLISH — closing channels: .*a full page of 100 commit\(s\)/);
