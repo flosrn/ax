@@ -64,6 +64,7 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { checkoutSkew } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
@@ -77,6 +78,7 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // default was dropped in a refactor once and no test noticed, because every test
 // injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
 import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 
 const USAGE =
   'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
@@ -355,9 +357,15 @@ export function dispatch(
   const paths = repoPaths(cwd);
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (!loaded.exists || loaded.errors.length > 0) {
+    // The same refusal `ax worktree setup` prints, and the same #84 correction:
+    // a checkout publishing another ax than the one running earns the repair
+    // that applies — its own copy — instead of "edit ax.config.json".
+    const skew = loaded.exists ? checkoutSkew({ root: paths.root }) : null;
     return refuse(
-      loaded.exists ? `${loaded.errors.length} problem(s) in ax.config.json: ${loaded.errors[0]}` : 'no ax.config.json — a dispatch reads this project\u2019s entry point, contract and hosts from it',
-      'ax init   # in the primary checkout',
+      loaded.exists
+        ? `${loaded.errors.length} problem(s) in ax.config.json: ${loaded.errors[0]}${skew === null ? '' : ` — ${skew.finding}`}`
+        : 'no ax.config.json — a dispatch reads this project\u2019s entry point, contract and hosts from it',
+      skew === null ? 'ax init   # in the primary checkout' : skew.repair,
     );
   }
   const config = loaded.config;
@@ -639,8 +647,17 @@ export function dispatch(
   // here and only here: they are provenance for this dispatch, not an input to
   // the child, and the child reads the ticket (KD4). A reason nobody kept is a
   // reason nobody asked for; a record that does not name its repository hides
-  // another checkout's ticket from the frontier.
-  const trackerRepo = named ? '' : trackerRepoOf(ticket.url);
+  // another checkout's ticket from the frontier and leaves its pane unplaceable
+  // by `ax worker release`.
+  //
+  // The repository a record names is the CHECKOUT THAT DISPATCHES — `gh repo
+  // view`'s nameWithOwner, the very read the frontier, release and settle
+  // compare against — never the tracker's. Until 2026-09-03 it came from the
+  // ticket URL, so `--name` and every Linear ticket recorded none and took the
+  // `unknown` branch forever (review of #118). The URL is now only the fallback
+  // for a checkout whose forge `gh` cannot name; with neither, the record stays
+  // unknown, and nothing here guesses one (F-028).
+  const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
   const owned = [
     '--request', request,
     '--run', runId,

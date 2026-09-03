@@ -111,14 +111,26 @@ export function currentBranch(cwd) {
  * The porcelain form is not an optimisation, it is the only parseable one: the
  * human-readable output packs path, head and branch onto one space-separated
  * line, so a worktree at `~/Code/my project` cannot be read back from it.
+ *
+ * An unreadable registry answers `[]` here, which is right for a caller that
+ * only enumerates and wrong for one whose next step is a MUTATION: absence is
+ * not zero (F-028). Those callers take `readWorktrees` and refuse `known:
+ * false` — `src/worker/placement.mjs` is the one, because "this subject has no
+ * worktree" is what authorises placing one.
  */
 export function listWorktrees(cwd = process.cwd()) {
+  return readWorktrees(cwd).trees;
+}
+
+/** The same read, with the difference between "no worktrees" and "no answer" kept. */
+export function readWorktrees(cwd = process.cwd()) {
   // `-z` (git >= 2.36) also survives a path containing a newline; the plain
   // porcelain form is the fallback and handles everything short of that.
   const nul = capture(cwd, ['worktree', 'list', '--porcelain', '-z']);
-  if (nul !== undefined) return parseWorktrees(nul, '\0');
+  if (nul !== undefined) return { known: true, trees: parseWorktrees(nul, '\0') };
   const plain = capture(cwd, ['worktree', 'list', '--porcelain']);
-  return plain === undefined ? [] : parseWorktrees(plain, '\n');
+  if (plain !== undefined) return { known: true, trees: parseWorktrees(plain, '\n') };
+  return { known: false, trees: [] };
 }
 
 function parseWorktrees(text, separator) {
