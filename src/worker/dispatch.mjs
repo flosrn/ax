@@ -78,6 +78,7 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // default was dropped in a refactor once and no test noticed, because every test
 // injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
 import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 
 const USAGE =
   'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
@@ -646,8 +647,17 @@ export function dispatch(
   // here and only here: they are provenance for this dispatch, not an input to
   // the child, and the child reads the ticket (KD4). A reason nobody kept is a
   // reason nobody asked for; a record that does not name its repository hides
-  // another checkout's ticket from the frontier.
-  const trackerRepo = named ? '' : trackerRepoOf(ticket.url);
+  // another checkout's ticket from the frontier and leaves its pane unplaceable
+  // by `ax worker release`.
+  //
+  // The repository a record names is the CHECKOUT THAT DISPATCHES — `gh repo
+  // view`'s nameWithOwner, the very read the frontier, release and settle
+  // compare against — never the tracker's. Until 2026-09-03 it came from the
+  // ticket URL, so `--name` and every Linear ticket recorded none and took the
+  // `unknown` branch forever (review of #118). The URL is now only the fallback
+  // for a checkout whose forge `gh` cannot name; with neither, the record stays
+  // unknown, and nothing here guesses one (F-028).
+  const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
   const owned = [
     '--request', request,
     '--run', runId,

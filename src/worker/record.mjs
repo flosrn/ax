@@ -264,9 +264,10 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
 /**
  * The first write of a claimed record: who asked, on what host, through which
  * binary — and, when the caller overrode the ticket's own assignment, why
- * (`--because`, R4/KTD3), and WHICH repository the ticket lives in (`repo`,
- * from `--tracker-repo`): the store is host-global, and the frontier needs the
- * name to keep one checkout's records from excluding another's candidates.
+ * (`--because`, R4/KTD3), and WHICH repository this dispatch belongs to
+ * (`repo`, from `--tracker-repo`: the dispatching checkout's own identity, the
+ * ticket's URL only as a fallback): the store is host-global, and the frontier
+ * needs the name to keep one checkout's records from excluding another's.
  *
  * Both keys are ADDITIVE and omitted when empty (the shape rule in this file's
  * header): every reader here works from named keys, no recovery path branches
