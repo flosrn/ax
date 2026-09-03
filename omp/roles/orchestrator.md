@@ -131,7 +131,13 @@ End your turn after dispatch. Completion and questions arrive on their own; neve
 poll or start a second consuming wait loop. On each wake, drain the whole inbox —
 process every queued completion and question before ending the turn, or a parked
 report stalls its ticket for a full cycle. Read the child's evidence, not merely
-its completion label.
+its completion label — and read its `## CRITERIA` section first: every
+acceptance criterion the ticket named, each with the evidence observed for it.
+A criterion with no observed evidence, or one marked `NOT MET`, is the worker's
+work before any gate run: send it back to its pane the way a gate refusal
+travels, under the same two bounds below. The gate reads grounds, the review
+bot reads the diff; this section is the only place the diff meets what was
+asked.
 
 The child stops with an open PR and decided CI. Merge only through the gate:
 

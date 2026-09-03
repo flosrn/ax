@@ -416,6 +416,11 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).toMatch(/distill the `wave:` bullets/);
   // The wave file demoted to cache; records, tracker and gate are authority.
   expect(role).toMatch(/wave-memory file is a CACHE/);
+  // The Spec axis (2026-09-03): the report's `## CRITERIA` is what the merge
+  // decision reads, and a criterion without evidence travels back like a
+  // gate refusal — under the same two bounds, never as a third loop.
+  expect(role).toMatch(/## CRITERIA/);
+  expect(role).toMatch(/NOT MET/);
 });
 
 // The worker's half of the learnings channel (KTD7) and the refusal duty the
@@ -433,6 +438,13 @@ test('the bundled worker contract carries the LEARNINGS grammar and the refusal 
   // Durable learnings prefer additive files: the bound on concurrent-slice
   // doc collisions the whole channel rests on.
   expect(playbook).toMatch(/ADDITIVE file/);
+  // The Spec axis: nobody else checks the diff against what the ticket asked —
+  // the review bot reads the diff, the gate reads grounds. Every acceptance
+  // criterion the ticket names, quoted, with the evidence observed for it or
+  // `NOT MET`. A criterion the ticket never named is not a line to invent.
+  expect(playbook).toContain('## CRITERIA');
+  expect(playbook).toMatch(/NOT MET/);
+  expect(playbook).toMatch(/never a line to invent/);
 });
 
 // ── unknown names refuse, visibly ────────────────────────────────────────────
