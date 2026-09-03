@@ -134,15 +134,23 @@ const settledFlag = path => JSON.parse(readFileSync(path, 'utf8')).attempts.at(-
 
 // ── the verb exists, and asking what it does settles nothing ─────────────────
 
-test('--help is a read: usage, exit 0, and not one byte of the record touched', () => {
+test('--help is not this verb’s to answer, and asking it touches not one byte', () => {
+  // The read is answered from the registry, anywhere in the noun's argv, before
+  // this verb is reached (#89, ../src/cli.mjs): `ax worker settle --help` is
+  // exercised there, in the table that iterates every declared verb inside a
+  // committed temp repo. This verb shipped with a help branch of its own — a
+  // second code path answering one question — so what is pinned here is the
+  // half that is this module's: the flag is refused as the unknown argument it
+  // now is, and the record it was asked about is not touched either way.
   const dir = store();
   const path = deadAttempt(dir, '71-rls-refute');
   const before = readFileSync(path, 'utf8');
 
   for (const flag of ['--help', '-h']) {
     const r = run([flag, '71-rls-refute'], { env: { ORCA_DISPATCH_STORE: dir } });
-    assert.equal(r.code, 0, `${flag} refused instead of answering`);
-    assert.match(r.out, /ax worker settle <task\|request>/);
+    assert.equal(r.code, 2, `${flag} answered a question this verb no longer owns`);
+    assert.match(r.out, new RegExp(`unknown argument "${flag}"`));
+    assert.match(r.out, /ax worker settle <task\|request>/, 'the usage line still names what the verb takes');
     assert.equal(readFileSync(path, 'utf8'), before, `${flag} settled the record it was asked about`);
   }
 });
