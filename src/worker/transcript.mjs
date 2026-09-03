@@ -282,6 +282,18 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
   // breaking release. The warning rides STDERR because the remote reader takes
   // the FIRST STDOUT LINE as the proof — a warning on stdout would corrupt
   // exactly the cross-version call the alias exists to serve.
+  //
+  // `--request` is what makes this verb the RECONCILER of a point-in-time
+  // verdict (issue #97). `ax triage dispatch` settles each pass as VERIFIED or
+  // CANNOT-ESTABLISH inside a bounded window, and a healthy child that booted
+  // slowly is settled unproven — measured 2026-09-02: verdict at 34.5 s, the
+  // receipts present on a read ~60 s later. Re-deriving that needs the session
+  // FILE, and this is the only verb that reads it. The needle alone could not
+  // name one pass of a wave: triage children run `--worktree current`, so every
+  // pass of the wave shares the needle and the unscoped read answers whichever
+  // file was touched last — a neighbouring pass reported as this one. The
+  // request id is the only disambiguator, `dispatchProof` always took it, and
+  // until now the CLI had no way to pass what `verifyPassRole` passes.
   const proofFlag = argv.includes('--dispatch-proof') ? '--dispatch-proof' : '--launch-proof';
   const proofAt = argv.indexOf(proofFlag);
   if (proofAt !== -1) {
@@ -293,9 +305,28 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
       bad('ax worker transcript --dispatch-proof expects the session needle (a worktree directory name)');
       return 2;
     }
+    // Refused rather than consumed, on the same grounds as the needle above: a
+    // missing value would read as the unscoped mode and answer the newest file
+    // in the checkout, which is precisely the wrong-pass answer the flag exists
+    // to prevent. A value that is itself a flag is the same mistake one token
+    // later (`--request --sessions <root>`).
+    const requestAt = argv.indexOf('--request');
+    if (requestAt !== -1) {
+      const value = argv[requestAt + 1];
+      if (value === undefined || value.startsWith('-')) {
+        bad('ax worker transcript --dispatch-proof --request expects the request id of one dispatched pass');
+        fix('ax triage status --issue <n>   # the request id each pass recorded');
+        return 2;
+      }
+    }
     const rootAt = argv.indexOf('--sessions');
+    // Zero or two candidates under a named request is an inability to
+    // establish, never newest-wins: `sessionFileForNeedle` answers null and
+    // this exits 1 with nothing on stdout, so no caller can read a sibling
+    // pass as this one (F-028 — an ambiguity is not an answer).
     const found = dispatchProof({
       needle,
+      request: requestAt === -1 ? '' : argv[requestAt + 1],
       env,
       sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1],
     });

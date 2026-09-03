@@ -310,6 +310,120 @@ test('a request id selects one triage session among siblings sharing the current
   assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
 });
 
+// Issue #97: the point-in-time CANNOT-ESTABLISH verdict of `ax triage dispatch`
+// is re-derivable only by the verb that actually reads the session file — and
+// it could not be pointed at ONE pass of a wave. Triage children run
+// `--worktree current` and share the needle, so `request` is the only
+// disambiguator; `dispatchProof` always took it and the CLI could not pass it.
+//
+// The three propositions below are the whole flag: it selects, it refuses
+// ambiguity instead of falling back to newest, and a malformed value is a
+// usage error rather than an unscoped read.
+
+/** The proof mode with the streams kept apart: stdout is the proof, and only that. */
+function proofRun(argv) {
+  const outs = [];
+  const errs = [];
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  process.stdout.write = chunk => (outs.push(String(chunk)), true);
+  process.stderr.write = chunk => (errs.push(String(chunk)), true);
+  let code;
+  try {
+    code = transcript(argv, { env: { HOME: '/nonexistent-home' } });
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return { code, out: outs.join(''), err: errs.join('') };
+}
+
+/**
+ * A checkout shared by N triage passes, each naming its own request id.
+ *
+ * Every pass carries a DISTINGUISHABLE payload — the skill and the model name
+ * carry the request id — because the sibling files are otherwise byte-identical
+ * proofs, and an unscoped newest-mtime read would then satisfy an assertion
+ * about the pass it did not select. Written in order, so the LAST request is
+ * the newest and is what a newest-wins fallback would answer.
+ */
+function wave(requests) {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+  for (const request of requests) {
+    writeFileSync(
+      join(dir, `${request}.jsonl`),
+      [
+        JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
+        JSON.stringify({ type: 'model_change', model: `anthropic/claude-opus-5-${request}`, role: 'default' }),
+        JSON.stringify({
+          type: 'custom_message',
+          customType: 'skill-prompt',
+          details: { role: 'triage-worker', skills: ['triage', request], status: 'applied' },
+        }),
+      ].join('\n'),
+    );
+  }
+  return root;
+}
+
+test('--dispatch-proof --request names one pass of a wave, as one JSON line on stdout', () => {
+  const root = wave(['triage-acme-8', 'triage-acme-7']);
+
+  const r = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-8', '--sessions', root]);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.trimEnd().split('\n').length, 1, 'the remote reader takes the FIRST stdout line as the proof');
+  assert.deepEqual(
+    JSON.parse(r.out),
+    dispatchProof({ needle: 'current', request: 'triage-acme-8', sessionsRoot: root }),
+    'the CLI answers exactly what the reader it wraps answers',
+  );
+  assert.match(r.out, /triage-acme-8/, 'the named pass, not the newest one beside it');
+  assert.doesNotMatch(r.out, /triage-acme-7/, 'an unscoped newest-wins read would answer the sibling');
+});
+
+test('--request with two or zero candidates cannot establish — exit 1, and never newest-wins', () => {
+  const root = wave(['triage-acme-7', 'triage-acme-8']);
+
+  const two = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme', '--sessions', root]);
+  assert.equal(two.code, 1, 'two matches is an ambiguity, not a pick');
+  assert.equal(two.out, '', 'nothing on stdout, so no caller reads a neighbouring pass as this one');
+
+  const none = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-9', '--sessions', root]);
+  assert.equal(none.code, 1);
+  assert.equal(none.out, '');
+});
+
+test('--request without a value, or a value that is a flag, is a usage error', () => {
+  const root = wave(['triage-acme-7']);
+  // `bad`/`fix` write to stdout by this repository's convention (src/log.mjs),
+  // exactly as the missing-needle check beside this one does. What must never
+  // appear is a PROOF line: the remote reader parses the first stdout line, and
+  // a silently-defaulted read would hand it a neighbouring pass as this one.
+  const noProof = out => assert.throws(() => JSON.parse(out.split('\n')[0]), 'no caller can parse a proof out of a usage error');
+
+  const bare = proofRun(['--dispatch-proof', 'current', '--sessions', root, '--request']);
+  assert.equal(bare.code, 2);
+  assert.match(bare.out, /--request expects the request id/);
+  noProof(bare.out);
+
+  const flagged = proofRun(['--dispatch-proof', 'current', '--request', '--sessions', root]);
+  assert.equal(flagged.code, 2, 'a flag consumed as a value would read an unscoped newest-wins proof');
+  assert.match(flagged.out, /--request expects the request id/);
+  noProof(flagged.out);
+});
+
+test('the retired --launch-proof spelling carries --request identically', () => {
+  const root = wave(['triage-acme-7', 'triage-acme-8']);
+
+  const r = proofRun(['--launch-proof', 'current', '--request', 'triage-acme-7', '--sessions', root]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(JSON.parse(r.out), dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root }));
+  assert.doesNotMatch(r.out, /triage-acme-8/, 'the alias scopes, it does not fall back to newest');
+  assert.match(r.err, /retired/, 'the alias still warns, and still on stderr');
+});
+
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
   const root = scratch();
   const dir = join(root, '--srv-orca-gapila-.worktrees-worker--');

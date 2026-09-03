@@ -39,7 +39,7 @@ import { capOf, liveCount, passPlan } from './capacity.mjs';
 import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
 const USAGE =
-  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--force] [--dry-run]';
+  'ax triage dispatch --issue N [--issue M …] [--job triage|brief|custom] [--instruction <file>] [--fresh --because <text>] [--repo <owner/repo>] [--model <alias>] [--wait <s>] [--force] [--dry-run]';
 
 /** Jobs whose child may apply labels, so whose project vocabulary is required. */
 const LABEL_JOBS = new Set(['triage', 'brief']);
@@ -200,15 +200,56 @@ const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
 /**
  * How long `verifyPassRole` waits for the child's own receipts. Consumed
  * there; refused here at the reader so a retired name cannot become a silent
- * 30s default. Empty is absence.
+ * default. Empty is absence.
+ *
+ * THREE LAYERS, and the order is the same one every valued flag in the worker
+ * family uses: an explicit `--wait` is the per-invocation override, then
+ * `AX_TRIAGE_ROLE_WAIT` is the machine default, then the built-in.
+ *
+ * THE BUILT-IN IS 120, the worker family's number (`../worker/dispatch.mjs`),
+ * and it was 30 — one proposition given two windows by two callers of the same
+ * reader and the same `settled()` predicate. Measured 2026-09-02 on this
+ * repository's own pile (#97): a healthy triage child was settled
+ * CANNOT-ESTABLISH at 34.5 s, and reads ~60 s later found its pane live, the
+ * mover `role=default` and the triage playbook applied. The window was the
+ * whole defect; nothing about that child was wrong. 120 is not a fresh guess
+ * either — it is the number the family beside this one already proves children
+ * against, so a boot that fits there fits here.
+ *
+ * THE NUMBER IS MEASURED, not folklore, and this is the measurement the brief
+ * for #97 handed to the implementation. 20 triage passes recorded on this
+ * host's own dispatch store, each paired with the ONE child session whose first
+ * task spec names its request id, timed from that dispatch's `worker-start`
+ * `beganAt` to the later of its two receipts:
+ *
+ *   min 7.5s · median 44.7s · 13 of 20 over 30s · 6 of 20 over 120s
+ *   (7.5, 18.7, 20.1, 20.2, 22.0, 22.2, 22.3, 35.7, 43.9, 44.1, 44.7, 46.8,
+ *    63.9, 73.6, 524.0, 529.5, 534.5, 1411.2, 1416.9, 1423.1)
+ *
+ * TWO THINGS FOLLOW, and only the first is settled here. The old 30 s failed
+ * the MEDIAN pass on this host, so it was never a window — it was a coin toss,
+ * and #97 is what losing it looks like. 120 s covers 14 of 20 outright.
+ *
+ * The six past 120 s are a REPORTED FINDING, not a number this default is sized
+ * to: their own session-boot-to-receipt time is ~3 s, so what is long is the
+ * gap between `worker start` returning and the pane booting at all, which no
+ * role-wait can shorten. Widening the window to cover them would pay that gap
+ * serially, per pass, on every wave (see the verification loop below). `--wait`
+ * is the operator's control for the wave that needs it; the built-in stays the
+ * worker family's proven number.
+ *
+ * The override is a NUMBER, already validated by the caller that parsed it, so
+ * this reader keeps exactly one job: refuse the retired name, and layer the
+ * three sources.
  */
-export function roleWaitOf(env) {
+export function roleWaitOf(env, override = null) {
   const retired = env.AX_READY_ROLE_WAIT;
   if (retired !== undefined && retired !== '') {
     return { ok: false, from: 'AX_READY_ROLE_WAIT', to: 'AX_TRIAGE_ROLE_WAIT' };
   }
-  const value = Number(env.AX_TRIAGE_ROLE_WAIT ?? 30);
-  return { ok: true, wait: Number.isFinite(value) && value >= 0 ? value : 30 };
+  if (override !== null) return { ok: true, wait: override };
+  const value = Number(env.AX_TRIAGE_ROLE_WAIT ?? 120);
+  return { ok: true, wait: Number.isFinite(value) && value >= 0 ? value : 120 };
 }
 
 /**
@@ -230,9 +271,8 @@ export function roleWaitOf(env) {
  * only thing standing between that verdict and the re-dispatch of a live agent
  * (F-001). An absent receipt is not a refused receipt (F-028).
  */
-function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proofFn, now, sleep }) {
+function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot, proofFn, now, sleep }) {
   const expected = ROLE_BY_JOB[job];
-  const wait = roleWaitOf(env).wait;
   const deadline = now() + wait * 1000;
   let model = null;
   let role = null;
@@ -263,6 +303,22 @@ function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proo
   if (model === null && role === null) {
     bad(`CANNOT ESTABLISH — ${request}: no child-side role receipt appeared within ${wait}s`);
     note('The dispatch DID happen. Do NOT re-dispatch; inspect its recorded pane with `ax worker ls`.');
+    // THE ONE EXIT THAT FIRES ON A HEALTHY CHILD, and until #97 it was the one
+    // naming no repair — while the CANNOT-ESTABLISH below it named `ax worker
+    // ls`. AGENTS.md: a `bad` without a `fix` is a finding neither an agent nor
+    // a human can act on. Measured 2026-09-02: an operator met this line at
+    // 34.5 s, and it cost three follow-up reads and a source read of this
+    // function to establish that the child was fine and that a knob existed.
+    //
+    // Both repairs, because the verdict is point-in-time and the window is a
+    // guess: the first RE-DERIVES the proof for exactly this pass, and it must
+    // carry `--request` — every pass of a wave shares this needle, so the
+    // unscoped read answers whichever session file was touched last. The second
+    // widens the window that closed too early, and names the flag before the
+    // env knob because a flag is discoverable from the command surface and the
+    // env name is what nobody could find.
+    fix(`ax worker transcript --dispatch-proof ${basename(root)} --request ${request}   # re-derive THIS pass's proof: the receipts may have landed since`);
+    fix(`ax triage dispatch --wait <s>   # a wider window for a slow boot (or AX_TRIAGE_ROLE_WAIT=<s> for this machine); the pass above is unaffected`);
     return 'CANNOT-ESTABLISH';
   }
 
@@ -280,10 +336,18 @@ function verifyPassRole({ request, job = 'triage', root, env, sessionsRoot, proo
   // written when the FIRST PROVIDER CALL fails, which can be after the receipt
   // this loop settles on, so no bounded wait here can prove the selection final
   // — a fallback at wait+1s exists for every wait. What the channel does
-  // instead is keep the evidence durable: `dispatchProof` reads the whole session
-  // file and the LAST mover wins, so any later read (`ax triage status`,
-  // `ax worker transcript`) sees a fallback this line could not have seen, and
-  // a `fallback` mover observed at ANY time fails below rather than passing.
+  // instead is keep the evidence durable: `dispatchProof` reads the whole
+  // session file and the LAST mover wins, so a later read sees a fallback this
+  // line could not have seen, and a `fallback` mover observed at ANY time fails
+  // below rather than passing.
+  //
+  // THE LATER READER IS `ax worker transcript --dispatch-proof <needle>
+  // --request <id>`, and naming any other verb here is a false claim that cost
+  // #97 a diagnosis: this sentence used to name `ax triage status`, which never
+  // calls `dispatchProof` at all — it answers from the dispatch record, the
+  // draft, the Orca mailbox and, for unfinished rows only, the pane cursor, and
+  // stays usable on a machine with no Orca. It is the ONLY verb that reads the
+  // session file, and `--request` is what lets it name one pass of a wave.
   if (
     model?.role === 'default' &&
     role?.status === 'applied' &&
@@ -350,6 +414,10 @@ export function dispatch(
   let dry = false;
   let freshPass = false;
   let because = '';
+  // `null` is "no flag", distinct from a flag whose value is missing — `value()`
+  // answers `''` for a lone trailing flag, and that empty string has to reach
+  // the same refusal as `--wait soon` rather than reading as absence.
+  let waitFlag = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -363,6 +431,7 @@ export function dispatch(
     else if (arg === '--dry-run') dry = true;
     else if (arg === '--fresh') freshPass = true;
     else if (arg === '--because') because = value();
+    else if (arg === '--wait') waitFlag = value();
     // No help branch: `runCli` answers the flag from the registry, anywhere in
     // this noun's argv, before the verb is reached (../cli.mjs, #89).
     else return usageError(`unknown argument "${arg}"`);
@@ -387,6 +456,13 @@ export function dispatch(
   // Refused rather than ignored: the caller wrote down why they were redoing the
   // work, and silence would carry none of it.
   if (!freshPass && because !== '') return usageError('--because only means something with --fresh');
+  // Validated exactly as `../worker/dispatch.mjs` validates its own `--wait`,
+  // with that verb's own words: one flag, one grammar, one message. Never
+  // silently defaulted — a window that reads back as 120 because the value was
+  // malformed is the same silence as the env knob nobody could discover, and
+  // this whole flag exists because a window closed without saying why (#97).
+  if (waitFlag !== null && !/^[0-9]+$/.test(waitFlag)) return usageError('--wait expects a number of seconds');
+  const waitOverride = waitFlag === null ? null : Number(waitFlag);
 
   // ── 2. the machine, before the tracker ────────────────────────────────────
   const bin = runner ? null : resolve({ env });
@@ -474,7 +550,10 @@ export function dispatch(
       'unset ORCA_TRIAGE_SESSION_CAP # the default is 3, and 0 means "no new session here"',
     );
   }
-  const wait = roleWaitOf(env);
+  // ONE read, and it decides the window every pass of this invocation gets:
+  // the flag layers over the env here, so `verifyPassRole` consumes a number
+  // and never re-derives it (a second reader is a second precedence order).
+  const wait = roleWaitOf(env, waitOverride);
   if (!wait.ok) {
     // Reachable from the same place the wait is consumed: before any session
     // starts. Putting it only in verifyPassRole would start children first.
@@ -660,6 +739,12 @@ export function dispatch(
   // the current checkout, and each request id appears in exactly one first task
   // spec, so the transcript reader can distinguish them without a worktree per
   // comment.
+  //
+  // THIS PASS IS SERIAL, and widening the window widened its worst case with
+  // it: N children that never write a receipt pay up to N × window before the
+  // summary prints. That is the accepted cost of the aligned default (#97), not
+  // an oversight — `--wait` is the operator's control over it, and the reason
+  // the flag is per-invocation rather than only an env knob.
   if (!dry) {
     for (const result of results) {
       if (result.verdict !== 'DISPATCHED') continue;
@@ -667,6 +752,7 @@ export function dispatch(
         request: result.request,
         job,
         root: paths.root,
+        wait: wait.wait,
         env,
         sessionsRoot,
         proofFn,
