@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { capture, run } from '../src/exec.mjs';
+import { capture, defaultExec, ghEnv, run } from '../src/exec.mjs';
 
 test('run answers status as data, never a throw', () => {
   const ok = run('node', ['-e', 'console.log("out"); console.error("err")']);
@@ -42,4 +42,21 @@ test('capture answers one trimmed value, or undefined for every kind of nothing'
   assert.equal(capture('node', ['-e', 'console.log("")']), undefined, 'an empty answer is an absence');
   assert.equal(capture('node', ['-e', 'console.log("x"); process.exit(3)']), undefined, 'a failure is an absence, whatever it printed');
   assert.equal(capture('ax-test-no-such-binary', []), undefined, 'a missing binary is an absence');
+});
+
+// Review of #123 (Codex, P2): `gh repo view` with no argument answers `GH_REPO`
+// when that variable is set — gh documents it as the repository for commands
+// that otherwise operate on the local checkout. Every ax verb speaks about the
+// checkout it runs in, and the dispatch record's `repo` key is written by one
+// verb and compared by three others, possibly in other shells: an override that
+// reaches one of them makes a record permanently foreign to the rest. So the
+// ONE adapter strips it from every `gh` call — the writer and the readers
+// cannot disagree, whatever the shell exported.
+test('a gh call never inherits GH_REPO: ax speaks about the checkout it runs in', () => {
+  const seen = run('node', ['-e', 'process.stdout.write(String(process.env.GH_REPO ?? "<unset>"))'], { env: { ...process.env, GH_REPO: 'other/repo' } });
+  assert.equal(seen.stdout, 'other/repo', 'a named env reaches an ordinary child');
+  const gh = defaultExec('node', ['-e', 'process.stdout.write(String(process.env.GH_REPO ?? "<unset>"))']);
+  assert.equal(gh.stdout, process.env.GH_REPO ?? '<unset>', 'defaultExec passes the shell through for a non-gh binary');
+  assert.equal(ghEnv({ GH_REPO: 'other/repo', HOME: '/h' }).GH_REPO, undefined);
+  assert.equal(ghEnv({ GH_REPO: 'other/repo', HOME: '/h' }).HOME, '/h', 'only the override is stripped');
 });
