@@ -1,15 +1,16 @@
 // `ax worker start` — the F-001 write-ahead countermeasure, ported from
 // orca-dispatch.test.ts. Real files and O_EXCL; only Orca itself is injected.
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawn as spawnProcess } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { armStallWatcher, start } from '../src/worker/start.mjs';
+import { acquireLock } from '../src/worker/record.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-worker-start-'));
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
@@ -894,7 +895,13 @@ test('two reclaimers of one closed foreign refusal serialize before minting', as
 // Here the window is ENGINEERED rather than hoped for. The winner is held inside
 // task-create long enough to prove it is in the locked region — the lock file's
 // existence is the proof — and the second starter runs while it is.
-test('a sibling arriving DURING the mint is refused, and no recorded phase is lost', async () => {
+//
+// #95 (pass A2) changed what the sibling meets: not a refusal against a live
+// owner, but a WAIT. It takes the lock once the winner released, reads a record
+// whose phases are complete, and replays it — `CLAIM LOST`, exit 0, no second
+// identity. The winner's phases survive because the sibling's first read of the
+// record happened after the winner's last write.
+test('a sibling arriving DURING the mint waits the winner out and replays — never a refusal, never a lost phase', async () => {
   const home = scratch();
   const store = join(home, 'dispatch');
   const spec = join(home, 'brief.md');
@@ -942,9 +949,9 @@ test('a sibling arriving DURING the mint is refused, and no recorded phase is lo
   await waitFor(() => existsSync(lock));
 
   const sibling = await runCli(argv('run_b'), env);
-  assert.notEqual(sibling.code, 0, `the sibling must not proceed while the mint holds the lock: ${sibling.out}`);
-  assert.match(sibling.out, /pre-existing lock/);
-  assert.match(sibling.out, /--resume --request req-mint-window/, 'and it is handed the sanctioned recovery');
+  assert.equal(sibling.code, 0, `the sibling waits the live winner out, then replays: ${sibling.out}`);
+  assert.match(sibling.out, /CLAIM LOST/);
+  assert.doesNotMatch(sibling.out, /pre-existing lock/, 'a live holder is waited out, never reported as a refusal');
 
   const first = await winner;
   assert.equal(first.code, 0, first.out);
@@ -954,6 +961,120 @@ test('a sibling arriving DURING the mint is refused, and no recorded phase is lo
     ['task-create', 'worker-start'],
     'both recorded phases survive a sibling that arrived mid-mint',
   );
+  // Two identities minted by the winner; the sibling's replay carried the same
+  // `--retry-request` values, so Orca deduplicated them into the same two.
+  const seen = readFileSync(stub.log, 'utf8').trim().split('\n');
+  assert.equal(new Set(seen).size, 2, `identities seen by Orca: ${seen.join(', ')}`);
+  assert.deepEqual(readdirSync(store).filter(name => name.includes('foreign')).length, 1, 'the closed foreign refusal was set aside exactly once');
+});
+
+// Criterion 6 of #95: the losing order, FORCED. The lost update needs the
+// loser's load to land after the winner closed `task-create` and before the
+// winner's `worker-start` was saved — and `phaseBegin` calls the injected
+// clock exactly there, between its load and its save. So the clock is the
+// seam: at the first tick where the record on disk holds a closed
+// `task-create` and no `worker-start`, this test plays the loser's first move
+// — taking the claim lock, no wait — and requires it to be REFUSED, because
+// the winner holds it. On the code before #95 the winner minted under no lock
+// at all, the probe took it, and this test failed.
+test('at the instant a loser would load between task-create and worker-start, the winner holds the lock', () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const request = 'req-seam';
+  const path = join(store, `${request}.json`);
+  const probes = [];
+  const now = () => {
+    let phases = null;
+    try {
+      phases = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases;
+    } catch {
+      // No record yet: not the instant.
+    }
+    const losingInstant = phases !== null
+      && phases.length === 1
+      && phases[0].name === 'task-create'
+      && phases[0].exit !== null;
+    if (losingInstant) {
+      const probe = acquireLock(path, { suffix: '.claim.lock', waitMs: 0 });
+      probes.push(probe.held ? 'taken' : probe.reason);
+      if (probe.held) probe.release();
+    }
+    return new Date().toISOString();
+  };
+  const r = invoke(freshArgs(home, request), { env: { HOME: home }, run: fakeRunner(), startDeps: { now } });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(probes.length >= 1, 'the losing instant was observed at least once through the clock seam');
+  for (const probe of probes) assert.match(probe, new RegExp(`pre-existing lock .* belongs to ${hostname()} pid ${process.pid}`), probe);
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  assert.deepEqual(record.attempts[0].phases.map(phase => phase.name), ['task-create', 'worker-start']);
+});
+
+// Criterion 7 of #95: the wait is never a takeover. A holder proven DEAD on this
+// host is refused at once with the same reason and the same repair as before.
+test('a lock whose holder is proven dead is refused at once — the wait never becomes a takeover', () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  mkdirSync(store, { recursive: true });
+  const request = 'req-dead-holder';
+  writeFileSync(join(store, `${request}.json.claim.lock`), JSON.stringify({ pid: 2 ** 22 - 1, host: hostname(), token: 'x', at: '2026-08-01T00:00:00Z' }));
+  const polls = [];
+  const r = invoke(freshArgs(home, request), { env: { HOME: home }, run: fakeRunner(), startDeps: { sleep: ms => polls.push(ms) } });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /pre-existing stale lock .* from dead pid 4194303; automatic takeover is refused/);
+  assert.match(r.out, /--resume --request req-dead-holder/);
+  assert.deepEqual(polls, [], 'a dead holder is not waited for');
+  assert.equal(existsSync(join(store, `${request}.json`)), false, 'no record was minted behind a dead holder');
+});
+
+// Criterion 3 of #95: a LIVE holder is waited out however long its mint takes —
+// the window re-arms on every proof of liveness, so the derived budget bounds
+// only what cannot be proven. Here the holder is this very process (alive by
+// construction), the clock is driven past the budget many times over, and the
+// lock is released from inside the injected sleep — the only seam a
+// synchronous wait offers.
+test('a live holder is waited out past the budget — the window re-arms on proven liveness', () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  mkdirSync(store, { recursive: true });
+  const request = 'req-live-holder';
+  const lock = join(store, `${request}.json.claim.lock`);
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), token: 'winner', at: '2026-08-01T00:00:00Z' }));
+  let ticks = 0;
+  let clock = Date.parse('2026-09-03T00:00:00.000Z');
+  const r = invoke(freshArgs(home, request), {
+    env: { HOME: home, AX_LOCK_WAIT_MS: '1000' },
+    run: fakeRunner(),
+    startDeps: {
+      now: () => new Date(clock).toISOString(),
+      sleep: () => {
+        ticks += 1;
+        clock += 5000; // every poll is five budgets late; liveness re-arms each one
+        if (ticks === 4) unlinkSync(lock); // the winner finishes
+      },
+    },
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(ticks, 4, 'four polls against a live holder, none of them a refusal');
+  const record = JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8'));
+  assert.deepEqual(record.attempts[0].phases.map(phase => phase.name), ['task-create', 'worker-start']);
+});
+
+test('an unprovable holder is bounded by the derived budget, then refused with the same reason', () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  mkdirSync(store, { recursive: true });
+  const request = 'req-remote-holder';
+  writeFileSync(join(store, `${request}.json.claim.lock`), JSON.stringify({ pid: 1, host: 'another-host', token: 'x', at: '2026-08-01T00:00:00Z' }));
+  let clock = Date.parse('2026-09-03T00:00:00.000Z');
+  const polls = [];
+  const r = invoke(freshArgs(home, request), {
+    env: { HOME: home, AX_LOCK_WAIT_MS: '1000' },
+    run: fakeRunner(),
+    startDeps: { now: () => new Date(clock).toISOString(), sleep: ms => { polls.push(ms); clock += 400; } },
+  });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /pre-existing lock .* belongs to another-host pid 1/);
+  assert.equal(polls.length, 3, 'polled until the budget ran out, then refused');
 });
 
 test('a USABLE CLI start arms a detached watcher that settles and cleans its pidfile', async () => {
