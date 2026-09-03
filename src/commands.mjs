@@ -35,6 +35,24 @@ import { orcaAvailable } from './orca-bin.mjs';
  * deliberately absent from every surface an agent reads. See
  * `plumbingSubcommands`.
  *
+ * `options` are the flags and positionals ONE command takes, and their arity is
+ * registry data read off the declaration itself: `--flag <value>` takes the
+ * next slot, a bare `--flag` takes none. That is the one convention — a
+ * placeholder in angle brackets — and `tests/commands.test.mjs` holds every
+ * declaration to it, because a `--flag value` declared without the placeholder
+ * would read as boolean and silently turn its value into a help page.
+ * `helpAsked` is what reads it. See `helpAsked`.
+ *
+ * `passthrough` marks a command whose arguments are a FOREIGN CLI's in full
+ * (`supabase`): ax claims the help flag in its first slot and not one argument
+ * past it.
+ *
+ * `helpBody` is the long help ONE verb declares, keyed by verb name and printed
+ * under the block by the single help read. It is for a verb whose contract is a
+ * judgement the caller makes BEFORE typing — what counts as landing, which exit
+ * code means resume — and it is registry data precisely so that carrying it
+ * costs no second help path in the verb. See `renderCommandHelp`.
+ *
  * `section` is the help heading the command is printed under, and every entry
  * declares one. See `SECTIONS`.
  */
@@ -81,6 +99,13 @@ export const COMMANDS = [
     // the Supabase CLI, so `ax` claims none of them. They are listed here all
     // the same, because an escape hatch nobody can find is an escape hatch
     // nobody uses — they delete the guard instead.
+    //
+    // And that ownership is DECLARED, because the help read is otherwise
+    // whole-argv: `supabase db push --help` is a question for the Supabase CLI
+    // and ax must not answer it (`helpAsked`, ./supabase-guard.mjs). The marker
+    // is what keeps the one gesture ax does claim there — `ax supabase --help`,
+    // in the first slot — from spreading over an argv that is not ax's.
+    passthrough: true,
     options: [
       ['AX_SUPABASE_CLI=<path>', 'the CLI to run when the workspace and PATH have none'],
       ['AX_SUPABASE_GUARD=0', 'skip the guard and run against the shared database'],
@@ -117,6 +142,31 @@ export const COMMANDS = [
     plumbing: {
       start: 'the write-ahead half of a dispatch — `worker dispatch` issues it, and replays it byte for byte on recovery',
     },
+    // What `ax worker release --help` prints under the block. A verb whose
+    // contract is a JUDGEMENT the caller has to make before typing needs more
+    // than a summary line: this one closes someone's pane, and the operator
+    // reads what counts as landing FROM THE TERMINAL, not from this module's
+    // header — a header is for whoever patches the verb (./worker/release.mjs).
+    helpBody: {
+      release: `A pane closes because the WORK LANDED, never because the session said it was done.
+
+  triage / brief    a comment on that issue, created AFTER the dispatch
+  implementation    a MERGED pull request for that branch. Nothing else.
+
+Never proof: an OPEN PR (it may still owe its review threads), commits with no PR,
+an empty diff against the base (squash-safe for minutes, then wrong forever), the
+child's own word, and silence. A pane still emitting is BUSY, not closed.
+
+  --close            act; without it this is a report and nothing mutates
+  --all              every repo on this machine, not just this checkout
+  --dispatch <id>    exactly one, and it names its own scope
+  --no-proof         you looked at that one pane; never valid for a batch
+  --base <ref>       the base landing is measured against (default origin/main)
+  --gap <s>          seconds between the two liveness samples (default 2)
+
+Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
+      3 cannot establish (no CLI, silent runtime, unreadable inventory, no gh)`,
+    },
   },
   {
     name: 'board',
@@ -150,6 +200,21 @@ export const COMMANDS = [
       ['publish --issue N …', 'apply what a draft names — never closes an issue'],
       ['release --issue N', "free the finished pass's pane, resolving its dispatch"],
     ],
+    // A blocked child routes on `ask`'s exit codes ALONE — meeting 1 or 3 with
+    // nothing to read, it has to choose between retry, resume and report. So
+    // the codes are printed to whoever asks the verb what it does, not only to
+    // whoever mistypes it into a usage error (./triage/ask.mjs).
+    helpBody: {
+      ask: `Exit codes — a blocked child routes on these alone:
+
+  0  answered — the rulings are printed; revise the draft, then report
+  1  refused — the reason is named, and the repair line says what to do
+  2  usage
+  3  cannot establish — the machine, not you
+  4  PENDING — the question outlived the wait; resume the printed id
+
+  ax triage ask --resume <message_id>   # the id printed on exit 4`,
+    },
   },
   {
     name: 'pr',
@@ -240,6 +305,67 @@ export const plumbingSubcommands = name => Object.keys(COMMANDS.find(command => 
 
 /** Why one verb is plumbing, or null when it is not. */
 export const plumbingSubcommand = (name, verb) => COMMANDS.find(command => command.name === name)?.plumbing?.[verb] ?? null;
+
+/**
+ * The whole-command flags whose NEXT slot is a value, read off their own
+ * declarations: `--vendor <owner>/<repo>` takes one, `--dry-run` takes none.
+ */
+const valueFlags = command =>
+  new Set(
+    (command.options ?? [])
+      .filter(([declaration]) => /^--[a-z-]+ </.test(declaration))
+      .map(([declaration]) => declaration.split(' ')[0]),
+  );
+
+/**
+ * Is this argv ASKING what the command does, rather than asking it to run?
+ *
+ * `args` is the command's own argv — everything after its name. The answer is
+ * the registry's because the data it needs is: which flags take a value, and
+ * which command owns an argv ax may not read at all.
+ *
+ * ANYWHERE IN THAT ARGV, and that is a reversal. #71 claimed the flag in ONE
+ * position, the command's first, on the reasoning that past it the argv belongs
+ * to whoever owns it. What that bought was measured on `main` at `bb75a2a`:
+ * `ax init --vendor <x> --help` RAN init and wrote six paths of the repository
+ * it was asked about (#89), because a value-taking flag puts the question in
+ * slot 2; `ax worktree clean --help` reclaimed processes and containers; `ax
+ * worker tail --help` reported CANNOT ESTABLISH about a pane named `--help`;
+ * and twenty subverbs answered the same question five different ways (#93).
+ * The first slot was not a boundary between owners, only the one place a
+ * question was safe to ask.
+ *
+ * Two rules keep the wider claim from swallowing a flag that is not ax's:
+ *
+ *   a declared VALUE SLOT is that flag's value, whatever it looks like — so
+ *   `ax board --comment --help` is a comment whose text is `--help`, and it is
+ *   the arity in the declaration that says so rather than the shape of the
+ *   string (`valueFlags`);
+ *
+ *   a PASSTHROUGH command's argv is a foreign CLI's in full — ax claims the
+ *   first slot of `ax supabase …` and not one argument past it, so `supabase db
+ *   push --help` reaches the CLI that owns the question (./supabase-guard.mjs).
+ *
+ * A verb's OWN flags are not registry data, so a help flag in one of their
+ * value slots (`ax pr gate --pr --help`) reads as the question. That direction
+ * is deliberate: the invocation is malformed either way, and a read never
+ * mutates the repository it was asked about, which is the whole defect class
+ * this predicate closes.
+ */
+export function helpAsked(name, args = []) {
+  const command = COMMANDS.find(entry => entry.name === name);
+  if (!command) return false;
+
+  const asks = argument => argument === '--help' || argument === '-h';
+  if (command.passthrough) return asks(args[0]);
+
+  const values = valueFlags(command);
+  for (let index = 0; index < args.length; index += 1) {
+    if (asks(args[index])) return true;
+    if (values.has(args[index])) index += 1;
+  }
+  return false;
+}
 
 /**
  * Where a retired verb WENT, and the command that replaces it.
@@ -351,14 +477,37 @@ function commandBlock(command, width) {
  * question nobody asked, and the section heading plus the block is text
  * `ax help` already shows, letter for letter but for the left column.
  *
+ * ONE EXCEPTION, and it is declared: a verb whose contract is a JUDGEMENT the
+ * caller makes before typing gets a `helpBody` under the block. `ax worker
+ * release --help` is how an operator learns that without `--close` nothing
+ * mutates and what counts as landing; `ax triage ask --help` is how a blocked
+ * child learns which exit code means resume. A module header cannot answer
+ * either — a header is for whoever patches the verb, and this is for whoever
+ * is typing it.
+ *
+ * The body is REGISTRY DATA rendered by this one path, never a second help
+ * path in the verb: `verb` is resolved against the declarations, so a token
+ * that is not a declared verb (`ax init --vendor x --help`) simply carries no
+ * body, and no verb parses a help flag to earn one.
+ *
  * The GATE stays the caller's. `runCli` decides whether a command exists on
  * this machine, and asks for this text only once it has. A name the registry
  * does not carry reads back as null, which is that caller's usage-error path.
  */
-export function renderCommandHelp(name) {
+export function renderCommandHelp(name, verb = '') {
   const command = COMMANDS.find(entry => entry.name === name);
   if (!command) return null;
-  return [bold(command.section), ...commandBlock(command, command.name.length), ''].join('\n');
+  const body = commandHelpBody(name, verb);
+  return [bold(command.section), ...commandBlock(command, command.name.length), ...(body === null ? [] : ['', body, '']), ''].join('\n');
+}
+
+/**
+ * The long help ONE verb declares, or null. Read by `renderCommandHelp` and by
+ * the test that holds every declared body to the help's column budget.
+ */
+export function commandHelpBody(name, verb = '') {
+  const declared = COMMANDS.find(entry => entry.name === name)?.helpBody ?? {};
+  return declared[String(verb).split(' ')[0]] ?? null;
 }
 
 /**

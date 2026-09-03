@@ -29,22 +29,26 @@ test('an unknown or missing verb is a usage error, never a default action', () =
 });
 
 test('every triage surface that carries --job advertises the three passes, and none advertises a fourth', () => {
+  // Read off each verb's REFUSAL, not off `--help`: no verb here answers that
+  // flag any more. `runCli` answers it from the registry, anywhere in the
+  // noun's argv, before a verb is reached (#89, ../src/cli.mjs), so the lanes
+  // have to keep riding the usage line every usage error prints.
   const written = [];
-  const stdout = process.stdout.write;
-  process.stdout.write = chunk => (written.push(String(chunk)), true);
+  const stderr = process.stderr.write;
+  process.stderr.write = chunk => (written.push(String(chunk)), true);
   try {
     for (const verb of ['dispatch', 'ask', 'status', 'answer', 'release']) {
       written.length = 0;
-      assert.equal(SUBCOMMANDS[verb](['--help']), 0, verb);
+      assert.equal(SUBCOMMANDS[verb](['--nope']), 2, verb);
       assert.match(written.join(''), /triage\|brief\|custom/, verb);
       assert.doesNotMatch(written.join(''), /refine/, `${verb} still advertises the retired lane`);
     }
     written.length = 0;
-    assert.equal(SUBCOMMANDS.publish(['--help']), 0);
+    assert.equal(SUBCOMMANDS.publish(['--nope']), 2);
     assert.match(written.join(''), /triage\|brief/, 'custom is deliberately not publishable');
     assert.doesNotMatch(written.join(''), /refine/);
   } finally {
-    process.stdout.write = stdout;
+    process.stderr.write = stderr;
   }
 });
 

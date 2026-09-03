@@ -46,9 +46,14 @@ import { readPane } from './pane.mjs';
 import { defaultStore, dispatchIndex, requestIdOk } from './record.mjs';
 
 /**
- * The terminal-handle grammar, closed. It lands on argv, and the bash era's
- * deliberate consequence is kept: there is no `--help` here, because `--help`
- * is not a `term_…` handle and is refused as one.
+ * The terminal-handle grammar, closed.
+ *
+ * The bash era's deliberate consequence — "there is no `--help` here, because
+ * `--help` is not a `term_…` handle and is refused as one" — is REVERSED as a
+ * surface contract (#89): `ax worker tail --help` answered CANNOT ESTABLISH
+ * about a pane named `--help`, and `runCli` now answers the flag from the
+ * registry before this verb is reached (../cli.mjs). Nothing changes in this
+ * grammar: a `--help` handed to this function directly still names no pane.
  */
 export const TERMINAL_HANDLE = /^term_[A-Za-z0-9_-]+$/;
 

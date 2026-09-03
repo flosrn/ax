@@ -26,7 +26,7 @@
 
 import { join } from 'node:path';
 
-import { bad, fix, note, ok, raw } from '../log.mjs';
+import { bad, fix, note, ok } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { briefDelivered } from './delivered.mjs';
@@ -66,7 +66,8 @@ export function repair(argv = [], { resolve = resolveOrca, runner, env = process
     const arg = argv[i];
     if (arg === '--request') request = argv[(i += 1)] ?? '';
     else if (arg === '--delivered') delivered = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89).
     else return usageError(`unknown argument "${arg}"`);
   }
   if (request === '') return usageError('no --request given');

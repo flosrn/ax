@@ -102,6 +102,18 @@ test('a read-only command runs with no promotion at all', () => {
   assert.deepEqual(calls, ['run status', 'cwd /repo/apps/web']);
 });
 
+test('the Supabase CLI’s own help flag is forwarded, wherever it sits in the argv', () => {
+  // ax widened its help read to a command's whole argv (#89), and this argv is
+  // not ax's: `db push --help` is a question for the CLI, whose answer ax has
+  // no business composing. The registry entry declares that ownership with
+  // `passthrough: true` (../src/commands.mjs); what is asserted here is the
+  // other end of it — the flag arrives, in place, unconsumed and unreordered.
+  const { calls, deps } = harness({ isolated: true });
+
+  assert.equal(capture(() => supabase(['db', 'push', '--help'], deps)).code, 0);
+  assert.deepEqual(calls, ['run db push --help', 'cwd /repo/apps/web']);
+});
+
 test('the primary checkout never promotes — it owns the shared stack', () => {
   const { calls, deps } = harness({ primary: true });
 

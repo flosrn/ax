@@ -54,9 +54,13 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
 
   let asked = '';
   let dry = false;
+  // No `--help` branch: `runCli` answers the flag from the registry before this
+  // verb is reached, anywhere in its argv (../src/cli.mjs). This loop used to
+  // scan the whole argv for it — the precedent the central read generalised —
+  // and a second code path answering one question is how twenty subverbs came
+  // to answer it five different ways (#89, #93).
   for (const arg of argv) {
     if (arg === '--dry-run') dry = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     else if (arg.startsWith('-')) return usageError(`unknown argument "${arg}"`);
     else if (asked !== '') return usageError(`one version only, got "${asked}" and "${arg}"`);
     else asked = arg;
