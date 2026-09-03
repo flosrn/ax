@@ -559,16 +559,31 @@ export function mergePolicy({ run, slug }) {
  *
  *   1. exactly two parents,
  *   2. the second one reachable from the base ref, and
- *   3. `git diff-tree --cc` EMPTY — the merge carries nothing that is not
- *      already in one of its parents.
+ *   3. its tree IDENTICAL to the tree an ordinary merge of its two parents
+ *      produces (`git merge-tree --write-tree`) — it is exactly what
+ *      `git merge origin/<base>` would have written, and nothing else.
  *
  * Re-derived on every run and remembered nowhere, so it holds identically in
  * the process that minted the commit, in the owning worker's fresh gate run,
  * and in a resumed merge; a worker's own clean `git merge origin/<base>` is the
- * same shape and gets the same answer. Part 3 is why the rule cannot be used to
- * smuggle work: a conflict resolution or an evil merge carries content of its
- * own, so it is work, refuses, and is named as one. THE READS ARE READS — a
- * base ref this checkout cannot resolve, or a `--cc` that cannot answer, leaves
+ * same shape and gets the same answer.
+ *
+ * PART 3 IS THE WHOLE ANTI-SMUGGLING GUARANTEE, and its first form was not one.
+ * `git diff-tree --cc` EMPTY looked like "carries nothing of its own" and is
+ * not: `--cc` drops hunks whose result matches a parent wholesale, so
+ * `git merge -X ours <base>` — two parents, second reachable, the base's change
+ * to a file silently DROPPED — printed an empty `--cc` and read as exempt
+ * (measured 2026-09-03 in a repository built for it, after a Codex P1 on PR
+ * #119). The lesson generalises: a diff FILTERED for human interest cannot
+ * answer a question about content, and an inspection of a result is weaker than
+ * a recomputation of it. Asking whether the tree IS the merge admits nothing —
+ * a conflict resolution, an evil merge, a restored file, a dropped upstream
+ * change all move the tree off the recomputed one, so all four are work,
+ * refuse, and are named as such.
+ *
+ * THE READS ARE READS — a base ref this checkout cannot resolve, a
+ * `merge-tree` that cannot answer (an absent object, or a git older than 2.38,
+ * which does not have `--write-tree`), or a tree that cannot be resolved leaves
  * the shape undecided, and undecided is not exempt (F-028).
  *
  * The rejected alternative, named so it is not re-invented: having the
@@ -624,12 +639,37 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
       return undecided(`'git merge-base --is-ancestor ${short(second)} ${baseRef}' could not answer (${clean(firstLine(reaches.stderr)) || `exit ${reaches.status}`})`);
     }
     if (!succeeded(reaches)) return { kind: 'work', why: `is a merge of ${short(second)}, which ${baseRef} does not reach — another branch merged in is work, not base movement` };
-    const carried = gitRun(['diff-tree', '--cc', '--no-commit-id', entry.sha]);
-    if (!succeeded(carried)) {
-      return undecided(`'git diff-tree --cc ${short(entry.sha)}' could not answer (${clean(firstLine(carried.stderr)) || `exit ${carried.status}`})`);
+    // THE MERGE IS RECOMPUTED AND THE TREES COMPARED, never inspected for
+    // "interesting" hunks. `git diff-tree --cc` was the first predicate here
+    // and it is not one: `--cc` drops hunks where the result matches a parent
+    // wholesale, so `git merge -X ours <base>` — two parents, second reachable,
+    // and the base's change to a file silently DROPPED — prints an empty `--cc`
+    // and read as exempt (measured 2026-09-03 on PR #119, Codex P1). That is
+    // caller-authored content passing the detector, which is the one thing this
+    // exemption must never do.
+    //
+    // So the question is asked positively: is this commit's tree EXACTLY what
+    // an ordinary merge of its two parents produces? `--write-tree` needs git
+    // 2.38 and writes an unreferenced tree object; an older git answers 129 and
+    // becomes undecided, which fails closed.
+    const recomputed = gitRun(['merge-tree', '--write-tree', entry.parents[0], second]);
+    // Exit 1 is BOTH "the ordinary merge conflicts" and "an object is missing",
+    // so the tree id on stdout is what separates them: a conflicted merge still
+    // writes one, a failed read writes nothing.
+    const wrote = firstLine(recomputed.stdout);
+    if (!/^[0-9a-f]{40,64}$/.test(wrote)) {
+      return undecided(`'git merge-tree --write-tree ${short(entry.parents[0])} ${short(second)}' could not answer (${clean(firstLine(recomputed.stderr)) || `exit ${recomputed.status}`})`);
     }
-    if (String(carried.stdout ?? '').trim() !== '') {
-      return { kind: 'work', why: `merges ${baseRef} and carries content neither parent has ('git diff-tree --cc' is not empty), so it is work under a merge commit, not base movement` };
+    if (!succeeded(recomputed)) {
+      return { kind: 'work', why: `merges ${baseRef} and an ordinary merge of its parents CONFLICTS, so the content it carries is a resolution someone authored, not base movement` };
+    }
+    const tree = gitRun(['rev-parse', `${entry.sha}^{tree}`]);
+    if (!succeeded(tree)) return undecided(`'git rev-parse ${short(entry.sha)}^{tree}' could not answer (${clean(firstLine(tree.stderr)) || `exit ${tree.status}`})`);
+    if (firstLine(tree.stdout) !== wrote) {
+      return {
+        kind: 'work',
+        why: `merges ${baseRef} but its tree is not the one an ordinary merge of its parents produces (${short(firstLine(tree.stdout))} against ${short(wrote)}), so it carries a decision someone made — dropped, restored or added content — not base movement`,
+      };
     }
     return { kind: 'exempt' };
   };
@@ -655,7 +695,7 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
   if (exempt.length > 0) {
     out.note(
       `commits since open: ${exempt.length} base merge${exempt.length === 1 ? '' : 's'} — exempt: ${exempt.map(entry => short(entry.sha)).join(' ')} ` +
-        `(clean merge of ${baseRef}: two parents, the second one the base reaches, and no content of its own — base movement, which no body written before it could describe)`,
+        `(clean merge of ${baseRef}: two parents, the second one the base reaches, and a tree identical to the one an ordinary merge of those parents produces — base movement, which no body written before it could describe)`,
     );
   }
   if (plain.length > 0) {

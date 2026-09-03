@@ -68,8 +68,9 @@ nowhere. A post-open commit is base movement when all three hold, each one read:
 1. exactly two parents (from the `parents` list on the PR commits payload the ground already
    fetches),
 2. the second parent reachable from the base ref (`git merge-base --is-ancestor`), and
-3. `git diff-tree --cc --no-commit-id <sha>` EMPTY — the merge carries nothing that is not already
-   in one of its parents.
+3. its tree IDENTICAL to the tree an ordinary merge of its two parents produces
+   (`git merge-tree --write-tree <parent1> <parent2>`, compared against
+   `git rev-parse <sha>^{tree}`) — it is exactly what `git merge origin/<base>` would have written.
 
 It is then reported, not refused: `1 base merge — exempt: <sha> (clean merge of main: …)`. Every
 post-open commit that is not that shape keeps refusing and keeps printing the `--ack-body` repair.
@@ -91,15 +92,28 @@ process that carried it, and the same false verdict returns in every other proce
 already held the answer; asking it costs three git reads and holds everywhere, forever, with no
 record to keep coherent.
 
-**An exemption by shape must be narrow enough to be unusable as a bypass.** Two parents and
-reachability alone would exempt an "evil merge" — work smuggled under a merge commit — which is
-exactly what the detector exists to catch. The `--cc` emptiness condition is what keeps the rule at
-"what a clean `git merge origin/<base>` would have produced" and no wider.
+**An exemption by shape must be narrow enough to be unusable as a bypass, and the narrowing must be
+a RECOMPUTATION, not an inspection.** The first predicate here asked whether
+`git diff-tree --cc --no-commit-id <sha>` was empty, reading that as "carries nothing of its own".
+It is not that. `--cc` drops hunks whose result matches a parent wholesale, so
+`git merge -X ours <base>` — two parents, second parent reachable, the base's change to a file
+silently DROPPED — prints an empty combined diff, and the exemption admitted it. Measured
+2026-09-03 in a repository built for it, after a Codex P1 on PR #119; the suite now carries that
+repository as a fixture, and it produced zero refusals under the old predicate.
 
-**Unknown is not exempt (F-028).** A base ref this checkout cannot resolve, or a `--cc` that cannot
-answer, leaves the shape undecided, and undecided refuses — with the fetch in the repair, not an
-acknowledgement of a commit nobody described.
+Asking instead whether the commit's tree IS the merge of its parents admits nothing: a conflict
+resolution, an evil merge, a restored file and a dropped upstream change all move the tree off the
+recomputed one. **A diff filtered for human interest cannot answer a question about content** —
+`--cc`, `-c`, `--first-parent` and every "show me what matters" view exist to be read by a person,
+and a guard that consumes one is measuring the filter.
 
-**`git diff-tree` prints the commit id.** `git diff-tree --cc <sha>` is never empty: its first line
-is the SHA. An emptiness test on it needs `--no-commit-id`, or every clean merge reads as carrying
-content.
+**Unknown is not exempt (F-028).** A base ref this checkout cannot resolve, a `merge-tree` that
+cannot answer — an absent object, or a git older than 2.38, which has no `--write-tree` — or an
+unresolvable tree leaves the shape undecided, and undecided refuses, with the fetch in the repair
+rather than an acknowledgement of a commit nobody described.
+
+**One git exit code can carry two different answers.** `git merge-tree --write-tree` exits 1 both
+when the ordinary merge conflicts and when an object is missing. The tree id on stdout is what
+separates them: a conflicted merge still writes one, a failed read writes nothing. Reading the
+status alone would have turned every unreadable commit into "work" — refusing with a repair that
+cannot fix it — or every conflict into "undecided".

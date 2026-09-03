@@ -530,11 +530,14 @@ const realRow = (root, ref, date = LATE) => {
 };
 
 /**
- * A repository whose `feature` tip is a MERGE, in the three shapes that decide
+ * A repository whose `feature` tip is a MERGE, in the four shapes that decide
  * the exemption: the clean merge of the base, the same merge carrying content
- * of its own (an evil merge), and a merge of some other branch.
+ * of its own (an evil merge), a merge of some other branch, and the one that
+ * broke the first predicate — a `-X ours` merge that DROPS the base's change to
+ * a file, whose combined diff is empty because each path matches a parent
+ * wholesale.
  */
-function mergedRepo({ evil = false, foreign = false } = {}) {
+function mergedRepo({ evil = false, foreign = false, dropsBaseChange = false } = {}) {
   const { root, git } = repo();
   git('checkout', '-q', 'feature');
   commitFile(root, git, 'f.txt', 'f\n', 'feature work');
@@ -543,6 +546,17 @@ function mergedRepo({ evil = false, foreign = false } = {}) {
     commitFile(root, git, 'o.txt', 'o\n', 'work on another branch');
     git('checkout', '-q', 'feature');
     git('merge', '-q', '--no-ff', '-m', "Merge branch 'other' into feature", 'other');
+    return { root, git };
+  }
+  if (dropsBaseChange) {
+    // Both sides touch a.txt, and the merge keeps the branch's version: two
+    // parents, the second one the base reaches, `git diff-tree --cc` EMPTY, and
+    // the base's change discarded. An ordinary merge of these parents conflicts.
+    commitFile(root, git, 'a.txt', 'the branch rewrote this\n', 'the branch changes a.txt');
+    git('checkout', '-q', 'main');
+    commitFile(root, git, 'a.txt', 'the base rewrote this\n', 'the base changes a.txt');
+    git('checkout', '-q', 'feature');
+    git('merge', '-q', '--no-ff', '-X', 'ours', '-m', "Merge branch 'main' into feature", 'main');
     return { root, git };
   }
   git('checkout', '-q', 'main');
@@ -620,9 +634,27 @@ test('commits since open: a base merge carrying content of its own is work, name
   const { root } = mergedRepo({ evil: true });
   const out = commitsGround(commitOptions(root, { commits: commitsOk([realRow(root, 'feature')]) }));
   assert.equal(out.refusals.length, 1);
-  assert.match(out.refusals[0].message, /commits since open \[DETECTOR\]: .* merges main and carries content neither parent has/);
-  assert.match(out.refusals[0].message, /git diff-tree --cc/);
+  assert.match(out.refusals[0].message, /commits since open \[DETECTOR\]: .* its tree is not the one an ordinary merge of its parents produces/);
   assert.match(out.refusals[0].repair, /--ack-body/);
+});
+
+test('commits since open: a merge that DROPS the base\'s change is work, though its combined diff is empty (#119 P1)', () => {
+  // The bypass the first predicate had. `git merge -X ours main` gives two
+  // parents, a second parent the base reaches, and an EMPTY
+  // `git diff-tree --cc` — because every path matches one parent wholesale —
+  // while silently discarding the base's change to a.txt. Nothing about that is
+  // base movement, and an exemption that admitted it would be a way past the
+  // detector rather than a refinement of it.
+  const { root } = mergedRepo({ dropsBaseChange: true });
+  const combined = execFileSync('git', ['diff-tree', '--cc', '--no-commit-id', 'feature'], { cwd: root, encoding: 'utf8' });
+  assert.equal(combined.trim(), '', 'the fixture no longer reproduces the empty combined diff');
+  assert.equal(execFileSync('git', ['show', 'feature:a.txt'], { cwd: root, encoding: 'utf8' }), 'the branch rewrote this\n', "the base's change survived, so nothing was dropped");
+
+  const out = commitsGround(commitOptions(root, { commits: commitsOk([realRow(root, 'feature')]) }));
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].message, /commits since open \[DETECTOR\]: .* an ordinary merge of its parents CONFLICTS/);
+  assert.match(out.refusals[0].repair, /--ack-body/);
+  assert.deepEqual(out.notes, [], 'a dropped upstream change was reported as base movement');
 });
 
 test('commits since open: a shape this checkout cannot read is not exempt, and the repair is the fetch (F-028, #90)', () => {
@@ -643,16 +675,43 @@ test('commits since open: a shape this checkout cannot read is not exempt, and t
   assert.match(unrefreshed.refusals[0].message, /'main' cannot be read here/);
   assert.match(unrefreshed.refusals[0].repair, /git fetch origin main/);
 
-  // The cleanliness read failing is the same answer: undecided, never exempt.
+  // The recompute failing is the same answer: undecided, never exempt. This is
+  // also the shape a git older than 2.38 produces — `--write-tree` does not
+  // exist there, so the flag is a usage error and the ground fails closed
+  // instead of exempting on an unasked question.
   const unreadable = commitsGround(
     commitOptions(root, {
-      git: (args, at) => (args[0] === 'diff-tree' ? { status: 128, stdout: '', stderr: 'fatal: bad object', error: undefined } : realGit(args, at)),
+      git: (args, at) => (args[0] === 'merge-tree' ? { status: 129, stdout: '', stderr: 'error: unknown option `write-tree', error: undefined } : realGit(args, at)),
       commits: commitsOk([realRow(root, 'feature')]),
     }),
   );
   assert.equal(unreadable.refusals.length, 1);
-  assert.match(unreadable.refusals[0].message, /git diff-tree --cc.*could not answer/);
+  assert.match(unreadable.refusals[0].message, /git merge-tree --write-tree.*could not answer/);
   assert.match(unreadable.refusals[0].repair, /git fetch origin main feature/);
+
+  // A conflicted recompute writes a tree ANYWAY, so the exit code alone cannot
+  // separate "the ordinary merge conflicts" from "the read failed" — the tree
+  // id on stdout is what does. A failed read carries none, and stays undecided.
+  const conflicting = commitsGround(
+    commitOptions(root, {
+      git: (args, at) => (args[0] === 'merge-tree' ? { status: 1, stdout: `${'9'.repeat(40)}\n`, stderr: '', error: undefined } : realGit(args, at)),
+      commits: commitsOk([realRow(root, 'feature')]),
+    }),
+  );
+  assert.equal(conflicting.refusals.length, 1);
+  assert.match(conflicting.refusals[0].message, /an ordinary merge of its parents CONFLICTS/);
+  assert.match(conflicting.refusals[0].repair, /--ack-body/);
+
+  // And the tree the commit itself carries has to be readable too.
+  const noTree = commitsGround(
+    commitOptions(root, {
+      git: (args, at) => (args[0] === 'rev-parse' && String(args[1]).endsWith('^{tree}') ? { status: 128, stdout: '', stderr: 'fatal: bad revision', error: undefined } : realGit(args, at)),
+      commits: commitsOk([realRow(root, 'feature')]),
+    }),
+  );
+  assert.equal(noTree.refusals.length, 1);
+  assert.match(noTree.refusals[0].message, /git rev-parse .*\^\{tree\}' could not answer/);
+  assert.match(noTree.refusals[0].repair, /git fetch origin main feature/);
 });
 
 test('commits since open: --ack-body answers for every late commit and reads no git at all (#90)', () => {
