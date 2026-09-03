@@ -164,19 +164,33 @@ function sendOk(out) {
 }
 
 /**
- * Orca refused the alert BECAUSE OF WHAT THE DISPATCH IS, not because the send
- * failed. The CLI turns `lifecycle.action === 'rejected'` into a non-zero exit
- * whose error carries the lifecycle code, and the three codes below all mean
- * one thing for a watcher: no active Dispatch stands behind this sender any
- * more, so there is nothing left to supervise. The rejected message is still
- * RECORDED on the Run as a `status` — which is why this must never be retried.
+ * Orca refused the alert AS A LIFECYCLE MESSAGE, and that refusal is final for
+ * this watcher — not because the watched worker is proven dead, but because
+ * nothing about the next attempt can differ. The CLI turns
+ * `lifecycle.action === 'rejected'` into a non-zero exit whose error carries
+ * the lifecycle code, and each of the three codes is decided by facts this
+ * process cannot change between ticks: `sender_not_assignee` (the SENDER —
+ * the pane whose environment this watcher inherited, i.e. the orchestrator's
+ * own — holds no active Dispatch, or no longer the one it held),
+ * `task_dispatch_mismatch` (the payload names another task) and
+ * `dispatch_capability_invalid` (the sender presents no valid capability, and
+ * this watcher never presents one). Orca ALSO records the refused message on
+ * the Run as a `status` carrying the original body, so the wake already
+ * happened; a retry only repeats the rejection.
  *
  * Measured 2026-09-02 on the package's own checkout: two watchers on brief
  * dispatches that had settled `failed` alerted after the silence window, were
  * refused `sender_not_assignee`, and retried every tick for ten hours — six
  * hundred rejected escalations, each delivered to the orchestrator's pane and
  * each pre-empting the tool call it was in. Only a transport failure (the
- * runtime unreachable, no receipt at all) is worth the next tick.
+ * runtime unreachable, no receipt at all) is worth the next tick, because only
+ * that can change.
+ *
+ * What this does NOT fix, and is filed separately: a top-level orchestrator's
+ * pane never holds a Dispatch, so an `escalation` sent from its environment is
+ * refused by construction, and the wake arrives as the rejection's `status`
+ * rather than as the envelope this file chose (see WAKE_TYPE). The envelope,
+ * not the retry, is the defect there.
  */
 const LIFECYCLE_REFUSALS = new Set(['sender_not_assignee', 'task_dispatch_mismatch', 'dispatch_capability_invalid']);
 
@@ -184,6 +198,9 @@ const sendRefused = out => {
   const code = out.receipt?.ok === false ? String(out.receipt.error?.code ?? '') : '';
   return LIFECYCLE_REFUSALS.has(code) ? code : '';
 };
+
+const refusalLine = (alert, out) =>
+  `Orca refused the ${alert} as a lifecycle message: ${sendRefused(out)} — ${String(out.receipt?.error?.message ?? '').trim() || 'no reason given'}. The body was recorded on the Run as a rejected status, and a retry can only repeat the refusal; exiting.`;
 
 // THE DELIVERY FORM OF EVERY ALERT IN THIS FILE.
 //
@@ -470,7 +487,7 @@ export function stall(
           return 0;
         }
         if (sendRefused(sent)) {
-          log(`Orca refused the alert: ${sendRefused(sent)} — no active Dispatch is left to supervise; exiting.`);
+          log(refusalLine('gone alert', sent));
           return 0;
         }
         log('gone alert failed; will retry next tick.');
@@ -528,7 +545,7 @@ export function stall(
                 cardSeen = card;
                 log(`card change #${cardsSent} sent to run:${fields.run}`);
               } else if (sendRefused(sent)) {
-                log(`Orca refused the alert: ${sendRefused(sent)} — no active Dispatch is left to supervise; exiting.`);
+                log(refusalLine('card alert', sent));
                 return 0;
               } else log('card alert failed; keeping the previous baseline so the unchanged card retries next tick.');
             }
@@ -544,7 +561,7 @@ export function stall(
           return 0;
         }
         if (sendRefused(sent)) {
-          log(`Orca refused the alert: ${sendRefused(sent)} — no active Dispatch is left to supervise; exiting.`);
+          log(refusalLine('stall alert', sent));
           return 0;
         }
         log('stall alert failed; will retry next tick.');

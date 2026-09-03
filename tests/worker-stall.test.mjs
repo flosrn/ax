@@ -461,9 +461,15 @@ test('a failed silence alert is retried on the next tick, then ends the watch', 
 // and the watcher read that refusal as a transport failure to retry next tick.
 // Sixty seconds × ten hours: six hundred rejected escalations, each recorded on
 // the orchestrator's Run as a `status` message, each delivered to its pane and
-// each pre-empting the tool call it was making. Orca's refusal is a VERDICT
-// about the dispatch, not a failure of the send: nothing is left to supervise.
-test("Orca's lifecycle refusal of an alert ends the watch — a rejected sender is a settled dispatch, never a retry", () => {
+// each pre-empting the tool call it was making.
+//
+// The refusal is about the ENVELOPE and its sender, not a verdict on the
+// watched worker: the watcher sends from the orchestrator pane's own
+// environment, and Orca decides each lifecycle code on facts that cannot change
+// between two ticks. Orca also records the refused body on the Run as a
+// `status`, so the wake already happened. One refusal, one exit, and the log
+// says which code and why — never a claim that the worker is dead.
+test("Orca's lifecycle refusal of an alert ends the watch once, with the code and reason on record", () => {
   const runner = fakeRunner({
     status: { dispatch: 'failed', worker: 'failed' },
     cursors: [7, 7, 7, 7, 7, 7],
@@ -471,10 +477,28 @@ test("Orca's lifecycle refusal of an alert ends the watch — a rejected sender 
   });
   const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
   assert.equal(r.code, 0);
-  assert.equal(sends(r.calls).length, 1, 'one refusal is one verdict; there is no second send');
-  assert.match(r.log, /Orca refused the alert: sender_not_assignee/);
-  assert.match(r.log, /no active Dispatch is left to supervise; exiting/);
+  assert.equal(sends(r.calls).length, 1, 'one refusal is final for this sender; there is no second send');
+  assert.match(r.log, /Orca refused the stall alert as a lifecycle message: sender_not_assignee — No active Dispatch belongs to this message sender/);
+  assert.match(r.log, /recorded on the Run as a rejected status, and a retry can only repeat the refusal; exiting/);
   assert.doesNotMatch(r.log, /will retry next tick/);
+  assert.doesNotMatch(r.log, /no active Dispatch is left to supervise|settled/, 'the exit claims nothing about the watched worker');
+});
+
+test('a refusal on a worker that still reads live is the same exit — the envelope, not the worker, was judged', () => {
+  // Review of the first draft (Codex, P1): `dispatch_capability_invalid` and
+  // `task_dispatch_mismatch` do not prove the worker ended. They do not have
+  // to: the watcher presents no capability and names no task, so the next
+  // attempt is the same attempt, and the refused body already reached the Run.
+  const runner = fakeRunner({
+    status: { dispatch: 'dispatched', worker: 'ready' },
+    cursors: [7, 7, 7, 7, 7, 7],
+    sendRefused: 'dispatch_capability_invalid',
+  });
+  const r = invoke({ runner, recordOptions: { on: '' }, env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  assert.equal(r.code, 0);
+  assert.equal(sends(r.calls).length, 1);
+  assert.match(r.log, /Orca refused the stall alert as a lifecycle message: dispatch_capability_invalid/);
+  assert.doesNotMatch(r.log, /dead|GONE|settled/, 'no death is reported on a refusal');
 });
 
 test('a transport failure of an alert is still retried — only a lifecycle refusal is terminal', () => {
