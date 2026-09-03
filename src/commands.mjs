@@ -210,6 +210,12 @@ Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
     // nothing to read, it has to choose between retry, resume and report. So
     // the codes are printed to whoever asks the verb what it does, not only to
     // whoever mistypes it into a usage error (./triage/ask.mjs).
+    // `dispatch` declares one too, and for the same reason: the window a child
+    // gets to prove its role is a judgement the caller makes BEFORE typing.
+    // Measured 2026-09-02 (#97): the window was 30 s, the only knob that could
+    // widen it was an env name appearing nowhere on the command surface, and a
+    // healthy child that booted slowly was settled CANNOT-ESTABLISH at 34.5 s.
+    // A flag nobody can discover is a flag nobody has.
     helpBody: {
       ask: `Exit codes — a blocked child routes on these alone:
 
@@ -220,6 +226,21 @@ Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
   4  PENDING — the question outlived the wait; resume the printed id
 
   ax triage ask --resume <message_id>   # the id printed on exit 4`,
+      dispatch: `Each pass proves its own role before the summary: the child's model mover and
+its role receipt, read from its session file. Unproven and live is exit 3 — the
+dispatch HAPPENED, so re-dispatching duplicates a working agent.
+
+  --wait <s>         how long one pass may take to write those receipts
+                     (default 120, the same window ax worker dispatch uses)
+
+Precedence: --wait, then AX_TRIAGE_ROLE_WAIT for this machine, then 120. The
+verification runs serially after the whole batch starts, so N children that
+never report can cost up to N x the window — that is what --wait shortens.
+
+A pass settled unproven is re-derivable afterwards, by the one verb that reads
+the session file:
+
+  ax worker transcript --dispatch-proof <checkout> --request <request_id>`,
     },
   },
   {

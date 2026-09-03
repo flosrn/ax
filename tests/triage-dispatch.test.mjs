@@ -693,6 +693,75 @@ test('a dispatch with no role receipt is cannot-establish and is never re-dispat
   assert.match(r.out, /Do NOT re-dispatch/);
 });
 
+// Issue #97: this is the ONE exit that fires on a healthy child that merely
+// booted slowly, and it was the one naming no repair — against the AGENTS.md
+// rule this repository enforces ("a `bad` without a `fix` is a finding neither
+// an agent nor a human can act on"). Two repairs exist and both have to be
+// named: the read that re-derives the proof for THIS pass, and the way to
+// widen the window that closed too early.
+test('the no-receipt verdict names both repairs — the request-scoped read, and the wider window', () => {
+  const r = run(['--issue', '7'], {
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
+    proofFn: () => null,
+  });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /--dispatch-proof/, 'the verb that actually reads the session file');
+  assert.match(r.out, /--request triage-acme-widgets-7/, 'scoped to this pass, not newest-wins across the wave');
+  assert.match(r.out, /--wait/, 'and the flag that would have kept the window open');
+  assert.match(r.out, /AX_TRIAGE_ROLE_WAIT/, 'including the machine-wide default it reads');
+});
+
+// The reported friction: 30 s against the worker family's 120 s for one
+// proposition, with no flag to widen it. The window is now the caller's, and
+// the value it was given is what the refusal reports.
+test('--wait bounds the role-verification window, and the refusal names the value it used', () => {
+  let clock = 0;
+  const r = run(['--issue', '7', '--wait', '7'], {
+    now: () => (clock += 1000),
+    proofFn: () => null,
+  });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /within 7s/, 'the wait the caller asked for, not the built-in default');
+  assert.doesNotMatch(r.out, /within 120s/);
+});
+
+test('--wait wins over AX_TRIAGE_ROLE_WAIT, which wins over the built-in default', () => {
+  let clock = 0;
+  const flagged = run(['--issue', '7', '--wait', '3'], {
+    env: { AX_TRIAGE_ROLE_WAIT: '99' },
+    now: () => (clock += 1000),
+    proofFn: () => null,
+  });
+  assert.match(flagged.out, /within 3s/, 'the per-invocation override is the last word');
+
+  let envClock = 0;
+  const fromEnv = run(['--issue', '7'], {
+    env: { AX_TRIAGE_ROLE_WAIT: '9' },
+    now: () => (envClock += 1000),
+    proofFn: () => null,
+  });
+  assert.match(fromEnv.out, /within 9s/, 'the machine default still overrides the built-in one');
+});
+
+// Validated the way the worker family validates its own (`src/worker/
+// dispatch.mjs`), never silently defaulted: a malformed window that reads as
+// 120 is the same class of silence as the knob nobody could discover.
+test('a malformed or valueless --wait is a usage error naming the reason', () => {
+  const bad = run(['--issue', '7', '--wait', 'soon']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.out, /--wait expects a number of seconds/);
+  assert.deepEqual(bad.started, [], 'nothing is dispatched on a usage error');
+
+  const bare = run(['--issue', '7', '--wait']);
+  assert.equal(bare.code, 2);
+  assert.match(bare.out, /--wait expects a number of seconds/);
+  assert.deepEqual(bare.started, []);
+
+  const negative = run(['--issue', '7', '--wait', '-5']);
+  assert.equal(negative.code, 2, 'a negative window is not a window');
+  assert.deepEqual(negative.started, []);
+});
+
 // The friction reported from goodluckagency/ofmchat#101 on 2026-08-27: the
 // session file exists as soon as the child boots, carrying the boot
 // `model_change` and no receipt. Reading once is reading that boot state.
@@ -1450,10 +1519,16 @@ test('an empty AX_READY_ROLE_WAIT does not refuse', () => {
   assert.equal(r.code, 0);
 });
 
-test('roleWaitOf honours AX_TRIAGE_ROLE_WAIT and still defaults to 30', () => {
-  assert.deepEqual(roleWaitOf({}), { ok: true, wait: 30 });
+// Updated rather than deleted (issue #97): the proposition is still "the env
+// name is honoured and there is a built-in default", and the default is now the
+// worker family's proven 120 — one proposition, one window, both families.
+test('roleWaitOf honours AX_TRIAGE_ROLE_WAIT, takes a caller override, and defaults to 120', () => {
+  assert.deepEqual(roleWaitOf({}), { ok: true, wait: 120 });
   assert.deepEqual(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '0' }), { ok: true, wait: 0 });
   assert.deepEqual(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '12' }), { ok: true, wait: 12 });
+  assert.deepEqual(roleWaitOf({}, 7), { ok: true, wait: 7 }, 'the per-invocation override');
+  assert.deepEqual(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: '12' }, 7), { ok: true, wait: 7 }, 'and it outranks the machine default');
+  assert.deepEqual(roleWaitOf({ AX_TRIAGE_ROLE_WAIT: 'soon' }), { ok: true, wait: 120 }, 'an unreadable env value falls back to the built-in, as it always did');
 });
 
 test('roleWaitOf refuses AX_READY_ROLE_WAIT rather than reading it', () => {

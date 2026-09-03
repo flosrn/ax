@@ -282,6 +282,18 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
   // breaking release. The warning rides STDERR because the remote reader takes
   // the FIRST STDOUT LINE as the proof — a warning on stdout would corrupt
   // exactly the cross-version call the alias exists to serve.
+  //
+  // `--request` is what makes this verb the RECONCILER of a point-in-time
+  // verdict (issue #97). `ax triage dispatch` settles each pass as VERIFIED or
+  // CANNOT-ESTABLISH inside a bounded window, and a healthy child that booted
+  // slowly is settled unproven — measured 2026-09-02: verdict at 34.5 s, the
+  // receipts present on a read ~60 s later. Re-deriving that needs the session
+  // FILE, and this is the only verb that reads it. The needle alone could not
+  // name one pass of a wave: triage children run `--worktree current`, so every
+  // pass of the wave shares the needle and the unscoped read answers whichever
+  // file was touched last — a neighbouring pass reported as this one. The
+  // request id is the only disambiguator, `dispatchProof` always took it, and
+  // until now the CLI had no way to pass what `verifyPassRole` passes.
   const proofFlag = argv.includes('--dispatch-proof') ? '--dispatch-proof' : '--launch-proof';
   const proofAt = argv.indexOf(proofFlag);
   if (proofAt !== -1) {
@@ -293,9 +305,28 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
       bad('ax worker transcript --dispatch-proof expects the session needle (a worktree directory name)');
       return 2;
     }
+    // Refused rather than consumed, on the same grounds as the needle above: a
+    // missing value would read as the unscoped mode and answer the newest file
+    // in the checkout, which is precisely the wrong-pass answer the flag exists
+    // to prevent. A value that is itself a flag is the same mistake one token
+    // later (`--request --sessions <root>`).
+    const requestAt = argv.indexOf('--request');
+    if (requestAt !== -1) {
+      const value = argv[requestAt + 1];
+      if (value === undefined || value.startsWith('-')) {
+        bad('ax worker transcript --dispatch-proof --request expects the request id of one dispatched pass');
+        fix('ax triage status --issue <n>   # the request id each pass recorded');
+        return 2;
+      }
+    }
     const rootAt = argv.indexOf('--sessions');
+    // Zero or two candidates under a named request is an inability to
+    // establish, never newest-wins: `sessionFileForNeedle` answers null and
+    // this exits 1 with nothing on stdout, so no caller can read a sibling
+    // pass as this one (F-028 — an ambiguity is not an answer).
     const found = dispatchProof({
       needle,
+      request: requestAt === -1 ? '' : argv[requestAt + 1],
       env,
       sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1],
     });
@@ -653,17 +684,60 @@ function sessionFilesForCwd({ cwd, env = process.env, sessionsRoot } = {}) {
   }
 }
 
+/**
+ * Does this session OWN the request — i.e. did the dispatch write it into the
+ * session's first task spec — as opposed to merely mentioning it later?
+ *
+ * A whole-file substring match cannot tell those apart, and the difference is
+ * not academic: the reconciliation read this resolver serves is typed BY the
+ * orchestrator, IN the checkout its children share, and that session's own
+ * transcript carries the request id twice over — the dispatch output it read,
+ * and the command it just ran. Measured on this host 2026-09-03, four real
+ * triage passes: the whole-file match found 9, 14, 15 and 16 candidate files
+ * each, and the session whose first task spec named the request was exactly one
+ * every time. So the "exactly one match" rule below was not selecting a pass —
+ * it was refusing on an ambiguity the caller created by asking.
+ *
+ * The FIRST user turn is what a dispatch actually writes (`--spec-file`), and
+ * nothing a session says afterwards can add to it. A session with no user turn
+ * at all owns nothing, which is the honest answer for a pane that never took a
+ * turn (F-028 — an unknown is not a match).
+ */
+function ownsRequest(path, request) {
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return false;
+  }
+  for (const line of text.split('\n')) {
+    if (line === '' || !line.includes('"user"')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry?.type !== 'message' || entry.message?.role !== 'user') continue;
+    const content = entry.message.content;
+    const parts = Array.isArray(content) ? content : [{ type: 'text', text: String(content ?? '') }];
+    return parts
+      .filter(part => part.type === 'text')
+      .map(part => String(part.text ?? ''))
+      .join('\n')
+      .includes(request);
+  }
+  return false;
+}
+
 function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
   const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
   if (files.length === 0) return null;
   if (request !== '') {
-    const matching = files.filter(path => {
-      try {
-        return readFileSync(path, 'utf8').includes(request);
-      } catch {
-        return false;
-      }
-    });
+    // Still exactly one, and still never newest-wins: zero owners and two
+    // owners are both an inability to establish. What changed is only WHICH
+    // files count as candidates.
+    const matching = files.filter(path => ownsRequest(path, request));
     return matching.length === 1 ? matching[0] : null;
   }
   return files.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);
