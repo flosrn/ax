@@ -29,9 +29,9 @@
 // cannot-establish naming all of them rather than a pick by position.
 
 import { existsSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, join } from 'node:path';
 
-import { listWorktrees } from '../git.mjs';
+import { readWorktrees } from '../git.mjs';
 import { physical, withinPath } from '../worktree/locate.mjs';
 import { CONTEXT_PATH } from '../worktree/context.mjs';
 
@@ -105,8 +105,13 @@ export function placeLocal({ request, issue, slug, named, paths, dispatchConfig,
   // habitable below, because the dispatch that made it may be exactly the one that
   // died before provisioning it.
   const placement = placementRoots({ root: paths.root, main: paths.main, run });
-  const candidates = existingFor(trees ?? listWorktrees(paths.main ?? paths.root ?? cwd), {
+  // Injected as a LIST by the tests, read from git otherwise — and the read
+  // carries whether it answered at all: an unreadable registry is unknown, and
+  // unknown must not authorise the create below (F-028).
+  const registry = trees === undefined ? readWorktrees(paths.main ?? paths.root ?? cwd) : { known: true, trees };
+  const candidates = existingFor(registry.trees, {
     roots: placement.roots,
+    placed: placement.placed,
     never: placement.never,
     subject,
     exact: named,
@@ -145,7 +150,16 @@ export function placeLocal({ request, issue, slug, named, paths, dispatchConfig,
   } else {
     // F-028, and the mutation it guards is the one this file exists to bound: an
     // unreadable list is UNKNOWN, not "this subject has no tree". Answering it
-    // as empty is exactly what places a second worktree beside the first.
+    // as empty is exactly what places a second worktree beside the first, and
+    // BOTH reads can fail to answer — git's registry names the candidates, the
+    // runtime says which of them ax may lend, and neither one alone decides.
+    if (!registry.known) {
+      return {
+        notes,
+        cannot: `git worktree list cannot say which worktrees this repository has, so whether ${subject} already has one is unknown — and placing a second one is what mints ${request}-2`,
+        repair: `git -C ${paths.main ?? paths.root} worktree list --porcelain   # then re-run this dispatch`,
+      };
+    }
     if (!placement.known) {
       return {
         notes,
@@ -218,17 +232,28 @@ const retryRoutes = worktree =>
   `cd ${worktree} && ax worktree setup   # then re-run this dispatch; it reuses that tree — or ax worker dispatch --worktree ${worktree} … to point this retry at it`;
 
 /**
- * Where ax is allowed to place, and therefore the only places it may lend from,
- * plus the trees that are never lent whatever their name.
+ * Where ax may lend a worktree from, and the trees it may never lend whatever
+ * their name.
  *
- * Two roots, and they are not symmetrical: `<root>/.worktrees` is this
- * package's own layout, and the workspaces root is the RUNTIME's — so the
- * runtime is asked for it, through the `run` this file already injects, rather
- * than a `~/orca/workspaces` hardcoded here that would be wrong on the next
- * host and silently wrong on this one after a settings change. The answer also
- * carries which tree is the primary checkout, and that one is never lendable:
- * a `--name` equal to the checkout directory's own basename would otherwise
- * dispatch a child into `main`.
+ * TWO PLACEMENT ROOTS, ASKED TWO DIFFERENT WAYS, because they are two different
+ * kinds of claim. `<root>/.worktrees` is this package's OWN layout, so it is a
+ * containing directory: anything git registered inside it was placed by ax's
+ * own worktree verbs. The runtime's root is not ours to name — a
+ * `~/orca/workspaces` hardcoded here is wrong on the next host and silently
+ * wrong on this one after a settings change — so the runtime is asked, through
+ * the `run` this file already injects, and its answer is taken as the tree
+ * paths it gives: `placed`, matched EXACTLY.
+ *
+ * Exactly, and not by parent directory, which was the first version of this and
+ * was too generous by a whole directory. A runtime may manage a tree outside its
+ * workspaces root — a folder it adopted, an import — and promoting that tree's
+ * parent to a placement root makes every registered worktree beside it lendable:
+ * one adopted `/tmp/gap-35-work` would have made `/tmp` a place ax lends from.
+ * The row IS the evidence; the directory it sits in proves nothing.
+ *
+ * The answer also carries which tree is the primary checkout, and that one is
+ * never lendable: a `--name` equal to the checkout directory's own basename
+ * would otherwise dispatch a child into `main`.
  *
  * `known: false` is the honest answer to an unreadable receipt, and the caller
  * must treat it as unknown rather than as "no trees" (F-028).
@@ -239,21 +264,22 @@ export function placementRoots({ root, main, run }) {
   // operator to `cd` into the stranded tree and re-run the dispatch, so the tree
   // the caller is standing in has to stay lendable to itself.
   const never = main ? [physical(main)] : [];
+  const placed = new Set();
 
   const out = run(['worktree', 'list', '--repo', `path:${main || root}`, '--json']);
   const receipt = out.receipt ?? {};
   const rows = receipt.result?.worktrees;
   if (out.status !== 0 || receipt.ok !== true || !Array.isArray(rows)) {
     const detail = String(receipt.unparseable ?? receipt.error?.code ?? out.stderr ?? '').replace(/\s+/g, ' ').trim();
-    return { roots, never, known: false, detail: detail === '' ? 'no receipt' : detail };
+    return { roots, placed, never, known: false, detail: detail === '' ? 'no receipt' : detail };
   }
   for (const row of rows) {
     const path = String(row?.path ?? '');
     if (path === '') continue;
     if (row?.isMainWorktree === true) never.push(physical(path));
-    else roots.push(dirname(physical(path)));
+    else placed.add(physical(path));
   }
-  return { roots: [...new Set(roots)], never: [...new Set(never)], known: true, detail: '' };
+  return { roots: [...new Set(roots)], placed, never: [...new Set(never)], known: true, detail: '' };
 }
 
 /**
@@ -272,12 +298,13 @@ export function placementRoots({ root, main, run }) {
  * different piece of work, already provisioned, already someone's.
  *
  * The rule is unchanged; its INPUT is what #84 widened, from the entries of one
- * directory to the absolute paths git has registered, narrowed to the placement
- * roots. Registration is the floor: an unregistered directory sitting in a
- * placement root is not a worktree, and lending it would send a child into a
- * tree the runtime resolves no selector for.
+ * directory to the absolute paths git has registered, narrowed to what
+ * placement may lend: a tree inside `<root>/.worktrees`, or one the runtime
+ * names as its own. Registration is the floor: an unregistered directory
+ * sitting in a placement root is not a worktree, and lending it would send a
+ * child into a tree the runtime resolves no selector for.
  */
-function existingFor(trees, { roots, never, subject, exact = false }) {
+function existingFor(trees, { roots, placed, never, subject, exact = false }) {
   const wanted = String(subject).toLowerCase();
   const blocked = new Set(never);
   const lendable = new Set();
@@ -286,7 +313,7 @@ function existingFor(trees, { roots, never, subject, exact = false }) {
     if (declared === '' || tree?.bare === true) continue;
     const path = physical(declared);
     if (blocked.has(path)) continue;
-    if (!roots.some(base => withinPath(path, base))) continue;
+    if (!placed.has(path) && !roots.some(base => withinPath(path, base))) continue;
     const name = basename(path).toLowerCase();
     const matches = exact ? name === wanted : name === wanted || name.startsWith(`${wanted}-`) || name.startsWith(`${wanted}_`);
     if (matches) lendable.add(path);

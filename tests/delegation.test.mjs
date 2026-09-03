@@ -155,6 +155,18 @@ test('a checkout that PUBLISHES ax at another version than the running copy is n
   assert.match(skew.finding, /0\.18\.0/);
   assert.match(skew.finding, /0\.17\.0/);
   assert.match(skew.repair, /own ax/, 'the repair is to run the checkout\u2019s own copy, never to edit the config');
+  assert.match(skew.repair, new RegExp(`'${join(checkout, 'bin', 'ax.mjs')}'`), 'and the path is quoted, like every other printed command here');
+});
+
+test('a checkout path carrying a space still renders a repair that runs', () => {
+  // The same rule `installCommand` holds: a path pasted into a printed command
+  // is quoted, or the line splits into two arguments and runs something else.
+  const spaced = join(temp(), 'my repo');
+  mkdirSync(spaced, { recursive: true });
+  axPackage({ version: '9.9.9', at: spaced });
+  const skew = checkoutSkew({ root: spaced, self: REPO });
+
+  assert.match(skew.repair, new RegExp(`node '${spaced}/bin/ax\\.mjs'`));
 });
 
 test('the skew line is silent whenever there is no skew to name', () => {

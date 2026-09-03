@@ -306,6 +306,10 @@ export function versionLine(version, origin = installOrigin()) {
  * announced unconditionally — `ax --version` already discloses which copy
  * answered, and a banner on every successful invocation would be a second
  * channel for a fact that has one.
+ *
+ * The path is QUOTED the way `installCommand` quotes one, and for the same
+ * reason: a checkout under `/tmp/my repo` renders a repair that splits into two
+ * arguments, so the line an operator pastes runs something else or nothing.
  */
 export function checkoutSkew({ root, self = SELF_DIR } = {}) {
   if (!root) return null;
@@ -315,8 +319,11 @@ export function checkoutSkew({ root, self = SELF_DIR } = {}) {
   const published = typeof manifest.version === 'string' ? manifest.version : '';
   const running = selfVersion(self);
   if (published === '' || published === running) return null;
+  const entry = join(root, 'bin', 'ax.mjs');
   return {
     finding: `${root} publishes ${PACKAGE_NAME} ${published} and the copy answering this command is ${running}, so this refusal may be the older copy reading the newer checkout's file`,
-    repair: `node ${join(root, 'bin', 'ax.mjs')} <the same arguments>   # run this dispatch with the checkout's own ax`,
+    repair: entry.includes("'")
+      ? `node ${entry} <the same arguments>   # the checkout's own ax — quote this path yourself`
+      : `node ${quote(entry)} <the same arguments>   # run this dispatch with the checkout's own ax`,
   };
 }

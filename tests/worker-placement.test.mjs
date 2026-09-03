@@ -215,6 +215,51 @@ test('a registered worktree under no placement root is never lent, however exact
   assert.equal(machine.state.creates, 1);
 });
 
+test('a tree the runtime manages does not make its NEIGHBOURS lendable', () => {
+  // The first version of this took each reported tree's parent directory as a
+  // placement root, so one runtime-managed tree outside the workspaces root —
+  // an adopted folder, an import — promoted the whole directory it sat in. Here
+  // the runtime manages `/…/loose/other-thing` and a hand-made
+  // `/…/loose/gap-35-work` sits beside it: the name matches exactly, and it is
+  // still nobody's dispatch.
+  const root = fixture([]);
+  const loose = join(root, 'loose');
+  const adopted = provisioned(join(loose, 'other-thing'));
+  const neighbour = provisioned(join(loose, 'gap-35-work'));
+  const machine = host(join(root, 'workspaces'));
+  const placed = placeLocal(
+    options(root, {
+      run: args => (args.join(' ').startsWith('worktree list')
+        ? { status: 0, stderr: '', receipt: { ok: true, result: { worktrees: [{ path: adopted, isMainWorktree: false }] } } }
+        : machine.run(args)),
+      trees: registered(adopted, neighbour),
+      setupFn: setupWrites(),
+    }),
+  );
+
+  assert.equal(placed.worktree, join(root, 'workspaces', 'gap-35-work'), 'the row is the evidence, not the directory it sits in');
+  assert.equal(machine.state.creates, 1);
+});
+
+test('an unreadable GIT registry refuses too: both reads have to answer before a create', () => {
+  // The runtime answering is only half of it. `listWorktrees` reports `[]` for a
+  // failed read, so a successful Orca list beside a failed git read used to walk
+  // straight into the create this ticket exists to prevent.
+  const root = fixture([]);
+  const machine = host(join(root, 'workspaces'));
+  const placed = placeLocal(
+    options(root, {
+      // No `trees` at all, and a root that is no repository: the read cannot answer.
+      trees: undefined,
+      paths: { root: join(root, 'nowhere'), main: join(root, 'nowhere') },
+      run: machine.run,
+    }),
+  );
+
+  assert.match(placed.cannot, /git worktree list cannot say/);
+  assert.equal(machine.state.creates, 0, 'nothing is placed while the registry is unknown');
+});
+
 test('the primary checkout is never lent, even when --name is the checkout directory\u2019s own basename', () => {
   const root = fixture([]);
   const workspaces = join(root, 'workspaces');
