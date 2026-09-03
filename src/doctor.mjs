@@ -185,7 +185,21 @@ export function doctor(cwd = process.cwd()) {
       if (wanted) fail(`${file} is missing`, 'ax init');
       continue;
     }
-    const block = readBlock(readFileSync(path, 'utf8'), { id: 'ax', style: styleFor(file) });
+    // MALFORMED IS ITS OWN ANSWER, neither a body nor an absence. An orphaned
+    // opening marker — half a conflict resolution — used to read as null, so a
+    // wanted file was told `ax init`, the one call that THROWS on it, and an
+    // exempt file passed in silence while carrying a marker the plan refuses.
+    // The repair names the marker, because removing it is what both states
+    // need and no verb here can do it: `ax init` cannot rewrite a block whose
+    // end it cannot find, and it writes nothing at all in an exempt file.
+    let block;
+    try {
+      block = readBlock(readFileSync(path, 'utf8'), { id: 'ax', style: styleFor(file) });
+    } catch (error) {
+      const repair = `remove the orphaned BEGIN:ax marker from ${file}`;
+      fail(`${file} — ${error.message}`, wanted ? `${repair}, then ax init` : repair);
+      continue;
+    }
     if (!wanted) {
       if (block !== null) {
         fail(`${file} carries a BEGIN:ax block and the plan for this checkout wants none — ${BLOCK_BODIES[file].reason}`, `remove the BEGIN:ax block from ${file}`);

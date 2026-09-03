@@ -256,23 +256,28 @@ export const retiredConfigKeyFixes = errors =>
 export function init(root, { dryRun = false, vendor } = {}) {
   section(`ax init${dryRun ? ' (dry run — nothing written)' : ''} — ${root}`);
   let failed = false;
-  try {
-    for (const relativePath of [
-      CONFIG_FILE,
-      'bin/ax',
-      OMP_SETTINGS,
-      LEGACY_OMP_LOADER,
-      '.gitignore',
-      'AGENTS.md',
-      'package.json',
-    ]) {
-      assertManagedPath(root, join(root, ...relativePath.split('/')));
+  // THE PREFLIGHT GUARDS WHAT THIS VERB WILL WRITE, and the plan decides that,
+  // so it cannot be one unconditional list. It was, and the list outranked the
+  // plan: a symlinked `AGENTS.md` on a self-hosted checkout exited 1 demanding
+  // the operator replace a path ax had already decided to leave alone (Codex,
+  // PR #117). It still runs BEFORE the first write, so a refusal never leaves a
+  // half-provisioned repository — that ordering is the whole point of a
+  // preflight, since `writeFile` asserts again per path.
+  const refused = paths => {
+    try {
+      for (const relativePath of paths) assertManagedPath(root, join(root, ...relativePath.split('/')));
+      return false;
+    } catch (error) {
+      bad(`managed path refused — ${error.message}`);
+      fix('replace the symlink with a regular path inside the checkout, then re-run ax init');
+      return true;
     }
-  } catch (error) {
-    bad(`managed path refused — ${error.message}`);
-    fix('replace the symlink with a regular path inside the checkout, then re-run ax init');
-    return 1;
-  }
+  };
+
+  // The two files the plan is DERIVED FROM, refused before they are read: the
+  // plan cannot decide which paths to guard out of bytes that came from outside
+  // the checkout.
+  if (refused([CONFIG_FILE, 'package.json'])) return 1;
 
   const existing = loadConfig(root);
   if (existing.exists && existing.errors.length > 0) {
@@ -291,6 +296,23 @@ export function init(root, { dryRun = false, vendor } = {}) {
   // so it never skips work because a contract is unadopted — the adoption field
   // tells it what it still has to DECLARE.
   const plan = planProject({ manifest: readManifest(root), declared: existing.declared });
+
+  // The rest of the write set, now that the plan says what it is. `bin/ax` only
+  // where the bootstrap belongs, the managed blocks only where the plan wants
+  // one, and `LEGACY_OMP_LOADER` always because this verb REMOVES it wherever
+  // it survives.
+  if (
+    refused([
+      OMP_SETTINGS,
+      LEGACY_OMP_LOADER,
+      ...(plan.bootstrap ? ['bin/ax'] : []),
+      ...Object.entries(plan.blocks)
+        .filter(([, wanted]) => wanted)
+        .map(([file]) => file),
+    ])
+  ) {
+    return 1;
+  }
 
   if (!existing.exists) {
     const inferred = inferConfig(root, { vendor, plan });
