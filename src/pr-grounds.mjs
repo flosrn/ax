@@ -135,6 +135,25 @@ function account() {
  * `github-actions[bot]` is the canonical login. It is not the only spelling a
  * read answers with, which is why the comparison below normalises rather than
  * matching literally — see `sameLogin`.
+ *
+ * A NAMED EXCEPTION TO "THE REPOSITORY IS INPUT", made by ruling (#94,
+ * 2026-09-02: "declared wins; absent means the default shape"). AGENTS.md
+ * requires labels and merge grounds to come from `ax.config.json`, and the rule
+ * was paid for by `docs/residual-review-findings` — ONE project's directory
+ * layout hardcoded into a tool that runs in other people's repositories. These
+ * two strings are not that: they are release-please's own published contract,
+ * identical in every repository that runs it, and a project whose automation
+ * differs names its own with `prGate.release`, which then REPLACES this pair.
+ *
+ * The direction each choice fails in is what decided it. A required
+ * declaration leaves every consumer's release path refusing until someone
+ * discovers the key — the defect this shape exists to remove, one indirection
+ * over. The default's cost is a bot-authored PR wearing release-please's label
+ * in a repository that does not run release-please: it skips a body-staleness
+ * detector, a keyword ground and a ticket comparison — never CI, threads,
+ * staleness, residuals or the declaration guard — and producing it needs both
+ * a workflow holding this repository's own token and that label deliberately
+ * created.
  */
 export const DEFAULT_RELEASE = { label: 'autorelease: pending', author: 'github-actions[bot]' };
 
