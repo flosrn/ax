@@ -19,10 +19,11 @@ import { ls } from './ls.mjs';
 import { tail } from './tail.mjs';
 import { transcript } from './transcript.mjs';
 import { release } from './release.mjs';
+import { settle } from './settle.mjs';
 import { dispatch } from './dispatch.mjs';
 import { sweep } from './sweep.mjs';
 
-export const SUBCOMMANDS = { start, repair, dispatch, ls, tail, gate, transcript, release, sweep };
+export const SUBCOMMANDS = { start, repair, dispatch, ls, tail, gate, transcript, release, settle, sweep };
 
 /**
  * `ax worker <verb> [args]`.

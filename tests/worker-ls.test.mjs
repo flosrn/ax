@@ -280,11 +280,12 @@ test('an unsettled pane that is GONE is still named, with the two routes that do
   assert.match(line, /term_8c22e160, MORT/, 'the recorded handle is named whatever became of it');
   assert.match(out, /ax worker tail 55-work/);
   assert.match(out, /ax worker transcript 55-work/, 'a session outlives its pane, and one verb reads it');
+  assert.match(out, /ax worker settle 55-work/, 'and the settlement debt names the verb that writes it (#102)');
   assert.match(out, /0 live pane\(s\)/, 'naming a dead pane is not counting it');
 
   const def = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
   assert.doesNotMatch(def.out, /55-work/, 'and the default view carries the count instead of the row');
-  assert.match(def.out, /1 unsettled record\(s\) whose pane is MORT — ax worker ls --all/);
+  assert.match(def.out, /1 unsettled record\(s\) whose pane is MORT — ax worker settle <request>/);
   assert.match(def.out, /0 live pane\(s\)/, 'the cap count is the same count in both views');
 });
 
@@ -422,8 +423,13 @@ test('#70: a dead attempt leaves the default as a count; an unasked host keeps i
   assert.match(shown.out, /unasked-1 .*pane INCONNU/, 'a host this call could not ask cannot answer for its panes');
   assert.match(shown.out, /host 'gapicore' could not be asked.*not a host this project declared/, 'and the omission names that host, with what it answered');
   assert.doesNotMatch(shown.out, /dead-attempt-1/, 'a dead attempt carries neither answer');
-  assert.doesNotMatch(shown.out, /ax worker tail|ax worker transcript/, 'and its settlement routes go with it');
-  assert.match(shown.out, /1 unsettled record\(s\) whose pane is MORT — ax worker ls --all/, 'collapsed to one line, with the view that has it');
+  assert.doesNotMatch(shown.out, /ax worker (?:tail|transcript|settle) dead-attempt-1/, 'and its repairs go with it');
+  // #102: the count that discloses the debt names the verb that pays it. A
+  // count with no repair is the finding src/log.mjs exists to forbid, and until
+  // `ax worker settle` existed this line was exactly that — it offered the flag
+  // that lengthens the list and no gesture that settles anything.
+  assert.match(shown.out, /1 unsettled record\(s\) whose pane is MORT — ax worker settle <request>/, 'the count names the verb that owns the answer');
+  assert.match(shown.out, /ax worker ls --all/, 'and still names the view that lists them');
   assert.match(shown.out, /1 live pane\(s\) — this is the cap count/);
 
   const all = capture(() => ls(['--all'], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir }, cwd: undeclared }));
@@ -433,6 +439,10 @@ test('#70: a dead attempt leaves the default as a count; an unasked host keeps i
   assert.match(line, /term_gone, MORT/, 'the recorded pane is named, as it always was');
   assert.match(all.out, /ax worker tail dead-attempt-1/, 'the two routes that need no pane live here now');
   assert.match(all.out, /ax worker transcript dead-attempt-1/);
+  // #102 again, per row: the verb is named unconditionally, because `ls`
+  // resolves no repository slug and grades no row by settleability — settle's
+  // own refusal is the applicable repair for a row that cannot be settled here.
+  assert.match(all.out, /ax worker settle dead-attempt-1/, 'the row that carries the debt names the verb that writes it');
   assert.match(all.out, /1 live pane\(s\) — this is the cap count/, 'the cap count is the same count in both views');
   assert.doesNotMatch(all.out, /unsettled record\(s\) whose pane is MORT — ax/, 'nothing is withheld here, so nothing is disclosed');
 });

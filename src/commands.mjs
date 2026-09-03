@@ -126,6 +126,7 @@ export const COMMANDS = [
       ['gate <task|request>', 'can this be re-dispatched without a duplicate agent? 0/1/2/3'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
+      ['settle <task|request>', 'write a proven-dead attempt as settled — never a live one'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
     ],
     // `launch` was this verb until 0.16: one gesture creates implementation
