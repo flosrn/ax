@@ -144,6 +144,7 @@ function passRecord(store, request, { handle = 'term_child', dispatchId = 'd-1' 
           phases: [
             {
               name: 'worker-start',
+              argv: ['orca', 'orchestration', 'worker-start'],
               beganAt: '2026-08-20T10:00:00.000Z',
               exit: 0,
               receipt: { ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: handle }] } },
@@ -1023,6 +1024,7 @@ function record(store, request, { usable = true, repaired = false, ask = null } 
           phases: [
             {
               name: 'worker-start',
+              argv: ['orca', 'orchestration', 'worker-start'],
               beganAt: '2026-08-20T10:00:00.000Z',
               exit: usable ? 0 : 1,
               receipt: usable

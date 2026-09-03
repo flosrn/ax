@@ -709,6 +709,9 @@ export function dispatchFields(path) {
  *     happens to carry a `dispatchId` is display metadata.
  *   - one dispatch produced by two DIFFERENT requests is ambiguous, and
  *     ambiguity is cannot-establish, never last-file-wins (F-001).
+ *   - a `worker-start` must carry the argv it issued, because `env` is the host
+ *     that argv NAMED (`''` for local). A phase naming no argv is unreadable —
+ *     named, indexed nowhere — never a local pane (#130).
  *
  * `issuedAt` is when the mutation was ISSUED — the newest `worker-start` phase's
  * own `beganAt`, falling back to the record's `createdAt` for records written
@@ -761,6 +764,30 @@ export function dispatchIndex(store) {
     const recorded = typeof rec.repo === 'string' ? rec.repo.trim() : '';
     const created = Date.parse(rec.createdAt ?? '');
     const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
+    const starts = attempts.flatMap(attempt => (Array.isArray(attempt.phases) ? attempt.phases : []).filter(ph => {
+      if (ph?.name !== 'worker-start') return false;
+      const result = ph.receipt?.result;
+      return result !== null && typeof result === 'object' && typeof result.dispatchId === 'string' && result.dispatchId !== '';
+    }));
+
+    // `env` is the host the phase NAMED, `''` for local — and a phase that
+    // recorded no argv named nothing. Read as `''` it was a local pane that
+    // the local list does not know, i.e. MORT, and it left every count: the
+    // under-count F-028 forbids (#130). Every phase is written ahead with the
+    // argv it issues (0 of 252 lacked one on this host, 2026-09-03), so the
+    // shape only arrives hand-edited or foreign-written, and it joins the
+    // record that does not name itself: unreadable, named, indexed nowhere —
+    // so every reader treats the handle as a missing record.
+    //
+    // THE WHOLE RECORD, not the phase (review of #131): a record whose older
+    // worker-start reads and whose newer one does not would keep only the
+    // stale row, and a reader finding that pane MORT would publish over the
+    // replacement child the unindexed phase opened. Partial provenance is none.
+    const unnamed = starts.find(ph => !Array.isArray(ph.argv));
+    if (unnamed !== undefined) {
+      unreadable.push({ file, error: `worker-start ${unnamed.receipt.result.dispatchId} recorded no argv, so its placement cannot be read` });
+      continue;
+    }
 
     for (const attempt of attempts) {
       for (const ph of Array.isArray(attempt.phases) ? attempt.phases : []) {
@@ -791,7 +818,7 @@ export function dispatchIndex(store) {
           file,
           repo: recorded,
           handle: agentTerminal(result),
-          env: Array.isArray(ph.argv) ? argvValue(ph.argv, '--on') ?? '' : '',
+          env: argvValue(ph.argv, '--on') ?? '',
           ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',
         });
       }

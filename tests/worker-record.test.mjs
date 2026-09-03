@@ -437,6 +437,59 @@ test('the index surfaces the repository a record names, and absence is not a rep
   assert.equal(index.byDispatch.get('ctx_legacy').repo, '', 'no key is the empty name, never a guessed one');
 });
 
+// #130: `env` is the host the phase NAMED — `''` for local — and a phase that
+// recorded no argv at all named nothing. Reading that absence as `''` made a
+// placement nobody recorded indistinguishable from an ordinary local pane:
+// absent from the local list it would read MORT and leave every count, the
+// under-count F-028 forbids. Measured 2026-09-03: 0 of 252 worker-start phases
+// on this host lack argv (232 local, 20 `--on`), because every phase is written
+// ahead with the argv it is about to issue — so this shape only ever arrives
+// hand-edited or foreign-written, and it joins the record that does not name
+// itself: unreadable, named, and indexed nowhere.
+test('a worker-start that recorded no argv is an unreadable phase, not a local one', () => {
+  const dir = store();
+  const started = (request, dispatchId, argv) => {
+    const path = join(dir, `${request}.json`);
+    claimRecord(dir, request);
+    initRecord(path, { request, orca: 'orca', repo: 'flosrn/ax' });
+    phaseBegin(path, { name: 'worker-start', identity: `${request}-1`, argv: ['orca', 'orchestration', 'worker-start'] });
+    phaseEnd(path, 'last', {
+      exit: 0,
+      receiptText: JSON.stringify({ ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: `term_${dispatchId}` }] } }),
+    });
+    if (argv !== undefined) {
+      const rec = JSON.parse(readFileSync(path, 'utf8'));
+      rec.attempts[0].phases[0].argv = argv;
+      writeFileSync(path, JSON.stringify(rec));
+    }
+    return path;
+  };
+
+  started('130-local', 'ctx_local');
+  started('130-remote', 'ctx_remote', ['orca', 'orchestration', 'worker-start', '--on', 'vps']);
+  started('130-unnamed', 'ctx_unnamed', null);
+  // Review of #131 (Codex, P1): a record with an older readable worker-start
+  // and a newer one naming no argv must not keep the older row — a reader would
+  // then see only the stale pane, find it MORT, and publish over the
+  // replacement child the unindexed phase opened. Partial provenance is none.
+  const replaced = started('130-replaced', 'ctx_older');
+  phaseBegin(replaced, { name: 'worker-start', identity: '130-replaced-2', argv: ['orca', 'orchestration', 'worker-start', '--replace'] });
+  phaseEnd(replaced, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_newer', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_newer' }] } }) });
+  const rec = JSON.parse(readFileSync(replaced, 'utf8'));
+  delete rec.attempts[0].phases[1].argv;
+  writeFileSync(replaced, JSON.stringify(rec));
+
+  const index = dispatchIndex(dir);
+  assert.equal(index.byDispatch.get('ctx_local').env, '', 'argv without --on is local');
+  assert.equal(index.byDispatch.get('ctx_remote').env, 'vps', 'the host the phase named');
+  assert.equal(index.byDispatch.get('ctx_unnamed'), undefined, 'a phase naming no argv indexes nowhere');
+  assert.equal(index.byDispatch.get('ctx_newer'), undefined);
+  assert.equal(index.byDispatch.get('ctx_older'), undefined, 'the whole record is quarantined — a stale row is worse than none');
+  assert.deepEqual(index.unreadable.map(entry => entry.file).sort(), ['130-replaced.json', '130-unnamed.json'], 'named, so a caller concluding "no provenance" can say it looked');
+  assert.match(index.unreadable[0].error, /no argv/);
+  assert.equal(index.ambiguous.size, 0);
+});
+
 // ── which Run dispatched the session sitting in THIS pane ─────────────────────
 //
 // Measured 2026-08-30, ofmchat PRD 2, twice in one night (#117 dispatch
