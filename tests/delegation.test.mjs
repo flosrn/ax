@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { installCommand, installOrigin, resolveDelegation, runDelegated, versionLine } from '../src/delegation.mjs';
+import { checkoutSkew, installCommand, installOrigin, resolveDelegation, runDelegated, versionLine } from '../src/delegation.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SELF_VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
@@ -142,6 +142,27 @@ test('declared and not installed: refused by name, with the install that repairs
 
 test('a path carrying a single quote is printed raw rather than as a command that would split', () => {
   assert.equal(installCommand("/tmp/flo's repo"), "pnpm install --dir /tmp/flo's repo   # quote this path yourself");
+});
+
+test('a checkout that PUBLISHES ax at another version than the running copy is named as the skew it is', () => {
+  // #84: a global 0.17.0 validated a checkout whose src/ was already 0.18.0-dev,
+  // and the only thing printed was `1 problem(s) in ax.config.json` — whose one
+  // readable repair is "edit ax.config.json", which was the wrong repair.
+  const checkout = axPackage({ version: '0.18.0' });
+  const skew = checkoutSkew({ root: checkout, self: axPackage({ version: '0.17.0' }) });
+
+  assert.notEqual(skew, null);
+  assert.match(skew.finding, /0\.18\.0/);
+  assert.match(skew.finding, /0\.17\.0/);
+  assert.match(skew.repair, /own ax/, 'the repair is to run the checkout\u2019s own copy, never to edit the config');
+});
+
+test('the skew line is silent whenever there is no skew to name', () => {
+  const same = axPackage({ version: '1.2.3' });
+  assert.equal(checkoutSkew({ root: same, self: same }), null, 'equal versions print nothing new');
+  assert.equal(checkoutSkew({ root: project(), self: REPO }), null, "a consumer project's refusal is unchanged");
+  assert.equal(checkoutSkew({ root: temp(), self: REPO }), null, 'no manifest is no claim');
+  assert.equal(checkoutSkew({ root: null, self: REPO }), null);
 });
 
 test('init bootstraps an unconfigured repo but never overrides a declared release', () => {

@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { PACKAGE_NAME, repoPaths } from './config.mjs';
 import { currentBranch } from './git.mjs';
+import { planProject } from './plan.mjs';
 import { bad, fix, note } from './log.mjs';
 
 /** The package directory of the copy currently executing. */
@@ -282,4 +283,40 @@ export function versionLine(version, origin = installOrigin()) {
     return `${version} — checkout ${origin.branch === null ? '' : `${origin.branch} `}at ${origin.path}`;
   }
   return `${version} — ${origin.kind} install at ${origin.path}`;
+}
+
+/**
+ * The checkout being operated on publishes ax at a version other than the one
+ * running — or `null`, which is the answer almost every time.
+ *
+ * This is the second half of #84, and the reason it is a helper here rather
+ * than a line at a refusal site: which copy answers an invocation is this
+ * module's question. A global 0.17.0 was typed inside a checkout whose `src/`
+ * was already 0.18.0-dev; nothing declares `@flosrn/ax` in that checkout, so
+ * `resolveDelegation` answers `mode: 'self'` — correctly, there is no exact pin
+ * to insist on — and the two copies drift with nothing comparing them. What the
+ * operator saw was `1 problem(s) in ax.config.json` from the config load, a
+ * sentence whose only readable repair is "edit ax.config.json". The config was
+ * right; the validator was old.
+ *
+ * SELF-HOSTED IS THE PREDICATE, by manifest NAME through the project plan: a
+ * consumer's install is delegation's business and already refused by version
+ * above, while a checkout that IS the package carries its own runnable copy and
+ * that copy is the repair. It adds no fourth delegation outcome and is never
+ * announced unconditionally — `ax --version` already discloses which copy
+ * answered, and a banner on every successful invocation would be a second
+ * channel for a fact that has one.
+ */
+export function checkoutSkew({ root, self = SELF_DIR } = {}) {
+  if (!root) return null;
+  const manifest = readManifest(join(root, 'package.json'));
+  if (manifest === null || !planProject({ manifest }).selfHosted) return null;
+
+  const published = typeof manifest.version === 'string' ? manifest.version : '';
+  const running = selfVersion(self);
+  if (published === '' || published === running) return null;
+  return {
+    finding: `${root} publishes ${PACKAGE_NAME} ${published} and the copy answering this command is ${running}, so this refusal may be the older copy reading the newer checkout's file`,
+    repair: `node ${join(root, 'bin', 'ax.mjs')} <the same arguments>   # run this dispatch with the checkout's own ax`,
+  };
 }

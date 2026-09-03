@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import { removeBlock, writeBlock } from '../dotenv.mjs';
 import { currentBranch, excludePaths, installHooks, isMainCheckout } from '../git.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { checkoutSkew } from '../delegation.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { CONTEXT_PATH, renderContext } from './context.mjs';
 import { identify } from './identity.mjs';
@@ -64,6 +65,14 @@ export function setup(argv = [], { cwd } = {}) {
   if (!exists || errors.length > 0) {
     bad(exists ? `${errors.length} problem(s) in ax.config.json` : 'no ax.config.json — run `ax init` in the primary checkout first');
     for (const error of errors) note(error);
+    // #84: the sentence above sends an operator to edit a file that may be
+    // right. When this checkout publishes another ax than the one running, the
+    // repair is the other copy, and only this site knows the refusal happened.
+    const skew = exists ? checkoutSkew({ root }) : null;
+    if (skew !== null) {
+      note(skew.finding);
+      fix(skew.repair);
+    }
     return 1;
   }
 
