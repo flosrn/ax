@@ -114,7 +114,9 @@ the global copy remains available to run `ax init`.
 - `ax.config.json`;
 - the committed `bin/ax` bootstrap;
 - the ax package-root entry in `.omp/settings.json`, preserving the project's other settings;
-- `BEGIN:ax` blocks in `.gitignore` and `AGENTS.md`;
+- `BEGIN:ax` blocks in `.gitignore` and `AGENTS.md`, whichever of them this repository's plan
+  wants — the checkout that publishes ax keeps the `.gitignore` block and authors its own
+  `AGENTS.md`;
 - `scripts.ax` and the exact `@flosrn/ax` devDependency in `package.json`.
 
 After a merge takes the vendor's side of one of those surfaces, run it again.
