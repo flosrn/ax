@@ -9,7 +9,7 @@
 // Offline by construction: the Orca runner is always injected, and every file
 // read is a fixture in a tmpdir.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -433,6 +433,30 @@ test('the request resolves through the record to the dispatch Orca minted — a 
   initRecord(bare, { request: 'triage-acme-12', orca: 'orca', host: 'mac', now: () => '2026-09-03T08:00:00.000Z' });
   childSession(dir, 'twelve', { dispatchId: 'ctx_121212121212', request: 'triage-acme-12' });
   assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-12', sessionsRoot: root, store }), null, 'no dispatch on the record, no owner');
+});
+
+// Review of PR #128 (Codex, P2): the record is trusted for its dispatch id, so
+// the record must be trustworthy in the way `dispatchIndex` already demands
+// before a pane may be CLOSED — it names itself, and no other record claims
+// the same dispatch. A copy under another name, or two records naming one
+// dispatch, would otherwise prove the WRONG pass as verified (F-001).
+test('a record that does not name itself, or a dispatch two records claim, proves nothing', () => {
+  const root = scratch();
+  const store = join(root, 'store');
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+  passRecord(store, 'triage-acme-7', 'ctx_070707070707');
+  childSession(dir, 'seven', { dispatchId: 'ctx_070707070707', request: 'triage-acme-7', skills: ['triage', 'seven'] });
+
+  // `triage-acme-13.json` is a copy of #7's record: its inner `request` still says 7.
+  writeFileSync(join(store, 'triage-acme-13.json'), readFileSync(join(store, 'triage-acme-7.json'), 'utf8'));
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-13', sessionsRoot: root, store }), null, 'a record naming another request vouches for nothing');
+  assert.deepEqual(dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store })?.sessionRole.skills, ['triage', 'seven'], 'the record that names itself still resolves');
+
+  // Two records, two requests, one dispatch id: ambiguous for both (F-001).
+  passRecord(store, 'triage-acme-14', 'ctx_070707070707');
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-14', sessionsRoot: root, store }), null);
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store }), null, 'a dispatch claimed by two requests belongs to neither');
 });
 
 // Issue #97: the point-in-time CANNOT-ESTABLISH verdict of `ax triage dispatch`

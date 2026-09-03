@@ -38,7 +38,7 @@ import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, section as sectionLine, warn as warnLine } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { defaultStore } from './record.mjs';
+import { defaultStore, dispatchIndex } from './record.mjs';
 
 // ONE redaction boundary, on the emitters themselves. Redacting field by field
 // is how the leak gets in: it only takes the one field nobody thought carried
@@ -785,13 +785,24 @@ export function newestDispatch(rec) {
  * cannot be read, or no `worker-start` came back with an id. All three are the
  * same absence to a caller: a request that names no dispatch owns no session,
  * and nothing here reaches for the prose instead (F-028).
+ *
+ * Read through `dispatchIndex`'s own checks, because this id is what a proof
+ * will be reported under (review of #128): the record must NAME itself — a
+ * copy of one record under another request's filename vouches for nothing —
+ * and a dispatch two records claim is ambiguous, belonging to neither (F-001).
+ * The ORDER of a record's dispatches is still `newestDispatch`, the reader
+ * `./delivered.mjs` shares, so no second rule can pick a different pass.
  */
 function dispatchOfRequest(store, request) {
+  let rec;
   try {
-    return newestDispatch(JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8'))).id;
+    rec = JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8'));
   } catch {
     return '';
   }
+  const { id } = newestDispatch(rec);
+  if (id === '') return '';
+  return dispatchIndex(store).byDispatch.get(id)?.request === request ? id : '';
 }
 
 function sessionFileForNeedle({ needle, dispatchId = '', env = process.env, sessionsRoot } = {}) {
