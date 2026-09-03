@@ -58,7 +58,7 @@ import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { namedList } from './gate.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
-import { attemptSettle, defaultStore, lastAttemptState, recordRepo, requestIdOk, taskIdScan } from './record.mjs';
+import { acquireLock, attemptSettle, defaultStore, lastAttemptState, recordRepo, requestIdOk, taskIdScan } from './record.mjs';
 
 const USAGE = 'ax worker settle <task|request>';
 
@@ -202,137 +202,179 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
   // than after it.
   section(`settle ${request} (task ${task})`);
 
-  let state;
+  // THE PROOF AND THE WRITE ARE ONE GESTURE, under the SAME lock
+  // `ax worker start --replace` takes (./record.mjs `acquireLock`, default
+  // suffix), for the reason that lock's own header gives: "the gate's answer is
+  // worthless the instant a sibling can act on it".
+  //
+  // Without it (P1, review of PR #112): a `--replace` acquiring between this
+  // verb's liveness read and its write returns the task to `ready`, opens a NEW
+  // attempt and starts an agent — and `attemptSettle` reloads the file from disk,
+  // so the flag would land on THAT live attempt, authorising a re-dispatch over a
+  // working child. Interleaved load-modify-save is also how a phase gets
+  // clobbered, which would cost the write-ahead identity of the running child.
+  //
+  // A lost lock is an inability, never a takeover: `acquireLock` has no
+  // time-based takeover and every pre-existing lock fails closed, so the answer
+  // is the named holder plus a re-run.
+  let lock;
   try {
-    state = lastAttemptState(path);
+    lock = acquireLock(path);
   } catch (error) {
+    return cannot(`the record lock could not be taken: ${String(error.message ?? error)}`, `ls -l ${path}.lock   # then re-run once nothing holds this record`);
+  }
+  if (!lock.held) {
     return cannot(
-      `the record ${path} does not answer for its last attempt: ${String(error.message ?? error)}`,
-      `ax worker ls --all   # a record whose shape cannot be read is never written to`,
+      `${lock.reason} — another caller is mid-gesture on this record, and an ending may not be written over one`,
+      `ax worker settle ${request}   # re-run once that caller has finished`,
     );
   }
+  try {
+    return prove();
+  } finally {
+    lock.release();
+  }
 
-  // Already written, so there is nothing to prove and nothing to do — the
-  // idempotence `attemptSettle` already has, spent before any read of the
-  // machine rather than after it.
-  if (state.settled) {
-    ok(`${request}'s last attempt is already settled — nothing to write`);
+  /**
+   * Everything the lock has to cover: the record's own state, the repository
+   * scope, the liveness proof, and the one write. Declared as a closure so the
+   * whole gesture is inside one `finally` rather than releasing the lock down
+   * every refusal path by hand.
+   */
+  function prove() {
+
+    let state;
+    try {
+      state = lastAttemptState(path);
+    } catch (error) {
+      return cannot(
+        `the record ${path} does not answer for its last attempt: ${String(error.message ?? error)}`,
+        `ax worker ls --all   # a record whose shape cannot be read is never written to`,
+      );
+    }
+
+    // Already written, so there is nothing to prove and nothing to do — the
+    // idempotence `attemptSettle` already has, spent before any read of the
+    // machine rather than after it.
+    if (state.settled) {
+      ok(`${request}'s last attempt is already settled — nothing to write`);
+      return 0;
+    }
+
+    const recorded = recordRepo(path);
+    if (recorded === '') {
+      return refuse(
+        `${request} names no repository, and an absent \`repo\` is UNKNOWN, never "this one" (F-028) — settling it from here would flip its frontier classification in every repository on this host at once`,
+        `grep -H '"repo"' ${path}   # a record written before --tracker-repo carries none, and nothing here may guess one`,
+      );
+    }
+
+    const viewed = repoView(args => exec('gh', args, cwd));
+    if (viewed.slug === '') {
+      return cannot(
+        `gh cannot name this checkout's repository, so no record can be scoped to it: ${viewed.detail}`,
+        'gh auth login   # then re-run from a checkout with a GitHub remote',
+      );
+    }
+    if (recorded.toLowerCase() !== viewed.slug.trim().toLowerCase()) {
+      return refuse(
+        `${request} belongs to ${recorded}, and this checkout is ${viewed.slug} — the flip changes ${recorded}'s frontier, so it is made from there`,
+        `cd <your ${recorded} checkout> && ax worker settle ${request}`,
+      );
+    }
+
+    // The one refusal the issue did not name and the triage census proved free
+    // (open in 0 of 206 unsettled records): a phase with no exit and no receipt is
+    // a mutation that MAY have committed, and `settled: true` written over it is
+    // F-001 by another road.
+    if (state.phases === 0) {
+      return refuse(
+        `${request} has no phase yet — its first mutation may be in flight, so nothing here proves an attempt ended`,
+        `ax worker ls --all   # then re-run once that mutation has an outcome`,
+      );
+    }
+    if (state.openPhase !== null) {
+      return refuse(
+        `phase "${state.openPhase}" of ${request} is still open — its mutation may be in flight`,
+        `ax worker ls --all   # the verb that opened that phase owns its recovery; this one only writes an ending`,
+      );
+    }
+
+    const bin = runner ? 'injected' : resolve({ env });
+    if (!bin) {
+      return cannot('no Orca CLI on this machine, so no attempt can be proved ended here', OPEN);
+    }
+    const run = runner ?? createRunner({ bin });
+
+    const ready = runtimeReady(run);
+    if (!ready.ready) return cannot(ready.reason, OPEN);
+
+    // The gate's own two reads, in its own order and through its own readers: the
+    // dispatches, then the panes that make each one an agent or a corpse. An
+    // absent `workers` container is a cannot-establish that says so — on a host
+    // whose command set has no `worker-list`, an empty read would authorise the
+    // very write it must forbid.
+    const workers = namedList(run(['orchestration', 'worker-list', '--json']), 'workers', 'orca orchestration worker-list');
+    if (!workers.ok) {
+      return cannot(`${workers.reason} (absent on this host?)`, 'orca orchestration worker-list --json   # settle from the host that carries it');
+    }
+    const terminals = terminalInventory(run);
+    if (!terminals.ok) {
+      return cannot(terminals.reason, 'orca terminal list --json   # without it, a corpse and a working agent are the same row');
+    }
+
+    const rows = workers.rows.filter(worker => worker.taskId === task);
+    if (rows.length === 0) {
+      return cannot(
+        `no dispatch of ${task} is in this host's worker-list, so nothing here proves the attempt ended`,
+        `ax worker gate ${request}   # the detector, and where an unknown is the safe answer`,
+      );
+    }
+
+    note(`Dispatches for ${task}: ${rows.length}`);
+    const live = [];
+    const unknown = [];
+    for (const worker of rows) {
+      const handle = typeof worker.agentTerminalHandle === 'string' ? worker.agentTerminalHandle : null;
+      // One verdict definition (./pane.mjs), and the conservative branch on
+      // purpose: `worker-list` carries no per-dispatch host, so a pane absent from
+      // a list that omitted hosts is INCONNU rather than MORT.
+      const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, {});
+      if (verdict.pane === 'VIVANT') live.push(worker);
+      else if (verdict.pane !== 'MORT') unknown.push({ worker, verdict });
+      note(
+        `${verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'dead   ' : 'unknown'} ${worker.dispatchId}  worker=${worker.workerState}  terminal=${worker.terminalState}  handle=${String(worker.agentTerminalHandle ?? '—').slice(0, 24)}`,
+      );
+    }
+
+    if (live.length > 0) {
+      const first = live[0];
+      return refuse(
+        `STOP — ${live.length} live agent(s) on ${task} (${live.map(worker => worker.dispatchId).join(', ')}): an attempt whose agent is working has not ended`,
+        `ax worker tail ${first.agentTerminalHandle}   # read that agent; a \`failed\` dispatch describes the receipt, never the process`,
+      );
+    }
+
+    if (unknown.length > 0) {
+      return cannot(
+        `${unknown.length} pane(s) of ${task} cannot be established${terminals.omitted ? `, and this terminal list omits ${terminals.omittedHosts.join(', ')}` : ''} — ${unknown[0].verdict.detail}`,
+        terminals.omitted
+          ? `ax worker settle ${request}   # once ${terminals.omittedHosts.join(', ')} answers; or read the pane from the host it was dispatched to`
+          : `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`,
+      );
+    }
+
+    try {
+      attemptSettle(path);
+    } catch (error) {
+      return cannot(
+        `${path} could not be written: ${String(error.message ?? error)}`,
+        `ls -l ${path}   # the attempt is still unsettled; nothing partial was written (./record.mjs writes atomically)`,
+      );
+    }
+
+    ok(`settled ${request} — every pane of ${task}'s ${rows.length} dispatch(es) is a corpse on a host this list read`);
+    note(`the frontier can classify it attempt-ended-unmerged now. No pane was released, closed or stopped: this verb writes one record flag.`);
     return 0;
   }
-
-  const recorded = recordRepo(path);
-  if (recorded === '') {
-    return refuse(
-      `${request} names no repository, and an absent \`repo\` is UNKNOWN, never "this one" (F-028) — settling it from here would flip its frontier classification in every repository on this host at once`,
-      `grep -H '"repo"' ${path}   # a record written before --tracker-repo carries none, and nothing here may guess one`,
-    );
-  }
-
-  const viewed = repoView(args => exec('gh', args, cwd));
-  if (viewed.slug === '') {
-    return cannot(
-      `gh cannot name this checkout's repository, so no record can be scoped to it: ${viewed.detail}`,
-      'gh auth login   # then re-run from a checkout with a GitHub remote',
-    );
-  }
-  if (recorded.toLowerCase() !== viewed.slug.trim().toLowerCase()) {
-    return refuse(
-      `${request} belongs to ${recorded}, and this checkout is ${viewed.slug} — the flip changes ${recorded}'s frontier, so it is made from there`,
-      `cd <your ${recorded} checkout> && ax worker settle ${request}`,
-    );
-  }
-
-  // The one refusal the issue did not name and the triage census proved free
-  // (open in 0 of 206 unsettled records): a phase with no exit and no receipt is
-  // a mutation that MAY have committed, and `settled: true` written over it is
-  // F-001 by another road.
-  if (state.phases === 0) {
-    return refuse(
-      `${request} has no phase yet — its first mutation may be in flight, so nothing here proves an attempt ended`,
-      `ax worker ls --all   # then re-run once that mutation has an outcome`,
-    );
-  }
-  if (state.openPhase !== null) {
-    return refuse(
-      `phase "${state.openPhase}" of ${request} is still open — its mutation may be in flight`,
-      `ax worker ls --all   # the verb that opened that phase owns its recovery; this one only writes an ending`,
-    );
-  }
-
-  const bin = runner ? 'injected' : resolve({ env });
-  if (!bin) {
-    return cannot('no Orca CLI on this machine, so no attempt can be proved ended here', OPEN);
-  }
-  const run = runner ?? createRunner({ bin });
-
-  const ready = runtimeReady(run);
-  if (!ready.ready) return cannot(ready.reason, OPEN);
-
-  // The gate's own two reads, in its own order and through its own readers: the
-  // dispatches, then the panes that make each one an agent or a corpse. An
-  // absent `workers` container is a cannot-establish that says so — on a host
-  // whose command set has no `worker-list`, an empty read would authorise the
-  // very write it must forbid.
-  const workers = namedList(run(['orchestration', 'worker-list', '--json']), 'workers', 'orca orchestration worker-list');
-  if (!workers.ok) {
-    return cannot(`${workers.reason} (absent on this host?)`, 'orca orchestration worker-list --json   # settle from the host that carries it');
-  }
-  const terminals = terminalInventory(run);
-  if (!terminals.ok) {
-    return cannot(terminals.reason, 'orca terminal list --json   # without it, a corpse and a working agent are the same row');
-  }
-
-  const rows = workers.rows.filter(worker => worker.taskId === task);
-  if (rows.length === 0) {
-    return cannot(
-      `no dispatch of ${task} is in this host's worker-list, so nothing here proves the attempt ended`,
-      `ax worker gate ${request}   # the detector, and where an unknown is the safe answer`,
-    );
-  }
-
-  note(`Dispatches for ${task}: ${rows.length}`);
-  const live = [];
-  const unknown = [];
-  for (const worker of rows) {
-    const handle = typeof worker.agentTerminalHandle === 'string' ? worker.agentTerminalHandle : null;
-    // One verdict definition (./pane.mjs), and the conservative branch on
-    // purpose: `worker-list` carries no per-dispatch host, so a pane absent from
-    // a list that omitted hosts is INCONNU rather than MORT.
-    const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, {});
-    if (verdict.pane === 'VIVANT') live.push(worker);
-    else if (verdict.pane !== 'MORT') unknown.push({ worker, verdict });
-    note(
-      `${verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'dead   ' : 'unknown'} ${worker.dispatchId}  worker=${worker.workerState}  terminal=${worker.terminalState}  handle=${String(worker.agentTerminalHandle ?? '—').slice(0, 24)}`,
-    );
-  }
-
-  if (live.length > 0) {
-    const first = live[0];
-    return refuse(
-      `STOP — ${live.length} live agent(s) on ${task} (${live.map(worker => worker.dispatchId).join(', ')}): an attempt whose agent is working has not ended`,
-      `ax worker tail ${first.agentTerminalHandle}   # read that agent; a \`failed\` dispatch describes the receipt, never the process`,
-    );
-  }
-
-  if (unknown.length > 0) {
-    return cannot(
-      `${unknown.length} pane(s) of ${task} cannot be established${terminals.omitted ? `, and this terminal list omits ${terminals.omittedHosts.join(', ')}` : ''} — ${unknown[0].verdict.detail}`,
-      terminals.omitted
-        ? `ax worker settle ${request}   # once ${terminals.omittedHosts.join(', ')} answers; or read the pane from the host it was dispatched to`
-        : `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`,
-    );
-  }
-
-  try {
-    attemptSettle(path);
-  } catch (error) {
-    return cannot(
-      `${path} could not be written: ${String(error.message ?? error)}`,
-      `ls -l ${path}   # the attempt is still unsettled; nothing partial was written (./record.mjs writes atomically)`,
-    );
-  }
-
-  ok(`settled ${request} — every pane of ${task}'s ${rows.length} dispatch(es) is a corpse on a host this list read`);
-  note(`the frontier can classify it attempt-ended-unmerged now. No pane was released, closed or stopped: this verb writes one record flag.`);
-  return 0;
 }

@@ -14,8 +14,8 @@
 // initRecord / phaseBegin / phaseEnd), the runtime is an injected runner and
 // `gh` is an injected exec: no Orca, no network, no clock.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -310,6 +310,45 @@ test('a dispatch row with no pane recorded is unknown, not dead', () => {
 
   assert.equal(r.code, 3);
   assert.equal(r.after, r.before);
+});
+
+// ── the lock: the proof and the write are one gesture ───────────────────────
+// Found by review on PR #112, and it is F-001's own shape: `worker start
+// --replace` acquiring between the liveness read and the write returns the task
+// to `ready`, opens a NEW attempt and starts an agent — and `attemptSettle`
+// reloads the file from disk, so the flag would land on that LIVE attempt. The
+// same lock `--replace` takes is what makes the two halves indivisible; its
+// header already says why ("the gate's answer is worthless the instant a
+// sibling can act on it").
+
+test('a record another caller is mid-gesture on is refused, and nothing is written', () => {
+  const dir = store();
+  const path = deadAttempt(dir, '71-rls-refute');
+  // A live holder: this pid, on this host, which is what `acquireLock` reads to
+  // tell a working sibling from a crashed one.
+  writeFileSync(`${path}.lock`, JSON.stringify({ pid: process.pid, host: hostname(), token: 'someone-else', at: new Date().toISOString() }));
+
+  const r = settling(path, dir, { workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')] });
+  assert.equal(r.code, 3, 'a lost lock is an inability, never a takeover');
+  assert.match(r.out, /pre-existing lock/, 'the holder is named rather than summarised');
+  assert.match(r.out, new RegExp(`ax worker settle 71-rls-refute`), 'and the repair is the re-run');
+  assert.equal(r.after, r.before);
+  assert.equal(existsSync(`${path}.lock`), true, "another caller's lock is never removed by this verb");
+});
+
+test('the lock is released on the way out, so the next call is not fenced by this one', () => {
+  const dir = store();
+  const path = deadAttempt(dir, '71-rls-refute');
+
+  const first = settling(path, dir, { workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')] });
+  assert.equal(first.code, 0, first.out);
+  assert.equal(existsSync(`${path}.lock`), false, 'a settled record left its lock behind');
+
+  // And on a REFUSAL path too — the release rides a `finally`, not the happy end.
+  const other = deadAttempt(dir, '72-live');
+  const refused = settling(other, dir, { workers: [dispatch('ctx_live', 'term_live', { state: 'ready' })], terminals: ['term_live'] }, ['72-live']);
+  assert.equal(refused.code, 1);
+  assert.equal(existsSync(`${other}.lock`), false, 'a refusal left its lock behind, fencing every later settle');
 });
 
 // ── an environment that cannot answer never writes ──────────────────────────
