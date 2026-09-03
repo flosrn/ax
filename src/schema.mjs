@@ -15,7 +15,6 @@ const SUPPORTED = new Set([
   'required',
   'properties',
   'additionalProperties',
-  'patternProperties',
   'pattern',
   'minimum',
   'maximum',
