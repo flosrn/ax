@@ -8,6 +8,19 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.19.0](https://github.com/flosrn/ax/compare/v0.18.0...v0.19.0) (2026-09-03)
+
+
+### Features
+
+* **triage:** a findings provenance class refuses a pass over what your own agents filed ([#105](https://github.com/flosrn/ax/issues/105)) ([eda90a2](https://github.com/flosrn/ax/commit/eda90a2016848827dadf07ffd669c36db89f2564))
+
+
+### Bug Fixes
+
+* four maintainer repairs — retired flags, ignore scope, redundant labels, release_unknown reason ([#106](https://github.com/flosrn/ax/issues/106)) ([f17f85c](https://github.com/flosrn/ax/commit/f17f85caf636b6d911eed53f4c0ebc888fef150c))
+* **worker:** the stall watcher obeys Orca's lifecycle refusal instead of retrying it ([#108](https://github.com/flosrn/ax/issues/108)) ([87f6e3c](https://github.com/flosrn/ax/commit/87f6e3cc1da30b3bb3cf6132c2c5dd86aa2e4d4a))
+
 ## [0.18.0](https://github.com/flosrn/ax/compare/v0.17.0...v0.18.0) (2026-09-02)
 
 
