@@ -183,6 +183,9 @@ function record(store, request, { handle = 'term_child', dispatchId = 'd-1', rep
           phases: [
             {
               name: 'worker-start',
+              // Every real phase is written ahead with the argv it issues, and
+              // the index reads a phase naming none as unreadable (#130).
+              argv: ['orca', 'orchestration', 'worker-start'],
               beganAt: '2026-08-20T10:00:00.000Z',
               exit: 0,
               receipt: { ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: handle }] } },
@@ -940,7 +943,7 @@ function stranded(store, request) {
       attempts: [
         {
           n: 1,
-          phases: [{ name: 'worker-start', beganAt: '2026-08-20T10:00:00.000Z', exit: 1, receipt: { ok: false, error: { code: 'runtime_unavailable' } } }],
+          phases: [{ name: 'worker-start', argv: ['orca', 'orchestration', 'worker-start'], beganAt: '2026-08-20T10:00:00.000Z', exit: 1, receipt: { ok: false, error: { code: 'runtime_unavailable' } } }],
         },
       ],
     }),
@@ -1026,6 +1029,7 @@ test('--fresh cannot establish anything when a settled legacy pass recorded no p
           phases: [
             {
               name: 'worker-start',
+              argv: ['orca', 'orchestration', 'worker-start'],
               beganAt: '2026-08-20T10:00:00.000Z',
               exit: 0,
               receiptPath: '/legacy/receipts/worker-start.json',

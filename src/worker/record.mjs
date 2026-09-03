@@ -709,6 +709,9 @@ export function dispatchFields(path) {
  *     happens to carry a `dispatchId` is display metadata.
  *   - one dispatch produced by two DIFFERENT requests is ambiguous, and
  *     ambiguity is cannot-establish, never last-file-wins (F-001).
+ *   - a `worker-start` must carry the argv it issued, because `env` is the host
+ *     that argv NAMED (`''` for local). A phase naming no argv is unreadable —
+ *     named, indexed nowhere — never a local pane (#130).
  *
  * `issuedAt` is when the mutation was ISSUED — the newest `worker-start` phase's
  * own `beganAt`, falling back to the record's `createdAt` for records written
@@ -768,6 +771,18 @@ export function dispatchIndex(store) {
         const result = ph.receipt?.result;
         if (result === null || typeof result !== 'object') continue;
         if (typeof result.dispatchId !== 'string' || result.dispatchId === '') continue;
+        // `env` is the host the phase NAMED, `''` for local — and a phase that
+        // recorded no argv named nothing. Read as `''` it was a local pane that
+        // the local list does not know, i.e. MORT, and it left every count: the
+        // under-count F-028 forbids (#130). Every phase is written ahead with
+        // the argv it issues (0 of 252 lacked one on this host, 2026-09-03), so
+        // the shape only arrives hand-edited or foreign-written, and it joins
+        // the record that does not name itself: unreadable, named, indexed
+        // nowhere — so every reader treats the handle as a missing record.
+        if (!Array.isArray(ph.argv)) {
+          unreadable.push({ file, error: `worker-start ${result.dispatchId} recorded no argv, so its placement cannot be read` });
+          continue;
+        }
 
         const known = byDispatch.get(result.dispatchId);
         if (known !== undefined && known.request !== stem) {
@@ -791,7 +806,7 @@ export function dispatchIndex(store) {
           file,
           repo: recorded,
           handle: agentTerminal(result),
-          env: Array.isArray(ph.argv) ? argvValue(ph.argv, '--on') ?? '' : '',
+          env: argvValue(ph.argv, '--on') ?? '',
           ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',
         });
       }
