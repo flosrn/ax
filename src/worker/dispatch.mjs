@@ -383,6 +383,31 @@ export function dispatch(
   if (ticket !== null && !ticket.ok) {
     return cannot(ticket.reason, `${kind === 'linear' ? 'orca linear issue' : 'gh issue view'} ${flags.issue}   # read it by hand first`);
   }
+  // A closed ticket has nothing to dispatch, and this is the verb's own check:
+  // `ax frontier` already excludes `no-longer-open`, but the `--slug` +
+  // `--because` path reaches here without the frontier. Measured 2026-09-03:
+  // #78, closed by the operator at 05:19Z, dispatched at 13:xx — the child
+  // refused at its decision gate, posted nothing, and a pane was minted and
+  // released for a ticket nobody could work.
+  // The repair is the tracker's: `ax frontier` reads GitHub only (it lists by
+  // label through `gh`), so a closed Linear ticket is sent back to Linear. And
+  // a state the tracker did not answer is UNKNOWN, never open: absence is not
+  // permission to mint a worktree, a task and a pane (AGENTS.md).
+  const readByHand = kind === 'linear' ? `orca linear issue ${flags.issue} --json` : `gh issue view ${flags.issue} --json state`;
+  if (ticket !== null && ticket.closed === null) {
+    return cannot(
+      `${ticket.id} answered no workflow state type this verb knows${ticket.state ? ` (state "${ticket.state}")` : ''}, so whether it is closed cannot be established`,
+      `${readByHand}   # read its state by hand; dispatch again once the tracker names it`,
+    );
+  }
+  if (ticket !== null && ticket.closed) {
+    return refuse(
+      `${ticket.id} is closed (${ticket.state}) — nothing to dispatch`,
+      kind === 'linear'
+        ? `${readByHand}   # its state and who closed it; dispatch an open ticket, or reopen this one first`
+        : `ax frontier   # the takeable set; a closed ticket is never in it`,
+    );
+  }
 
   const entry = dispatchConfig.entry ?? '';
   if (named) {

@@ -94,6 +94,9 @@ export function parseReceipt(stdout) {
   }
 }
 
+/** One Orca call's budget. `ax worker start` derives its lock wait from it. */
+export const RUNNER_TIMEOUT_MS = 30000;
+
 /**
  * A runner for one resolved binary. Exit codes are verdicts in this domain
  * (ADR 0003), so a non-zero status is DATA — returned, never thrown. stderr is
@@ -102,7 +105,7 @@ export function parseReceipt(stdout) {
  * `exec` is injected so every test runs offline: it must return
  * `{ status, stdout, stderr }` like the spawnSync default.
  */
-export function createRunner({ bin, exec, timeoutMs = 30000 } = {}) {
+export function createRunner({ bin, exec, timeoutMs = RUNNER_TIMEOUT_MS } = {}) {
   // The default's knobs live in src/exec.mjs — including the measured
   // maxBuffer fix (2026-08-22: the 1 MiB cap killed a child mid-print and
   // truncated a healthy receipt).
