@@ -747,6 +747,19 @@ test('the session is placed in the CURRENT worktree, with no tree and no setup',
   assert.ok(!r.started[0].includes('--setup'), 'and no setup run');
 });
 
+test('a triage record NAMES its repository, because that key is what places its pane', () => {
+  // #83: `ax worker release` scopes by the record's `repo` — a record naming
+  // none is UNKNOWN, and unknown authorizes no close (F-028). A triage dispatch
+  // that recorded no repository would hand `ax triage release` a pane it can
+  // never free. AX-OWNED like `--because`: Orca never sees it.
+  const r = run(['--issue', '7']);
+  assert.match(r.started[0], /--tracker-repo acme\/widgets/);
+  assert.ok(
+    r.started[0].indexOf('--tracker-repo') < r.started[0].indexOf(' -- '),
+    'it is a recorded option, never forwarded past the placement separator',
+  );
+});
+
 test('the request names the job, so a brief never replays the triage record', () => {
   const r = run(['--issue', '7', '--job', 'brief'], { issues: { 7: 'OPEN|2|Triaged' } });
   assert.match(r.started[0], /--request brief-acme-widgets-7/);

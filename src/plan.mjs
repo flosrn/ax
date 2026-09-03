@@ -81,6 +81,59 @@ export const CONTRACTS = [
 ];
 
 /**
+ * The lines the managed `.gitignore` block carries: runtime state of the AX
+ * layer, nothing else. Plan-owned because BOTH verbs answer for it — `ax init`
+ * writes the block, `ax doctor` grades the block it finds against this list —
+ * and target state decided inside either verb is the drift this file's header
+ * measured.
+ *
+ * `.env.local` is on it because `ax worktree setup` WRITES it
+ * (`${config.apps.web}/.env.local`, ./worktree/plan.mjs) while release's
+ * landing proof reads `git status --porcelain`, untracked files included.
+ * Measured 2026-09-02 (#83): a finished child worktree whose only dirt was that
+ * file answered `KEEP · uncommitted changes on feat/73-…`, and removing it by
+ * hand made the same command answer `CLOSE · PR #79 merged`. The dirty
+ * predicate is right to refuse a dirty tree — an allowlist inside a proof is
+ * how a hand-edited file carrying real work stops blocking a close — so what
+ * was missing is the ignore. It carries NO SLASH on purpose: it matches at any
+ * depth, covering a root write and a consumer's `apps/web/.env.local` alike. On
+ * a MakerKit consumer the vendor `.gitignore` already covers it, which is why
+ * the defect only ever showed on a plain package repo.
+ *
+ * `.orca-worktree.json` is deliberately absent while the Orca adapter still
+ * lives in the project — ofmchat already ignores it, with a comment saying
+ * which script writes it. Claiming it here too would print the same path twice
+ * in a file a human reads. It joins this list when `ax orca` does.
+ */
+const IGNORE = ['.worktrees/', '.agent/', '.scratch/', '.env.local'];
+
+/**
+ * The files ax manages a `BEGIN:ax` block in, and whether the checkout that
+ * PUBLISHES ax carries each one. A consumer carries all of them.
+ *
+ * ONE RULE FOR BOTH FILES WAS THE MISTAKE (#96, ruled per file). Until this
+ * list existed the plan had no field about the blocks at all, so both verbs
+ * hardcoded the same pair independently — `ax init` writing it, `ax doctor`
+ * grading it — and on this checkout `ax doctor` named `ax init` as the repair
+ * for the `AGENTS.md` block, a fix that appends a generated consumer section
+ * into the package's OWN authored doctrine. It read red for seven tickets
+ * because nobody could run it, which is the F-014 state: a finding nobody acts
+ * on trains the reader to ignore the verb.
+ *
+ * `selfHosted` is per file because the two bodies are different KINDS of
+ * content. `.gitignore` gets AX runtime state — `.worktrees/`, `.agent/`,
+ * `.scratch/` — which this checkout produces exactly like a consumer's, since
+ * its own workers enter its own worktrees; #83's dirty-worktree defect is that
+ * block's absence. `AGENTS.md` gets a consumer instruction section, and here
+ * that file is authored doctrine graded by `tests/docs.test.mjs`, which would
+ * then answer "how do I invoke ax" twice — once authored, once generated.
+ */
+export const MANAGED_BLOCKS = [
+  { file: '.gitignore', selfHosted: true },
+  { file: 'AGENTS.md', selfHosted: false },
+];
+
+/**
  * The target state of a project, from its own manifest and the contracts its
  * configuration declares.
  *
@@ -102,6 +155,15 @@ export function planProject({ manifest = {}, declared = [] } = {}) {
     // through the `bin` field in the manifest it publishes.
     bootstrap: !selfHosted,
     pin: !selfHosted,
+    // Every path ax's own tooling writes, in the block ax owns. One list, so
+    // the verb that writes it and the verb that grades it cannot disagree.
+    ignore: IGNORE,
+    // Per FILE, so both verbs read one answer: `ax init` writes the blocks
+    // whose value is true, `ax doctor` grades presence for those and ABSENCE
+    // for the rest. A false entry is still a measured file — the exemption
+    // stops wanting the block, never stops grading it, exactly as the refused
+    // self-pin above is graded rather than ignored.
+    blocks: Object.fromEntries(MANAGED_BLOCKS.map(({ file, selfHosted: wanted }) => [file, selfHosted ? wanted : true])),
     adopted: Object.fromEntries(CONTRACTS.map(contract => [contract.id, declared.includes(contract.declaration)])),
   };
 }

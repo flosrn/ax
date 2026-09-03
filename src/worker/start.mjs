@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-import { createRunner, resolveOrca } from '../orca-bin.mjs';
+import { RUNNER_TIMEOUT_MS, createRunner, resolveOrca } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { bad, fix, note, ok, raw, section, status } from '../log.mjs';
 import { gate } from './gate.mjs';
@@ -36,6 +36,7 @@ import {
   phaseVerdict,
   recordedBin,
   recordedRun,
+  recordRepo,
   report,
   requestIdOk,
   staleClaim,
@@ -162,9 +163,9 @@ function reservedRefusal(passthru) {
   return `worker-start passthrough may not carry ${taken}: ax owns ${RESERVED.join(', ')} — they are the recorded dispatch identity`;
 }
 
-function phaseRun(path, name, args, { bin, execute, identity = newIdentity() }) {
+function phaseRun(path, name, args, { bin, execute, identity = newIdentity(), now }) {
   const full = [bin, ...args];
-  phaseBegin(path, { name, identity, argv: full });
+  phaseBegin(path, { name, identity, argv: full, ...(now ? { now } : {}) });
   const out = execute(full);
   phaseEnd(path, 'last', { exit: out.status, receiptText: out.stdout, stderr: out.stderr, error: out.error });
   return phaseVerdict(path, 'last');
@@ -530,6 +531,18 @@ function fresh(path, spec, passthru, context) {
   return finishUsable(path, context);
 }
 
+/**
+ * The lock budget a fresh start derives from its own mint: one runner timeout
+ * for each of the two Orca calls it issues (`task-create`, `worker-start`).
+ * Never an invented constant — a loser waiting on a winner waits for exactly
+ * what the winner may honestly spend, and `AX_LOCK_WAIT_MS` overrides it in
+ * the shape the board's own lock established.
+ */
+export const lockWaitMs = 2 * RUNNER_TIMEOUT_MS;
+
+/** A synchronous pause: the loser has nothing to do until the winner is done. */
+const sleepDefault = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
 export function start(
   argv = [],
   {
@@ -540,6 +553,7 @@ export function start(
     gateFn,
     arm,
     now = () => new Date().toISOString(),
+    sleep = sleepDefault,
   } = {},
 ) {
   const parsed = parse(argv);
@@ -591,79 +605,135 @@ export function start(
     env,
     gateFn,
     arm,
+    now,
   };
 
   section(redactSecrets(`worker start ${parsed.request}`));
-  if (parsed.mode === 'resume') return resume(path, context);
+  // `--replace` keeps its own differently-suffixed lock, by ruling (#95 pass A1:
+  // the claim pair only). `--resume` is the loser's replay typed by hand — the
+  // same load-modify-save writer — so it takes the claim lock below like the
+  // loser does; review of the first draft measured it bypassing the lock and
+  // rewriting a record mid-mint.
   if (parsed.mode === 'replace') return replace(path, parsed.passthru, context);
 
-  let claim;
+  // ONE LOCK, TWO CONTENDERS (#95). The claim winner used to mint — initRecord
+  // and every phase write of the fresh dispatch — holding no lock at all, while
+  // only claim LOSERS took `.claim.lock`: it serialized loser against loser and
+  // never loser against the winner it races. Both then load-mutate-saved one
+  // file, and when the loser's load landed after the winner closed
+  // `task-create` and before its `worker-start` was saved, the loser's save
+  // dropped that phase. `save()` is atomic per write, which prevents a torn
+  // file and not a lost update. Reproduced on `main` @ bb75a2a, 2 of 48 under
+  // 8-way load; CI runs 33615656342 and 33721872276 ended with the canonical
+  // record holding `['task-create']` alone while the stub log proved a full
+  // pair had been issued — a recorded `worker-start`, and therefore a real
+  // pane, gone from the file every recovery reads.
+  //
+  // So the lock is taken BEFORE the claim, by both, and held across the whole
+  // gesture: the winner's mint, or the loser's staleness reading and replay.
+  // The loser keeps its automatic replay (pass A2): `acquireLock` waits out a
+  // holder that is alive on this host, re-arming on every proof of liveness,
+  // so an honestly slow winner — two Orca calls under CI load — is never met
+  // with an exit 3. The budget below bounds only what cannot be proven (a
+  // holder on another host, a lock caught mid-write): the winner's own budget,
+  // one Orca call's timeout for each of the two calls a mint issues. A holder
+  // proven DEAD is refused at once, exactly as before: the wait is never a
+  // takeover, and its refusal still names the `--resume` repair.
+  const waitMs = Number(env.AX_LOCK_WAIT_MS ?? lockWaitMs);
+  let ownership;
   try {
-    claim = claimRecord(store, parsed.request);
+    // The lock lives beside the record, so the store exists first — the same
+    // directory `claimRecord` makes, made here because the lock now precedes it.
+    mkdirSync(store, { recursive: true, mode: 0o700 });
+    ownership = acquireLock(path, { suffix: '.claim.lock', waitMs, sleep, clock: () => Date.parse(now()) });
   } catch (error) {
-    return cannot(`record claim failed: ${String(error)}`);
+    return cannot(`the claim lock could not be taken: ${String(error)}`);
   }
+  if (!ownership.held) return cannot(ownership.reason, `ax worker start --resume --request ${context.request}`);
 
-  if (!claim.claimed) {
-    let ownership;
+  try {
+    if (parsed.mode === 'resume') return resume(path, context);
+
+    let claim;
     try {
-      ownership = acquireLock(claim.path, { suffix: '.claim.lock' });
+      claim = claimRecord(store, parsed.request);
     } catch (error) {
-      return cannot(`the claim-recovery lock could not be taken: ${String(error)}`);
+      return cannot(`record claim failed: ${String(error)}`);
     }
-    if (!ownership.held) return cannot(ownership.reason, `ax worker start --resume --request ${context.request}`);
 
-    try {
-      let stale = null;
-      try {
-        // Re-read only AFTER serialization. A stale answer from before the
-        // lock can otherwise rename a sibling's new canonical claim.
-        stale = staleClaim(claim.path, parsed.runId);
-      } catch {
-        // An unreadable owner record is still precious: it cannot be proven stale.
-      }
-      if (!stale?.stale) {
-        note(redactSecrets(`CLAIM LOST — ${stale?.reason ?? 'the owner record is unreadable'}; replaying the owner's record instead of minting a second identity.`));
-        return resume(claim.path, context);
-      }
-
-      const stamp = now().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-      const foreign = `${claim.path}.foreign-${stamp}-${newIdentity()}`;
-      note(redactSecrets(`stale foreign claim from ${stale.foreignRun}; preserving it at ${foreign}`));
-      try {
-        renameSync(claim.path, foreign);
-        claim = claimRecord(store, parsed.request);
-        if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
-        // Install the new owner's identity before releasing the recovery lock.
-        // A sibling then sees a zero-phase record and cannot call it stale.
-        initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
-      } catch (error) {
-        return cannot(`could not preserve stale foreign record: ${String(error)}`);
-      }
-      // MINT UNDER THE LOCK, not after it. Releasing first published a
-      // half-built record: a sibling then took the recovery lock, read a record
-      // holding one open phase, and replayed it — and because `phaseBegin` and
-      // `phaseEnd` are load-mutate-save, that replay's write CLOBBERED the
-      // phase this process was adding. `save()` is atomic per write, which
-      // prevents a torn file and not a lost update.
-      //
-      // Measured in CI 2026-08-27 (the first run this repository ever had):
-      // `two reclaimers of one closed foreign refusal serialize before minting`
-      // ended with the canonical record holding `['task-create']` alone while
-      // the stub log proved a full task/worker pair had been issued. A recorded
-      // `worker-start` had gone missing — a pane that exists, invisible to
-      // every recovery that reads this file. That is F-001 by another route,
-      // and it is what the test's own name always demanded.
-      //
-      // Holding across the dispatch is safe here BECAUSE `acquireLock` has no
-      // time-based takeover: a sibling gets `held: false` with a named reason
-      // and the `--resume` repair (line 600), never a silent second mint.
+    if (claim.claimed) {
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
       return fresh(claim.path, spec, parsed.passthru, context);
-    } finally {
-      ownership.release();
     }
-  }
 
-  initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
-  return fresh(claim.path, spec, parsed.passthru, context);
+    // THE REPOSITORY RULE COMES BEFORE THE STALENESS RULE. The store is
+    // host-global and a request id is `<issue>-<suffix>` with no repository in
+    // it, so two checkouts' #89 share one filename. A record that NAMES another
+    // repository is that checkout's dispatch — a collision, never a resume —
+    // and replaying it would issue this caller's mutation under the other
+    // repository's Run. Measured 2026-09-03 on flosrn/ax: `89-work`, `78-work`
+    // and `83-work` were ofmchat's, every dispatch of this repository's #89
+    // replayed ofmchat's record and collected `consumer_fenced`, and the
+    // operator learned to pass a fresh --slug each time. `staleClaim` cannot
+    // see this: those records carry a task id, which is the harshest "precious"
+    // it knows. A record naming NO repository is unknown, not local (F-028,
+    // `recordRepo`): it may be this checkout's own earlier dispatch, and only
+    // an explicit --resume — a human reading — may replay it. Both fences need
+    // the caller's own name; a caller naming no repository keeps the replay.
+    if (parsed.trackerRepo !== '') {
+      let owner;
+      try {
+        owner = recordRepo(claim.path);
+      } catch {
+        owner = null;
+      }
+      if (owner === '') {
+        return cannot(
+          `request ${parsed.request} is already recorded at ${claim.path} by a record that names no repository — it may be this checkout's own earlier dispatch or another's, and a replay under the wrong Run is a mutation into a foreign consumer`,
+          `ax worker start --resume --request ${parsed.request}   # after reading the record's worker-start --worktree; a foreign record is repaired by writing its "repo" key, a fresh name by --slug`,
+        );
+      }
+      if (typeof owner === 'string' && owner.toLowerCase() !== parsed.trackerRepo.trim().toLowerCase()) {
+        return refuse(
+          `request ${parsed.request} is already recorded by another repository (${owner}) at ${claim.path} — the store is host-global and request ids carry no repository, so this is a name collision, not a resume`,
+          `ax worker dispatch --issue <n> --slug <distinct-name>   # mints a request id the other repository's record does not hold`,
+        );
+      }
+    }
+
+    let stale = null;
+    try {
+      // Read only UNDER the lock: the winner's phases are complete by now, so
+      // this reading is never of a record mid-append.
+      stale = staleClaim(claim.path, parsed.runId);
+    } catch {
+      // An unreadable owner record is still precious: it cannot be proven stale.
+    }
+    if (!stale?.stale) {
+      note(redactSecrets(`CLAIM LOST — ${stale?.reason ?? 'the owner record is unreadable'}; replaying the owner's record instead of minting a second identity.`));
+      return resume(claim.path, context);
+    }
+
+    const stamp = now().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const foreign = `${claim.path}.foreign-${stamp}-${newIdentity()}`;
+    note(redactSecrets(`stale foreign claim from ${stale.foreignRun}; preserving it at ${foreign}`));
+    try {
+      renameSync(claim.path, foreign);
+      claim = claimRecord(store, parsed.request);
+      if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
+      // Install the new owner's identity before releasing the lock. A sibling
+      // then sees a zero-phase record and cannot call it stale.
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
+    } catch (error) {
+      return cannot(`could not preserve stale foreign record: ${String(error)}`);
+    }
+    // MINT UNDER THE LOCK, not after it — measured in CI 2026-08-27 (the first
+    // run this repository ever had) on `two reclaimers of one closed foreign
+    // refusal serialize before minting`: released first, a sibling read a record
+    // holding one open phase and replayed it over the phase this process was
+    // adding. The plain-winner path above adopted the same rule on 2026-09-03.
+    return fresh(claim.path, spec, parsed.passthru, context);
+  } finally {
+    ownership.release();
+  }
 }

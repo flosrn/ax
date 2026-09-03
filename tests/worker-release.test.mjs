@@ -133,8 +133,15 @@ function fakeExec({ repo = 'owner/repo', answers = {} } = {}) {
 
 const store = () => mkdtempSync(join(tmpdir(), 'ax-release-'));
 
-/** A dispatch store record: the provenance a bulk proof needs. */
-function record(dir, request, dispatchId, { createdAt = '2026-08-20T10:00:00.000Z', beganAt = null, handle = `term_${dispatchId}`, state = 'ready' } = {}) {
+/**
+ * A dispatch store record: the provenance a bulk proof needs.
+ *
+ * `repo` is what PLACES the row (#83): the sweep is scoped to the repository a
+ * record NAMES, never to the path its worktree sits at, so the default here is
+ * the slug `fakeExec` answers with. `repo: ''` writes no key at all — the
+ * pre-0.17.0 shape, which is unknown and never ours.
+ */
+function record(dir, request, dispatchId, { createdAt = '2026-08-20T10:00:00.000Z', beganAt = null, handle = `term_${dispatchId}`, state = 'ready', repo = 'owner/repo' } = {}) {
   writeFileSync(
     join(dir, `${request}.json`),
     JSON.stringify({
@@ -142,6 +149,7 @@ function record(dir, request, dispatchId, { createdAt = '2026-08-20T10:00:00.000
       host: 'test',
       orca: 'stub-orca',
       createdAt,
+      ...(repo === '' ? {} : { repo }),
       attempts: [
         {
           n: 1,
@@ -313,7 +321,15 @@ test('the agent handle is read from the key the runtime fills, not only from res
   // 217 of 218 rows carry `agentTerminalHandle`; 132 also carry
   // `resource.terminalHandle`. Reading the resource key alone reported 86
   // workers as "no terminal recorded" — that is where the eighty came from.
+  //
+  // Both rows carry a record naming this repository, because that key is what
+  // places a row now (#83): an unplaced row is declined before its handle is
+  // ever read, which would make this proposition unobservable.
+  const dir = store();
+  record(dir, 'ws-top', 'ctx_top');
+  record(dir, 'ws-res', 'ctx_res', { handle: 'term_ctx_res' });
   const r = run(['--all'], {
+    dir,
     orca: {
       workers: [worker('ctx_top'), worker('ctx_res', { agentTerminalHandle: undefined, resource: { terminalHandle: 'term_ctx_res', worktreeId: `id::${SCOPE}/wt` } })],
       terminals: [terminal('term_ctx_top'), terminal('term_ctx_res')],
@@ -657,12 +673,15 @@ test('a brief is proven by a comment newer than its dispatch, like triage', () =
 });
 
 
-test('a dispatch this host never recorded has unknown provenance, and unknown is KEEP', () => {
+test('a dispatch this host never recorded cannot be placed, and an unplaceable row is never judged', () => {
+  // #83: placement is the repository a RECORD names. A pane with no record at
+  // all names none, so it is declined once, counted in the bucket that says why,
+  // and never proven — an absence authorizes nothing (F-028).
   const r = run(['--all'], {
     orca: { workers: [worker('ctx_orphan')], terminals: [terminal('term_ctx_orphan')] },
   });
 
-  assert.match(r.out, /unknown provenance/);
+  assert.match(r.out, /1 no repository on record/);
   assert.match(r.out, /0 closeable/);
 });
 
@@ -787,28 +806,187 @@ test('a live pane recorded here but absent from worker-list is offered, not igno
 
 // ── scope ───────────────────────────────────────────────────────────────────
 
-test('a sibling worktree sharing a path prefix is not in scope', () => {
-  const r = run([], {
+// The scope predicate is SAME-REPOSITORY, never same-path (#83). Measured
+// 2026-09-02 on the first pane this repository ever had to release: PR #79
+// merged, worker `succeeded/reclaimable`, pane alive — and
+// `ax worker release --close` answered `0 closeable · 0 kept` over 92 tallied
+// rows with the live merged one in none of its buckets. ax places every child
+// under Orca's workspace root, outside the checkout by construction, and the
+// row was `continue`d before any tally. The `--dispatch` route printed the same
+// fact honestly (`outside <checkout>`), which is how it was found.
+
+/** Orca's workspace root: a linked worktree of this repository, outside the checkout. */
+const PLACED = realpathSync(mkdtempSync(join(tmpdir(), 'ax-orca-workspaces-')));
+
+test('a worktree Orca placed outside the checkout is offered when its record names this repository', () => {
+  const dir = store();
+  record(dir, '83-env-sweep', 'ctx_placed');
+
+  const r = run(['--close'], {
+    dir,
     orca: {
-      workers: [worker('ctx_sibling'), worker('ctx_inside')],
+      workers: [worker('ctx_placed')],
+      terminals: [terminal('term_ctx_placed', { worktreePath: `${PLACED}/83-env-sweep` })],
+      cursors: { term_ctx_placed: [7, 7] },
+    },
+    execOptions: { answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 79, headRefName: 'feat/83-env-sweep' }]), stderr: '' } } },
+  });
+
+  assert.match(r.out, /ctx_placed.*CLOSE.*PR #79 merged/);
+  assert.match(r.out, /1 closeable/);
+  assert.ok(r.calls.some(argv => argv.includes('worker-release')), 'the live merged pane is the one this verb exists to close');
+});
+
+test('a row whose record names another repository is counted, named, and never judged', () => {
+  const dir = store();
+  record(dir, 'shared-slug', 'ctx_theirs', { repo: 'goodluckagency/ofmchat' });
+
+  const r = run(['--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_theirs')],
+      // Inside this checkout's path, and still another repository's row: path
+      // containment never substitutes for the key.
+      terminals: [terminal('term_ctx_theirs', { worktreePath: `${SCOPE}/shared-slug` })],
+      cursors: { term_ctx_theirs: [3, 3] },
+    },
+    // A merged PR that WOULD prove the slug in this repository. Asking owner/repo
+    // about ofmchat's branch is how a same-named merge closes a live session.
+    execOptions: { answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 12, headRefName: 'shared-slug' }]), stderr: '' } } },
+  });
+
+  assert.match(r.out, /1 in another repository/);
+  assert.doesNotMatch(r.out, /ctx_theirs/, 'a row this run may not judge is counted once, never printed as a verdict');
+  assert.match(r.out, /0 closeable/);
+  assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
+});
+
+test('a record that names no repository is unknown — its own bucket, and never ours by containment', () => {
+  const dir = store();
+  record(dir, 'legacy-slug', 'ctx_legacy', { repo: '' });
+
+  const r = run(['--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_legacy')],
+      terminals: [terminal('term_ctx_legacy', { worktreePath: `${SCOPE}/legacy-slug` })],
+      cursors: { term_ctx_legacy: [3, 3] },
+    },
+    execOptions: { answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 12, headRefName: 'legacy-slug' }]), stderr: '' } } },
+  });
+
+  assert.match(r.out, /1 no repository on record/);
+  assert.match(r.out, /0 in another repository/, 'unknown is not foreign, and never counted as one');
+  assert.match(r.out, /0 closeable/);
+  assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
+});
+
+test('every row is in exactly one place: two declined buckets beside one printed candidate', () => {
+  const dir = store();
+  record(dir, 'ours-slug', 'ctx_ours');
+  record(dir, 'their-slug', 'ctx_theirs', { repo: 'goodluckagency/ofmchat' });
+  record(dir, 'old-slug', 'ctx_legacy', { repo: '' });
+
+  const r = run([], {
+    dir,
+    orca: {
+      workers: [worker('ctx_ours'), worker('ctx_theirs'), worker('ctx_legacy')],
       terminals: [
-        terminal('term_ctx_sibling', { worktreePath: `${SCOPE}-2/wt` }),
-        terminal('term_ctx_inside'),
+        terminal('term_ctx_ours', { worktreePath: `${PLACED}/ours-slug` }),
+        terminal('term_ctx_theirs', { worktreePath: `${PLACED}/their-slug` }),
+        terminal('term_ctx_legacy', { worktreePath: `${PLACED}/old-slug` }),
       ],
+    },
+    execOptions: { answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([]), stderr: '' } } },
+  });
+
+  assert.match(r.out, /ctx_ours.*KEEP.*no merged PR/);
+  assert.match(r.out, /1 in another repository/);
+  assert.match(r.out, /1 no repository on record/);
+  assert.equal(r.out.split('\n').filter(line => /ctx_theirs|ctx_legacy/.test(line)).length, 0);
+});
+
+test('--dispatch over a row this run cannot place keeps its KEEP and the cd that can', () => {
+  const dir = store();
+  record(dir, 'their-slug', 'ctx_theirs', { repo: 'goodluckagency/ofmchat' });
+  const foreign = run(['--dispatch', 'ctx_theirs', '--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_theirs')],
+      terminals: [terminal('term_ctx_theirs', { worktreePath: `${PLACED}/their-slug` })],
     },
   });
 
-  assert.doesNotMatch(r.out, /ctx_sibling/, '/tmp/scope-repo-2 is not inside /tmp/scope-repo');
-  assert.match(r.out, /ctx_inside/);
+  assert.match(foreign.out, /ctx_theirs.*KEEP.*goodluckagency\/ofmchat/);
+  assert.match(foreign.out, new RegExp(`cd ${PLACED}/their-slug && ax worker release --close --dispatch ctx_theirs`));
+  assert.doesNotMatch(foreign.out, /outside/, 'the reason is a repository mismatch, never a path relation');
+  assert.ok(foreign.calls.every(argv => !argv.includes('worker-release')));
+
+  const legacyDir = store();
+  record(legacyDir, 'old-slug', 'ctx_legacy', { repo: '' });
+  const unknown = run(['--dispatch', 'ctx_legacy', '--close'], {
+    dir: legacyDir,
+    orca: {
+      workers: [worker('ctx_legacy')],
+      terminals: [terminal('term_ctx_legacy', { worktreePath: `${PLACED}/old-slug` })],
+    },
+  });
+
+  assert.match(unknown.out, /ctx_legacy.*KEEP.*names no repository/);
+  assert.match(unknown.out, /old-slug\.json/, 'the repair names the record that cannot place it');
+  // A repair has to be able to CHANGE the outcome (validated review finding on
+  // #118): reading the record again still computes `unknown`, so the row would
+  // refuse forever. What closes it is the route that asks no artifact question.
+  assert.match(unknown.out, /worker-read --dispatch ctx_legacy/);
+  assert.match(unknown.out, /ax worker release --close --dispatch ctx_legacy --no-proof/);
+  assert.ok(unknown.calls.every(argv => !argv.includes('worker-release')));
 });
 
-test('outside a repository, a machine-wide sweep must be asked for', () => {
+test('--all shows this repository\u2019s archaeology and never another repository\u2019s panes', () => {
+  const dir = store();
+  record(dir, 'ours-gone', 'ctx_ours_gone');
+  record(dir, 'their-gone', 'ctx_their_gone', { repo: 'goodluckagency/ofmchat' });
+  record(dir, 'old-gone', 'ctx_legacy_gone', { repo: '' });
+  const orca = {
+    workers: [
+      worker('ctx_ours_gone', { terminalState: 'released' }),
+      worker('ctx_their_gone', { terminalState: 'released' }),
+      worker('ctx_legacy_gone', { terminalState: 'released' }),
+    ],
+    terminals: [],
+  };
+
+  // A row PROVEN to belong elsewhere leaves before any pane-state tally: its
+  // release is not this checkout's archaeology, and `--all` never lists it. A
+  // record naming NO repository is not proven foreign (F-028), so the cause this
+  // run can establish without any repository is still counted — and the receipt
+  // says how much of its own tally nothing places.
+  const swept = run([], { dir, orca });
+  assert.match(swept.out, /2 already released/);
+  assert.match(swept.out, /1 in another repository/);
+  assert.match(swept.out, /no repository on record: 0 declined at placement · 1 of the buckets above/);
+  assert.doesNotMatch(swept.out, /ctx_ours_gone/);
+
+  // The flag changes what is SHOWN, never what was established (#82's reading
+  // for `ax worker ls --all`): the counts are the same on both routes.
+  const all = run(['--all'], { dir, orca });
+  assert.match(all.out, /2 already released/);
+  assert.match(all.out, /1 in another repository/);
+  assert.match(all.out, /ctx_ours_gone.*already released/);
+  assert.doesNotMatch(all.out, /ctx_their_gone/, '--all is this repository\u2019s archaeology, never a machine-wide sweep');
+  assert.doesNotMatch(all.out, /ctx_legacy_gone/, 'a row nothing places is disclosed as a count, never listed as ours');
+});
+
+test('a run that cannot name its repository refuses rather than sweeping, and --all is no escape', () => {
   const { runner } = fakeOrca({ workers: THREE_CAUSES });
   const exec = (bin, args) => (bin === 'git' && args.includes('--show-toplevel') ? { status: 128, stdout: '', stderr: 'not a git repository' } : { status: 1, stdout: '', stderr: '' });
-  const r = capture(() => release([], { runner, exec, env: {}, cwd: '/tmp', sleep: () => {} }));
 
-  assert.equal(r.code, 3);
-  assert.match(r.out, /refusing to sweep machine-wide by accident/);
+  for (const argv of [[], ['--all']]) {
+    const r = capture(() => release(argv, { runner, exec, env: {}, cwd: '/tmp', sleep: () => {} }));
+    assert.equal(r.code, 3, JSON.stringify(argv));
+    assert.match(r.out, /no repository/);
+    assert.doesNotMatch(r.out, /every repo on this machine/, 'no surface offers a sweep the predicate no longer implements');
+  }
 });
 
 test('a dispatch nothing knows about cannot be established', () => {
@@ -1048,22 +1226,61 @@ test('two equal malformed cursors are not a quiet pane', () => {
   assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
 });
 
-test('a pane in another repository is never proven from this one', () => {
-  // Two checkouts, one slug: repo A has the merged PR, the live pane belongs to
-  // B. Asking A about B's branch is how a same-named merge closes a live session.
+test('one slug, two repositories: the record decides which row is proven, not the path', () => {
+  // Two checkouts, one slug: this repository has the merged PR, and a live pane
+  // of ANOTHER repository carries the same branch name. Asking owner/repo about
+  // ofmchat's branch is how a same-named merge closes a live session — and the
+  // discriminator is the record's `repo`, because both worktrees sit outside
+  // this checkout (Orca placement) and a path could no longer tell them apart.
   const dir = store();
-  record(dir, 'shared-slug', 'ctx_far');
-  const r = run(['--all', '--close'], {
+  record(dir, 'shared-slug', 'ctx_ours');
+  record(dir, 'shared-slug-2', 'ctx_far', { repo: 'goodluckagency/ofmchat' });
+  const r = run(['--close'], {
     dir,
     orca: {
-      workers: [worker('ctx_far')],
-      terminals: [terminal('term_ctx_far', { worktreePath: `${SCOPE}-other/shared-slug` })],
-      cursors: { term_ctx_far: [2, 2] },
+      workers: [worker('ctx_ours'), worker('ctx_far')],
+      terminals: [
+        terminal('term_ctx_ours', { worktreePath: `${SCOPE}-other/shared-slug` }),
+        terminal('term_ctx_far', { worktreePath: `${SCOPE}-other/shared-slug-2` }),
+      ],
+      cursors: { term_ctx_ours: [2, 2], term_ctx_far: [2, 2] },
     },
     execOptions: { answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 12, headRefName: 'shared-slug' }]), stderr: '' } } },
   });
 
-  assert.match(r.out, /this run can only prove landing in owner\/repo/);
+  assert.match(r.out, /ctx_ours.*CLOSE.*PR #12 merged/);
+  assert.match(r.out, /1 in another repository/);
+  assert.match(r.out, /1 closeable/);
+  assert.equal(r.calls.filter(argv => argv.includes('worker-release')).length, 1);
+  assert.ok(r.calls.every(argv => !argv.includes('ctx_far')));
+});
+
+test('a worktree carrying any uncommitted change is KEPT, and no path is allowlisted inside the proof', () => {
+  // #83's second defect was the tool's OWN `.env.local` reading as work. The
+  // repair is the ignore `ax init` writes, never an allowlist here: a proof that
+  // skips one path is how a hand-edited file with real work in it stops
+  // blocking a close.
+  const dir = store();
+  record(dir, 'ws-dirty', 'ctx_dirty');
+  const here = join(SCOPE, 'ws-dirty');
+  mkdirSync(here, { recursive: true });
+
+  const r = run(['--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_dirty')],
+      terminals: [terminal('term_ctx_dirty', { worktreePath: here })],
+      cursors: { term_ctx_dirty: [4, 4] },
+    },
+    execOptions: {
+      answers: {
+        'git rev-parse': { status: 0, stdout: 'feat/83-env-sweep\n', stderr: '' },
+        'git status': { status: 0, stdout: '?? .env.local\n', stderr: '' },
+      },
+    },
+  });
+
+  assert.match(r.out, /ctx_dirty.*KEEP.*uncommitted changes on feat\/83-env-sweep/);
   assert.match(r.out, /0 closeable/);
   assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
 });
