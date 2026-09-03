@@ -661,10 +661,10 @@ test('commits since open: a shape this checkout cannot read is cannot-establish,
   const { root } = mergedRepo();
   // A read that failed is this module's `unknown` — exit 3, CANNOT ESTABLISH —
   // exactly like an unreadable base ref in the staleness ground beside it. It
-  // fails closed either way, but calling it a REFUSAL tells the caller a
-  // transient git failure is established authored work, and hands them an
-  // `--ack-body` they must not pass (#119 P2). Every one of these names the read
-  // that would decide it instead.
+  // fails closed either way and the repair was already the fetch; what calling
+  // it a REFUSAL got wrong is the sentence and the exit code, telling the caller
+  // a transient git failure is an established named reason on exit 1 where every
+  // sibling read answers exit 3 (#119 P2).
   const absent = commitsGround(
     commitOptions(root, { commits: commitsOk([commitRow('d'.repeat(40), 'a merge this checkout lacks', LATE, [{ sha: 'e'.repeat(40) }, { sha: 'f'.repeat(40) }])]) }),
   );

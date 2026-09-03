@@ -585,9 +585,11 @@ export function mergePolicy({ run, slug }) {
  * `merge-tree` that cannot answer, or a tree that cannot be resolved leaves the
  * shape undecided, and undecided is not exempt (F-028). An undecided shape is
  * this module's `unknown` — CANNOT ESTABLISH, exit 3 — and never a refusal.
- * Both fail closed, but a refusal says "established authored work" and hands
- * the caller an `--ack-body` they must not pass for a commit no read decided;
- * every other unreadable git read in this file answers the same way.
+ * Both fail closed, and the first version's refusal even carried the right
+ * repair — the fetch. What it got wrong was the SENTENCE and the exit code: it
+ * told the caller a transient git failure was a named, established reason to
+ * refuse, on exit 1, where every other unreadable git read in this file answers
+ * `unknown` on exit 3. Downstream tooling routes on that code.
  *
  * Each undecided shape carries its OWN repair, because "re-run the read" is not
  * one for all of them: `merge-tree --write-tree` arrived in git 2.38, so an
@@ -710,9 +712,10 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
     } else {
       // A READ THAT FAILED IS THIS MODULE'S `unknown`, not a refusal: it fails
       // closed either way (exit 3 merges nothing), but calling it a refusal
-      // tells the caller a transient git failure is established authored work
-      // and hands them an `--ack-body` they must not pass (#119 P2). Every
-      // other unreadable git read in this file answers the same way.
+      // tells the caller a transient git failure is an established, named
+      // reason on exit 1 — where every other unreadable git read in this file
+      // answers `unknown` on exit 3, and downstream tooling routes on the code
+      // (#119 P2). The repair was already the fetch; only the channel was wrong.
       out.unknown(
         `commits since open: ${short(entry.sha)} landed after the PR opened and ${shape.reason}, so whether it is base movement or work is undecided — unknown is not exempt (F-028)`,
         shape.repair,

@@ -109,11 +109,13 @@ and a guard that consumes one is measuring the filter.
 
 **Unknown is not exempt (F-028) — and unknown is not a refusal either.** A base ref this checkout
 cannot resolve, a `merge-tree` that cannot answer, or an unresolvable tree leaves the shape
-undecided, and an undecided shape is the module's `unknown`: CANNOT ESTABLISH, exit 3. Both fail
-closed, so the first version called it a refusal and nothing merged either way — but a refusal
-asserts *established authored work* and prints the `--ack-body` repair, which tells a caller to
-acknowledge a commit no read ever decided. Whenever fail-closed can be reached through two
-channels, pick the one whose SENTENCE is true; the exit code is what other tooling routes on.
+undecided, and an undecided shape is the module's `unknown`: CANNOT ESTABLISH, exit 3. The first
+version called it a refusal. Nothing merged either way, and it even printed the right repair — the
+fetch — so the defect was entirely in the SENTENCE and the exit code: it reported a transient git
+failure as a named, established reason to refuse, on exit 1, where every sibling read in the same
+file answers exit 3. Whenever fail-closed is reachable through two channels, pick the one whose
+sentence is true: the prose is what a human acts on and the exit code is what other tooling routes
+on, and a ground that lies in either direction gets switched off.
 
 **A repair that cannot repair is not a repair.** `merge-tree --write-tree` arrived in git 2.38, so
 an older host answers 129 — and the common "re-run the fetch" repair would fail identically
