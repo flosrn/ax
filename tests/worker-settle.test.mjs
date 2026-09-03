@@ -336,18 +336,47 @@ test('a record another caller is mid-gesture on is refused, and nothing is writt
   assert.equal(existsSync(`${path}.lock`), true, "another caller's lock is never removed by this verb");
 });
 
-test('the lock is released on the way out, so the next call is not fenced by this one', () => {
+test('the lock is HELD across the proof and released on the way out, success and refusal alike', () => {
   const dir = store();
   const path = deadAttempt(dir, '71-rls-refute');
 
-  const first = settling(path, dir, { workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')] });
-  assert.equal(first.code, 0, first.out);
+  // Diagnostic in BOTH directions, which the first cut of this test was not:
+  // asserting only that no lock survives passes trivially against a verb that
+  // never takes one. The runner is called from inside the locked gesture, so it
+  // is the one place that can witness the lock existing while the proof runs.
+  const held = [];
+  const witness = fixture => {
+    const inner = fakeRunner(fixture);
+    const run = args => {
+      held.push(existsSync(`${path}.lock`) || existsSync(`${dir}/72-live.json.lock`));
+      return inner(args);
+    };
+    run.calls = inner.calls;
+    return run;
+  };
+
+  const before = readFileSync(path, 'utf8');
+  const ok = run(['71-rls-refute'], {
+    runner: witness({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')] }),
+    exec: ghSaying(REPO),
+    env: { ORCA_DISPATCH_STORE: dir },
+  });
+  assert.equal(ok.code, 0, ok.out);
+  assert.notEqual(readFileSync(path, 'utf8'), before, 'the write happened, so the reads around it were the locked ones');
+  assert.ok(held.every(Boolean) && held.length > 0, `the lock was not held while the machine was read: ${JSON.stringify(held)}`);
   assert.equal(existsSync(`${path}.lock`), false, 'a settled record left its lock behind');
 
   // And on a REFUSAL path too — the release rides a `finally`, not the happy end.
   const other = deadAttempt(dir, '72-live');
-  const refused = settling(other, dir, { workers: [dispatch('ctx_live', 'term_live', { state: 'ready' })], terminals: ['term_live'] }, ['72-live']);
-  assert.equal(refused.code, 1);
+  held.length = 0;
+  const refused = run(['72-live'], {
+    runner: witness({ workers: [dispatch('ctx_live', 'term_live', { state: 'ready' })], terminals: ['term_live'] }),
+    exec: ghSaying(REPO),
+    env: { ORCA_DISPATCH_STORE: dir },
+  });
+  assert.equal(refused.code, 1, refused.out);
+  assert.match(refused.out, /STOP — 1 live agent/, 'the refusal under test is the live-agent one, not some earlier branch');
+  assert.ok(held.every(Boolean) && held.length > 0, 'the lock was not held while the refused proof was taken');
   assert.equal(existsSync(`${other}.lock`), false, 'a refusal left its lock behind, fencing every later settle');
 });
 
