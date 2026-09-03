@@ -8,6 +8,23 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.20.0](https://github.com/flosrn/ax/compare/v0.19.0...v0.20.0) (2026-09-03)
+
+
+### Features
+
+* **omp:** the worker's report opens on its CRITERIA, and the merge decision reads them first ([#113](https://github.com/flosrn/ax/issues/113)) ([fa5e2d4](https://github.com/flosrn/ax/commit/fa5e2d4bf4b99b434dd66978e76fbfbfb567e5a5))
+* **worker:** ax worker settle writes the ending the gate can prove ([#112](https://github.com/flosrn/ax/issues/112)) ([effe105](https://github.com/flosrn/ax/commit/effe1055f5bc85ac257934c81256c07bbf333e76))
+
+
+### Bug Fixes
+
+* **cli:** --help is a read anywhere in a command's own argv ([#115](https://github.com/flosrn/ax/issues/115)) ([777cc7f](https://github.com/flosrn/ax/commit/777cc7f006bb2aac72e8c41c567e6a6bf3366724))
+* **pr-gate:** read every channel a merge closes issues from, not the body alone ([#114](https://github.com/flosrn/ax/issues/114)) ([056b556](https://github.com/flosrn/ax/commit/056b556be5cbe4229c261d9c6724a56c11a58889))
+* **schema:** refuse patternProperties instead of admitting it unimplemented ([#110](https://github.com/flosrn/ax/issues/110)) ([6c723be](https://github.com/flosrn/ax/commit/6c723be69c8fd63d2e795d1dcbb930c288320f15))
+* the project plan decides managed blocks per file, not per checkout ([#117](https://github.com/flosrn/ax/issues/117)) ([7962007](https://github.com/flosrn/ax/commit/79620075136e70665cce916402c6c148e3e979e6))
+* **worker:** dispatch refuses a closed ticket and a foreign record before any mutation; the claim winner mints under the lock ([#95](https://github.com/flosrn/ax/issues/95)) ([#116](https://github.com/flosrn/ax/issues/116)) ([bcc30a1](https://github.com/flosrn/ax/commit/bcc30a13a2dd0bb40916454e2802536ab21ce444))
+
 ## [0.19.0](https://github.com/flosrn/ax/compare/v0.18.0...v0.19.0) (2026-09-03)
 
 
