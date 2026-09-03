@@ -74,7 +74,7 @@ function provisioned(root, name) {
  * dispatch will use; `cursors` is the liveness series; every argv is recorded so
  * "nothing was dispatched" is asserted rather than assumed.
  */
-function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false, labels = [] } = {}) {
+function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' } } = {}) {
   const calls = [];
   let reads = 0;
   const runner = createRunner({
@@ -85,7 +85,7 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/paren
       const receipt = result => ({ status: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' });
       if (args[0] === 'status') return receipt({ runtime: { reachable: true } });
       if (line.startsWith('linear issue')) {
-        return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state: { name: 'In Progress' }, description: emptyBody ? '   ' : 'a decision, written down', labels: { nodes: labels.map(name => ({ name })) } } });
+        return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state, description: emptyBody ? '   ' : 'a decision, written down', labels: { nodes: labels.map(name => ({ name })) } } });
       }
       if (line.startsWith('worktree create')) return created ?? receipt({ worktree: { path: '/nonexistent' } });
       if (line.startsWith('worktree show')) {
@@ -228,6 +228,25 @@ test('an unreadable --notes file is refused before the ticket is even read', () 
   assert.equal(r.code, 1);
   assert.match(r.out, /--notes file unreadable/);
   assert.deepEqual(r.calls, [], 'nothing is read when the arguments already refuse');
+});
+
+// Measured 2026-09-03: #78 was closed by the operator at 05:19Z and dispatched
+// at 13:xx through the `--slug` + `--because` path, which never consults the
+// frontier. The child refused at its decision gate, posted nothing, and a pane
+// was minted and released for a ticket nobody could work. The frontier already
+// excludes `no-longer-open`; the verb must refuse the same state itself, before
+// any mutation, because the verb can be reached without the frontier.
+test('a closed ticket is refused before any mutation, on either tracker', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { orca: { state: { name: 'Done', type: 'completed' } } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /GAP-353 is closed \(Done\)/);
+  assert.match(r.out, /nothing to dispatch/);
+  assert.deepEqual(r.started, []);
+  assert.ok(r.calls.every(argv => !argv.includes('worktree create') && !argv.includes('task-create')), r.calls.join(' | '));
+
+  const canceled = run(['--issue', ISSUE, '--slug', SLUG], { orca: { state: { name: 'Canceled', type: 'canceled' } } });
+  assert.equal(canceled.code, 1);
+  assert.deepEqual(canceled.started, []);
 });
 
 test('the retired --brief is refused BY NAME, with --notes named as the repair', () => {

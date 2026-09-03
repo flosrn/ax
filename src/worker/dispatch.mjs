@@ -383,6 +383,18 @@ export function dispatch(
   if (ticket !== null && !ticket.ok) {
     return cannot(ticket.reason, `${kind === 'linear' ? 'orca linear issue' : 'gh issue view'} ${flags.issue}   # read it by hand first`);
   }
+  // A closed ticket has nothing to dispatch, and this is the verb's own check:
+  // `ax frontier` already excludes `no-longer-open`, but the `--slug` +
+  // `--because` path reaches here without the frontier. Measured 2026-09-03:
+  // #78, closed by the operator at 05:19Z, dispatched at 13:xx — the child
+  // refused at its decision gate, posted nothing, and a pane was minted and
+  // released for a ticket nobody could work.
+  if (ticket !== null && ticket.closed) {
+    return refuse(
+      `${ticket.id} is closed (${ticket.state}) — nothing to dispatch`,
+      `ax frontier   # the takeable set; a closed ticket is never in it`,
+    );
+  }
 
   const entry = dispatchConfig.entry ?? '';
   if (named) {

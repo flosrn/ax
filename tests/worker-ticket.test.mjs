@@ -98,6 +98,7 @@ test('a Linear ticket reduces to the fields a brief needs, and never to its body
     // Linear answers no handle: its url is the only address a brief can print.
     handle: '',
     state: 'In Progress',
+    closed: false,
     bodyLength: ISSUE.description.length,
     // A connection, which is the shape a GraphQL tracker answers.
     labels: ['domain:database', 'area:web'],
@@ -140,9 +141,25 @@ test('a GitHub issue answers the same shape, from the top level of its own JSON'
     // receipt.
     handle: 'issue://1234',
     state: 'OPEN',
+    closed: false,
     bodyLength: 5,
     labels: ['domain:database', 'domain:security'],
   });
+});
+
+test('a ticket says whether it is closed, in each tracker\'s own vocabulary', () => {
+  // GitHub has two states. Linear has a workflow whose NAMES are the team's
+  // ("Done", "Won't do", "Shipped") and whose TYPE is the contract: `completed`
+  // and `canceled` are the two terminal types, everything else is live.
+  const gh = state => (bin, args) => ({ status: 0, stdout: JSON.stringify({ title: 't', url: 'https://github.com/o/r/issues/9', state, body: '', labels: [] }), stderr: '' });
+  assert.equal(readTicket('9', { kind: 'github', exec: gh('CLOSED') }).closed, true);
+  assert.equal(readTicket('9', { kind: 'github', exec: gh('OPEN') }).closed, false);
+
+  const linear = state => runnerOf({ status: 0, stdout: linearReceipt({ ...ISSUE, state }), stderr: '' });
+  assert.equal(readTicket('GAP-353', { kind: 'linear', run: linear({ name: 'Done', type: 'completed' }) }).closed, true);
+  assert.equal(readTicket('GAP-353', { kind: 'linear', run: linear({ name: "Won't do", type: 'canceled' }) }).closed, true);
+  assert.equal(readTicket('GAP-353', { kind: 'linear', run: linear({ name: 'Done', type: 'started' }) }).closed, false, 'the name is the team\'s; only the type decides');
+  assert.equal(readTicket('GAP-353', { kind: 'linear', run: linear({ name: 'Todo' }) }).closed, false, 'no type is not a terminal type');
 });
 
 test("an unreadable ticket is a refusal that carries the tracker's own words", () => {

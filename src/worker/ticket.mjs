@@ -122,6 +122,11 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
   let title;
   let url;
   let state = '';
+  // Whether the ticket is DONE, in the tracker's own vocabulary. GitHub has two
+  // states. Linear has a workflow whose names are the team's ("Done", "Won't
+  // do", "Shipped") and whose TYPE is the contract: `completed` and `canceled`
+  // are its two terminal types, and the name alone decides nothing.
+  let closed = false;
   let body = '';
   let detail = '';
   let labels = [];
@@ -139,6 +144,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     title = issue.title;
     url = issue.url;
     state = issue.state?.name ?? '';
+    closed = ['completed', 'canceled'].includes(String(issue.state?.type ?? ''));
     body = issue.description ?? '';
     labels = labelNames(issue.labels);
     detail = detailOf(answer?.stderr, answer?.receipt?.error, answer?.receipt?.unparseable);
@@ -164,6 +170,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     title = parsed.title;
     url = parsed.url;
     state = parsed.state ?? '';
+    closed = String(state).toUpperCase() === 'CLOSED';
     body = parsed.body ?? '';
     labels = labelNames(parsed.labels);
     detail = detailOf(answer?.stderr);
@@ -180,7 +187,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
   // link an agent cannot follow. Linear answers none, so its brief keeps the url.
   // Both surfaces stay honest: `url` remains what the orchestrator's receipt
   // prints for a human.
-  return { ok: true, id: ident, title, url, handle: kind === 'github' ? `issue://${ref}` : '', state, bodyLength: String(body).trim().length, labels };
+  return { ok: true, id: ident, title, url, handle: kind === 'github' ? `issue://${ref}` : '', state, closed, bodyLength: String(body).trim().length, labels };
 }
 
 /**
