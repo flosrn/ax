@@ -455,7 +455,20 @@ export function prCommits({ run, slug, pr }) {
       const commit = must(entry, 'commit', 'a PR commit');
       const when = Date.parse(must(must(commit, 'committer', 'commit'), 'date', 'committer'));
       if (Number.isNaN(when)) throw new Error('a PR commit carries a committer date that is not a date');
-      return { sha: String(must(entry, 'sha', 'a PR commit')), message: String(must(commit, 'message', 'commit')), when };
+      // The PARENTS are the third thing standing on this payload (#90): Ground
+      // 6's shape rule asks how many a post-open commit has and which one the
+      // base reaches, and this endpoint has always carried them. Read by name
+      // like every other field — an absent list is an unread shape, never a
+      // commit with no parents, and defaulting it to `[]` would make every
+      // commit read as a non-merge and quietly disable the rule.
+      const parents = must(entry, 'parents', 'a PR commit');
+      if (!Array.isArray(parents)) throw new Error("a PR commit's 'parents' is not a list");
+      return {
+        sha: String(must(entry, 'sha', 'a PR commit')),
+        message: String(must(commit, 'message', 'commit')),
+        when,
+        parents: parents.map(parent => String(must(parent, 'sha', "a PR commit's parent"))),
+      };
     });
     return { ok: true, commits };
   } catch (error) {
@@ -529,20 +542,196 @@ export function mergePolicy({ run, slug }) {
  * The payload arrives already read (`prCommits`): this ground and the closing
  * channel stand on ONE fetch, and each names its own inability over it rather
  * than sharing one sentence about two different questions.
+ *
+ * ONE SHAPE IS EXEMPT, AND IT IS EXEMPT BY MEASUREMENT: a clean merge FROM the
+ * base. #90 measured the cost of not having it — the gate's own staleness
+ * self-repair ran `gh pr update-branch`, the merge that produced was committed
+ * after the PR opened, and this ground then listed and refused that very
+ * commit, printing an `--ack-body` repair the caller could not have satisfied
+ * because the commit did not exist when they typed the command. The merge of
+ * #87 went to a worker for a body edit whose only content was the gate's own
+ * footprint.
+ *
+ * KTD9's premise is what fails there, not KTD9: a body written before a commit
+ * existed cannot describe it, and base movement is not work the body was ever
+ * meant to describe. So the exemption is not a suppressor anyone can pass — it
+ * is a PREDICATE ON THE COMMIT, all three parts read, none assumed:
+ *
+ *   1. exactly two parents,
+ *   2. the second one reachable from the base ref, and
+ *   3. its tree IDENTICAL to the tree an ordinary merge of its two parents
+ *      produces (`git merge-tree --write-tree`) — it is exactly what
+ *      `git merge origin/<base>` would have written, and nothing else.
+ *
+ * Re-derived on every run and remembered nowhere, so it holds identically in
+ * the process that minted the commit, in the owning worker's fresh gate run,
+ * and in a resumed merge; a worker's own clean `git merge origin/<base>` is the
+ * same shape and gets the same answer.
+ *
+ * PART 3 IS THE WHOLE ANTI-SMUGGLING GUARANTEE, and its first form was not one.
+ * `git diff-tree --cc` EMPTY looked like "carries nothing of its own" and is
+ * not: `--cc` drops hunks whose result matches a parent wholesale, so
+ * `git merge -X ours <base>` — two parents, second reachable, the base's change
+ * to a file silently DROPPED — printed an empty `--cc` and read as exempt
+ * (measured 2026-09-03 in a repository built for it, after a Codex P1 on PR
+ * #119). The lesson generalises: a diff FILTERED for human interest cannot
+ * answer a question about content, and an inspection of a result is weaker than
+ * a recomputation of it. Asking whether the tree IS the merge admits nothing —
+ * a conflict resolution, an evil merge, a restored file, a dropped upstream
+ * change all move the tree off the recomputed one, so all four are work,
+ * refuse, and are named as such.
+ *
+ * THE READS ARE READS — a base ref this checkout cannot resolve, a
+ * `merge-tree` that cannot answer, or a tree that cannot be resolved leaves the
+ * shape undecided, and undecided is not exempt (F-028). An undecided shape is
+ * this module's `unknown` — CANNOT ESTABLISH, exit 3 — and never a refusal.
+ * Both fail closed, and the first version's refusal even carried the right
+ * repair — the fetch. What it got wrong was the SENTENCE and the exit code: it
+ * told the caller a transient git failure was a named, established reason to
+ * refuse, on exit 1, where every other unreadable git read in this file answers
+ * `unknown` on exit 3. Downstream tooling routes on that code.
+ *
+ * Each undecided shape carries its OWN repair, because "re-run the read" is not
+ * one for all of them: `merge-tree --write-tree` arrived in git 2.38, so an
+ * older git answers 129, and a repair naming a fetch there would fail
+ * identically forever — no fetch adds a capability. That one names the version.
+ *
+ * The rejected alternative, named so it is not re-invented: having the
+ * self-repair append `--ack-body` to its own re-run. That suppresses the
+ * detector for EVERY post-open commit, including the caller-authored ones the
+ * body genuinely fails to describe — a one-commit exemption turned into a
+ * blanket bypass of the ground.
  */
-export function commitsGround({ commits, slug, pr, openedAt, ackBody, invocation }) {
+export function commitsGround({ commits, git, root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation }) {
   const out = account();
   if (!commits.ok) {
     out.unknown(`commits since open: ${commits.reason}`, commits.repair);
     return out;
   }
-  const late = commits.commits.filter(entry => entry.when > openedAt).map(entry => entry.sha.slice(0, 12));
-  if (late.length === 0) out.note('commits since open: none — the body describes every commit on the branch');
-  else if (ackBody) out.note(`commits since open: ${late.length} acknowledged via --ack-body (${late.join(' ')})`);
-  else {
+  // The FULL sha rides each row — the shape is measured against the commit
+  // graph, which a 12-character prefix cannot address — and the prefix is
+  // derived where it is printed.
+  const late = commits.commits.filter(entry => entry.when > openedAt);
+  const short = sha => String(sha).slice(0, 12);
+  const ackRepair = `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`;
+  if (late.length === 0) {
+    out.note('commits since open: none — the body describes every commit on the branch');
+    return out;
+  }
+  if (ackBody) {
+    // The caller answered for the whole list, so nothing here refuses and no
+    // shape needs measuring: a git read whose failure could only produce a
+    // refusal on an already-acknowledged run is a read this ground must not
+    // make.
+    out.note(`commits since open: ${late.length} acknowledged via --ack-body (${late.map(entry => short(entry.sha)).join(' ')})`);
+    return out;
+  }
+
+  const gitRun = args => git(args, root);
+  // Resolved ONCE, and only because a two-parent commit is asking: a PR with no
+  // post-open merge costs this ground no git read at all.
+  const merges = late.filter(entry => entry.parents.length === 2);
+  const baseRef = merges.length === 0 || !refsRefreshed ? '' : resolveRef(gitRun, baseBranch);
+  // An undecided shape carries its OWN repair. Most of them are a read to
+  // retry, so the fetch is the default; a git that does not have the read at
+  // all is a different repair, and handing it a fetch would loop forever on a
+  // capability no fetch can add (#119 P2).
+  const fetchRepair = `git fetch origin ${baseBranch} ${headBranch}   # then: ${invocation()}`;
+  const undecided = (reason, repair = fetchRepair) => ({ kind: 'undecided', reason, repair });
+  const shapeOf = entry => {
+    if (baseRef === '') {
+      return undecided(
+        refsRefreshed
+          ? `'${baseBranch}' cannot be read here, so whether its second parent is base movement is unmeasurable`
+          : `the refs could not be refreshed, so '${baseBranch}' cannot be read here and whether its second parent is base movement is unmeasurable`,
+      );
+    }
+    const second = entry.parents[1];
+    const reaches = gitRun(['merge-base', '--is-ancestor', second, baseRef]);
+    // git answers this question with 1, and everything else — a missing object
+    // above all — with a failure that is not an answer.
+    if (!succeeded(reaches) && reaches.status !== 1) {
+      return undecided(`'git merge-base --is-ancestor ${short(second)} ${baseRef}' could not answer (${clean(firstLine(reaches.stderr)) || `exit ${reaches.status}`})`);
+    }
+    if (!succeeded(reaches)) return { kind: 'work', why: `is a merge of ${short(second)}, which ${baseRef} does not reach — another branch merged in is work, not base movement` };
+    // THE MERGE IS RECOMPUTED AND THE TREES COMPARED, never inspected for
+    // "interesting" hunks. `git diff-tree --cc` was the first predicate here
+    // and it is not one: `--cc` drops hunks where the result matches a parent
+    // wholesale, so `git merge -X ours <base>` — two parents, second reachable,
+    // and the base's change to a file silently DROPPED — prints an empty `--cc`
+    // and read as exempt (measured 2026-09-03 on PR #119, Codex P1). That is
+    // caller-authored content passing the detector, which is the one thing this
+    // exemption must never do.
+    //
+    // So the question is asked positively: is this commit's tree EXACTLY what
+    // an ordinary merge of its two parents produces? `--write-tree` needs git
+    // 2.38 and writes an unreferenced tree object; an older git answers 129 and
+    // becomes undecided, which fails closed.
+    const recomputed = gitRun(['merge-tree', '--write-tree', entry.parents[0], second]);
+    // Exit 1 is BOTH "the ordinary merge conflicts" and "an object is missing",
+    // so the tree id on stdout is what separates them: a conflicted merge still
+    // writes one, a failed read writes nothing.
+    const wrote = firstLine(recomputed.stdout);
+    if (!/^[0-9a-f]{40,64}$/.test(wrote)) {
+      // git's usage exit. `--write-tree` arrived in git 2.38, and a fetch
+      // cannot add it: naming one here would print a repair that fails
+      // identically forever (#119 P2).
+      if (recomputed.status === 129) {
+        return undecided(
+          `'git merge-tree --write-tree' is not available here (${clean(firstLine(recomputed.stderr)) || 'exit 129'}), so what an ordinary merge of its parents produces cannot be recomputed`,
+          `git --version   # 'merge-tree --write-tree' needs git 2.38 or newer; upgrade git, then: ${invocation()}`,
+        );
+      }
+      return undecided(`'git merge-tree --write-tree ${short(entry.parents[0])} ${short(second)}' could not answer (${clean(firstLine(recomputed.stderr)) || `exit ${recomputed.status}`})`);
+    }
+    if (!succeeded(recomputed)) {
+      return { kind: 'work', why: `merges ${baseRef} and an ordinary merge of its parents CONFLICTS, so the content it carries is a resolution someone authored, not base movement` };
+    }
+    const tree = gitRun(['rev-parse', `${entry.sha}^{tree}`]);
+    if (!succeeded(tree)) return undecided(`'git rev-parse ${short(entry.sha)}^{tree}' could not answer (${clean(firstLine(tree.stderr)) || `exit ${tree.status}`})`);
+    if (firstLine(tree.stdout) !== wrote) {
+      return {
+        kind: 'work',
+        why: `merges ${baseRef} but its tree is not the one an ordinary merge of its parents produces (${short(firstLine(tree.stdout))} against ${short(wrote)}), so it carries a decision someone made — dropped, restored or added content — not base movement`,
+      };
+    }
+    return { kind: 'exempt' };
+  };
+
+  const exempt = [];
+  const plain = [];
+  for (const entry of late) {
+    if (entry.parents.length !== 2) {
+      plain.push(entry);
+      continue;
+    }
+    const shape = shapeOf(entry);
+    if (shape.kind === 'exempt') exempt.push(entry);
+    else if (shape.kind === 'work') {
+      out.refuse(`commits since open [DETECTOR]: ${short(entry.sha)} ${shape.why}`, ackRepair);
+    } else {
+      // A READ THAT FAILED IS THIS MODULE'S `unknown`, not a refusal: it fails
+      // closed either way (exit 3 merges nothing), but calling it a refusal
+      // tells the caller a transient git failure is an established, named
+      // reason on exit 1 — where every other unreadable git read in this file
+      // answers `unknown` on exit 3, and downstream tooling routes on the code
+      // (#119 P2). The repair was already the fetch; only the channel was wrong.
+      out.unknown(
+        `commits since open: ${short(entry.sha)} landed after the PR opened and ${shape.reason}, so whether it is base movement or work is undecided — unknown is not exempt (F-028)`,
+        shape.repair,
+      );
+    }
+  }
+  if (exempt.length > 0) {
+    out.note(
+      `commits since open: ${exempt.length} base merge${exempt.length === 1 ? '' : 's'} — exempt: ${exempt.map(entry => short(entry.sha)).join(' ')} ` +
+        `(clean merge of ${baseRef}: two parents, the second one the base reaches, and a tree identical to the one an ordinary merge of those parents produces — base movement, which no body written before it could describe)`,
+    );
+  }
+  if (plain.length > 0) {
     out.refuse(
-      `commits since open [DETECTOR]: ${late.length} commit(s) landed after the PR was opened (${late.join(' ')})`,
-      `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`,
+      `commits since open [DETECTOR]: ${plain.length} commit(s) landed after the PR was opened (${plain.map(entry => short(entry.sha)).join(' ')})`,
+      ackRepair,
     );
   }
   return out;
