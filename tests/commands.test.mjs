@@ -17,6 +17,7 @@ import {
   SECTIONS,
   WIDTH,
   commandNames,
+  helpAsked,
   plumbingSubcommand,
   plumbingSubcommands,
   renderUsage,
@@ -331,12 +332,23 @@ test('help and version answer without a repository', () => {
   assert.match(run([]).out, /^Usage$/m);
 });
 
-// ── --help is a read on every verb ───────────────────────────────────────────
+// ── --help is a read anywhere in a command's own argv ────────────────────────
 // `ax init --help` RAN init: it rewrote four tracked files of the repository it
 // was asked from, on a machine whose operator was only asking what the verb
-// does (#69). Asking a verb what it does must never run it, and the guarantee
-// is STRUCTURAL — `runCli` answers the flag from the registry before any runner
-// is reached, so a verb registered next month inherits it by being registered.
+// does (#69). #71 answered the flag in ONE slot — the command's first — and
+// that left the same defect alive one argument to the right: `ax init --vendor
+// <x> --help` still ran init and wrote six paths, because `--vendor` takes a
+// value and the flag was therefore in slot 2 (#89). One level down it was
+// worse: `ax worktree clean --help` reclaimed, `ax worktree setup --help`
+// provisioned, and `ax worker tail --help` diagnosed a pane named `--help`
+// (#93).
+//
+// So ax claims the flag in the command's WHOLE argv, minus the value slots its
+// own declarations name — arity is registry data, which is what keeps `ax
+// board --comment --help` a comment whose text is `--help`. The guarantee is
+// STRUCTURAL: `runCli` answers from the registry before any runner is reached,
+// so a verb registered next month inherits it by being registered, and a
+// command whose argv is a foreign CLI's in full says so with one marker.
 
 /** A committed temp repository, so `git status --porcelain` starts empty. */
 const cleanRepo = () => {
@@ -399,15 +411,115 @@ test('a verb’s help carries the verbs and flags it declares, and never its plu
   assert.match(init, /^ +--vendor <owner>\/<repo> +upstream kit/m, 'a declared flag is missing from the command’s own help');
 });
 
-test('the help flag past the first slot belongs to whoever owns that argv', () => {
-  // A noun's verb parses its own arguments and answers its own `--help` with
-  // its own exit codes, so ax claims the flag in ONE position: the command's
-  // first. Claiming more would swallow a flag that is not ax's — every argument
-  // after `ax supabase` belongs to the Supabase CLI (./supabase-guard.mjs).
-  const verb = run(['triage', 'ask', '--help'], HAS_ORCA);
-  assert.equal(verb.status, 0);
-  assert.match(verb.out, /ax triage ask --issue/, 'the verb no longer answers its own help');
-  assert.doesNotMatch(plain(verb.out), /^ORCHESTRATION$/m, 'the noun’s section answered a question the verb owns');
+test('a value-taking flag no longer runs the verb: --help is a read past the first slot', () => {
+  const root = cleanRepo();
+  const porcelain = () => execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
+
+  try {
+    // The #89 reproduction verbatim, and its `-h` twin: measured on `main` at
+    // `bb75a2a`, the first of these ran init and left six paths behind.
+    for (const argv of [
+      ['init', '--vendor', 'makerkit/next-supabase-saas-kit', '--help'],
+      ['init', '--vendor', 'makerkit/next-supabase-saas-kit', '-h'],
+      ['init', '--dry-run', '--help'],
+    ]) {
+      const asked = `ax ${argv.join(' ')}`;
+      const result = run(argv, HAS_ORCA, root);
+
+      assert.equal(result.status, 0, `${asked} exited ${result.status} instead of answering`);
+      assert.equal(porcelain(), '', `${asked} wrote to the working tree — asking a verb what it does ran it`);
+      assert.deepEqual(sectionsOf(result.out), { PROJECT: ['init'] }, `${asked} answered with something other than init's own section`);
+      assert.match(plain(result.out), /^ +--vendor <owner>\/<repo> +upstream kit/m, `${asked} did not answer with init's declared flags`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('every declared verb answers --help as a read, and none of them runs', () => {
+  // The #93 table as a contract. Measured on `main` at `bb75a2a`, twenty
+  // subverbs answered five different ways: three RAN (`worktree setup|ls|clean`,
+  // and `clean` reclaimed processes and containers a `git status` cannot see),
+  // two consumed the flag as their positional target (`worker tail|gate`, exit
+  // 3 about a pane named `--help`), three refused it as an unknown argument,
+  // and ten answered out of their own argv loop. One place decides now, so all
+  // of them read the same — and a verb added later cannot answer a sixth way.
+  const root = cleanRepo();
+  const porcelain = () => execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
+  const shown = new Set(plain(run(['help'], HAS_ORCA).out).split('\n').map(squeeze));
+
+  try {
+    for (const command of visibleCommands({ orca: true })) {
+      for (const verb of subcommandNames(command.name)) {
+        for (const flag of ['--help', '-h']) {
+          const asked = `ax ${command.name} ${verb} ${flag}`;
+          const result = run([command.name, verb, flag], HAS_ORCA, root);
+
+          assert.equal(result.status, 0, `${asked} exited ${result.status} instead of answering`);
+          assert.equal(porcelain(), '', `${asked} wrote to the working tree`);
+
+          // Composed once, from the registry: every line is a line `ax help`
+          // already shows, so a verb cannot pin a second description of itself.
+          for (const line of plain(result.out).split('\n').filter(text => text.trim() !== '')) {
+            assert.ok(shown.has(squeeze(line)), `${asked} prints "${squeeze(line)}", which ax help does not show`);
+          }
+          assert.deepEqual(sectionsOf(result.out), { [command.section]: [command.name] }, `${asked} answered for a command other than ${command.name}`);
+        }
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a declared value slot is that flag’s value, never a help read', () => {
+  // `ax board --comment --help` is a comment whose text is `--help`, and arity
+  // is the only thing that tells it from a read: `--comment <text>` is declared
+  // with a placeholder and `--verbose` is not (../src/commands.mjs). Observed
+  // past the argv loop — board reaches its runtime probe, which is downstream
+  // of the parse it would have refused.
+  const result = run(['board', '--verbose', '--comment', '--help'], HAS_ORCA);
+
+  assert.equal(result.status, 0);
+  assert.match(plain(result.out), /orca runtime not reachable/, 'the value slot was claimed as a help flag: board never reached its runner');
+  assert.doesNotMatch(plain(result.out), /nothing to do/, 'the comment arrived empty, so the value slot was consumed by someone else');
+  assert.deepEqual(sectionsOf(result.out), {}, 'board answered its own help instead of taking the comment');
+});
+
+test('the registry decides who asked for help, by arity and by ownership', () => {
+  // The predicate, directly: the CLI-level tests above prove the answer, this
+  // one pins the three rules that produce it.
+  assert.equal(helpAsked('init', ['--vendor', 'makerkit/next', '--help']), true, 'a free slot past a value is still ax’s to answer');
+  assert.equal(helpAsked('init', ['--dry-run', '-h']), true);
+  assert.equal(helpAsked('worktree', ['setup', '--help']), true, 'a verb is a positional, not a value slot');
+  assert.equal(helpAsked('board', ['--comment', '--help']), false, 'a declared value slot is the flag’s value');
+  assert.equal(helpAsked('board', ['--comment', 'done', '--help']), true);
+  assert.equal(helpAsked('init', []), false);
+  assert.equal(helpAsked('deploy', ['--help']), false, 'an unknown command has no registry entry to answer from');
+
+  // `supabase` owns its whole argv: every argument after the noun belongs to
+  // the Supabase CLI, whose own `--help` must reach it (../src/supabase-guard.mjs).
+  assert.equal(helpAsked('supabase', ['--help']), true, 'the first slot is the one gesture ax claims there');
+  assert.equal(helpAsked('supabase', ['-h']), true);
+  assert.equal(helpAsked('supabase', ['db', 'push', '--help']), false, 'ax swallowed a flag that was the Supabase CLI’s');
+  assert.equal(helpAsked('supabase', ['help']), false);
+});
+
+test('every declared option states its arity in one convention', () => {
+  // Arity is derived from the declaration, so the declaration is what has to be
+  // uniform: a bare `--flag` takes nothing, `--flag <value>` takes one slot.
+  // A future `--flag value` declared without the placeholder would read as
+  // boolean and turn its value into a help page, silently — this is the check
+  // that makes it a test failure instead.
+  for (const command of COMMANDS) {
+    for (const [declaration] of command.options ?? []) {
+      assert.match(
+        declaration,
+        /^(--[a-z-]+( <\S+>)?|<\S+>|[A-Z_]+=\S+)$/,
+        `${command.name} declares "${declaration}", whose arity cannot be read: use --flag, --flag <value>, <positional> or ENV=<value>`,
+      );
+    }
+  }
 });
 
 test('an unknown verb with --help is still the usage-error path', () => {

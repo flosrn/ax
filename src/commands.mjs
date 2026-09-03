@@ -35,6 +35,18 @@ import { orcaAvailable } from './orca-bin.mjs';
  * deliberately absent from every surface an agent reads. See
  * `plumbingSubcommands`.
  *
+ * `options` are the flags and positionals ONE command takes, and their arity is
+ * registry data read off the declaration itself: `--flag <value>` takes the
+ * next slot, a bare `--flag` takes none. That is the one convention — a
+ * placeholder in angle brackets — and `tests/commands.test.mjs` holds every
+ * declaration to it, because a `--flag value` declared without the placeholder
+ * would read as boolean and silently turn its value into a help page.
+ * `helpAsked` is what reads it. See `helpAsked`.
+ *
+ * `passthrough` marks a command whose arguments are a FOREIGN CLI's in full
+ * (`supabase`): ax claims the help flag in its first slot and not one argument
+ * past it.
+ *
  * `section` is the help heading the command is printed under, and every entry
  * declares one. See `SECTIONS`.
  */
@@ -81,6 +93,13 @@ export const COMMANDS = [
     // the Supabase CLI, so `ax` claims none of them. They are listed here all
     // the same, because an escape hatch nobody can find is an escape hatch
     // nobody uses — they delete the guard instead.
+    //
+    // And that ownership is DECLARED, because the help read is otherwise
+    // whole-argv: `supabase db push --help` is a question for the Supabase CLI
+    // and ax must not answer it (`helpAsked`, ./supabase-guard.mjs). The marker
+    // is what keeps the one gesture ax does claim there — `ax supabase --help`,
+    // in the first slot — from spreading over an argv that is not ax's.
+    passthrough: true,
     options: [
       ['AX_SUPABASE_CLI=<path>', 'the CLI to run when the workspace and PATH have none'],
       ['AX_SUPABASE_GUARD=0', 'skip the guard and run against the shared database'],
@@ -239,6 +258,67 @@ export const plumbingSubcommands = name => Object.keys(COMMANDS.find(command => 
 
 /** Why one verb is plumbing, or null when it is not. */
 export const plumbingSubcommand = (name, verb) => COMMANDS.find(command => command.name === name)?.plumbing?.[verb] ?? null;
+
+/**
+ * The whole-command flags whose NEXT slot is a value, read off their own
+ * declarations: `--vendor <owner>/<repo>` takes one, `--dry-run` takes none.
+ */
+const valueFlags = command =>
+  new Set(
+    (command.options ?? [])
+      .filter(([declaration]) => /^--[a-z-]+ </.test(declaration))
+      .map(([declaration]) => declaration.split(' ')[0]),
+  );
+
+/**
+ * Is this argv ASKING what the command does, rather than asking it to run?
+ *
+ * `args` is the command's own argv — everything after its name. The answer is
+ * the registry's because the data it needs is: which flags take a value, and
+ * which command owns an argv ax may not read at all.
+ *
+ * ANYWHERE IN THAT ARGV, and that is a reversal. #71 claimed the flag in ONE
+ * position, the command's first, on the reasoning that past it the argv belongs
+ * to whoever owns it. What that bought was measured on `main` at `bb75a2a`:
+ * `ax init --vendor <x> --help` RAN init and wrote six paths of the repository
+ * it was asked about (#89), because a value-taking flag puts the question in
+ * slot 2; `ax worktree clean --help` reclaimed processes and containers; `ax
+ * worker tail --help` reported CANNOT ESTABLISH about a pane named `--help`;
+ * and twenty subverbs answered the same question five different ways (#93).
+ * The first slot was not a boundary between owners, only the one place a
+ * question was safe to ask.
+ *
+ * Two rules keep the wider claim from swallowing a flag that is not ax's:
+ *
+ *   a declared VALUE SLOT is that flag's value, whatever it looks like — so
+ *   `ax board --comment --help` is a comment whose text is `--help`, and it is
+ *   the arity in the declaration that says so rather than the shape of the
+ *   string (`valueFlags`);
+ *
+ *   a PASSTHROUGH command's argv is a foreign CLI's in full — ax claims the
+ *   first slot of `ax supabase …` and not one argument past it, so `supabase db
+ *   push --help` reaches the CLI that owns the question (./supabase-guard.mjs).
+ *
+ * A verb's OWN flags are not registry data, so a help flag in one of their
+ * value slots (`ax pr gate --pr --help`) reads as the question. That direction
+ * is deliberate: the invocation is malformed either way, and a read never
+ * mutates the repository it was asked about, which is the whole defect class
+ * this predicate closes.
+ */
+export function helpAsked(name, args = []) {
+  const command = COMMANDS.find(entry => entry.name === name);
+  if (!command) return false;
+
+  const asks = argument => argument === '--help' || argument === '-h';
+  if (command.passthrough) return asks(args[0]);
+
+  const values = valueFlags(command);
+  for (let index = 0; index < args.length; index += 1) {
+    if (asks(args[index])) return true;
+    if (values.has(args[index])) index += 1;
+  }
+  return false;
+}
 
 /**
  * Where a retired verb WENT, and the command that replaces it.

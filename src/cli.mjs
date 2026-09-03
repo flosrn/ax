@@ -7,7 +7,7 @@
 // implementation. So the implementation is an exported function, and the bin
 // entry is the thing that decides whose implementation runs.
 
-import { COMMANDS, renderCommandHelp, renderUsage, retiredCommand } from './commands.mjs';
+import { COMMANDS, helpAsked, renderCommandHelp, renderUsage, retiredCommand } from './commands.mjs';
 import { board } from './board.mjs';
 import { orcaAvailable } from './orca-bin.mjs';
 import { worker } from './worker/index.mjs';
@@ -100,13 +100,21 @@ export function runCli(argv = []) {
     // untouched. The read is answered from the registry, here, so a verb
     // registered next month inherits it by being registered (./commands.mjs).
     //
-    // ONE position, the command's first: past it the argv belongs to whoever
-    // owns it. A noun's verb parses its own arguments and answers its own
-    // `--help` with its own exit codes (`ax triage ask --help`), and every
-    // argument after `ax supabase` is the Supabase CLI's, of which ax claims
-    // not one (./supabase-guard.mjs). Claiming more than the first slot would
-    // make this read swallow a flag that was never ax's to answer.
-    if (['--help', '-h'].includes(argv[1])) {
+    // ANYWHERE IN THE COMMAND'S OWN ARGV, and the first cut of this claimed
+    // only slot 1 — on the reasoning that past it the argv belongs to whoever
+    // owns it. That boundary held for verbs and broke for flags: `ax init
+    // --vendor <x> --help` puts the question in slot 2 and RAN init, writing
+    // six paths (#89), and one level down `ax worktree clean --help` reclaimed
+    // and `ax worker tail --help` diagnosed a pane named `--help` (#93). What
+    // makes the wider claim safe is registry data rather than argv position:
+    // a declared value slot is that flag's value (`ax board --comment --help`
+    // is a comment), and a passthrough command's argv is a foreign CLI's in
+    // full (`ax supabase db push --help` is the Supabase CLI's question).
+    //
+    // ONE PLACE DECIDES. No verb parses this flag any more — a second code path
+    // answering the same question is how twenty subverbs came to answer it five
+    // different ways, three of them by running.
+    if (helpAsked(command, argv.slice(1))) {
       process.stdout.write(renderCommandHelp(command));
       return 0;
     }

@@ -12,7 +12,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
-import { bad, dim, fix, note, raw, section } from '../log.mjs';
+import { bad, dim, fix, note, section } from '../log.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { paneVerdict, readPane, terminalInventory } from '../worker/pane.mjs';
 import { defaultExec } from '../exec.mjs';
@@ -189,7 +189,8 @@ export function status(argv = [], { exec = defaultExec, env = process.env, cwd =
     else if (arg === '--job') job = value();
     else if (arg === '--repo') repo = value();
     else if (arg === '--oneline') oneline = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89).
     else {
       // The retired name is refused BY NAME, with its replacement above the
       // usage line, from the one map that holds every retired flag

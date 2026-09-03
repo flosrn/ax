@@ -29,7 +29,7 @@ import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
-import { bad, dim, fix, note, raw, section, warn } from '../log.mjs';
+import { bad, dim, fix, note, section, warn } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
@@ -123,7 +123,8 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     else if (arg === '--dry-run') dry = true;
     else if (arg === '--pass') wantPass = value();
     else if (arg === '--republish') republish = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89).
     else return usageError(`unknown argument "${arg}"`);
   }
 

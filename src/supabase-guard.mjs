@@ -154,14 +154,21 @@ export function resolveCli({ appDir, root, env = process.env, isExecutable = exe
  * Run the Supabase CLI, promoting this checkout first when the command would
  * otherwise write to a database other checkouts are reading.
  *
- * Every argument here belongs to the CLI, with exactly one exception ax now
- * claims: `--help` (or `-h`) in the FIRST slot, answered by `runCli` before
- * this function is reached, because asking a verb what it does must never run
- * it (#71, ./cli.mjs). Nothing further is claimed — a flag past that slot would
+ * Every argument here belongs to the CLI, with exactly one exception ax claims:
+ * `--help` (or `-h`) in the FIRST slot, answered by `runCli` before this
+ * function is reached, because asking a verb what it does must never run it
+ * (#71, ./cli.mjs). Nothing further is claimed — a flag past that slot would
  * mean two things depending on who typed it — and the Supabase CLI's own help
  * stays one gesture away as `ax supabase help`, which `commandNeedsIsolation`
  * answers false for and this wrapper forwards untouched. The two knobs are
  * environment variables.
+ *
+ * That exception is now DECLARED rather than incidental. #89 widened the help
+ * read to a command's whole argv, which would have swallowed `supabase db push
+ * --help` — a question for the Supabase CLI, whose answer ax has no business
+ * composing. The registry entry carries `passthrough: true` for exactly this
+ * boundary (./commands.mjs), so the one gesture ax claims here is stated where
+ * the read is decided instead of resting on the shape of an argv scan.
  *
  * Everything that touches the machine arrives through `deps`, so the sequencing
  * can be tested without a container, a port or a real CLI.

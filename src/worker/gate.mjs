@@ -29,10 +29,15 @@
 //   2  duplicate: two or more live agents on one task
 //   3  cannot establish — never a permission
 //
-// No `--help`: the original never had one, and a `--help` lands in the
-// positional slot and is answered as a task id would be (so: 3, cannot
-// establish). Callers already depend on that, and the safe direction is the one
-// it already points in.
+// `--help` NEVER REACHES THIS VERB, and that reverses what this header said
+// until #89. The rule was that the original had no `--help`, that a `--help`
+// therefore landed in the positional slot and was answered as a task id would
+// be (3, cannot establish), and that callers depended on it. What that bought
+// was measured: `ax worker gate --help` diagnosed a task named `--help` —
+// a diagnosis of the wrong question entirely (#93). `runCli` now answers the
+// flag from the registry, anywhere in this noun's argv, before the verb is
+// reached (../cli.mjs). A `--help` arriving at the function directly is not a
+// second contract: it is a string that names no task, which is still 3.
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';

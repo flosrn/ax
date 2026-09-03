@@ -127,7 +127,10 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     else if (arg === '--resume') resume = value();
     else if (arg === '--dispatch-capability') capabilityArg = value();
     else if (arg === '--dry-run') dry = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89). The exit
+    // codes a blocked child routes on stay in `USAGE`, which every refusal
+    // below prints.
     else return usageError(`unknown argument "${arg}"`);
   }
 

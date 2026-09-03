@@ -25,7 +25,7 @@ import { basename, isAbsolute, join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
-import { bad, dim, fix, note, ok, raw, section } from '../log.mjs';
+import { bad, dim, fix, note, ok, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
 import { defaultStore, dispatchIndex } from '../worker/record.mjs';
@@ -363,7 +363,8 @@ export function dispatch(
     else if (arg === '--dry-run') dry = true;
     else if (arg === '--fresh') freshPass = true;
     else if (arg === '--because') because = value();
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89).
     else return usageError(`unknown argument "${arg}"`);
   }
 
