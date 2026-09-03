@@ -64,6 +64,7 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { checkoutSkew } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
@@ -356,9 +357,15 @@ export function dispatch(
   const paths = repoPaths(cwd);
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (!loaded.exists || loaded.errors.length > 0) {
+    // The same refusal `ax worktree setup` prints, and the same #84 correction:
+    // a checkout publishing another ax than the one running earns the repair
+    // that applies — its own copy — instead of "edit ax.config.json".
+    const skew = loaded.exists ? checkoutSkew({ root: paths.root }) : null;
     return refuse(
-      loaded.exists ? `${loaded.errors.length} problem(s) in ax.config.json: ${loaded.errors[0]}` : 'no ax.config.json — a dispatch reads this project\u2019s entry point, contract and hosts from it',
-      'ax init   # in the primary checkout',
+      loaded.exists
+        ? `${loaded.errors.length} problem(s) in ax.config.json: ${loaded.errors[0]}${skew === null ? '' : ` — ${skew.finding}`}`
+        : 'no ax.config.json — a dispatch reads this project\u2019s entry point, contract and hosts from it',
+      skew === null ? 'ax init   # in the primary checkout' : skew.repair,
     );
   }
   const config = loaded.config;

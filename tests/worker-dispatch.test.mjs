@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { addWorktree } from '../src/git.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
 // The canonical name, from the module that APPLIES it. Imported rather than
 // retyped: `ax triage publish` is what makes a ticket agent-grabbable, and a
@@ -46,9 +47,12 @@ function capture(fn) {
   }
 }
 
+const IDENTITY = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
+
 /**
- * A real repository with a real `.worktrees` base, because placement compares
- * paths the filesystem answers for and the reuse branch reads a directory.
+ * A real repository with a real `.worktrees` base and one commit, because
+ * placement compares paths the filesystem answers for and reuse reads the
+ * worktrees GIT has registered — which needs a HEAD to add one against.
  */
 function repo({ dispatch: block = {} } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-dispatch-')));
@@ -58,12 +62,22 @@ function repo({ dispatch: block = {} } = {}) {
     join(dir, 'ax.config.json'),
     JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', ...block } }),
   );
+  execFileSync('git', [...IDENTITY, 'add', 'ax.config.json'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', [...IDENTITY, 'commit', '-qm', 'fixture'], { cwd: dir, stdio: 'ignore' });
   return dir;
 }
 
-/** A worktree that looks provisioned: the context file `setup` would write. */
+/**
+ * A worktree that looks provisioned: REGISTERED with git, then carrying the
+ * context file `setup` would write. Registration is not decoration — reuse is
+ * grounded in git's registry (#84), and both placers register before they
+ * provision: Orca's `worktree create` runs `git worktree add` and only then
+ * runs its setup hook, which is exactly how the reported orphan came to sit on
+ * a branch with no provisioning.
+ */
 function provisioned(root, name) {
   const path = join(root, '.worktrees', name);
+  assert.equal(addWorktree({ cwd: root, path, branch: `feat/${name}` }).ok, true, `fixture worktree ${name}`);
   mkdirSync(join(path, '.agent'), { recursive: true });
   writeFileSync(join(path, CONTEXT_PATH), '- Web URL: `http://probe.test:3100`\n');
   return path;
@@ -71,10 +85,12 @@ function provisioned(root, name) {
 
 /**
  * A stub Orca. `seen` decides whether `worktree show` resolves the selector a
- * dispatch will use; `cursors` is the liveness series; every argv is recorded so
- * "nothing was dispatched" is asserted rather than assumed.
+ * dispatch will use; `cursors` is the liveness series; `workspaces` is the
+ * runtime's answer about its OWN placement root — the second root reuse may lend
+ * from (#84) — and every argv is recorded so "nothing was dispatched" is
+ * asserted rather than assumed.
  */
-function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' } } = {}) {
+function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' }, workspaces = [] } = {}) {
   const calls = [];
   let reads = 0;
   const runner = createRunner({
@@ -88,6 +104,9 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/paren
         return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state, description: emptyBody ? '   ' : 'a decision, written down', labels: { nodes: labels.map(name => ({ name })) } } });
       }
       if (line.startsWith('worktree create')) return created ?? receipt({ worktree: { path: '/nonexistent' } });
+      // The runtime enumerates the trees IT placed for this repo, and flags the
+      // primary checkout. An empty list is a host that has placed none.
+      if (line.startsWith('worktree list')) return receipt({ worktrees: workspaces.map(path => ({ path, isMainWorktree: false })) });
       if (line.startsWith('worktree show')) {
         return seen ? receipt({ worktree: { path: 'x', parentWorktreeId: parent } }) : { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'selector_not_found' } }), stderr: '' };
       }
@@ -533,6 +552,54 @@ test('a worktree that already exists for the ticket is reused, and still proven 
   assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'no second placement');
   assert.deepEqual(setups, [existing], 'the reused tree is proven habitable, not assumed');
   assert.match(r.started[0], new RegExp(`--worktree path:${existing}`));
+});
+
+test('#84: the tree Orca placed OUTSIDE .worktrees is this ticket\u2019s tree, so a retry mints no -2', () => {
+  // The reported dispatch placed through Orca — which places into its own
+  // workspaces root, not `<root>/.worktrees` — and then failed
+  // `ax worktree setup`, correctly recording nothing and correctly leaving the
+  // tree. The retry asked for a second one, and Orca disambiguated the taken
+  // name by suffix: two worktrees, two branches, one ticket, and a request id
+  // that no longer named its own worktree.
+  const root = repo();
+  const workspaces = realpathSync(mkdtempSync(join(tmpdir(), 'ax-workspaces-')));
+  const tree = join(workspaces, REQUEST);
+  assert.equal(addWorktree({ cwd: root, path: tree, branch: `feat/${REQUEST}` }).ok, true);
+
+  const setups = [];
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    root,
+    orca: { workspaces: [tree] },
+    setupFn: (argv, context) => {
+      setups.push(context.cwd);
+      mkdirSync(join(context.cwd, '.agent'), { recursive: true });
+      writeFileSync(join(context.cwd, CONTEXT_PATH), '- Web URL: `http://probe.test:3100`\n');
+      return 0;
+    },
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /reusing the worktree that already exists/);
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'no second create, so nothing is there to suffix');
+  assert.deepEqual(setups, [tree], 'a tree that never finished provisioning is lent, and provisioned');
+  assert.match(r.started[0], new RegExp(`--worktree path:${tree}`));
+});
+
+test('a config refusal in a checkout carrying another ax than the one running names the skew (#84)', () => {
+  // `1 problem(s) in ax.config.json` was the whole diagnostic when a global
+  // 0.17.0 validated a 0.18.0-dev config, and its only readable repair — edit
+  // the config — was the wrong one.
+  const root = repo();
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@flosrn/ax', version: '0.0.1-skewed' }));
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'p' }, apps: { web: 5 } }));
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { root });
+
+  assert.equal(r.code, 1, 'the exit code is untouched');
+  assert.match(r.out, /problem\(s\) in ax\.config\.json/);
+  assert.match(r.out, /0\.0\.1-skewed/);
+  assert.match(r.out, /own ax/);
+  assert.deepEqual(r.started, [], 'nothing was dispatched');
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')));
 });
 
 test("a ticket labelled as touching the database is provisioned with its own stack", () => {
