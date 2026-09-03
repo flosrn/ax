@@ -140,11 +140,12 @@ const ORCA_BINARY = /(^|\/)(orca|orca-ide|orca-dev)$/;
  * code path answering one question is how twenty subverbs came to answer it
  * five different ways, three of them by running (#93).
  *
- * The long `HELP` string that used to sit here is gone rather than moved: it
- * restated, in twenty lines, what proof is and what is never proof — the header
- * above, which this repository treats as the authority for a module's doctrine.
- * The registry keeps the one line a caller reads before typing: `close a landed
- * pane — proven by artifact, never by a word` (../commands.mjs).
+ * The long help this verb used to hold in a `HELP` string did NOT go away with
+ * it: what proof is, what is never proof, the flags and the exit codes are
+ * declared as `helpBody.release` in the registry and printed by that one read
+ * (../commands.mjs). The distinction is who each text is for — this header is
+ * for whoever patches the verb, `--help` is for whoever is typing it, and an
+ * operator deciding whether to close someone's pane is reading the terminal.
  */
 
 /** The store namespace release records live in — never beside the dispatches. */

@@ -16,6 +16,7 @@ import {
   RETIRED_COMMANDS,
   SECTIONS,
   WIDTH,
+  commandHelpBody,
   commandNames,
   helpAsked,
   plumbingSubcommand,
@@ -127,6 +128,13 @@ test('every command declares one of the declared sections, and no section is emp
  * The rendered help as `{ SECTION: [command, …] }`, read off the output the way
  * an agent reads it: a heading is a bare capitalised line, a command is the
  * only thing indented by exactly two columns.
+ *
+ * A BLANK LINE ENDS A SECTION'S COMMAND LIST, because a per-command read may
+ * carry a declared help body under the block (`helpBody`, ../src/commands.mjs)
+ * and that body is PROSE — its own two-column-indented lines (`  --close  act;
+ * …`) are indistinguishable from a command line by indentation alone. Reading
+ * them as commands is how this helper first reported `ax worker release --help`
+ * as answering for `implementation`, `--close` and `--all`.
  */
 const sectionsOf = usage => {
   const rendered = {};
@@ -136,6 +144,10 @@ const sectionsOf = usage => {
     if (heading !== null) {
       current = heading[1];
       rendered[current] = [];
+      continue;
+    }
+    if (line.trim() === '') {
+      current = null;
       continue;
     }
     const command = line.match(/^ {2}(\S+) {2,}\S/);
@@ -458,10 +470,16 @@ test('every declared verb answers --help as a read, and none of them runs', () =
           assert.equal(result.status, 0, `${asked} exited ${result.status} instead of answering`);
           assert.equal(porcelain(), '', `${asked} wrote to the working tree`);
 
-          // Composed once, from the registry: every line is a line `ax help`
-          // already shows, so a verb cannot pin a second description of itself.
+          // Composed once, from the registry: every line is either a line `ax
+          // help` already shows, or a line of the long body this verb DECLARES
+          // — so a verb still cannot pin a second description of itself, and
+          // the exception is registry data rather than a verb's own help path.
+          const body = new Set((commandHelpBody(command.name, verb) ?? '').split('\n').map(squeeze));
           for (const line of plain(result.out).split('\n').filter(text => text.trim() !== '')) {
-            assert.ok(shown.has(squeeze(line)), `${asked} prints "${squeeze(line)}", which ax help does not show`);
+            assert.ok(
+              shown.has(squeeze(line)) || body.has(squeeze(line)),
+              `${asked} prints "${squeeze(line)}", which is neither in ax help nor in this verb's declared body`,
+            );
           }
           assert.deepEqual(sectionsOf(result.out), { [command.section]: [command.name] }, `${asked} answered for a command other than ${command.name}`);
         }
@@ -469,6 +487,50 @@ test('every declared verb answers --help as a read, and none of them runs', () =
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a verb whose contract is a judgement prints it, and only from the registry', () => {
+  // The refused surface loss (#89). `ax worker release --help` is how an
+  // operator learns that without `--close` nothing mutates and what counts as
+  // landing — read from the terminal, not from the module header, because a
+  // header is for whoever patches the verb. `ax triage ask --help` is the same
+  // for a blocked child, which routes on the exit codes alone.
+  const release = plain(run(['worker', 'release', '--help'], HAS_ORCA).out);
+  assert.match(release, /A pane closes because the WORK LANDED/, 'the proof rule is gone from the surface an operator reads');
+  assert.match(release, /implementation {4}a MERGED pull request for that branch/);
+  assert.match(release, /Never proof: an OPEN PR/);
+  assert.match(release, /--close {12}act; without it this is a report and nothing mutates/);
+  assert.match(release, /^Exit: 0 report or every release settled/m, 'the exit-code contract is stated where it is typed (ADR 0003)');
+
+  const ask = plain(run(['triage', 'ask', '--help'], HAS_ORCA).out);
+  for (const line of [/0 {2}answered/, /1 {2}refused/, /3 {2}cannot establish/, /4 {2}PENDING/]) {
+    assert.match(ask, line, 'a blocked child routes on these alone');
+  }
+
+  // A verb that declares no body gets the block and nothing else: the field is
+  // for a contract that needs more than a summary, not a place to grow prose.
+  const tail = plain(run(['worker', 'tail', '--help'], HAS_ORCA).out);
+  assert.doesNotMatch(tail, /MERGED pull request/, 'one verb’s body leaked into another’s read');
+
+  // Both are answered by the ONE read, so neither verb may carry a help path of
+  // its own: reached directly, they refuse the flag as the unknown argument it
+  // is there (../src/worker/release.mjs, ../src/triage/ask.mjs).
+  assert.equal(commandHelpBody('worker', 'release').length > 0, true);
+  assert.equal(commandHelpBody('worker', 'tail'), null);
+  assert.equal(commandHelpBody('init', '--vendor'), null, 'a token that is not a declared verb must carry no body');
+});
+
+test('every declared help body fits the column budget it is printed in', () => {
+  // Same reason the rest of the help is held to 96: a split pane in an editor
+  // is narrower than a terminal, and a page that wraps there reads as noise.
+  for (const command of COMMANDS) {
+    for (const verb of Object.keys(command.helpBody ?? {})) {
+      assert.ok(subcommandNames(command.name).includes(verb), `${command.name} declares a help body for "${verb}", which is not a declared verb`);
+      for (const line of commandHelpBody(command.name, verb).split('\n')) {
+        assert.ok(line.length <= WIDTH, `${command.name} ${verb}: a body line is ${line.length} columns, past the ${WIDTH} budget: ${line}`);
+      }
+    }
   }
 });
 

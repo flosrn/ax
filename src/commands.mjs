@@ -47,6 +47,12 @@ import { orcaAvailable } from './orca-bin.mjs';
  * (`supabase`): ax claims the help flag in its first slot and not one argument
  * past it.
  *
+ * `helpBody` is the long help ONE verb declares, keyed by verb name and printed
+ * under the block by the single help read. It is for a verb whose contract is a
+ * judgement the caller makes BEFORE typing — what counts as landing, which exit
+ * code means resume — and it is registry data precisely so that carrying it
+ * costs no second help path in the verb. See `renderCommandHelp`.
+ *
  * `section` is the help heading the command is printed under, and every entry
  * declares one. See `SECTIONS`.
  */
@@ -135,6 +141,31 @@ export const COMMANDS = [
     plumbing: {
       start: 'the write-ahead half of a dispatch — `worker dispatch` issues it, and replays it byte for byte on recovery',
     },
+    // What `ax worker release --help` prints under the block. A verb whose
+    // contract is a JUDGEMENT the caller has to make before typing needs more
+    // than a summary line: this one closes someone's pane, and the operator
+    // reads what counts as landing FROM THE TERMINAL, not from this module's
+    // header — a header is for whoever patches the verb (./worker/release.mjs).
+    helpBody: {
+      release: `A pane closes because the WORK LANDED, never because the session said it was done.
+
+  triage / brief    a comment on that issue, created AFTER the dispatch
+  implementation    a MERGED pull request for that branch. Nothing else.
+
+Never proof: an OPEN PR (it may still owe its review threads), commits with no PR,
+an empty diff against the base (squash-safe for minutes, then wrong forever), the
+child's own word, and silence. A pane still emitting is BUSY, not closed.
+
+  --close            act; without it this is a report and nothing mutates
+  --all              every repo on this machine, not just this checkout
+  --dispatch <id>    exactly one, and it names its own scope
+  --no-proof         you looked at that one pane; never valid for a batch
+  --base <ref>       the base landing is measured against (default origin/main)
+  --gap <s>          seconds between the two liveness samples (default 2)
+
+Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
+      3 cannot establish (no CLI, silent runtime, unreadable inventory, no gh)`,
+    },
   },
   {
     name: 'board',
@@ -168,6 +199,21 @@ export const COMMANDS = [
       ['publish --issue N …', 'apply what a draft names — never closes an issue'],
       ['release --issue N', "free the finished pass's pane, resolving its dispatch"],
     ],
+    // A blocked child routes on `ask`'s exit codes ALONE — meeting 1 or 3 with
+    // nothing to read, it has to choose between retry, resume and report. So
+    // the codes are printed to whoever asks the verb what it does, not only to
+    // whoever mistypes it into a usage error (./triage/ask.mjs).
+    helpBody: {
+      ask: `Exit codes — a blocked child routes on these alone:
+
+  0  answered — the rulings are printed; revise the draft, then report
+  1  refused — the reason is named, and the repair line says what to do
+  2  usage
+  3  cannot establish — the machine, not you
+  4  PENDING — the question outlived the wait; resume the printed id
+
+  ax triage ask --resume <message_id>   # the id printed on exit 4`,
+    },
   },
   {
     name: 'pr',
@@ -430,14 +476,37 @@ function commandBlock(command, width) {
  * question nobody asked, and the section heading plus the block is text
  * `ax help` already shows, letter for letter but for the left column.
  *
+ * ONE EXCEPTION, and it is declared: a verb whose contract is a JUDGEMENT the
+ * caller makes before typing gets a `helpBody` under the block. `ax worker
+ * release --help` is how an operator learns that without `--close` nothing
+ * mutates and what counts as landing; `ax triage ask --help` is how a blocked
+ * child learns which exit code means resume. A module header cannot answer
+ * either — a header is for whoever patches the verb, and this is for whoever
+ * is typing it.
+ *
+ * The body is REGISTRY DATA rendered by this one path, never a second help
+ * path in the verb: `verb` is resolved against the declarations, so a token
+ * that is not a declared verb (`ax init --vendor x --help`) simply carries no
+ * body, and no verb parses a help flag to earn one.
+ *
  * The GATE stays the caller's. `runCli` decides whether a command exists on
  * this machine, and asks for this text only once it has. A name the registry
  * does not carry reads back as null, which is that caller's usage-error path.
  */
-export function renderCommandHelp(name) {
+export function renderCommandHelp(name, verb = '') {
   const command = COMMANDS.find(entry => entry.name === name);
   if (!command) return null;
-  return [bold(command.section), ...commandBlock(command, command.name.length), ''].join('\n');
+  const body = commandHelpBody(name, verb);
+  return [bold(command.section), ...commandBlock(command, command.name.length), ...(body === null ? [] : ['', body, '']), ''].join('\n');
+}
+
+/**
+ * The long help ONE verb declares, or null. Read by `renderCommandHelp` and by
+ * the test that holds every declared body to the help's column budget.
+ */
+export function commandHelpBody(name, verb = '') {
+  const declared = COMMANDS.find(entry => entry.name === name)?.helpBody ?? {};
+  return declared[String(verb).split(' ')[0]] ?? null;
 }
 
 /**

@@ -114,8 +114,14 @@ export function runCli(argv = []) {
     // ONE PLACE DECIDES. No verb parses this flag any more — a second code path
     // answering the same question is how twenty subverbs came to answer it five
     // different ways, three of them by running.
+    //
+    // The verb is handed to the renderer because a verb whose contract is a
+    // judgement — `worker release`, `triage ask` — declares a long body in the
+    // registry, and this is the one path that prints it. Resolving the name
+    // here is not a per-verb help path: nothing in the verb parses the flag,
+    // and a token that is not a declared verb carries no body.
     if (helpAsked(command, argv.slice(1))) {
-      process.stdout.write(renderCommandHelp(command));
+      process.stdout.write(renderCommandHelp(command, argv[1] ?? ''));
       return 0;
     }
     return table[command](context) ?? 0;
