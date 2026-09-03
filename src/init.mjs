@@ -38,29 +38,10 @@ export const LEGACY_OMP_LOADER_SOURCE = [
   '',
 ].join('\n');
 
-/**
- * Lines ax owns in .gitignore: runtime state of the AX layer, nothing else.
- *
- * `.env.local` is here because `ax worktree setup` WRITES it
- * (`${config.apps.web}/.env.local`, ../worktree/plan.mjs) and release's dirty
- * proof reads `git status --porcelain`, untracked files included. Measured
- * 2026-09-02 (#83): a child worktree whose only dirt was that file answered
- * `KEEP · uncommitted changes on feat/73-…`, and removing it by hand made the
- * same command answer `CLOSE · PR #79 merged`. The predicate is right to refuse
- * a dirty tree — an allowlist inside a proof is how a hand-edited file carrying
- * real work stops blocking a close — so what was missing is this line. It
- * carries NO SLASH on purpose: it matches at any depth, covering both a root
- * write and a consumer's `apps/web/.env.local`. On a MakerKit consumer the
- * vendor `.gitignore` already covers it, which is why the defect only ever
- * showed on a plain package repo.
- *
- * `.orca-worktree.json` is deliberately absent while the Orca adapter still
- * lives in the project — ofmchat already ignores it, with a comment saying
- * which script writes it. Claiming it here too would print the same path twice
- * in a file a human reads. It joins this list when `ax orca` does.
- */
-export const GITIGNORE_LINES = ['.worktrees/', '.agent/', '.scratch/', '.env.local'];
-export const GITIGNORE_BODY = GITIGNORE_LINES.join('\n');
+// The lines ax owns in `.gitignore` live on the PROJECT PLAN (`./plan.mjs`,
+// `plan.ignore`): `ax init` writes that block and `ax doctor` grades the block
+// it finds against the same field, so target state decided inside either verb
+// would be drift by construction.
 
 function assertManagedPath(root, target) {
   const base = resolve(root);
@@ -344,7 +325,7 @@ export function init(root, { dryRun = false, vendor } = {}) {
   }
 
   for (const [file, body] of [
-    ['.gitignore', GITIGNORE_BODY],
+    ['.gitignore', plan.ignore.join('\n')],
     ['AGENTS.md', agentsBody()],
   ]) {
     const path = join(root, file);

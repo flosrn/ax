@@ -933,7 +933,12 @@ test('--dispatch over a row this run cannot place keeps its KEEP and the cd that
   });
 
   assert.match(unknown.out, /ctx_legacy.*KEEP.*names no repository/);
-  assert.match(unknown.out, /old-slug\.json/, 'the repair points at the record that cannot place it');
+  assert.match(unknown.out, /old-slug\.json/, 'the repair names the record that cannot place it');
+  // A repair has to be able to CHANGE the outcome (validated review finding on
+  // #118): reading the record again still computes `unknown`, so the row would
+  // refuse forever. What closes it is the route that asks no artifact question.
+  assert.match(unknown.out, /worker-read --dispatch ctx_legacy/);
+  assert.match(unknown.out, /ax worker release --close --dispatch ctx_legacy --no-proof/);
   assert.ok(unknown.calls.every(argv => !argv.includes('worker-release')));
 });
 

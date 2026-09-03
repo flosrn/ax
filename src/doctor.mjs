@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote, version } from './config.mjs';
 import { EXACT_VERSION } from './delegation.mjs';
-import { GITIGNORE_LINES, LEGACY_OMP_LOADER, OMP_SETTINGS, retiredConfigKeyFixes } from './init.mjs';
+import { LEGACY_OMP_LOADER, OMP_SETTINGS, retiredConfigKeyFixes } from './init.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { CONTRACTS, planProject, readManifest } from './plan.mjs';
 import { worktreeFindings } from './worktree/doctor.mjs';
@@ -171,18 +171,21 @@ export function doctor(cwd = process.cwd()) {
     const block = readBlock(readFileSync(path, 'utf8'), { id: 'ax', style: styleFor(file) });
     if (block === null) fail(`${file} carries no BEGIN:ax block`, 'ax init');
     // PRESENCE IS NOT CONTENT, and for `.gitignore` the difference is a pane
-    // nobody can release. Every line here is a path ax's own tooling writes, so
-    // one missing from a block written by an older release leaves that file
-    // reading as uncommitted work — `ax worker release` then KEEPS the child
-    // worktree forever (#83, measured over the `.env.local` `ax worktree setup`
-    // provisions). AGENTS.md is generated prose and is graded on presence alone:
-    // its body is rewritten by every release, and diffing it would report drift
-    // on every consumer that has not re-run `ax init`.
+    // nobody can release. Every line of `plan.ignore` is a path ax's own tooling
+    // writes, so one missing from a block written by an older release leaves
+    // that file reading as uncommitted work — `ax worker release` then KEEPS the
+    // child worktree forever (#83, measured over the `.env.local` `ax worktree
+    // setup` provisions). Recorded value vs PLAN value, like every other finding
+    // here: the list lives in ./plan.mjs, which `ax init` writes from.
+    //
+    // AGENTS.md is graded on presence alone: its body is generated prose,
+    // rewritten by every release, and diffing it would report drift on every
+    // consumer that has not re-run `ax init`.
     else if (file === '.gitignore') {
       const lines = block.split('\n').map(line => line.trim());
-      const missing = GITIGNORE_LINES.filter(line => !lines.includes(line));
+      const missing = plan.ignore.filter(line => !lines.includes(line));
       if (missing.length > 0) fail(`${file}: the managed block does not list ${missing.join(', ')} — paths ax writes and this checkout does not ignore`, 'ax init');
-      else ok(`${file}: managed block lists the ${GITIGNORE_LINES.length} paths ax writes`);
+      else ok(`${file}: managed block lists the ${plan.ignore.length} paths ax writes`);
     } else ok(`${file}: managed block present`);
   }
 

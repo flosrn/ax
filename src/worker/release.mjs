@@ -800,9 +800,32 @@ export function release(
     // inside this checkout — path containment is not evidence about a
     // repository, which is the whole finding of #83.
     //
+    // THE IDENTITY IS THE BARE SLUG, trimmed and case-folded, because that is
+    // already what a repository IS in this package: `../pr-gate.mjs` binds a
+    // ticket with the same comparison and `./settle.mjs` scopes its write with
+    // it. A second identity shape introduced here would be a second convention
+    // beside a shipped one, and it would read every existing record as unknown.
+    //
     // `--no-proof` asks no artifact question, so it has no repository to scope:
     // that route is ONE named pane an operator says they have looked at, and
-    // closing a pane belongs to no repository.
+    // closing a pane belongs to no repository. It is also the only route left
+    // for a row nothing places, which is why `decline()` names it.
+    //
+    // TWO RESIDUALS THIS PREDICATE HAS AND CANNOT CLOSE FROM HERE (both found in
+    // review on #118, both needing the WRITE side to change first):
+    //   * A dispatch class that records no repository is unplaceable by
+    //     construction, not just historically: `../worker/dispatch.mjs` omits
+    //     `--tracker-repo` for `--name` and for any tracker whose URL is not
+    //     GitHub-shaped (every Linear ticket). Their panes take the `unknown`
+    //     branch forever, and `--no-proof` is their route until the write side
+    //     records the checkout that dispatched them.
+    //   * The key names `owner/repo` and no forge. `trackerRepoOf` accepts a
+    //     GitHub Enterprise URL and keeps only the slug, and `repoView` answers
+    //     `nameWithOwner`, so one host-global store cannot tell
+    //     `github.com/owner/repo` from `ghe.example.com/owner/repo`. Comparing a
+    //     host neither side records would make EVERY row unknown, so the fix is
+    //     to record it at dispatch first — until then, two same-named
+    //     repositories on two forges, dispatched from one machine, compare equal.
     const entry = index.byDispatch.get(row.dispatchId);
     const belongsTo = entry?.repo ?? '';
     const placed = noProof
@@ -844,9 +867,19 @@ export function release(
           ? worktree === ''
             ? `cd <your ${belongsTo} checkout> && ax worker release --close --dispatch ${row.dispatchId}`
             : `cd ${worktree} && ax worker release --close --dispatch ${row.dispatchId}`
-          : entry === undefined
-            ? `orca orchestration worker-show --dispatch ${row.dispatchId} --json   # establish which repository dispatched it, then release from there`
-            : `grep -H '"repo"' ${join(store, entry.file)}   # a record written before --tracker-repo carries none, and nothing here may guess one`,
+          // A REPAIR THAT CHANGES THE OUTCOME, not a second look at the absence
+          // (validated review finding on #118). Reading the record again still
+          // computes `unknown`, so this row would refuse forever: what closes it
+          // is the route that already exists for one pane an operator has read —
+          // `--no-proof`, which asks no artifact question and therefore needs no
+          // repository. The transcript is named first because that is what makes
+          // the operator's claim ("I looked at it") true rather than asserted,
+          // and no ax verb may make it for them.
+          : `orca orchestration worker-read --dispatch ${row.dispatchId} --json   # read the pane, then close it on your own word: ax worker release --close --dispatch ${row.dispatchId} --no-proof${
+              entry === undefined
+                ? '. This host recorded no request for it, so nothing here can place it'
+                : `. Its record ${join(store, entry.file)} names no repository — written before --tracker-repo existed, and nothing here may guess one (#78)`
+            }`,
       );
     };
 
@@ -1028,30 +1061,14 @@ export function release(
       );
       continue;
     }
-    // PLACEMENT, at the last moment before the artifact question — and never a
-    // silent drop (#83). A row this run may not judge is declined HERE, where
-    // every other decline already is: counted in the bucket that says why on the
-    // sweep, printed with the command that CAN judge it when the caller named it.
+    // PLACEMENT'S SECOND MOMENT, at the last instant before the artifact
+    // question: only `unknown` reaches here (a proven foreign row left before
+    // any pane-state tally), and it is declined by the SAME helper — one decline
+    // in one place, so a route cannot drift into naming a repair the other does
+    // not (it did, for one commit on #118: the late copy still named a
+    // `worker-show` that changes nothing).
     if (placed !== 'ours') {
-      if (only === '') {
-        if (placed === 'foreign') tally.foreign += 1;
-        else tally.unplaced += 1;
-        continue;
-      }
-      keep(
-        placed === 'foreign'
-          ? `${row.dispatchId} · ${row.workerState}/${row.terminalState} · KEEP · its record names ${belongsTo}, and this run can only prove landing in ${repo}`
-          : `${row.dispatchId} · ${row.workerState}/${row.terminalState} · KEEP · nothing places this pane: ${
-              entry === undefined ? 'this host recorded no request for it' : 'its record names no repository'
-            }, and an absent repository is UNKNOWN, never "this one" (F-028)`,
-        placed === 'foreign'
-          ? worktree === ''
-            ? `cd <your ${belongsTo} checkout> && ax worker release --close --dispatch ${row.dispatchId}`
-            : `cd ${worktree} && ax worker release --close --dispatch ${row.dispatchId}`
-          : entry === undefined
-            ? `orca orchestration worker-show --dispatch ${row.dispatchId} --json   # establish which repository dispatched it, then release from there`
-            : `grep -H '"repo"' ${join(store, entry.file)}   # a record written before --tracker-repo carries none, and nothing here may guess one`,
-      );
+      decline();
       continue;
     }
 
@@ -1150,7 +1167,7 @@ export function release(
   if (tally.unplaced + unplacedByCause > 0) {
     note(
       `no repository on record: ${tally.unplaced} declined at placement · ${unplacedByCause} of the buckets above — UNKNOWN, never assumed ours (F-028), so nothing there authorizes a close; ` +
-        '`ax worker release --dispatch <id>` prints the record that cannot place one',
+        '`ax worker release --dispatch <id>` prints each one with the pane read and the --no-proof close that is its only route',
     );
   }
   if (archaeology.length > 0) {
