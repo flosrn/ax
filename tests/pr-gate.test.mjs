@@ -955,6 +955,30 @@ test('#90: --stale-retried suppresses nothing, and no CLI surface names a SHA to
   assert.match(valued.out, new RegExp(`unknown argument "${HEAD_SHA}"`));
 });
 
+test('#90: a merge shape this host cannot measure is exit 3, with a repair that is not the fetch', () => {
+  // The exemption's cleanliness half is `git merge-tree --write-tree`, which
+  // arrived in git 2.38. An older host answers 129, and the ground's account
+  // is asserted where it is built (tests/pr-grounds.test.mjs) — but the thing
+  // a caller and every wrapper around this verb actually consume is the EXIT
+  // CODE, and that is only observable through gate(). An unread shape must
+  // land on 3/CANNOT ESTABLISH, never on 1/REFUSE, or a transient tooling
+  // failure reads as established authored work (#119 P2).
+  const root = repoFor('base-merge', DEFAULT_GATE);
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    shape: 'base-merge',
+    commits: [...prCommits(0), realCommitRow(root, 'feature')],
+    git: (args, at) => (args[0] === 'merge-tree' ? { status: 129, stdout: '', stderr: 'error: unknown option `write-tree\'', error: undefined } : realGit(args, at)),
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — commits since open: .*'git merge-tree --write-tree' is not available here/);
+  assert.match(out, /unknown is not exempt \(F-028\)/);
+  assert.doesNotMatch(out, /REFUSE — commits since open/, 'an unread read was reported as authored work');
+  // The repair has to be one that can work: no fetch adds a git capability.
+  assert.match(out, /→ git --version {3}# 'merge-tree --write-tree' needs git 2\.38 or newer/);
+  assert.doesNotMatch(out, /commits since open.*\n.*→ git fetch/, 'a fetch repair here loops forever');
+});
+
 // ── Ground 7: the closing keyword ──────────────────────────────────────────
 
 test('F-018: a French closing keyword counts as missing, and is named', () => {
