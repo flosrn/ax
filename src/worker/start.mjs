@@ -609,7 +609,11 @@ export function start(
   };
 
   section(redactSecrets(`worker start ${parsed.request}`));
-  if (parsed.mode === 'resume') return resume(path, context);
+  // `--replace` keeps its own differently-suffixed lock, by ruling (#95 pass A1:
+  // the claim pair only). `--resume` is the loser's replay typed by hand — the
+  // same load-modify-save writer — so it takes the claim lock below like the
+  // loser does; review of the first draft measured it bypassing the lock and
+  // rewriting a record mid-mint.
   if (parsed.mode === 'replace') return replace(path, parsed.passthru, context);
 
   // ONE LOCK, TWO CONTENDERS (#95). The claim winner used to mint — initRecord
@@ -648,6 +652,8 @@ export function start(
   if (!ownership.held) return cannot(ownership.reason, `ax worker start --resume --request ${context.request}`);
 
   try {
+    if (parsed.mode === 'resume') return resume(path, context);
+
     let claim;
     try {
       claim = claimRecord(store, parsed.request);

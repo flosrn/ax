@@ -97,6 +97,28 @@ function labelNames(container) {
 }
 
 /**
+ * Linear's workflow state TYPES (its API contract; the state NAME is the
+ * team's): two terminal, four live. Anything else — absent, empty, a type
+ * this reader has never seen — is unknown, and answered as `null`.
+ */
+const LINEAR_TERMINAL = new Set(['completed', 'canceled']);
+const LINEAR_LIVE = new Set(['triage', 'backlog', 'unstarted', 'started']);
+const linearClosed = type => {
+  const known = String(type ?? '');
+  if (LINEAR_TERMINAL.has(known)) return true;
+  if (LINEAR_LIVE.has(known)) return false;
+  return null;
+};
+
+/** GitHub's two issue states; anything else is unknown, answered as `null`. */
+const githubClosed = state => {
+  const known = String(state ?? '').toUpperCase();
+  if (known === 'CLOSED') return true;
+  if (known === 'OPEN') return false;
+  return null;
+};
+
+/**
  * A ticket reduced to what a brief needs: identifier, title, url, state, the
  * SIZE of its body — and its LABELS.
  *
@@ -122,11 +144,15 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
   let title;
   let url;
   let state = '';
-  // Whether the ticket is DONE, in the tracker's own vocabulary. GitHub has two
-  // states. Linear has a workflow whose names are the team's ("Done", "Won't
-  // do", "Shipped") and whose TYPE is the contract: `completed` and `canceled`
-  // are its two terminal types, and the name alone decides nothing.
-  let closed = false;
+  // Whether the ticket is DONE, in the tracker's own vocabulary — `true`,
+  // `false`, or `null` when the tracker did not answer. GitHub has two states.
+  // Linear has a workflow whose names are the team's ("Done", "Won't do",
+  // "Shipped") and whose TYPE is the contract: `completed` and `canceled` are
+  // terminal, `triage`/`backlog`/`unstarted`/`started` are live, and the name
+  // alone decides nothing. Absence is unknown, never open (AGENTS.md): read as
+  // permission, it mints a worktree, a task and a pane for a ticket whose
+  // terminality nobody established.
+  let closed = null;
   let body = '';
   let detail = '';
   let labels = [];
@@ -144,7 +170,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     title = issue.title;
     url = issue.url;
     state = issue.state?.name ?? '';
-    closed = ['completed', 'canceled'].includes(String(issue.state?.type ?? ''));
+    closed = linearClosed(issue.state?.type);
     body = issue.description ?? '';
     labels = labelNames(issue.labels);
     detail = detailOf(answer?.stderr, answer?.receipt?.error, answer?.receipt?.unparseable);
@@ -170,7 +196,7 @@ export function readTicket(ref, { kind = ticketKind(ref), run, exec = defaultExe
     title = parsed.title;
     url = parsed.url;
     state = parsed.state ?? '';
-    closed = String(state).toUpperCase() === 'CLOSED';
+    closed = githubClosed(state);
     body = parsed.body ?? '';
     labels = labelNames(parsed.labels);
     detail = detailOf(answer?.stderr);

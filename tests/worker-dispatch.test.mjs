@@ -252,6 +252,15 @@ test('a closed ticket is refused before any mutation, with the repair on its own
   assert.deepEqual(canceled.started, []);
 });
 
+test('a ticket whose state the tracker did not answer cannot establish — absence is never permission to mutate', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { orca: { state: { name: 'In Progress' } } });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /CANNOT ESTABLISH — GAP-353 answered no workflow state type/);
+  assert.match(r.out, /orca linear issue GAP-353 --json/);
+  assert.deepEqual(r.started, []);
+  assert.ok(r.calls.every(argv => !argv.includes('worktree create') && !argv.includes('task-create')), r.calls.join(' | '));
+});
+
 test('the retired --brief is refused BY NAME, with --notes named as the repair', () => {
   // 0.16.0 renamed the flag and published the contract that "every retired name
   // refuses with the replacement named rather than falling back silently". The

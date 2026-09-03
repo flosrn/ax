@@ -390,12 +390,21 @@ export function dispatch(
   // refused at its decision gate, posted nothing, and a pane was minted and
   // released for a ticket nobody could work.
   // The repair is the tracker's: `ax frontier` reads GitHub only (it lists by
-  // label through `gh`), so a closed Linear ticket is sent back to Linear.
+  // label through `gh`), so a closed Linear ticket is sent back to Linear. And
+  // a state the tracker did not answer is UNKNOWN, never open: absence is not
+  // permission to mint a worktree, a task and a pane (AGENTS.md).
+  const readByHand = kind === 'linear' ? `orca linear issue ${flags.issue} --json` : `gh issue view ${flags.issue} --json state`;
+  if (ticket !== null && ticket.closed === null) {
+    return cannot(
+      `${ticket.id} answered no workflow state type this verb knows${ticket.state ? ` (state "${ticket.state}")` : ''}, so whether it is closed cannot be established`,
+      `${readByHand}   # read its state by hand; dispatch again once the tracker names it`,
+    );
+  }
   if (ticket !== null && ticket.closed) {
     return refuse(
       `${ticket.id} is closed (${ticket.state}) — nothing to dispatch`,
       kind === 'linear'
-        ? `orca linear issue ${flags.issue} --json   # its state and who closed it; dispatch an open ticket, or reopen this one first`
+        ? `${readByHand}   # its state and who closed it; dispatch an open ticket, or reopen this one first`
         : `ax frontier   # the takeable set; a closed ticket is never in it`,
     );
   }

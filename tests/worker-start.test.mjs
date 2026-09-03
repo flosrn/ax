@@ -1009,6 +1009,33 @@ test('at the instant a loser would load between task-create and worker-start, th
   assert.deepEqual(record.attempts[0].phases.map(phase => phase.name), ['task-create', 'worker-start']);
 });
 
+// Review of the first draft (Codex, P1): an explicit `--resume` typed while a
+// fresh start is still minting is the same load-modify-save writer as the
+// loser's automatic replay, and it bypassed the claim lock. It now takes the
+// same lock, with the same wait, so a resume never rewrites a record mid-mint.
+// `--replace` keeps its own differently-suffixed lock by ruling (#95 brief,
+// out of scope: "every other pair of record writers outside the claim
+// winner/loser race, including a --replace caller").
+test('an explicit --resume takes the claim lock too, and waits out a live winner', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-resume-lock'), { env: { HOME: home }, run: fakeRunner() });
+  assert.equal(first.code, 0, first.out);
+  const store = join(home, 'dispatch');
+  const lock = join(store, 'req-resume-lock.json.claim.lock');
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), token: 'winner', at: '2026-08-01T00:00:00Z' }));
+  let ticks = 0;
+  const run = fakeRunner();
+  const r = invoke(['--resume', '--request', 'req-resume-lock'], {
+    env: { HOME: home },
+    run,
+    startDeps: { sleep: () => { ticks += 1; if (ticks === 2) unlinkSync(lock); } },
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(ticks, 2, 'the resume polled the live winner out before touching the record');
+  assert.equal(run.calls.length, 2, 'then replayed exactly the two recorded calls');
+  assert.equal(existsSync(lock), false, 'and released its own lock');
+});
+
 // Criterion 7 of #95: the wait is never a takeover. A holder proven DEAD on this
 // host is refused at once with the same reason and the same repair as before.
 test('a lock whose holder is proven dead is refused at once — the wait never becomes a takeover', () => {
