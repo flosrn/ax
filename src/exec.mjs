@@ -27,15 +27,32 @@ const MAX_BUFFER = 64 * 1024 * 1024;
  * caller's own predicate decides what that means: exit codes are verdicts in
  * this package, per verb (ADR 0003).
  */
-export function run(bin, args, { cwd, timeout, maxBuffer = MAX_BUFFER } = {}) {
+export function run(bin, args, { cwd, timeout, maxBuffer = MAX_BUFFER, env } = {}) {
   const out = spawnSync(bin, args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer,
     ...(cwd ? { cwd } : {}),
     ...(timeout ? { timeout } : {}),
+    ...(env ? { env } : {}),
   });
   return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
+}
+
+/**
+ * The environment a `gh` call runs under: the shell's, minus `GH_REPO`.
+ *
+ * `gh repo view` with no argument answers `GH_REPO` when it is set — gh
+ * documents it as the repository for commands that otherwise operate on the
+ * local checkout. Every ax verb speaks about the checkout it runs in, and the
+ * dispatch record's `repo` key is written by one verb and compared by three
+ * others, possibly from other shells: an override reaching one of them makes a
+ * record permanently foreign to the rest (review of #123). Stripped HERE, in
+ * the one adapter, so writer and readers cannot disagree.
+ */
+export function ghEnv(env = process.env) {
+  const { GH_REPO: _ignored, ...rest } = env;
+  return rest;
 }
 
 /**
@@ -58,4 +75,4 @@ export function capture(bin, args, { cwd } = {}) {
  * and a full green suite said nothing — the first real invocation was a
  * ReferenceError.
  */
-export const defaultExec = (bin, args, at) => run(bin, args, { cwd: at, timeout: 30000 });
+export const defaultExec = (bin, args, at) => run(bin, args, { cwd: at, timeout: 30000, ...(bin === 'gh' ? { env: ghEnv() } : {}) });
