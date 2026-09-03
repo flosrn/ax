@@ -89,8 +89,11 @@ input the caller could have written can describe. Enumerate those acts when addi
 
 **Prefer re-deriving a fact from durable state over carrying it.** A carried fact is scoped to the
 process that carried it, and the same false verdict returns in every other process. The commit graph
-already held the answer; asking it costs three git reads and holds everywhere, forever, with no
-record to keep coherent.
+already held the answer, and asking it holds everywhere, forever, with no record to keep coherent.
+The price is bounded and paid only when a post-open commit has two parents: the base ref resolved
+once per run (one or two `rev-parse` calls), then `merge-base --is-ancestor`,
+`merge-tree --write-tree` and one `rev-parse <sha>^{tree}` per candidate merge. A pull request with
+no post-open merge costs no git read at all.
 
 **An exemption by shape must be narrow enough to be unusable as a bypass, and the narrowing must be
 a RECOMPUTATION, not an inspection.** The first predicate here asked whether
