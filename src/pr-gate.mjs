@@ -587,9 +587,12 @@ export function gate(
   /**
    * THE TEXTS A MERGE OF THIS PR PUTS ON THE DEFAULT BRANCH (#86). GitHub acts
    * on every closing construct it finds there, and the body is only one of
-   * them: the branch's commit messages arrive too whenever the repository's
-   * merge-message policy or the merge method lands them, and this gate read
-   * neither.
+   * them: the branch's commit messages arrive whenever the policy or the method
+   * lands them, and the pull request TITLE arrives whenever policy makes it the
+   * subject of the commit that lands. This gate read none of it.
+   *
+   * The title costs no round trip either — it rides the same `gh pr view`
+   * receipt as the body, on every side of the merge.
    *
    * Each read happens ONCE per run and is memoised here, because both sides of
    * the merge consume the answer: the grounds below, and closure verification
@@ -598,20 +601,26 @@ export function gate(
    * post-merge sentence from disagreeing with the set the merge was approved
    * against.
    *
-   * The commit messages cost no extra round trip: they ride the very payload
-   * Ground 6 already fetches for its "commits since open" detector.
+   * The commit messages cost no extra round trip either: they ride the very
+   * payload Ground 6 already fetches for its "commits since open" detector.
+   *
+   * `merging` is `doMerge`, not a convenience: this run's own mutation uses
+   * exactly one method, so that is the method the channel predicate stands on.
    */
   let policyRead = null;
   let commitsRead = null;
-  let channelRead = null;
-  const channelOnce = () => {
+  const channelReads = new Map();
+  const channelOnce = title => {
     policyRead ??= mergePolicy({ run, slug });
     commitsRead ??= prCommits({ run, slug, pr });
-    channelRead ??= closingChannels({ policy: policyRead, commits: commitsRead, method, methodGiven });
-    return channelRead;
+    const key = String(title ?? '');
+    if (!channelReads.has(key)) {
+      channelReads.set(key, closingChannels({ policy: policyRead, commits: commitsRead, title: key, method, methodGiven, merging: doMerge }));
+    }
+    return channelReads.get(key);
   };
-  /** The body as it stands NOW, plus the commit channels this run established. */
-  const channelsFor = body => [{ label: 'the body', text: String(body ?? ''), sha: '' }, ...channelOnce().commitChannels];
+  /** The body and title as they stand NOW, plus whatever else policy lands. */
+  const channelsFor = (body, title) => [{ kind: 'body', label: 'the body', text: String(body ?? ''), sha: '' }, ...channelOnce(title).channels];
 
   /**
    * KTD5: a merged PR proves delivery only when its ticket actually closed.
@@ -632,10 +641,10 @@ export function gate(
    * there is, and refusing to establish a landed merge over a policy read would
    * escalate a delivery the tracker itself confirms. It is named instead.
    */
-  const verifyClosure = (body, binding) => {
-    const channels = channelsFor(body);
+  const verifyClosure = (body, title, binding) => {
+    const channels = channelsFor(body, title);
     const closes = closedIssuesOf(channels);
-    for (const entry of channelOnce().unknowns) note(`closure: ${entry.message}`);
+    for (const entry of channelOnce(title).unknowns) note(`closure: ${entry.message}`);
     if (!binding.ok) {
       if (closes.length === 0) {
         note('closure: nothing this merge closed from names a same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
@@ -710,7 +719,7 @@ export function gate(
     }
     if (recordedArgv !== null) {
       const recordedSha = argvValue(recordedArgv, '--match-head-commit') ?? '';
-      const seen = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,headRefName,body']));
+      const seen = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,headRefName,body,title']));
       if (!seen.ok) return cannot(`the replay read 'gh pr view ${pr}' ${seen.reason}`, `gh pr view ${pr} --repo ${slug}`);
       const prState = String(seen.value?.state ?? '').toUpperCase();
       const headNow = String(seen.value?.headRefOid ?? '').trim();
@@ -729,7 +738,7 @@ export function gate(
             slug,
             invocation,
           });
-          return verifyClosure(typeof seen.value?.body === 'string' ? seen.value.body : '', binding);
+          return verifyClosure(typeof seen.value?.body === 'string' ? seen.value.body : '', typeof seen.value?.title === 'string' ? seen.value.title : '', binding);
         }
         bad(
           `REPLAY — ${slug}#${pr} merged OUTSIDE this gate's validated head (recorded ${recordedSha || 'nothing'}, merged ${headNow || 'unread'}); the record must not become false proof of validation`,
@@ -749,7 +758,7 @@ export function gate(
   // ── Setup. The head SHA is resolved ONCE and every ground below uses that one
   // value, so no step can validate one commit and speak about another.
   const receipt = payload(
-    run(['pr', 'view', pr, '--repo', slug, '--json', 'number,headRefOid,headRefName,baseRefName,body,createdAt,mergeStateStatus']),
+    run(['pr', 'view', pr, '--repo', slug, '--json', 'number,headRefOid,headRefName,baseRefName,body,title,createdAt,mergeStateStatus']),
   );
   if (!receipt.ok) {
     return cannot(`'gh pr view ${pr} --repo ${slug}' ${receipt.reason}`, `gh pr view ${pr} --repo ${slug}   # read it by hand`);
@@ -781,6 +790,10 @@ export function gate(
   }
   const mergeState = typeof receipt.value.mergeStateStatus === 'string' && receipt.value.mergeStateStatus !== '' ? receipt.value.mergeStateStatus : '-';
   const body = typeof receipt.value.body === 'string' ? receipt.value.body : '';
+  // The title is read like the body, and for the same reason: policy decides
+  // whether either text lands on the default branch, and this gate does not get
+  // to assume it does not (#86).
+  const title = typeof receipt.value.title === 'string' ? receipt.value.title : '';
 
   section(`pr gate — ${slug}#${pr}`);
   note(`head SHA         ${sha}  (resolved once; every ground below uses this value)`);
@@ -801,8 +814,8 @@ export function gate(
   // The channels this merge closes from, resolved ONCE (the policy read and the
   // commits read are memoised): Ground 7, Ground 9 and the closure verification
   // all stand on this one answer.
-  const channel = channelOnce();
-  const channels = channelsFor(body);
+  const channel = channelOnce(title);
+  const channels = channelsFor(body, title);
   const ci = ciGround({ run, slug, sha, declared, pr });
   const gitOut = gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir });
   const grounds = [
@@ -961,7 +974,7 @@ export function gate(
           // lock that state is authoritative: reissuing over a merge that
           // already landed overwrites the recorded receipt of the run that
           // actually issued it, leaving a successful merge recorded as failed.
-          const settled = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,body']));
+          const settled = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,headRefOid,body,title']));
           if (!settled.ok) {
             bad(
               `CANNOT ESTABLISH — with the merge lock held, the read 'gh pr view ${pr}' ${settled.reason}, so whether the recorded merge already landed is unread and a reissue could be a second mutation`,
@@ -973,7 +986,7 @@ export function gate(
           const settledHead = String(settled.value?.headRefOid ?? '').trim();
           if (settledState === 'MERGED' && settledHead === sha) {
             note(`REPLAYED-SUCCESS — the recorded merge landed at ${sha} while this run waited for the lock; no second mutation minted`);
-            return verifyClosure(typeof settled.value?.body === 'string' ? settled.value.body : '', binding);
+            return verifyClosure(typeof settled.value?.body === 'string' ? settled.value.body : '', typeof settled.value?.title === 'string' ? settled.value.title : '', binding);
           }
           if (settledState === 'MERGED') {
             bad(
@@ -1011,7 +1024,7 @@ export function gate(
     // success says only that the mutation was issued — and releasing before
     // this read leaves a sibling free to acquire while GitHub still answers
     // OPEN and reissue over a merge that is landing.
-    const landed = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,mergeCommit,body']));
+    const landed = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'state,mergeCommit,body,title']));
     if (!landed.ok) {
       bad(
         `CANNOT ESTABLISH — the merge was issued and the post-merge read 'gh pr view ${pr}' ${landed.reason}, so whether ${slug}#${pr} merged, queued or enabled auto-merge is unread`,
@@ -1030,18 +1043,19 @@ export function gate(
     const mergeCommit = clean(String(landed.value?.mergeCommit?.oid ?? '')).slice(0, 12);
     note(`MERGED — ${slug}#${pr} at ${sha} (${method}${mergeCommit === '' ? '' : `, merge commit ${mergeCommit}`})`);
 
-    // Closure is verified from the POST-MERGE body: GitHub closes from the body
-    // as it stands at merge time, and the pre-merge capture is a different text
-    // the moment the description is edited while this gate runs.
+    // Closure is verified from the POST-MERGE text: GitHub closes from the body
+    // and the title as they stand at merge time, and the pre-merge capture is a
+    // different text the moment either is edited while this gate runs.
     const landedBody = landed.value?.body;
-    if (typeof landedBody !== 'string') {
+    const landedTitle = landed.value?.title;
+    if (typeof landedBody !== 'string' || typeof landedTitle !== 'string') {
       bad(
-        `CANNOT ESTABLISH — the post-merge read of ${slug}#${pr} answered no body, so the issue GitHub closes from it cannot be named`,
+        `CANNOT ESTABLISH — the post-merge read of ${slug}#${pr} answered no ${typeof landedBody !== 'string' ? 'body' : 'title'}, so the issue GitHub closes from it cannot be named`,
       );
-      fix(`gh pr view ${pr} --repo ${slug} --json body   # then verify the linked issue by hand`);
+      fix(`gh pr view ${pr} --repo ${slug} --json body,title   # then verify the linked issue by hand`);
       return 3;
     }
-    return verifyClosure(landedBody, binding);
+    return verifyClosure(landedBody, landedTitle, binding);
   } finally {
     // Every path releases: a lock outliving its gesture wedges every later run.
     ownership.release();

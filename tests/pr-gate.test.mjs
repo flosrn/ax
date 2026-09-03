@@ -55,6 +55,9 @@ const prView = (over = {}) => ({
   headRefOid: HEAD_SHA,
   headRefName: 'feature',
   baseRefName: 'main',
+  // The title is a closure channel wherever policy makes it the merge subject
+  // (#86), so the fixture's is deliberately inert.
+  title: 'fix: the spin dedup',
   body: 'Closes #1786',
   createdAt: OPENED,
   mergeStateStatus: 'CLEAN',
@@ -107,25 +110,30 @@ const prCommits = (lateCount, messages = []) => {
 };
 
 /**
- * The repository's merge-message policy (#86), the read that says whether the
- * branch's commit messages will reach the default branch at all.
+ * The repository's merge-message policy (#86), the read that says which texts
+ * will reach the default branch at all.
  *
- * The DEFAULT IS THE INERT ONE — squash the only allowed method, the merge
- * message from the PR body, the title from the PR title — so every expectation
- * in this file that predates #86 keeps measuring the body-only verdict it was
- * written for, byte for byte. The rows that exercise the channel declare the
- * policy they stand on, which is also the only way to read what they prove.
+ * THERE IS NO INERT POLICY. GitHub always writes a subject and a message for
+ * the commit it lands, and every value those settings can take names a text:
+ * the pull request title, the branch's commit messages, or a single commit's
+ * subject. The default below is the narrowest real one — squash the only
+ * allowed method, the merge message from the PR body, the subject from the PR
+ * TITLE — so the commit messages stay off the default branch and the title is
+ * the one extra channel. Every fixture title is therefore inert, and the rows
+ * that arm one say so.
  */
-const INERT_POLICY = {
+const BODY_POLICY = {
   squash_merge_commit_message: 'PR_BODY',
   squash_merge_commit_title: 'PR_TITLE',
+  merge_commit_title: 'MERGE_MESSAGE',
+  merge_commit_message: 'PR_BODY',
   allow_squash_merge: true,
   allow_merge_commit: false,
   allow_rebase_merge: false,
 };
 
 /** ax's own measured setting: the merge message IS the commit messages. */
-const MESSAGES_POLICY = { ...INERT_POLICY, squash_merge_commit_message: 'COMMIT_MESSAGES' };
+const MESSAGES_POLICY = { ...BODY_POLICY, squash_merge_commit_message: 'COMMIT_MESSAGES', squash_merge_commit_title: 'COMMIT_OR_PR_TITLE' };
 
 const DEFAULT_GATE = { aggregate: AGGREGATE };
 
@@ -304,7 +312,7 @@ const run = (
     checks,
     threads,
     commits,
-    policy = INERT_POLICY,
+    policy = BODY_POLICY,
     slug = SLUG,
     mergeFails = false,
     git: gitOverride,
@@ -343,9 +351,9 @@ const run = (
       if (onPrView) onPrView(args);
       // `prStates` sequences the receipts a replaying run reads; the plain
       // `receipt` answers every read. The POST-MERGE read-back is a distinct
-      // call (`--json state,mergeCommit,body`), so a run that does not sequence
+      // call (`--json state,mergeCommit,body,title`), so a run that does not sequence
       // its states still gets the MERGED answer that read exists to check.
-      const readBack = args.includes('state,mergeCommit,body');
+      const readBack = args.includes('state,mergeCommit,body,title');
       const base = receipt === null ? null : (receipt ?? prView());
       const answer = prStates ? prStates[Math.min(prViews, prStates.length - 1)] : base === null ? null : readBack ? { ...base, state: 'MERGED' } : base;
       prViews += 1;
@@ -489,7 +497,7 @@ test('a checkout may declare its gate WITHOUT the provisioning contract', () => 
         if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([])));
         if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
         if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
-        if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(INERT_POLICY));
+        if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(BODY_POLICY));
         return answered('');
       },
       git: realGit,
@@ -854,7 +862,7 @@ test('AE6: a PR that closes no issue is a refusal naming the two readings and th
   // chore case survives through the repair: the human merges by hand.
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ body: 'Tooling fix: the doctor read the wrong path.' }) });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
+  assert.match(out, /REFUSE — closing keyword: neither the body nor the PR title closes an issue or expresses intent to/);
   assert.match(out, /→ gh pr edit 1845 --repo gapilabs\/gapila --body-file -/);
 });
 
@@ -875,7 +883,7 @@ test('a declared tracker turns the false "no intent" line into the actionable on
 test('without a declared tracker the refusal wording is the bare one, so no other repository moves', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }) });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
+  assert.match(out, /REFUSE — closing keyword: neither the body nor the PR title closes an issue or expresses intent to/);
   assert.doesNotMatch(out, /moves by hand/);
 });
 
@@ -921,7 +929,7 @@ test('a tracker pattern that does not compile falls back to the bare refusal, an
     receipt: prView({ body: 'Part of GAP-380.' }),
   });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — closing keyword: the body closes no issue and expresses no intent to/);
+  assert.match(out, /REFUSE — closing keyword: neither the body nor the PR title closes an issue or expresses intent to/);
   assert.doesNotMatch(out, /moves by hand/);
 });
 
@@ -1075,8 +1083,43 @@ test('a bound ticket the body closes nothing for is refused: the dispatched tick
     receipt: prView({ body: 'Fixes GAP-380 — the spin dedup.' }),
   });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — ticket binding: this merge is for #1786 .*, and the body closes no same-repository issue/);
+  assert.match(out, /REFUSE — ticket binding: this merge is for #1786 .*, and neither the body nor the PR title closes a same-repository issue/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#86: a PR title closing another ticket refuses where policy makes the title the merge subject', () => {
+  // BODY_POLICY is `squash_merge_commit_title=PR_TITLE`: the title IS the
+  // subject of the commit that lands on main, so a construct there closes
+  // exactly like one in a commit message.
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    receipt: prView({ title: 'fix: the gate — Fixes #11' }),
+  });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — ticket binding: .*#11/);
+  assert.match(out, /the PR title closes #11/);
+  assert.match(out, /→ gh pr edit 1845 --repo gapilabs\/gapila --title/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a title closed an unrelated ticket');
+});
+
+test('#86: --merge without --method evaluates the squash channels alone — the method it will ISSUE', () => {
+  // The documented default mutates with --squash unconditionally. Widening to
+  // every allowed method here refused a merge over commit messages that cannot
+  // reach the commit this run writes.
+  const { code, out, calls, headSha } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    policy: { ...BODY_POLICY, allow_merge_commit: true, allow_rebase_merge: true },
+    commits: prCommits(0, ['fix: the gate\n\nFixes #11']),
+  });
+  assert.equal(code, 0, out);
+  assert.match(out, /methods evaluated: squash/);
+  assert.doesNotMatch(out, /rebase/, 'a method this run cannot issue decided the channel');
+  assert.doesNotMatch(out, /#11/, 'a message that cannot reach the squash commit refused a merge');
+  assert.deepEqual(
+    calls.filter(call => call.startsWith('pr merge')),
+    [`pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${headSha}`],
+    'the run merged with the very method it evaluated',
+  );
 });
 
 // ── The second closure channel: the branch's commit messages (#86) ──────────
@@ -1108,19 +1151,22 @@ test('#86: a commit message closing another ticket refuses under COMMIT_MESSAGES
   assert.ok(!calls.some(call => call.startsWith('issue view')), 'closure was polled for a merge that never happened');
 });
 
-test('#86: the same messages under PR_BODY change nothing — the channel cannot reach the default branch', () => {
+test('#86: the same messages under PR_BODY change nothing — they never reach the default branch', () => {
   const { code, out } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
     commits: prCommits(0, ['fix: the gate\n\nFixes #11']),
   });
   assert.equal(code, 0, out);
   assert.match(out, /ticket binding: the body closes #1786, the ticket this merge is for/);
-  assert.doesNotMatch(out, /#11/, 'an inert channel contributed a finding');
-  assert.doesNotMatch(out, /closing channels/, 'an inert channel printed a note');
+  assert.doesNotMatch(out, /#11/, 'a message that cannot reach the merge commit contributed a finding');
+  // The note names the ONE channel policy does land here — the PR title, which
+  // becomes the squash subject — and no commit message at all.
+  assert.match(out, /closing channels: the body, plus the PR title —/);
+  assert.doesNotMatch(out, /commit message\(s\) on this branch/);
 });
 
 test('#86: the title arm — one commit and COMMIT_OR_PR_TITLE puts its subject on the default branch', () => {
-  const subject = { ...INERT_POLICY, squash_merge_commit_title: 'COMMIT_OR_PR_TITLE' };
+  const subject = { ...BODY_POLICY, squash_merge_commit_title: 'COMMIT_OR_PR_TITLE' };
   const refused = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
     policy: subject,
@@ -1147,7 +1193,7 @@ test('#86: the title arm — one commit and COMMIT_OR_PR_TITLE puts its subject 
 test('#86: a detector run names no method, so it evaluates every one the repository allows and fails closed', () => {
   const { code, out } = run(['--pr', '1845'], {
     ...CLEAN,
-    policy: { ...INERT_POLICY, allow_merge_commit: true },
+    policy: { ...BODY_POLICY, allow_merge_commit: true },
     commits: prCommits(0, ['fix: the gate\n\nFixes #11']),
   });
   assert.equal(code, 1);
@@ -1157,7 +1203,7 @@ test('#86: a detector run names no method, so it evaluates every one the reposit
   // Naming the method the caller stands on narrows it back to the squash arm.
   const named = run(['--pr', '1845', '--method', 'squash'], {
     ...CLEAN,
-    policy: { ...INERT_POLICY, allow_merge_commit: true },
+    policy: { ...BODY_POLICY, allow_merge_commit: true },
     commits: prCommits(0, ['fix: the gate\n\nFixes #11']),
   });
   assert.equal(named.code, 0, named.out);
@@ -1522,7 +1568,7 @@ test('KTD5: a PR that edits the prGate declaration it is measured by refuses tow
     if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
     if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
     if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
-    if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(INERT_POLICY));
+    if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(BODY_POLICY));
     return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
   };
   const { code, out } = capture(() => gate(['--pr', '1845', '--merge'], { gh, git: realGit, cwd: root, env: { HOME: sandbox }, sleep: () => {} }));
@@ -1659,7 +1705,7 @@ test('the lock outlives the merge call: the post-merge read-back happens while a
     ...CLEAN,
     store: storeDir,
     onPrView: args => {
-      if (args.includes('state,mergeCommit,body')) heldAtReadBack = existsSync(lock);
+      if (args.includes('state,mergeCommit,body,title')) heldAtReadBack = existsSync(lock);
     },
   });
   assert.equal(code, 0);
@@ -1702,7 +1748,7 @@ test('a merging run refuses a prGate the head does not carry: the gate never mea
     if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
     if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
     if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
-    if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(INERT_POLICY));
+    if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(BODY_POLICY));
     if (verb === 'pr' && target === 'merge') return answered('merged\n');
     if (verb === 'issue' && target === 'view') return answered(JSON.stringify({ state: 'CLOSED' }));
     return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);

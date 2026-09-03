@@ -144,10 +144,13 @@ test('threads: an undecided CI issues NO read at all — the dependency is in th
 // ── Ground 7: the closing keyword, over every channel a merge closes from ───
 
 /** The one channel a repository whose commit messages never reach main has. */
-const bodyOnly = text => [{ label: 'the body', text, sha: '' }];
+const bodyOnly = text => [{ kind: 'body', label: 'the body', text, sha: '' }];
 
 /** A commit message channel: what the merge message will carry, and from where. */
-const fromCommit = (sha, text) => ({ label: `commit ${sha}`, text, sha });
+const fromCommit = (sha, text) => ({ kind: 'commit', label: `commit ${sha}`, text, sha });
+
+/** The pull request title, wherever policy makes it the subject that lands. */
+const fromTitle = text => ({ kind: 'title', label: 'the PR title', text, sha: '' });
 
 test('closing keyword: Ferme #N is intent GitHub ignores — a refusal naming the phrase (F-018)', () => {
   const out = keywordGround({ channels: bodyOnly('Ferme #1786 en corrigeant le routeur.'), tracker: undefined, pr: '7', slug: 'gapilabs/gapila' });
@@ -220,7 +223,7 @@ test('closing keyword: a construct in a commit message is closing intent, and na
   // The false absence this fix removes: the body says nothing, the merge
   // message says everything, and the ground used to print "closes no issue".
   const out = keywordGround({
-    channels: [{ label: 'the body', text: 'A repair with no description.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: the gate\n\nCloses #42')],
+    channels: [{ kind: 'body', label: 'the body', text: 'A repair with no description.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: the gate\n\nCloses #42')],
     tracker: undefined,
     pr: '7',
     slug: 'gapilabs/gapila',
@@ -236,7 +239,7 @@ test('closing keyword: a construct in a commit message is closing intent, and na
 
 test('closing keyword: the absence refusal names every channel it read, never the body alone (#86)', () => {
   const out = keywordGround({
-    channels: [{ label: 'the body', text: 'Tooling fix.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'chore: tidy'), fromCommit('b2c3d4e5f6a1', 'chore: tidy again')],
+    channels: [{ kind: 'body', label: 'the body', text: 'Tooling fix.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'chore: tidy'), fromCommit('b2c3d4e5f6a1', 'chore: tidy again')],
     tracker: undefined,
     pr: '7',
     slug: 'gapilabs/gapila',
@@ -249,7 +252,7 @@ test('closing keyword: the absence refusal names every channel it read, never th
 
 test('closing keyword: base inertness outranks the channel — a commit construct closes nothing there either (#86)', () => {
   const out = keywordGround({
-    channels: [{ label: 'the body', text: 'No description.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #42')],
+    channels: [{ kind: 'body', label: 'the body', text: 'No description.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #42')],
     tracker: undefined,
     pr: '7',
     slug: 'gapilabs/gapila',
@@ -265,7 +268,7 @@ test('closing keyword: base inertness outranks the channel — a commit construc
 
 test('closing keyword: a wrong-verb form in a commit message is repaired on the message, not on the body (#86)', () => {
   const out = keywordGround({
-    channels: [{ label: 'the body', text: 'No description.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nFerme #1786')],
+    channels: [{ kind: 'body', label: 'the body', text: 'No description.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nFerme #1786')],
     tracker: undefined,
     pr: '7',
     slug: 'gapilabs/gapila',
@@ -281,7 +284,7 @@ test('closing keyword: a wrong-verb form in a commit message is repaired on the 
 
 test('closure set: the union is deduplicated, ascending, and carries the channel that named each ticket (#86)', () => {
   const closes = closedIssuesOf([
-    { label: 'the body', text: 'Closes #42\n\nAlso resolves #7', sha: '' },
+    { kind: 'body', label: 'the body', text: 'Closes #42\n\nAlso resolves #7', sha: '' },
     fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #42'),
     fromCommit('b2c3d4e5f6a1', 'fix: more\n\nFixes #11'),
   ]);
@@ -301,7 +304,7 @@ test('closure set: the union is deduplicated, ascending, and carries the channel
 
 test('closure set: a cross-repository target stays out of it, in a commit message exactly as in the body (#86)', () => {
   const closes = closedIssuesOf([
-    { label: 'the body', text: 'Closes other/repo#9', sha: '' },
+    { kind: 'body', label: 'the body', text: 'Closes other/repo#9', sha: '' },
     fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses https://github.com/other/repo/issues/12'),
   ]);
   assert.deepEqual(closes, []);
@@ -312,7 +315,7 @@ test('closure set: a cross-repository target stays out of it, in a commit messag
 const BOUND = { ok: true, issue: 42, source: '--issue' };
 
 test('ticket binding: a commit message closing another ticket refuses BEFORE the merge (#86)', () => {
-  const channels = [{ label: 'the body', text: 'Closes #42', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nFixes #11')];
+  const channels = [{ kind: 'body', label: 'the body', text: 'Closes #42', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nFixes #11')];
   const out = ticketGround({ binding: BOUND, closes: closedIssuesOf(channels), channels, pr: '7', slug: 'gapilabs/gapila' });
   assert.equal(out.refusals.length, 1);
   assert.match(out.refusals[0].message, /#11/);
@@ -332,31 +335,72 @@ test('ticket binding: a sibling the body DECLARES is not refused when a commit r
   // The construct is in the description a reviewer read; the commit message
   // only repeats it. What refuses is a closure nobody could see, not a
   // duplicated one.
-  const channels = [{ label: 'the body', text: 'Closes #42\n\nCloses #99', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #99')];
+  const channels = [{ kind: 'body', label: 'the body', text: 'Closes #42\n\nCloses #99', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #99')];
   const out = ticketGround({ binding: BOUND, closes: closedIssuesOf(channels), channels, pr: '7', slug: 'gapilabs/gapila' });
   assert.equal(out.refusals.length, 0);
   assert.match(out.notes[0].message, /it also closes #99/);
 });
 
 test('ticket binding: a commit message closing the BOUND ticket satisfies the ground (#86)', () => {
-  const channels = [{ label: 'the body', text: 'A repair.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #42')];
+  const channels = [{ kind: 'body', label: 'the body', text: 'A repair.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it\n\nCloses #42')];
   const out = ticketGround({ binding: BOUND, closes: closedIssuesOf(channels), channels, pr: '7', slug: 'gapilabs/gapila' });
   assert.equal(out.refusals.length, 0);
   assert.match(out.notes[0].message, /commit a1b2c3d4e5f6 closes #42, the ticket this merge is for \(--issue\)/);
 });
 
 test('ticket binding: nothing closing anywhere names every channel it read (#86)', () => {
-  const channels = [{ label: 'the body', text: 'A repair.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it')];
+  const channels = [{ kind: 'body', label: 'the body', text: 'A repair.', sha: '' }, fromCommit('a1b2c3d4e5f6', 'fix: it')];
   const out = ticketGround({ binding: BOUND, closes: closedIssuesOf(channels), channels, pr: '7', slug: 'gapilabs/gapila' });
   assert.equal(out.refusals.length, 1);
   assert.match(out.refusals[0].message, /neither the body nor commit a1b2c3d4e5f6 closes a same-repository issue/);
 });
 
+test('closing keyword: a construct in the PR TITLE is closing intent, and names the title (#86)', () => {
+  const out = keywordGround({
+    channels: [{ kind: 'body', label: 'the body', text: 'A repair with no description.', sha: '' }, fromTitle('fix: the gate — Closes #42')],
+    tracker: undefined,
+    pr: '7',
+    slug: 'gapilabs/gapila',
+    baseBranch: 'main',
+    defaultBranch: 'main',
+  });
+  assert.equal(out.refusals.length, 0);
+  assert.match(out.notes[0].message, /'Closes #42' in the PR title — GitHub will close the issue/);
+});
+
+test('closing keyword: a wrong-verb form in the title is repaired on the title (#86)', () => {
+  const out = keywordGround({
+    channels: [{ kind: 'body', label: 'the body', text: 'No description.', sha: '' }, fromTitle('Ferme #1786')],
+    tracker: undefined,
+    pr: '7',
+    slug: 'gapilabs/gapila',
+    baseBranch: 'main',
+    defaultBranch: 'main',
+  });
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].message, /'Ferme #1786' in the PR title closes nothing/);
+  assert.match(out.refusals[0].repair, /gh pr edit 7 --repo gapilabs\/gapila --title/);
+});
+
+test('ticket binding: a PR TITLE closing another ticket refuses, and repairs on the title (#86)', () => {
+  // The title reaches the default branch as the merge commit's subject, so a
+  // construct there closes exactly like one in a commit message — and the body
+  // a reviewer read declared only the bound ticket.
+  const channels = [{ kind: 'body', label: 'the body', text: 'Closes #42', sha: '' }, fromTitle('fix: the gate — Fixes #11')];
+  const out = ticketGround({ binding: BOUND, closes: closedIssuesOf(channels), channels, pr: '7', slug: 'gapilabs/gapila' });
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].message, /the PR title closes #11/);
+  assert.match(out.refusals[0].repair, /gh pr edit 7 --repo gapilabs\/gapila --title/);
+});
+
 // ── The merge-message policy, read once ────────────────────────────────────
 
+/** ax's own, read 2026-09-03 with `gh api repos/flosrn/ax`. */
 const REPO_PAYLOAD = {
   squash_merge_commit_message: 'COMMIT_MESSAGES',
   squash_merge_commit_title: 'COMMIT_OR_PR_TITLE',
+  merge_commit_title: 'MERGE_MESSAGE',
+  merge_commit_message: 'PR_TITLE',
   allow_squash_merge: true,
   allow_merge_commit: true,
   allow_rebase_merge: false,
@@ -365,7 +409,7 @@ const REPO_PAYLOAD = {
 const answering = value => () => ({ status: 0, stdout: JSON.stringify(value), stderr: '', error: undefined });
 const failing = stderr => () => ({ status: 1, stdout: '', stderr, error: undefined });
 
-test('merge policy: one gh api repos/<slug> read answers all three facts (#86)', () => {
+test('merge policy: one gh api repos/<slug> read answers every fact the predicate needs (#86)', () => {
   const calls = [];
   const policy = mergePolicy({
     run: args => {
@@ -375,7 +419,14 @@ test('merge policy: one gh api repos/<slug> read answers all three facts (#86)',
     slug: 'o/r',
   });
   assert.deepEqual(calls, ['api repos/o/r']);
-  assert.deepEqual(policy, { ok: true, squashMessage: 'COMMIT_MESSAGES', squashTitle: 'COMMIT_OR_PR_TITLE', allowed: ['squash', 'merge'] });
+  assert.deepEqual(policy, {
+    ok: true,
+    squashMessage: 'COMMIT_MESSAGES',
+    squashTitle: 'COMMIT_OR_PR_TITLE',
+    mergeTitle: 'MERGE_MESSAGE',
+    mergeMessage: 'PR_TITLE',
+    allowed: ['squash', 'merge'],
+  });
 });
 
 test('merge policy: an unread or incomplete payload is a reason and a repair, never a default (#86)', () => {
@@ -391,6 +442,18 @@ test('merge policy: an unread or incomplete payload is a reason and a repair, ne
   const none = mergePolicy({ run: answering({ ...REPO_PAYLOAD, allow_squash_merge: false, allow_merge_commit: false }), slug: 'o/r' });
   assert.equal(none.ok, false);
   assert.match(none.reason, /names no allowed merge method/);
+});
+
+test('merge policy: a value this predicate does not know is unread, never inert (#86)', () => {
+  // The predicate is exhaustive over the documented values. A value it cannot
+  // place would otherwise fall through every arm and read as "nothing reaches
+  // the default branch" — F-028's failure with a spelling instead of an
+  // absence.
+  const unknown = mergePolicy({ run: answering({ ...REPO_PAYLOAD, squash_merge_commit_title: 'PR_TITLE_AND_NUMBER' }), slug: 'o/r' });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.reason, /'squash_merge_commit_title' names 'PR_TITLE_AND_NUMBER'/);
+  assert.match(unknown.reason, /which text reaches the default branch is undecided/);
+  assert.match(unknown.repair, /gh api repos\/o\/r/);
 });
 
 // ── The commits, read once for both the detector and the channel ───────────
@@ -435,84 +498,135 @@ test('pr commits: a payload missing a named key is the reason each consumer pref
   assert.equal(out.unknowns[0].message, "commits since open: a PR commit: 'commit' is absent from the payload");
 });
 
-// ── The predicate: will these messages reach the default branch? ────────────
+// ── The predicate: which texts will reach the default branch? ──────────────
+//
+// There is no policy under which the body is the only one. GitHub always writes
+// a subject and a message for the commit it lands, and every value those two
+// settings can take names a text: the pull request title, the branch's commit
+// messages, or a single commit's subject.
 
-const policyOf = over => ({ ok: true, squashMessage: 'PR_BODY', squashTitle: 'PR_TITLE', allowed: ['squash'], ...over });
+const policyOf = over => ({
+  ok: true,
+  squashMessage: 'PR_BODY',
+  squashTitle: 'PR_TITLE',
+  mergeTitle: 'MERGE_MESSAGE',
+  mergeMessage: 'PR_BODY',
+  allowed: ['squash'],
+  ...over,
+});
 const commitsOf = (...messages) => ({ ok: true, commits: messages.map((message, index) => ({ sha: String(index).repeat(40).slice(0, 40), message, when: 0 })) });
+const kinds = out => out.channels.map(channel => channel.kind);
+const textsOf = (out, kind) => out.channels.filter(channel => channel.kind === kind).map(channel => channel.text);
 
 test('channel: COMMIT_MESSAGES squash carries every commit message onto the default branch (#86)', () => {
   const out = closingChannels({
-    policy: policyOf({ squashMessage: 'COMMIT_MESSAGES' }),
-    commits: commitsOf('fix: one', 'fix: two'),
+    policy: policyOf({ squashMessage: 'COMMIT_MESSAGES', squashTitle: 'COMMIT_OR_PR_TITLE' }),
+    commits: commitsOf('fix: one'),
+    title: 'fix: one',
     method: 'squash',
     methodGiven: true,
   });
-  assert.deepEqual(
-    out.commitChannels.map(channel => channel.text),
-    ['fix: one', 'fix: two'],
-  );
+  assert.deepEqual(textsOf(out, 'commit'), ['fix: one']);
   assert.match(out.notes[0].message, /squash_merge_commit_message=COMMIT_MESSAGES/);
   assert.match(out.notes[0].message, /methods evaluated: squash/);
 });
 
-test('channel: the title arm is the single commit SUBJECT, whatever the message policy says (#86)', () => {
+test('channel: the squash SUBJECT is a channel, and which text fills it depends on the commit count (#86)', () => {
+  // COMMIT_OR_PR_TITLE with exactly one commit: that commit's subject.
   const one = closingChannels({
     policy: policyOf({ squashTitle: 'COMMIT_OR_PR_TITLE' }),
     commits: commitsOf('fix: it\n\nCloses #42'),
+    title: 'fix: it',
     method: 'squash',
     methodGiven: true,
   });
-  assert.deepEqual(
-    one.commitChannels.map(channel => channel.text),
-    ['fix: it'],
-  );
+  assert.deepEqual(textsOf(one, 'commit'), ['fix: it']);
+  assert.deepEqual(textsOf(one, 'title'), [], 'with one commit GitHub never reaches for the PR title');
   assert.match(one.notes[0].message, /squash_merge_commit_title=COMMIT_OR_PR_TITLE/);
 
-  // Two commits close the title arm: GitHub then takes the PR title.
+  // Two commits: GitHub takes the PULL REQUEST TITLE instead, so that is the
+  // text that lands — the case this predicate used to call inert.
   const two = closingChannels({
     policy: policyOf({ squashTitle: 'COMMIT_OR_PR_TITLE' }),
     commits: commitsOf('fix: it', 'fix: more'),
+    title: 'fix: both halves',
     method: 'squash',
     methodGiven: true,
   });
-  assert.deepEqual(two.commitChannels, []);
-  assert.deepEqual(two.notes, []);
+  assert.deepEqual(kinds(two), ['title']);
+  assert.deepEqual(textsOf(two, 'title'), ['fix: both halves']);
+  assert.match(two.notes[0].message, /2 commits/);
+
+  // PR_TITLE says so outright, whatever the branch holds.
+  const always = closingChannels({ policy: policyOf(), commits: commitsOf('fix: it\n\nCloses #11'), title: 'fix: it', method: 'squash', methodGiven: true });
+  assert.deepEqual(kinds(always), ['title']);
+  assert.match(always.notes[0].message, /squash_merge_commit_title=PR_TITLE/);
+  assert.deepEqual(textsOf(always, 'commit'), [], 'PR_BODY keeps the commit messages off the default branch');
 });
 
-test('channel: PR_BODY and PR_TITLE contribute nothing at all — no channel, no note (#86)', () => {
-  const out = closingChannels({ policy: policyOf(), commits: commitsOf('fix: it\n\nCloses #11'), method: 'squash', methodGiven: true });
-  assert.deepEqual(out.commitChannels, []);
-  assert.deepEqual(out.notes, []);
-  assert.deepEqual(out.unknowns, []);
-  assert.deepEqual(out.refusals, []);
+test('channel: a merge commit that takes the PR title makes the title a channel too (#86)', () => {
+  const titled = closingChannels({
+    policy: policyOf({ allowed: ['squash', 'merge'], mergeMessage: 'PR_TITLE', squashTitle: 'COMMIT_OR_PR_TITLE' }),
+    commits: commitsOf('fix: it'),
+    title: 'fix: it',
+    method: 'merge',
+    methodGiven: true,
+  });
+  assert.ok(kinds(titled).includes('title'), 'merge_commit_message=PR_TITLE lands the title');
+  assert.match(titled.notes[0].message, /merge_commit_message=PR_TITLE/);
+
+  // A rebase writes no merge commit at all: the title never lands, the
+  // messages always do.
+  const rebased = closingChannels({
+    policy: policyOf({ allowed: ['rebase'], squashTitle: 'COMMIT_OR_PR_TITLE' }),
+    commits: commitsOf('fix: it'),
+    title: 'fix: it',
+    method: 'rebase',
+    methodGiven: true,
+  });
+  assert.deepEqual(kinds(rebased), ['commit']);
+  assert.match(rebased.notes[0].message, /verbatim/);
 });
 
-test('channel: --method merge lands every message verbatim whatever the squash setting is (#86)', () => {
-  const out = closingChannels({ policy: policyOf(), commits: commitsOf('fix: it\n\nCloses #11'), method: 'merge', methodGiven: true });
-  assert.equal(out.commitChannels.length, 1);
-  assert.match(out.notes[0].message, /verbatim/);
-  assert.match(out.notes[0].message, /methods evaluated: merge/);
-});
-
-test('channel: no --method evaluates EVERY allowed method and fails closed (#86)', () => {
-  const out = closingChannels({
-    policy: policyOf({ allowed: ['squash', 'rebase'] }),
-    commits: commitsOf('fix: it\n\nCloses #11'),
+test('channel: a --merge run evaluates the method it will ISSUE, never every allowed one (#86)', () => {
+  // The documented default `ax pr gate --pr N --merge` mutates with --squash
+  // unconditionally, so widening to merge and rebase there refuses a merge over
+  // text that cannot reach the commit this run will write.
+  const merging = closingChannels({
+    policy: policyOf({ allowed: ['squash', 'merge', 'rebase'] }),
+    commits: commitsOf('fix: it\n\nFixes #11'),
+    title: 'fix: it',
     method: 'squash',
     methodGiven: false,
+    merging: true,
   });
-  assert.equal(out.commitChannels.length, 1, 'a repository allowing rebase lands the messages whatever squash does');
-  assert.match(out.notes[0].message, /methods evaluated: squash, rebase/);
+  assert.deepEqual(kinds(merging), ['title'], 'the squash arm alone');
+  assert.match(merging.notes[0].message, /methods evaluated: squash/);
+  assert.doesNotMatch(merging.notes[0].message, /rebase/);
+
+  // A DETECTOR run issues nothing, so it fails closed over every method the
+  // repository allows and says which.
+  const detecting = closingChannels({
+    policy: policyOf({ allowed: ['squash', 'rebase'] }),
+    commits: commitsOf('fix: it\n\nFixes #11'),
+    title: 'fix: it',
+    method: 'squash',
+    methodGiven: false,
+    merging: false,
+  });
+  assert.ok(kinds(detecting).includes('commit'), 'a repository allowing rebase lands the messages whatever squash does');
+  assert.match(detecting.notes[0].message, /methods evaluated: squash, rebase/);
 });
 
 test('channel: an unread policy is an inability to establish, never "the body is the only channel" (#86)', () => {
   const out = closingChannels({
     policy: { ok: false, reason: "'gh api repos/o/r' failed — HTTP 502", repair: 'gh api repos/o/r' },
     commits: commitsOf('fix: it\n\nCloses #11'),
+    title: 'fix: it',
     method: 'squash',
     methodGiven: true,
   });
-  assert.deepEqual(out.commitChannels, []);
+  assert.deepEqual(out.channels, []);
   assert.equal(out.unknowns.length, 1);
   assert.match(out.unknowns[0].message, /HTTP 502/);
   assert.match(out.unknowns[0].message, /F-028/);
@@ -523,23 +637,28 @@ test('channel: a live channel this run could not read is unread, not empty (#86)
   const out = closingChannels({
     policy: policyOf({ squashMessage: 'COMMIT_MESSAGES' }),
     commits: { ok: false, reason: 'the list is a full page', repair: 'gh api --paginate' },
+    title: 'fix: it',
     method: 'squash',
     methodGiven: true,
   });
-  assert.deepEqual(out.commitChannels, []);
+  assert.deepEqual(out.channels, []);
   assert.equal(out.unknowns.length, 1);
   assert.match(out.unknowns[0].message, /the list is a full page/);
   assert.equal(out.unknowns[0].repair, 'gh api --paginate');
 });
 
-test('channel: an inert arm never reads the commit list as unknown (#86)', () => {
+test('channel: an unreadable commit list still answers where only the title lands (#86)', () => {
+  // PR_TITLE needs no commit list: the title is the subject whatever the branch
+  // holds, so an unread list decides nothing here.
   const out = closingChannels({
     policy: policyOf(),
     commits: { ok: false, reason: 'HTTP 502', repair: 'gh api' },
+    title: 'fix: it',
     method: 'squash',
     methodGiven: true,
   });
-  assert.deepEqual(out.unknowns, [], 'a channel that cannot reach main decides nothing, read or unread');
+  assert.deepEqual(kinds(out), ['title']);
+  assert.deepEqual(out.unknowns, []);
 });
 
 

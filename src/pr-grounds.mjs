@@ -464,33 +464,56 @@ export function prCommits({ run, slug, pr }) {
 }
 
 /**
- * The repository's MERGE-MESSAGE POLICY: what a merge here will put on the
- * default branch, and by which methods it is allowed to do it.
+ * The repository's MERGE-MESSAGE POLICY: which texts a merge here will put on
+ * the default branch, and by which methods it is allowed to do it.
  *
- * One `gh api repos/<slug>` read answers all three facts. It cannot ride on the
+ * ONE `gh api repos/<slug>` read answers all of it. It cannot ride on the
  * `gh repo view <slug> --json defaultBranchRef` call the gate already makes:
  * `gh repo view --json` has no `squashMergeCommitMessage` field and errors with
  * `Unknown JSON field` (verified 2026-09-02).
  *
- * An absent field RAISES rather than defaulting. "This repository probably
- * builds its merge message from the pull request body" is the assumption that
- * left the channel unread in the first place, and F-028's rule is that an
- * absent value is unknown, never the convenient one.
+ * FOUR SETTINGS, not one. The squash pair decides the squash commit's message
+ * and its SUBJECT; the merge pair decides the merge commit's. A subject is
+ * always written and always comes from somewhere — the pull request title, or a
+ * single commit's own subject — which is why there is no configuration where
+ * the body is the only text that lands (#86, Codex P1 on PR #114).
+ *
+ * An absent field RAISES rather than defaulting, and so does a value this
+ * predicate cannot place. "This repository probably builds its merge message
+ * from the pull request body" is the assumption that left the channel unread in
+ * the first place; a spelling nobody has taught this code is the same unknown
+ * arriving as a string instead of as an absence (F-028).
  */
+const POLICY_VALUES = {
+  squash_merge_commit_message: ['PR_BODY', 'COMMIT_MESSAGES', 'BLANK'],
+  squash_merge_commit_title: ['PR_TITLE', 'COMMIT_OR_PR_TITLE'],
+  merge_commit_title: ['PR_TITLE', 'MERGE_MESSAGE'],
+  merge_commit_message: ['PR_BODY', 'PR_TITLE', 'BLANK'],
+};
+
 export function mergePolicy({ run, slug }) {
   const call = `gh api repos/${slug}`;
-  const repair = `${call} --jq '{squash_merge_commit_message,squash_merge_commit_title,allow_squash_merge,allow_merge_commit,allow_rebase_merge}'`;
+  const repair = `${call} --jq '{${Object.keys(POLICY_VALUES).join(',')},allow_squash_merge,allow_merge_commit,allow_rebase_merge}'`;
   const got = payload(run(['api', `repos/${slug}`]));
   if (!got.ok) return { ok: false, reason: `'${call}' ${got.reason}`, repair };
   try {
     const where = `the repository payload for ${slug}`;
-    const squashMessage = String(must(got.value, 'squash_merge_commit_message', where)).trim().toUpperCase();
-    const squashTitle = String(must(got.value, 'squash_merge_commit_title', where)).trim().toUpperCase();
+    const setting = key => {
+      const value = String(must(got.value, key, where)).trim().toUpperCase();
+      if (!POLICY_VALUES[key].includes(value)) {
+        throw new Error(`${where}: '${key}' names '${clean(value)}', which this gate cannot place, so which text reaches the default branch is undecided`);
+      }
+      return value;
+    };
+    const squashMessage = setting('squash_merge_commit_message');
+    const squashTitle = setting('squash_merge_commit_title');
+    const mergeTitle = setting('merge_commit_title');
+    const mergeMessage = setting('merge_commit_message');
     const allowed = ['squash', 'merge', 'rebase'].filter(
       method => must(got.value, `allow_${method === 'merge' ? 'merge_commit' : `${method}_merge`}`, where) === true,
     );
     if (allowed.length === 0) throw new Error(`${where} names no allowed merge method`);
-    return { ok: true, squashMessage, squashTitle, allowed };
+    return { ok: true, squashMessage, squashTitle, mergeTitle, mergeMessage, allowed };
   } catch (error) {
     return { ok: false, reason: error.message, repair };
   }
@@ -526,97 +549,151 @@ export function commitsGround({ commits, slug, pr, openedAt, ackBody, invocation
 }
 
 /**
- * THE CHANNELS A MERGE OF THIS PR CLOSES ISSUES FROM, beside the body.
+ * THE TEXTS A MERGE OF THIS PR PUTS ON THE DEFAULT BRANCH, beside the body.
  *
- * #86: GitHub acts on every closing construct in the text that lands on the
- * default branch, and the pull request body is only one of the texts that get
- * there. The other is the branch's own commit messages, and whether they arrive
- * is a property of the repository and of the method, never of the PR:
+ * #86: GitHub acts on every closing construct in the text that lands, and the
+ * pull request body is only one of the texts that get there. Which others do is
+ * a property of the repository and of the METHOD, never of the PR:
  *
  *   - `merge` and `rebase` land every commit on the default branch verbatim, so
  *     the messages arrive whatever the squash settings say. GitHub's own
  *     documentation is explicit: a closing keyword in a commit message closes
  *     its issue once that commit is merged into the default branch.
- *   - `squash` writes ONE commit, and two independent settings decide its text:
- *     `squash_merge_commit_message=COMMIT_MESSAGES` makes the body the
- *     concatenated messages, and `squash_merge_commit_title=COMMIT_OR_PR_TITLE`
- *     makes the title the single commit's subject when the branch has exactly
- *     one. Either arm is a channel; two or more commits closes the title arm.
+ *   - `squash` writes ONE commit, and the two squash settings decide its two
+ *     halves. `squash_merge_commit_message=COMMIT_MESSAGES` makes the message
+ *     the concatenated commit messages. The SUBJECT is always written and
+ *     always comes from somewhere: `PR_TITLE` takes the pull request title,
+ *     `COMMIT_OR_PR_TITLE` takes the single commit's subject when the branch
+ *     has exactly one and the pull request TITLE otherwise.
+ *   - a `merge` commit's own halves come from `merge_commit_title` and
+ *     `merge_commit_message`, either of which may be `PR_TITLE`.
  *
- * THE METHODS THE VERDICT STANDS ON ARE NAMED. With `--method` the predicate is
- * evaluated for that method alone. Without it — a detector run has no method —
- * it is evaluated for every method the repository ALLOWS, and fails closed: on a
- * repository that allows merge or rebase, assuming squash is a false negative by
- * construction.
+ * SO THE TITLE IS A CHANNEL (Codex P1 on PR #114). It does not close as a
+ * "pull request title" — GitHub's linking mechanism reads the body and commit
+ * messages — it closes because policy makes it the SUBJECT of the commit that
+ * lands on the default branch. Reading only the message settings called that
+ * case inert and left `Fixes #11` in a title free to close an unrelated ticket
+ * while Ground 9 approved the body's bound construct. There is consequently no
+ * configuration under which the body is the only channel.
  *
- * AN INERT CHANNEL CONTRIBUTES NOTHING AT ALL — no channel, no note, not even
- * the commit list's own unreadability. Where those messages cannot reach the
- * default branch they decide nothing, and the body-only verdict this gate
- * printed before #86 has to survive byte for byte.
+ * THE METHODS THE VERDICT STANDS ON ARE THE ONES THIS RUN CAN CAUSE. A merging
+ * run mutates with exactly one method — `--method`, or the `squash` default —
+ * so it evaluates that method alone; widening there refuses a merge over text
+ * that cannot reach the commit the run is about to write (Codex P1 on PR #114).
+ * A DETECTOR run causes nothing and names no method, so it fails closed over
+ * every method the repository ALLOWS: on a repository that allows merge or
+ * rebase, assuming squash would be a false negative by construction. Either
+ * way the note says which methods it evaluated.
  */
-export function closingChannels({ policy, commits, method, methodGiven }) {
+export function closingChannels({ policy, commits, title, method, methodGiven, merging = false }) {
   const out = account();
-  out.commitChannels = [];
+  out.channels = [];
   if (!policy.ok) {
     out.unknown(
-      `closing channels: ${policy.reason} — whether this branch's commit messages reach the default branch is unread, and an unread policy is not "the body is the only channel" (F-028)`,
+      `closing channels: ${policy.reason} — which texts reach the default branch is unread, and an unread policy is not "the body is the only channel" (F-028)`,
       policy.repair,
     );
     return out;
   }
-  const methods = methodGiven ? [method] : policy.allowed;
-  const evaluated = `methods evaluated: ${methods.join(', ')}`;
-  const because = [];
-  let everyMessage = false;
-  let titleArm = false;
-  for (const one of methods) {
-    if (one === 'merge' || one === 'rebase') {
-      everyMessage = true;
-      because.push(`the ${one} method lands every commit on the default branch verbatim`);
-    } else if (one === 'squash') {
-      if (policy.squashMessage === 'COMMIT_MESSAGES') {
-        everyMessage = true;
-        because.push('squash builds the merge message from the commit messages (squash_merge_commit_message=COMMIT_MESSAGES)');
-      }
-      if (policy.squashTitle === 'COMMIT_OR_PR_TITLE') titleArm = true;
-    }
-  }
-  if (!everyMessage && !titleArm) return out;
-  if (!commits.ok) {
+  // A merging run stands on the method it will issue; a detector run has none
+  // to stand on and answers for every method that could be issued.
+  const decided = methodGiven || merging;
+  const methods = decided ? [method] : policy.allowed;
+  const evaluated = `methods evaluated: ${methods.join(', ')}${decided ? '' : ' (no --method given, so every method this repository allows)'}`;
+  const squash = methods.includes('squash');
+  const verbatim = methods.filter(one => one === 'merge' || one === 'rebase');
+
+  // Every commit message lands, and the commit COUNT decides which text fills a
+  // COMMIT_OR_PR_TITLE subject. Those are the only two questions the commit list
+  // answers, and where neither is asked an unread list decides nothing.
+  const everyMessage = verbatim.length > 0 || (squash && policy.squashMessage === 'COMMIT_MESSAGES');
+  const countDecides = squash && policy.squashTitle === 'COMMIT_OR_PR_TITLE';
+  if ((everyMessage || countDecides) && !commits.ok) {
     out.unknown(
-      `closing channels: ${commits.reason} — this branch's commit messages reach the default branch here, so the closing constructs in them are unread (${evaluated})`,
+      `closing channels: ${commits.reason} — this branch's commit messages decide what a merge here lands, so the closing constructs in them are unread (${evaluated})`,
       commits.repair,
     );
     return out;
   }
-  const rows = commits.commits;
-  if (everyMessage) {
-    out.commitChannels = rows.map(entry => ({ label: `commit ${entry.sha.slice(0, 12)}`, text: entry.message, sha: entry.sha.slice(0, 12) }));
-    out.note(`closing channels: the body, plus ${rows.length} commit message(s) on this branch — ${because.join('; ')}; ${evaluated}`);
-    return out;
+
+  const rows = commits.ok ? commits.commits : [];
+  const because = [];
+  const channels = [];
+
+  // The pull request title, wherever policy makes it the subject that lands.
+  let titled = false;
+  if (squash && policy.squashTitle === 'PR_TITLE') {
+    titled = true;
+    because.push('squash takes the merge subject from the pull request title (squash_merge_commit_title=PR_TITLE)');
   }
-  // The title arm alone: it is the ONE commit's subject that becomes the merge
-  // title, and a branch with two commits has no such subject.
-  if (rows.length !== 1) return out;
-  const short = rows[0].sha.slice(0, 12);
-  out.commitChannels = [{ label: `commit ${short}`, text: firstLine(rows[0].message), sha: short }];
-  out.note(
-    `closing channels: the body, plus the subject of commit ${short} — squash takes the merge title from the single commit's subject (squash_merge_commit_title=COMMIT_OR_PR_TITLE); ${evaluated}`,
-  );
+  if (countDecides && rows.length !== 1) {
+    titled = true;
+    because.push(`squash takes the merge subject from the pull request title, because this branch has ${rows.length} commits (squash_merge_commit_title=COMMIT_OR_PR_TITLE)`);
+  }
+  if (methods.includes('merge')) {
+    if (policy.mergeTitle === 'PR_TITLE') {
+      titled = true;
+      because.push('the merge commit takes its subject from the pull request title (merge_commit_title=PR_TITLE)');
+    }
+    if (policy.mergeMessage === 'PR_TITLE') {
+      titled = true;
+      because.push('the merge commit takes its message from the pull request title (merge_commit_message=PR_TITLE)');
+    }
+  }
+  if (titled) channels.push({ kind: 'title', label: 'the PR title', text: String(title ?? ''), sha: '' });
+
+  if (everyMessage) {
+    for (const one of verbatim) because.push(`the ${one} method lands every commit on the default branch verbatim`);
+    if (squash && policy.squashMessage === 'COMMIT_MESSAGES') {
+      because.push('squash builds the merge message from the commit messages (squash_merge_commit_message=COMMIT_MESSAGES)');
+    }
+    for (const entry of rows) {
+      const short = entry.sha.slice(0, 12);
+      channels.push({ kind: 'commit', label: `commit ${short}`, text: entry.message, sha: short });
+    }
+  } else if (countDecides && rows.length === 1) {
+    const short = rows[0].sha.slice(0, 12);
+    channels.push({ kind: 'commit', label: `commit ${short}`, text: firstLine(rows[0].message), sha: short });
+    because.push("squash takes the merge subject from the single commit's subject (squash_merge_commit_title=COMMIT_OR_PR_TITLE)");
+  }
+
+  // Reachable on a PR whose commit list came back empty under a method that
+  // lands messages and writes no title: nothing beside the body then lands.
+  if (channels.length === 0) return out;
+  out.channels = channels;
+  const commitCount = channels.filter(channel => channel.kind === 'commit').length;
+  const described = [
+    ...(titled ? ['the PR title'] : []),
+    ...(everyMessage ? [`${commitCount} commit message(s) on this branch`] : commitCount === 1 ? [`the subject of ${channels[channels.length - 1].label}`] : []),
+  ].join(' and ');
+  out.note(`closing channels: the body, plus ${described} — ${because.join('; ')}; ${evaluated}`);
   return out;
 }
 
 /**
- * The channels BESIDE the body, named the way a repair has to name them: a
- * short sha an operator can `git rebase -i`, not a count. Past three, the list
- * stops being a thing anyone reads and the count is the useful fact.
+ * The channels BESIDE the body, named the way a repair has to name them: the
+ * PR title, or a short sha an operator can `git rebase -i`. Past three, the
+ * list stops being a thing anyone reads and the count is the useful fact.
  */
 const restOf = channels => {
-  const rest = (channels ?? []).slice(1);
+  const rest = (channels ?? []).filter(channel => channel.kind !== 'body');
   if (rest.length === 0) return '';
-  if (rest.length > 3) return `the branch's ${rest.length} commit messages`;
+  if (rest.length > 3) return `the ${rest.length} other texts this merge lands`;
   return rest.map(channel => channel.label).join(', ');
 };
+
+/**
+ * THE COMMAND THAT EDITS THE CHANNEL A CONSTRUCT ACTUALLY LIVES IN. A repair
+ * pointing at the description while the construct sits in a commit message or a
+ * title is a repair that cannot work, and the whole point of naming the channel
+ * is that the author can go and fix the right text.
+ */
+const editChannel = (source, pr, slug) =>
+  source.kind === 'commit'
+    ? `git rebase -i ${source.sha}^`
+    : source.kind === 'title'
+      ? `gh pr edit ${pr} --repo ${slug} --title '<subject>'`
+      : `gh pr edit ${pr} --repo ${slug} --body-file -`;
 
 /**
  * The first closing construct one of these channels carries, and WHERE. Only
@@ -628,7 +705,7 @@ const firstIn = (channels, verbs) => {
   const pattern = new RegExp(`\\b(?:${verbs})\\b\\s*:?\\s+${TARGET}`, 'i');
   for (const channel of channels ?? []) {
     const found = pattern.exec(String(channel.text ?? ''));
-    if (found) return { channel, phrase: found[0].trim(), where: channel.sha === '' ? '' : ` in ${channel.label}` };
+    if (found) return { channel, phrase: found[0].trim(), where: channel.kind === 'body' ? '' : ` in ${channel.label}` };
   }
   return null;
 };
@@ -706,9 +783,9 @@ export function keywordGround({ channels, tracker, pr, slug, baseBranch = '', de
   if (intended) {
     out.refuse(
       `closing keyword: '${clean(intended.phrase)}'${intended.where} closes nothing — GitHub acts only on Closes / Fixes / Resolves and their documented variants (F-018)`,
-      intended.channel.sha === ''
+      intended.channel.kind === 'body'
         ? `gh pr edit ${pr} --repo ${slug}   # rewrite it as "Closes #N"`
-        : `git rebase -i ${intended.channel.sha}^   # reword it as "Closes #N", force-push, then re-run`,
+        : `${editChannel(intended.channel, pr, slug)}   # rewrite it as "Closes #N"${intended.channel.kind === 'commit' ? ', force-push' : ''}, then re-run`,
     );
     return out;
   }
@@ -815,7 +892,7 @@ export function closedIssuesOf(channels) {
       if (!bare) continue;
       const issue = Number(bare[1]);
       const sources = found.get(issue) ?? [];
-      if (!sources.some(source => source.label === channel.label)) sources.push({ label: channel.label, sha: channel.sha ?? '' });
+      if (!sources.some(source => source.label === channel.label)) sources.push({ kind: channel.kind, label: channel.label, sha: channel.sha ?? '' });
       found.set(issue, sources);
     }
   }
@@ -867,13 +944,14 @@ const closureOf = entry => `${sourcesOf(entry)} closes #${entry.issue}`;
  * PR may merge at all.
  *
  * AN UNDECLARED CLOSURE REFUSES (#86). The set now spans the commit messages
- * too, and a construct that lives ONLY there names a ticket no reviewer of this
- * description ever saw — the #67 incident exactly: explanatory prose quoted a
- * closing keyword for an unrelated open ticket, and the squash merge message
- * would have closed it. So a same-repository ticket other than the bound one is
- * refused when the body does not declare it, and named when it does. The
- * distinction is not politeness: the body is the text a human reviewed, and the
- * repair for the other channel is a reword, not a description edit.
+ * and the pull request title too, and a construct that lives ONLY there names a
+ * ticket no reviewer of this description ever saw — the #67 incident exactly:
+ * explanatory prose quoted a closing keyword for an unrelated open ticket, and
+ * the squash merge message would have closed it. So a same-repository ticket
+ * other than the bound one is refused when THE BODY does not declare it, and
+ * named when it does. The distinction is not politeness: the body is the text a
+ * review reads as the statement of what this merge delivers, and the repair for
+ * every other channel is a reword of that channel, not a description edit.
  */
 export function ticketGround({ binding, closes, channels, pr, slug }) {
   const out = account();
@@ -896,24 +974,24 @@ export function ticketGround({ binding, closes, channels, pr, slug }) {
   }
   const mine = closes.find(entry => entry.issue === bound);
   if (!mine) {
-    const away = closes.filter(entry => entry.sources.every(source => source.sha !== ''));
+    const away = closes.filter(entry => entry.sources.every(source => source.kind !== 'body'));
     out.refuse(
       `ticket binding: this merge is for #${bound} (${binding.source}), but ${closes.map(closureOf).join('; ')} — merging would close ${named} and leave #${bound} open, and every ticket blocked by #${bound} keeps deriving from a stale blocker`,
       away.length === closes.length
-        ? `git rebase -i ${away[0].sources[0].sha}^   # reword the message to close #${bound}, force-push, then re-run`
+        ? `${editChannel(away[0].sources[0], pr, slug)}   # make it close #${bound}${away[0].sources[0].kind === 'commit' ? ', force-push' : ''}, then re-run`
         : `gh pr edit ${pr} --repo ${slug} --body-file -   # make the body close #${bound}, or re-run naming the ticket this PR really delivers`,
     );
     return out;
   }
   // A closure the description never declared: invisible to review, and GitHub
   // acts on it anyway.
-  const undeclared = closes.filter(entry => entry.issue !== bound && entry.sources.every(source => source.sha !== ''));
+  const undeclared = closes.filter(entry => entry.issue !== bound && entry.sources.every(source => source.kind !== 'body'));
   if (undeclared.length > 0) {
     out.refuse(
       `ticket binding: this merge is for #${bound} (${binding.source}) and ${sourcesOf(mine)} closes it, but ${undeclared
         .map(closureOf)
         .join('; ')} — merging would also close ${undeclared.map(entry => `#${entry.issue}`).join(', ')}, which this PR's description never declared, and a merged PR cannot be un-merged`,
-      `git rebase -i ${undeclared[0].sources[0].sha}^   # reword that message so it names no other ticket, force-push, then re-run`,
+      `${editChannel(undeclared[0].sources[0], pr, slug)}   # drop #${undeclared[0].issue} from that text${undeclared[0].sources[0].kind === 'commit' ? ', force-push' : ''}, then re-run`,
     );
     return out;
   }
