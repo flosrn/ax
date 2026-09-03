@@ -389,10 +389,14 @@ export function dispatch(
   // #78, closed by the operator at 05:19Z, dispatched at 13:xx — the child
   // refused at its decision gate, posted nothing, and a pane was minted and
   // released for a ticket nobody could work.
+  // The repair is the tracker's: `ax frontier` reads GitHub only (it lists by
+  // label through `gh`), so a closed Linear ticket is sent back to Linear.
   if (ticket !== null && ticket.closed) {
     return refuse(
       `${ticket.id} is closed (${ticket.state}) — nothing to dispatch`,
-      `ax frontier   # the takeable set; a closed ticket is never in it`,
+      kind === 'linear'
+        ? `orca linear issue ${flags.issue} --json   # its state and who closed it; dispatch an open ticket, or reopen this one first`
+        : `ax frontier   # the takeable set; a closed ticket is never in it`,
     );
   }
 

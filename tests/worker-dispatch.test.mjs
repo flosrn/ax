@@ -236,11 +236,14 @@ test('an unreadable --notes file is refused before the ticket is even read', () 
 // was minted and released for a ticket nobody could work. The frontier already
 // excludes `no-longer-open`; the verb must refuse the same state itself, before
 // any mutation, because the verb can be reached without the frontier.
-test('a closed ticket is refused before any mutation, on either tracker', () => {
+test('a closed ticket is refused before any mutation, with the repair on its own tracker', () => {
   const r = run(['--issue', ISSUE, '--slug', SLUG], { orca: { state: { name: 'Done', type: 'completed' } } });
   assert.equal(r.code, 1);
   assert.match(r.out, /GAP-353 is closed \(Done\)/);
   assert.match(r.out, /nothing to dispatch/);
+  // `ax frontier` reads GitHub only; a Linear ticket is sent back to Linear.
+  assert.match(r.out, /orca linear issue GAP-353 --json/);
+  assert.doesNotMatch(r.out, /ax frontier/);
   assert.deepEqual(r.started, []);
   assert.ok(r.calls.every(argv => !argv.includes('worktree create') && !argv.includes('task-create')), r.calls.join(' | '));
 
