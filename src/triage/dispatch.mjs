@@ -271,7 +271,7 @@ export function roleWaitOf(env, override = null) {
  * only thing standing between that verdict and the re-dispatch of a live agent
  * (F-001). An absent receipt is not a refused receipt (F-028).
  */
-function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot, proofFn, now, sleep }) {
+function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot, store, proofFn, now, sleep }) {
   const expected = ROLE_BY_JOB[job];
   const deadline = now() + wait * 1000;
   let model = null;
@@ -285,7 +285,7 @@ function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot
   for (;;) {
     let proof = null;
     try {
-      proof = proofFn({ needle: basename(root), request, env, sessionsRoot });
+      proof = proofFn({ needle: basename(root), request, env, sessionsRoot, store });
     } catch {
       proof = null;
     }
@@ -736,9 +736,11 @@ export function dispatch(
   }
 
   // Start the whole batch before waiting on any child. Triage sessions share
-  // the current checkout, and each request id appears in exactly one first task
-  // spec, so the transcript reader can distinguish them without a worktree per
-  // comment.
+  // the current checkout, and each pass's record names the `ctx_…` Orca wrote
+  // into the first turn of the one session it created, so the transcript
+  // reader can distinguish them without a worktree per comment (#126 — the
+  // request id in the child's prose was a prefix of its neighbours', and a
+  // pass 2 named pass 1's draft path).
   //
   // THIS PASS IS SERIAL, and widening the window widened its worst case with
   // it: N children that never write a receipt pay up to N × window before the
@@ -755,6 +757,7 @@ export function dispatch(
         wait: wait.wait,
         env,
         sessionsRoot,
+        store,
         proofFn,
         now,
         sleep,
