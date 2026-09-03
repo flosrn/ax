@@ -86,10 +86,28 @@
 // READ-BACK of `state`, and anything but `MERGED` is an inability to establish
 // (exit 3): the mutation was issued, its completion was not observed.
 //
+// THE BODY IS NOT THE ONLY TEXT A MERGE CLOSES FROM (#86). GitHub acts on every
+// closing construct in what lands on the default branch, and on a repository
+// whose squash merge message is built from the concatenated commit messages —
+// `squash_merge_commit_message=COMMIT_MESSAGES`, which is this project's own
+// setting — those messages are a second channel. So is a `--method merge` or
+// rebase merge, which lands every commit verbatim whatever the squash settings
+// say. Measured on #67: a commit whose explanatory prose quoted a closing
+// keyword for an unrelated OPEN ticket was one squash from closing it, and no
+// ground could refuse, because the closing-construct read had exactly one
+// input. The gate therefore establishes the merge-message policy once
+// (`gh api repos/<slug>`, a read `gh repo view --json` cannot answer) and
+// derives ONE closure set over every channel that reaches the default branch.
+// An unread policy is exit 3, never "the body is the only channel": F-028's
+// rule is that absence is not zero, and defaulting there authorises a merge
+// over a read this run could not make.
+//
 // THE BODY CLOSURE IS VERIFIED FROM IS THE POST-MERGE ONE. GitHub closes from
 // the body as it stands AT MERGE TIME, so the pre-merge capture is the wrong
 // text the moment anyone edits the description while the gate runs. The
-// read-back above carries `body`, and that is what closure reads.
+// read-back above carries `body`, and that is what closure reads — over the
+// same commit channel the merge was approved against, so the sentence this
+// prints about the merge and the set Ground 9 approved are one answer.
 //
 // THE CLOSURE IS VERIFIED FOR THE TICKET THAT WAS DISPATCHED. Reading the issue
 // out of the body alone made the gate verify whatever the body named: a worker
@@ -97,10 +115,10 @@
 // closure check, and #10 plus every ticket blocked by it stayed open with
 // nothing escalating. So the merge is BOUND to a ticket before any ground runs
 // — `--issue` from the caller, or the dispatch record of the PR's branch
-// (`boundTicket` below) — Ground 9 compares that number against what the body
-// closes, and closure verification polls the bound number, never the body's.
-// Unbound while the body closes a ticket here is exit 3: an absent record is
-// unknown, and F-001's rule is that unknown is never permission.
+// (`boundTicket` below) — Ground 9 compares that number against what the
+// channels close, and closure verification polls the bound number, never the
+// text's. Unbound while a channel closes a ticket here is exit 3: an absent
+// record is unknown, and F-001's rule is that unknown is never permission.
 //
 // THE MERGE GESTURE IS SERIALIZED, not merely claimed. `claimRecord` guards the
 // BIRTH of a record; the reissue path is reached with the record already born,
@@ -139,13 +157,16 @@ import {
   canonical,
   clean,
   closedIssuesOf,
+  closingChannels,
   commitsGround,
   declarationGround,
   firstLine,
   gitGrounds,
   keywordGround,
+  mergePolicy,
   must,
   payload,
+  prCommits,
   succeeded,
   threadsGround,
   ticketGround,
@@ -420,7 +441,15 @@ export function gate(
   let doMerge = false;
   /** Insertion-ordered, so a reprinted command reads the way it was typed. */
   const acks = new Set();
+  /**
+   * The method this run stands on, and whether the CALLER named it. A detector
+   * run has no method, and the closing-construct channel is a function of the
+   * method: with none given the predicate is evaluated over every method the
+   * repository allows and fails closed (#86), so "squash by default" and
+   * "squash because the caller said so" are two different questions.
+   */
   let method = 'squash';
+  let methodGiven = false;
   /** Set by the one recursive re-run the staleness self-repair issues (KTD6). */
   let staleRetried = false;
 
@@ -436,7 +465,10 @@ export function gate(
       issueArg = value();
     } else if (arg === '--merge') doMerge = true;
     else if (ACK_FLAGS.includes(arg)) acks.add(arg);
-    else if (arg === '--method') method = value();
+    else if (arg === '--method') {
+      methodGiven = true;
+      method = value();
+    }
     else if (arg === '--stale-retried') staleRetried = true;
     // Identifiers and flags only — an extra bare word is not a sentence this
     // command reads, it is an argument it does not have.
@@ -449,7 +481,12 @@ export function gate(
    * This run's own command line, plus whatever the caller must add next. Every
    * next action this verb prints is a command a caller runs VERBATIM, so it
    * carries what this run consumed — the repository, the acknowledgements the
-   * verdict stood on, and a method that is not the default.
+   * verdict stood on, and the method, whenever the caller named one.
+   *
+   * `--method squash` is reprinted even though squash is the default: naming it
+   * narrows the closing-construct channel to the squash arm alone (#86), so a
+   * re-run without it would evaluate a WIDER set of methods than the verdict
+   * being reprinted stood on.
    */
   const invocation = (...extra) =>
     [
@@ -459,7 +496,7 @@ export function gate(
       ...(issueArg === '' ? [] : ['--issue', issueArg]),
       ...(repoArg === '' ? [] : ['--repo', repoArg]),
       ...acks,
-      ...(method === 'squash' ? [] : ['--method', method]),
+      ...(methodGiven ? ['--method', method] : []),
       ...extra,
     ].join(' ');
 
@@ -548,28 +585,66 @@ export function gate(
   const recordPath = join(store, `${requestId}.json`);
 
   /**
+   * THE TEXTS A MERGE OF THIS PR PUTS ON THE DEFAULT BRANCH (#86). GitHub acts
+   * on every closing construct it finds there, and the body is only one of
+   * them: the branch's commit messages arrive too whenever the repository's
+   * merge-message policy or the merge method lands them, and this gate read
+   * neither.
+   *
+   * Each read happens ONCE per run and is memoised here, because both sides of
+   * the merge consume the answer: the grounds below, and closure verification
+   * after the mutation — which is reachable on the replay paths before any
+   * ground has run. One derivation over one channel set is what keeps the
+   * post-merge sentence from disagreeing with the set the merge was approved
+   * against.
+   *
+   * The commit messages cost no extra round trip: they ride the very payload
+   * Ground 6 already fetches for its "commits since open" detector.
+   */
+  let policyRead = null;
+  let commitsRead = null;
+  let channelRead = null;
+  const channelOnce = () => {
+    policyRead ??= mergePolicy({ run, slug });
+    commitsRead ??= prCommits({ run, slug, pr });
+    channelRead ??= closingChannels({ policy: policyRead, commits: commitsRead, method, methodGiven });
+    return channelRead;
+  };
+  /** The body as it stands NOW, plus the commit channels this run established. */
+  const channelsFor = body => [{ label: 'the body', text: String(body ?? ''), sha: '' }, ...channelOnce().commitChannels];
+
+  /**
    * KTD5: a merged PR proves delivery only when its ticket actually closed.
    * Bounded re-reads, then an operator escalation: every ticket blocked by an
    * unclosed-but-delivered issue derives from a stale blocker, so the gap must
    * never travel as a note.
    *
-   * The number polled is the BOUND ticket, never the body's. GitHub closes from
+   * The number polled is the BOUND ticket, never the text's. GitHub closes from
    * the body as it stands at merge time, so a body edited while this gate ran
    * closes something else — and polling that something else is how a delivery
    * of a ticket nobody merged for gets reported as success. The edit is named,
    * and the ticket this merge was for is what has to read closed.
+   *
+   * The SET is recomputed over the post-merge body and the same commit channel
+   * this run established (#86), so what this prints about the merge and what
+   * Ground 9 approved can never be two different answers. An unread channel
+   * does NOT overrule the poll: the issue's own state is the strongest evidence
+   * there is, and refusing to establish a landed merge over a policy read would
+   * escalate a delivery the tracker itself confirms. It is named instead.
    */
   const verifyClosure = (body, binding) => {
-    const named = closedIssuesOf(body);
+    const channels = channelsFor(body);
+    const closes = closedIssuesOf(channels);
+    for (const entry of channelOnce().unknowns) note(`closure: ${entry.message}`);
     if (!binding.ok) {
-      if (named.length === 0) {
-        note('closure: the body names no same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
+      if (closes.length === 0) {
+        note('closure: nothing this merge closed from names a same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
         return 0;
       }
       // Reachable on the replay paths alone: a merging run refuses this in
       // Ground 9, before the mutation. Same wording either way — one binding,
       // one finding.
-      const account = ticketGround({ binding, closes: named, pr, slug });
+      const account = ticketGround({ binding, closes, channels, pr, slug });
       for (const entry of account.unknowns) {
         bad(`CANNOT ESTABLISH — ${entry.message}`);
         if (entry.repair) fix(entry.repair);
@@ -577,9 +652,9 @@ export function gate(
       return 3;
     }
     const issue = binding.issue;
-    if (!named.includes(issue)) {
+    if (!closes.some(entry => entry.issue === issue)) {
       note(
-        `closure: the post-merge body closes ${named.length === 0 ? 'no same-repository issue' : named.map(number => `#${number}`).join(', ')}, not #${issue} — the ticket this merge was for (${binding.source}); GitHub closed from that body, so #${issue} is what must be observed`,
+        `closure: the post-merge body closes ${closes.length === 0 ? 'no same-repository issue' : closes.map(entry => `#${entry.issue}`).join(', ')}, not #${issue} — the ticket this merge was for (${binding.source}); GitHub closed from that body, so #${issue} is what must be observed`,
       );
     }
     // The two outcomes are kept apart: a read that ANSWERED non-closed, and a
@@ -723,6 +798,11 @@ export function gate(
   // The binding is resolved ONCE, from the branch this receipt names, and both
   // Ground 9 and the closure verification below stand on that one answer.
   const binding = boundTicket({ issue: issueArg, store: dispatchStore, root: paths.root, branch: headBranch, slug, invocation });
+  // The channels this merge closes from, resolved ONCE (the policy read and the
+  // commits read are memoised): Ground 7, Ground 9 and the closure verification
+  // all stand on this one answer.
+  const channel = channelOnce();
+  const channels = channelsFor(body);
   const ci = ciGround({ run, slug, sha, declared, pr });
   const gitOut = gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir });
   const grounds = [
@@ -735,9 +815,13 @@ export function gate(
     // unattempted fetch is not, and re-probing origin here would answer about a
     // different moment than the grounds above.
     declarationGround({ git, root: paths.root, baseBranch, sha, refsRefreshed: ['ok', 'local-only'].includes(gitOut.fetchState), pr, slug }),
-    commitsGround({ run, slug, pr, openedAt, ackBody, invocation }),
-    keywordGround({ body, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch }),
-    ticketGround({ binding, closes: closedIssuesOf(body), pr, slug }),
+    commitsGround({ commits: commitsRead, slug, pr, openedAt, ackBody, invocation }),
+    // The channel read answers before the two grounds that consume it, so its
+    // own inability to establish is a named reason in this same verdict rather
+    // than a silent narrowing to the body (#86).
+    channel,
+    keywordGround({ channels, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch }),
+    ticketGround({ binding, closes: closedIssuesOf(channels), channels, pr, slug }),
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);
