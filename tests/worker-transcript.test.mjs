@@ -310,6 +310,54 @@ test('a request id selects one triage session among siblings sharing the current
   assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
 });
 
+// The P1 on PR #124, and the reason it matters more than a sibling collision:
+// the repair line this whole feature advertises is run FROM the orchestrator
+// session, in the same checkout the children share. That session's own
+// transcript names the request — it printed the dispatch output, and it typed
+// the command — so a whole-file `.includes(request)` match counts the caller
+// as a candidate beside the child and refuses on an ambiguity it invented.
+//
+// Measured on this host, 2026-09-03: for four real triage passes, the whole-file
+// match found 9, 14, 15 and 16 candidate files; the session whose FIRST TASK
+// SPEC names the request was exactly one, every time. Reconciliation would have
+// exited 1 on every invocation.
+//
+// OWNERSHIP IS THE FIRST TASK SPEC, which is what a dispatch actually writes
+// into its child. A later mention is discussion, not ownership.
+test('a session that merely MENTIONS the request is not a candidate for owning it', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+  const request = 'triage-acme-7';
+
+  // The child: the request arrives in its first task spec.
+  writeFileSync(
+    join(dir, 'child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
+    ].join('\n'),
+  );
+
+  // The orchestrator: its own first turn is its own work, and the request shows
+  // up later — in the dispatch output it read and the repair it was told to run.
+  writeFileSync(
+    join(dir, 'orchestrator.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'run the triage wave over this pile' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'orchestrator', skills: [], status: 'applied' } }),
+      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `issue #7 → session '${request}' (pass 1)` }] } }),
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `ax worker transcript --dispatch-proof current --request ${request}` }] } }),
+    ].join('\n'),
+  );
+
+  const proof = dispatchProof({ needle: 'current', request, sessionsRoot: root });
+  assert.notEqual(proof, null, 'the caller naming the request must not make its own read ambiguous');
+  assert.deepEqual(proof.sessionRole, { status: 'applied', role: 'triage-worker', skills: ['triage'] }, 'the child that OWNS the request, not the session discussing it');
+});
+
 // Issue #97: the point-in-time CANNOT-ESTABLISH verdict of `ax triage dispatch`
 // is re-derivable only by the verb that actually reads the session file — and
 // it could not be pointed at ONE pass of a wave. Triage children run

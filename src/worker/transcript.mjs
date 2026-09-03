@@ -684,17 +684,60 @@ function sessionFilesForCwd({ cwd, env = process.env, sessionsRoot } = {}) {
   }
 }
 
+/**
+ * Does this session OWN the request — i.e. did the dispatch write it into the
+ * session's first task spec — as opposed to merely mentioning it later?
+ *
+ * A whole-file substring match cannot tell those apart, and the difference is
+ * not academic: the reconciliation read this resolver serves is typed BY the
+ * orchestrator, IN the checkout its children share, and that session's own
+ * transcript carries the request id twice over — the dispatch output it read,
+ * and the command it just ran. Measured on this host 2026-09-03, four real
+ * triage passes: the whole-file match found 9, 14, 15 and 16 candidate files
+ * each, and the session whose first task spec named the request was exactly one
+ * every time. So the "exactly one match" rule below was not selecting a pass —
+ * it was refusing on an ambiguity the caller created by asking.
+ *
+ * The FIRST user turn is what a dispatch actually writes (`--spec-file`), and
+ * nothing a session says afterwards can add to it. A session with no user turn
+ * at all owns nothing, which is the honest answer for a pane that never took a
+ * turn (F-028 — an unknown is not a match).
+ */
+function ownsRequest(path, request) {
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return false;
+  }
+  for (const line of text.split('\n')) {
+    if (line === '' || !line.includes('"user"')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry?.type !== 'message' || entry.message?.role !== 'user') continue;
+    const content = entry.message.content;
+    const parts = Array.isArray(content) ? content : [{ type: 'text', text: String(content ?? '') }];
+    return parts
+      .filter(part => part.type === 'text')
+      .map(part => String(part.text ?? ''))
+      .join('\n')
+      .includes(request);
+  }
+  return false;
+}
+
 function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
   const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
   if (files.length === 0) return null;
   if (request !== '') {
-    const matching = files.filter(path => {
-      try {
-        return readFileSync(path, 'utf8').includes(request);
-      } catch {
-        return false;
-      }
-    });
+    // Still exactly one, and still never newest-wins: zero owners and two
+    // owners are both an inability to establish. What changed is only WHICH
+    // files count as candidates.
+    const matching = files.filter(path => ownsRequest(path, request));
     return matching.length === 1 ? matching[0] : null;
   }
   return files.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);

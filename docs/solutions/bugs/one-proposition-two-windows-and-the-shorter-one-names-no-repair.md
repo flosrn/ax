@@ -69,13 +69,20 @@ min 7.5s · median 44.7s · 13 of 20 over 30s · 6 of 20 over 120s
 30 s failed the **median** pass on this host. It was never a window; it was a
 coin toss, and the reported incident is what losing it looks like.
 
-Two traps in taking that measurement, both worth knowing before repeating it:
+Two traps in taking that measurement. The first turned out to be a defect in
+the fix itself, caught in review on PR #124:
 
-- **Content-matching the request id is not ownership.** The request string also
-  appears in the orchestrator's own transcript, which is a session too, with its
-  own mover and its own receipt. Only the child whose FIRST user turn carries
-  the task spec owns the request — the same discrimination
-  `sessionFileForNeedle` refuses to guess at.
+- **Content-matching the request id is not ownership, and this one bites the
+  product, not just the script.** The reconciliation read is typed BY the
+  orchestrator, IN the checkout its children share, and that session's own
+  transcript carries the request id twice over: the dispatch output it read,
+  and the command it just ran. A whole-file `.includes(request)` therefore
+  counts the caller as a candidate beside the child, finds two, and refuses.
+  Measured on this host for four real passes: **9, 14, 15 and 16 whole-file
+  candidates each, and exactly one owner every time.** The advertised repair
+  would have exited 1 on every invocation. Ownership is the FIRST user turn —
+  the task spec a dispatch actually writes — and `sessionFileForNeedle` now
+  enforces that, keeping the "exactly one, never newest-wins" rule intact.
 - **The long tail is not boot latency.** The six passes past 120 s show ~3 s
   from their own session boot to both receipts. What is long is the gap between
   `worker start` returning and the pane booting at all, and no role-wait
@@ -91,7 +98,7 @@ Two traps in taking that measurement, both worth knowing before repeating it:
 - The no-receipt branch names both repairs: the request-scoped read that
   re-derives the proof for that exact pass, and the way to widen the window.
 - `ax worker transcript --dispatch-proof <needle> --request <id>` scopes the
-  proof to one pass. Zero or two candidates under a named request stays an
+  proof to one pass, by first-task-spec ownership. Zero or two owners stays an
   inability to establish — exit 1, nothing on stdout, never newest-wins.
 - The exit code stays **3** (ADR 0003). A live child whose effects are unproven
   must not be handed the code that reads as safe to retry (F-001).
