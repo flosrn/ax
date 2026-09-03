@@ -468,13 +468,24 @@ test('a worker-start that recorded no argv is an unreadable phase, not a local o
   started('130-local', 'ctx_local');
   started('130-remote', 'ctx_remote', ['orca', 'orchestration', 'worker-start', '--on', 'vps']);
   started('130-unnamed', 'ctx_unnamed', null);
+  // Review of #131 (Codex, P1): a record with an older readable worker-start
+  // and a newer one naming no argv must not keep the older row — a reader would
+  // then see only the stale pane, find it MORT, and publish over the
+  // replacement child the unindexed phase opened. Partial provenance is none.
+  const replaced = started('130-replaced', 'ctx_older');
+  phaseBegin(replaced, { name: 'worker-start', identity: '130-replaced-2', argv: ['orca', 'orchestration', 'worker-start', '--replace'] });
+  phaseEnd(replaced, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_newer', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_newer' }] } }) });
+  const rec = JSON.parse(readFileSync(replaced, 'utf8'));
+  delete rec.attempts[0].phases[1].argv;
+  writeFileSync(replaced, JSON.stringify(rec));
 
   const index = dispatchIndex(dir);
   assert.equal(index.byDispatch.get('ctx_local').env, '', 'argv without --on is local');
   assert.equal(index.byDispatch.get('ctx_remote').env, 'vps', 'the host the phase named');
   assert.equal(index.byDispatch.get('ctx_unnamed'), undefined, 'a phase naming no argv indexes nowhere');
-  assert.equal(index.unreadable.length, 1, 'and is named, so a caller concluding "no provenance" can say it looked');
-  assert.equal(index.unreadable[0].file, '130-unnamed.json');
+  assert.equal(index.byDispatch.get('ctx_newer'), undefined);
+  assert.equal(index.byDispatch.get('ctx_older'), undefined, 'the whole record is quarantined — a stale row is worse than none');
+  assert.deepEqual(index.unreadable.map(entry => entry.file).sort(), ['130-replaced.json', '130-unnamed.json'], 'named, so a caller concluding "no provenance" can say it looked');
   assert.match(index.unreadable[0].error, /no argv/);
   assert.equal(index.ambiguous.size, 0);
 });
