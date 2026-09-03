@@ -76,8 +76,12 @@ function taskFromRequest(id, env) {
  * A named list out of a receipt — the F-028 read. An absent `workers` container
  * is a cannot-establish that says so, never an empty list: an `or` on a
  * container is how an empty worker list was once read as a count of 2.
+ *
+ * Exported because `ax worker settle` stands on THIS gate's evidence and must
+ * read it the same way (#102): a second parser of the same receipt is how the
+ * proof and the mutation end up disagreeing about who is alive.
  */
-function namedList(out, key, command) {
+export function namedList(out, key, command) {
   if (out.status !== 0) {
     const detail = String(out.stderr || out.stdout || '').trim().slice(0, 200);
     return { ok: false, reason: `'${command}' failed (exit ${out.status})${detail ? `: ${detail}` : ''}` };

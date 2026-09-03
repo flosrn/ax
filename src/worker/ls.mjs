@@ -440,7 +440,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     // stays INCONNU — the listing never relabels a verdict), and the pane this
     // record DID name is a corpse on a host the receipt read. No capacity, no
     // overlap. What it still holds is a settlement debt, and the verb that pays
-    // it is #78 rather than this one.
+    // it is `ax worker settle` (#102) — this one only counts it.
     const deadAttempt = row.handle === null && leakedVerdict !== null && leakedVerdict.pane === 'MORT';
 
     return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt };
@@ -480,7 +480,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
 
   section(`${hidden > 0 ? `${shown.length} of ${views.length}` : String(views.length)} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
 
-  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees } of shown) {
+  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt } of shown) {
     const suffix = leaked === null
       ? ''
       : leakedLive
@@ -513,6 +513,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
         fix(`ax worker tail ${row.request}   # the recorded pane, resolved from this store`);
         fix(`ax worker transcript ${row.request}   # what that child actually did — a session outlives its pane`);
       }
+      // And the debt itself, on the one row that carries it (#102). Named
+      // UNCONDITIONALLY: this verb resolves no repository slug and grades no row
+      // by settleability — 205 per-row predicates on every invocation to answer
+      // a question the verb itself answers for one. `settle` is fail-closed and
+      // refuses a row that is not this checkout's, which is what makes naming it
+      // here honest rather than a guess.
+      if (deadAttempt) fix(`ax worker settle ${row.request}   # write the ending, once the gate's evidence proves it`);
     }
   }
 
@@ -524,7 +531,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   // surface that counts a settlement debt, which is why it is a count and not
   // silence.
   if (!all && withheldMort > 0) note(`${withheldMort} MORT record(s) not shown — a pane the runtime cannot see names no repair: ax worker ls --all`);
-  if (!all && withheldAttempts > 0) note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker ls --all`);
+  if (!all && withheldAttempts > 0) {
+    note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker settle <request> writes the ending, ax worker ls --all names them`);
+  }
   // THE OMISSION SET, now only what it really is (#76): the hosts that could
   // NOT be asked, each with the reason it answered — a host that answered
   // classified its own panes and is no omission at all. One line per host and
