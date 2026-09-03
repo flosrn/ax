@@ -36,6 +36,7 @@ import {
   phaseVerdict,
   recordedBin,
   recordedRun,
+  recordRepo,
   report,
   requestIdOk,
   staleClaim,
@@ -613,7 +614,42 @@ export function start(
     }
     if (!ownership.held) return cannot(ownership.reason, `ax worker start --resume --request ${context.request}`);
 
+    // THE REPOSITORY RULE COMES BEFORE THE STALENESS RULE. The store is
+    // host-global and a request id is `<issue>-<suffix>` with no repository in
+    // it, so two checkouts' #89 share one filename. A record that NAMES another
+    // repository is that checkout's dispatch — a collision, never a resume —
+    // and replaying it would issue this caller's mutation under the other
+    // repository's Run. Measured 2026-09-03 on flosrn/ax: `89-work`, `78-work`
+    // and `83-work` were ofmchat's, every dispatch of this repository's #89
+    // replayed ofmchat's record and collected `consumer_fenced`, and the
+    // operator learned to pass a fresh --slug each time. `staleClaim` cannot
+    // see this: those records carry a task id, which is the harshest "precious"
+    // it knows. A record naming NO repository is unknown, not local (F-028,
+    // `recordRepo`): it may be this checkout's own earlier dispatch, and only
+    // an explicit --resume — a human reading — may replay it. Both fences need
+    // the caller's own name; a caller naming no repository keeps the replay.
     try {
+      if (parsed.trackerRepo !== '') {
+        let owner;
+        try {
+          owner = recordRepo(claim.path);
+        } catch {
+          owner = null;
+        }
+        if (owner === '') {
+          return cannot(
+            `request ${parsed.request} is already recorded at ${claim.path} by a record that names no repository — it may be this checkout's own earlier dispatch or another's, and a replay under the wrong Run is a mutation into a foreign consumer`,
+            `ax worker start --resume --request ${parsed.request}   # after reading the record's worker-start --worktree; a foreign record is repaired by writing its "repo" key, a fresh name by --slug`,
+          );
+        }
+        if (typeof owner === 'string' && owner.toLowerCase() !== parsed.trackerRepo.trim().toLowerCase()) {
+          return refuse(
+            `request ${parsed.request} is already recorded by another repository (${owner}) at ${claim.path} — the store is host-global and request ids carry no repository, so this is a name collision, not a resume`,
+            `ax worker dispatch --issue <n> --slug <distinct-name>   # mints a request id the other repository's record does not hold`,
+          );
+        }
+      }
+
       let stale = null;
       try {
         // Re-read only AFTER serialization. A stale answer from before the

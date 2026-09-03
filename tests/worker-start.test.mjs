@@ -370,6 +370,54 @@ test('a second start on the same request replays the recorded argv without minti
   assert.deepEqual(replayRun.calls[1], before.attempts[0].phases[1].argv.slice(1));
 });
 
+// The store is host-global and a request id is `<issue>-<suffix>` with no
+// repository in it, so two checkouts' #89 collide on one filename. Measured
+// 2026-09-03 on flosrn/ax: `89-work`, `78-work` and `83-work` were ofmchat's
+// records, every dispatch of this repository's #89 replayed ofmchat's recorded
+// mutation under ofmchat's Run and collected `consumer_fenced`, and the
+// operator learned to pass a fresh --slug each time. The frontier already
+// skips a record naming another repository; this verb must refuse it, BEFORE
+// any mutation, and name the collision and its repair.
+test('a record that names another repository is a collision, refused before any mutation', () => {
+  const home = scratch();
+  const first = freshArgs(home, 'req-shared');
+  first.splice(first.indexOf('--'), 0, '--tracker-repo', 'goodluckagency/ofmchat');
+  assert.equal(invoke(first, { env: { HOME: home }, run: fakeRunner() }).code, 0);
+
+  const run = fakeRunner();
+  const second = freshArgs(home, 'req-shared');
+  second.splice(second.indexOf('--'), 0, '--tracker-repo', 'flosrn/ax');
+  const r = invoke(second, { env: { HOME: home }, run });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /req-shared is already recorded by another repository \(goodluckagency\/ofmchat\)/);
+  assert.match(r.out, /--slug/);
+  assert.doesNotMatch(r.out, /CLAIM LOST/);
+  assert.deepEqual(run.calls, [], 'a collision issues no mutation — no replay under the other repository\'s Run');
+});
+
+test('a record that names no repository cannot be told from a collision: cannot establish, zero mutations', () => {
+  const home = scratch();
+  assert.equal(invoke(freshArgs(home, 'req-legacy'), { env: { HOME: home }, run: fakeRunner() }).code, 0);
+  const run = fakeRunner();
+  const args = freshArgs(home, 'req-legacy');
+  args.splice(args.indexOf('--'), 0, '--tracker-repo', 'flosrn/ax');
+  const r = invoke(args, { env: { HOME: home }, run });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /names no repository/);
+  assert.match(r.out, /ax worker start --resume --request req-legacy/);
+  assert.deepEqual(run.calls, []);
+});
+
+test('a caller naming no repository keeps the replay: the collision rule needs both names', () => {
+  const home = scratch();
+  const first = freshArgs(home, 'req-noname');
+  first.splice(first.indexOf('--'), 0, '--tracker-repo', 'goodluckagency/ofmchat');
+  assert.equal(invoke(first, { env: { HOME: home }, run: fakeRunner() }).code, 0);
+  const r = invoke(freshArgs(home, 'req-noname'), { env: { HOME: home }, run: fakeRunner() });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /CLAIM LOST/);
+});
+
 test('a torn or symlinked owner record cannot establish and issues zero mutations', () => {
   for (const kind of ['torn', 'symlink']) {
     const home = scratch();
