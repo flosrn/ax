@@ -102,7 +102,7 @@ const taskCreated = (taskId = 'task_aaa') => ({ ok: true, result: { task: { id: 
  * reply that never claims to have read its own scope — can be pinned too. An
  * environment absent from `hosts`, or one carrying `fail`, could not answer.
  */
-function fakeRunner({ terminals = [], omittedHostIds = [], workers = [], ready = true, terminalFail = false, workerFail = false, hosts = {} } = {}) {
+function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], workers = [], ready = true, terminalFail = false, workerFail = false, hosts = {} } = {}) {
   const calls = [];
   const run = args => {
     calls.push(args);
@@ -140,7 +140,17 @@ function fakeRunner({ terminals = [], omittedHostIds = [], workers = [], ready =
             status: 0,
             stdout: '',
             stderr: '',
-            receipt: { ok: true, result: { terminals, hostScope: { hostIds: ['local'], omittedHostIds }, totalCount: terminals.length } },
+            receipt: {
+              ok: true,
+              result: {
+                terminals,
+                // `hostIds: null` is the MEASURED absent container: a list that
+                // never says which hosts it read, so it covers no pane's absence
+                // (F-028). It is what leaves a record with no placement UNKNOWN.
+                hostScope: hostIds === null ? { omittedHostIds } : { hostIds, omittedHostIds },
+                totalCount: terminals.length,
+              },
+            },
           };
     }
     if (args[0] === 'orchestration' && args[1] === 'worker-list') {
@@ -850,10 +860,59 @@ test('#88: a checkout gh cannot name gets NOT MEASURED, never a zero it would re
     repo: 'goodluckagency/ofmchat',
   });
   const run = fakeRunner({ terminals: [pane('term_t')] });
+
   const { code, out } = capture(() =>
     ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, exec: () => ({ status: 1, stdout: '', stderr: 'gh: no auth token\n' }) }),
   );
   assert.equal(code, 0, 'the list still renders: a slug is not a pane count');
   assert.match(out, /NOT MEASURED/);
   assert.match(out, /1 live pane\(s\) on this machine/, 'the count it CAN establish is still answered');
+});
+
+// ── ONE definition of "unmeasured", shared with the fence ────────────────────
+// The count this verb prints under "could not be asked" must be the count both
+// dispatch verbs turn into cannot-establish (../src/worker/capacity.mjs, driven
+// by `liveInventory.unresolved`): a record NAMING a host that could not be
+// asked. A broader count here would print a cause that did not happen, which is
+// #88's own species — a number whose label the reader cannot verify.
+
+test('#88: a NAMED host that could not be asked is the unmeasured count, and it says which', () => {
+  const dir = store();
+  writeRecord(dir, 'mine-far', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f', handle: 'term_far' }) }], { on: 'gapicore' });
+  const run = fakeRunner({ terminals: [], omittedHostIds: ['runtime:7930a317'], hosts: { gapicore: { fail: 'ssh_unreachable' } } });
+  const { out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+
+  assert.match(out, /1 pane\(s\) are on a host that could not be asked/, 'exactly the shape the fence refuses on');
+  assert.match(out, /host 'gapicore' could not be asked/, 'and the host is named once, with its reason');
+});
+
+test('#88: (b) a host that answered without covering its own scope is NOT "could not be asked"', () => {
+  // It ANSWERED. The row stays INCONNU — that answer proves nothing about this
+  // pane — but naming an ask that happened as an ask that could not happen is
+  // the mislabel this test exists to prevent. The row's own line carries why.
+  const dir = store();
+  writeRecord(dir, 'mine-far', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_f', handle: 'term_far' }) }], { on: 'gapicore' });
+  const run = fakeRunner({
+    terminals: [],
+    omittedHostIds: ['runtime:7930a317'],
+    hosts: { gapicore: { terminals: [], hostIds: ['someone-elses-scope'] } },
+  });
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+
+  assert.match(lineWith('mine-far'), /pane INCONNU/, 'still unknown, and still shown');
+  assert.match(lineWith('mine-far'), /did not say it read that host's own scope/);
+  assert.doesNotMatch(out, /could not be asked/, 'a host that answered is not a host that could not be asked');
+});
+
+test('#88: (c) a record whose placement no phase named is NOT "could not be asked" either', () => {
+  // Nothing named a host, so no ask was possible and none failed. The scope
+  // itself is the disclosure, and it already has its own line.
+  const dir = store();
+  writeRecord(dir, 'unplaced-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_u', handle: 'term_ghost' }) }]);
+  const run = fakeRunner({ terminals: [], omittedHostIds: ['runtime:7930a317'], hostIds: null });
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(lineWith('unplaced-1'), /pane INCONNU/);
+  assert.doesNotMatch(out, /could not be asked/, 'no host was named, so none could fail to answer');
+  assert.match(out, /name no placement, and this list omits/, 'the residue keeps the disclosure it always had');
 });

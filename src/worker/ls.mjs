@@ -453,7 +453,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first list
     // decides a local dispatch, an unknown placement, and any handle it already
     // carries; a remote handle it does not carry is put to that host itself.
-    const { verdict } = hosts.verdictFor(row.handle, row.why, row.host);
+    const { verdict, asked } = hosts.verdictFor(row.handle, row.why, row.host);
     const { pane, detail } = verdict;
     const ours = row.repo !== '' && slug !== '' && row.repo.toLowerCase() === slug.toLowerCase();
     if (pane === 'VIVANT') {
@@ -464,12 +464,17 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // joins the machine total alone and is disclosed as its own count (F-028).
       if (row.repo === '') nameless += 1;
       else if (ours) mine += 1;
-    } else if (pane === 'INCONNU' && row.handle !== null) {
-      // A RECORDED PANE NOBODY COULD DECIDE — neither count carries it, and
-      // that is the number both dispatch verbs turn into cannot-establish
-      // (../worker/capacity.mjs). Printing it here is what lets a reader see
-      // why a dispatch it is about to attempt may refuse without any cap being
-      // full: an absence of information is not an absence of a child (F-028).
+    } else if (pane === 'INCONNU' && row.handle !== null && row.host !== undefined && row.host !== '' && !asked) {
+      // A RECORDED PANE ON A HOST THAT COULD NOT BE ASKED — neither count
+      // carries it, and this is EXACTLY the set both dispatch verbs turn into
+      // cannot-establish (`liveInventory.unresolved`, ./capacity.mjs). The
+      // predicate is that narrow on purpose: a row INCONNU because a host
+      // ANSWERED without covering its own scope, or because no phase named a
+      // placement at all, is equally unknown — but no ask failed for it, and a
+      // count printed under "could not be asked" for a cause that did not
+      // happen is #88's own species, a number whose label the reader cannot
+      // verify. Those two keep the disclosures they already had: the row's own
+      // line, and the omitted-scope line below.
       unmeasured.machine += 1;
       if (ours) unmeasured.mine += 1;
     }
