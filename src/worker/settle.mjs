@@ -54,7 +54,7 @@ import { join } from 'node:path';
 
 import { defaultExec } from '../exec.mjs';
 import { repoView } from '../gh.mjs';
-import { bad, fix, note, ok, raw, section } from '../log.mjs';
+import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { namedList } from './gate.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
@@ -170,8 +170,11 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
   };
 
   let subject = '';
+  // No help branch: `runCli` answers the flag from the registry, anywhere in
+  // this noun's argv, before the verb is reached (../cli.mjs, #89). This verb
+  // arrived from main carrying one, written against the boundary #89 replaced —
+  // the drift AGENTS.md's "Adding a surface" section now names by rule.
   for (const arg of argv) {
-    if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
     // Both absent modes are refused BY NAME rather than as unknown flags: each
     // is a gesture an operator can reasonably expect, and the reason it does not
     // exist is the design.

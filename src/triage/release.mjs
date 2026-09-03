@@ -14,7 +14,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
-import { bad, fix, note, raw } from '../log.mjs';
+import { bad, fix, note } from '../log.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { defaultStore, report } from '../worker/record.mjs';
@@ -49,7 +49,8 @@ export function triageRelease(argv = [], { exec = defaultExec, env = process.env
     else if (arg === '--repo') repo = value();
     else if (arg === '--pass') passArg = value();
     else if (arg === '--no-proof') noProof = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89).
     else return usageError(`unknown argument "${arg}"`);
   }
   if (job === 'refine') return usageError(REFINE_REMOVED);

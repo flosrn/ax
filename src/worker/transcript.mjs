@@ -306,13 +306,10 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
 
 
   let wantLast = false;
+  // No help branch: `runCli` answers the flag from the registry, anywhere in
+  // this noun's argv, before the verb is reached (../cli.mjs, #89). A `-h` that
+  // gets here is an unknown argument, refused below with the usage line.
   for (const arg of argv) {
-    if (arg === '--help' || arg === '-h') {
-      section('ax worker transcript <handle|dispatch_id|path.jsonl> [--last-message]');
-      note('the full session history of one child, structured and redacted (no bypass flag)');
-      note('--last-message: only the last thing the agent SAID — its final report, in full, still redacted');
-      return 0;
-    }
     if (arg === '--last-message') {
       wantLast = true;
       continue;

@@ -70,10 +70,16 @@ belongs in Orca goes to the fork branch, not to a workaround in ax.
 A new **command** needs one registry entry in `src/commands.mjs` — its name, its help section and
 its summary — one runner, one implementation, and a test that exercises what the generated help or
 AGENTS.md tells an agent to type. Its `--help` arrives with the registration and is never parsed in
-the runner: `src/cli.mjs` answers the flag in the command's first slot from the registry, so asking
-a verb what it does cannot run it. A future domain (automated checks, architecture rules, context
-rules) arrives as its own noun plus a help section — the `gh` shape, never a nesting prefix
-(`docs/adr/0001`).
+the runner: `src/cli.mjs` answers the flag from the registry wherever it appears in the command's
+own argv, so asking a verb what it does cannot run it. Two declarations bound that claim — a flag
+written `--flag <value>` in `options` owns the next slot, so `ax board --comment --help` stays a
+comment; and `passthrough: true` marks a command whose arguments are a foreign CLI's in full
+(`supabase`), where ax claims the first slot and nothing past it. A verb whose contract is a
+judgement the caller makes before typing declares a `helpBody`, printed by that same read. Never
+parse the flag in a runner: one place decides, and a second path answering it is how twenty
+subverbs came to answer one question five different ways (#89, #93). A future domain (automated
+checks, architecture rules, context rules) arrives as its own noun plus a help section — the `gh`
+shape, never a nesting prefix (`docs/adr/0001`).
 
 A new **session role** needs a file under `omp/roles/`, an internal playbook when the role has a
 procedure, a role-proof name, and integration coverage for its real activation path. Operator roles
