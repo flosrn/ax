@@ -818,17 +818,23 @@ export function gate(
   const channels = channelsFor(body, title);
   const ci = ciGround({ run, slug, sha, declared, pr });
   const gitOut = gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir });
+  // gitGrounds' OWN refresh, read once and shared: `ok` and `local-only` are as
+  // fresh as this checkout can be, a failed or unattempted fetch is not, and a
+  // ground that re-probed origin here would answer about a different moment
+  // than the grounds above.
+  const refsRefreshed = ['ok', 'local-only'].includes(gitOut.fetchState);
   const grounds = [
     ci,
     threadsGround({ run, owner, name, pr, sha, ciDecided: ci.ciDecided, invocation }),
     gitOut,
     // The guard stands on the head SHA this run resolved — never on a branch
-    // name a stale `origin/<head>` shadows — and on gitGrounds' OWN refresh:
-    // `ok` and `local-only` are as fresh as this checkout can be, a failed or
-    // unattempted fetch is not, and re-probing origin here would answer about a
-    // different moment than the grounds above.
-    declarationGround({ git, root: paths.root, baseBranch, sha, refsRefreshed: ['ok', 'local-only'].includes(gitOut.fetchState), pr, slug }),
-    commitsGround({ commits: commitsRead, slug, pr, openedAt, ackBody, invocation }),
+    // name a stale `origin/<head>` shadows — and on the shared refresh reading.
+    declarationGround({ git, root: paths.root, baseBranch, sha, refsRefreshed, pr, slug }),
+    // Ground 6 measures the SHAPE of each post-open commit against the commit
+    // graph (#90), so it takes the same git reader and the same refresh
+    // reading: a clean merge from the base is base movement, not work the body
+    // was meant to describe, and an unreadable shape is not exempt.
+    commitsGround({ commits: commitsRead, git, root: paths.root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation }),
     // The channel read answers before the two grounds that consume it, so its
     // own inability to establish is a named reason in this same verdict rather
     // than a silent narrowing to the body (#86).
@@ -858,7 +864,9 @@ export function gate(
 
   section('what this run prevents and what it merely detects (R21)');
   note(`prevents  the declared checks, the review threads, staleness, the residual file and the closing keyword — each read against live state on ${sha}`);
-  note("detects   the commits landed since the PR opened: a body's staleness is not mechanically decidable, so that ground lists and refuses, it does not verify");
+  note(
+    "detects   the commits landed since the PR opened: a body's staleness is not mechanically decidable, so that ground lists and refuses, it does not verify — except a clean merge from the base, which is movement no body written before it could describe (#90)",
+  );
   note('reports   landed-by-content, which answers the post-merge cleanup question, not this one');
 
   section(
