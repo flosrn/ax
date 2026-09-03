@@ -417,10 +417,13 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   // The wave file demoted to cache; records, tracker and gate are authority.
   expect(role).toMatch(/wave-memory file is a CACHE/);
   // The Spec axis (2026-09-03): the report's `## CRITERIA` is what the merge
-  // decision reads, and a criterion without evidence travels back like a
-  // gate refusal — under the same two bounds, never as a third loop.
+  // decision reads, and a missing criterion travels back with every ground
+  // the gate refused, as ONE repair round — AGENTS.md: every merge ground
+  // runs, nothing stops after the first refusal. Review of the first draft
+  // (Codex, P2): "before any gate run" short-circuited exactly that.
   expect(role).toMatch(/## CRITERIA/);
   expect(role).toMatch(/NOT MET/);
+  expect(role).toMatch(/one repair round/);
 });
 
 // The worker's half of the learnings channel (KTD7) and the refusal duty the
