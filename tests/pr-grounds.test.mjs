@@ -26,6 +26,8 @@ import {
   keywordGround,
   mergePolicy,
   prCommits,
+  readRelease,
+  releaseShape,
   threadsGround,
   ticketGround,
 } from '../src/pr-grounds.mjs';
@@ -992,4 +994,247 @@ test('gitGrounds carries its fetch state out, so the guard stands on the same me
     return realGit(args, at);
   };
   assert.equal(gitGrounds(options(root, { git: failing })).fetchState, 'failed');
+});
+
+// ── The release shape: the one PR that has no ticket by construction (#94) ──
+//
+// Origin: PR #68, the release-please pull request for 0.18.0. `keywordGround`'s
+// R8 hardening refused it on "the body closes no issue and expresses no intent
+// to" — structurally, since a changelog names no ticket and never will — while
+// `.github/workflows/test.yml` promises in its own header that the release path
+// stays gateable instead of permanently hand-merged. Ruled 2026-09-02: the
+// release PR is a recognized SHAPE, and the exemption belongs to the shape, so
+// there is nothing an author of an ordinary PR can type to reach it.
+//
+// The two spellings below are measured, not chosen: `gh pr view --json author`
+// answered `app/github-actions` on PR #68 while that same PR's commits payload
+// answered `github-actions[bot]` — one identity, two spellings, and a literal
+// comparison against either one alone fails on the other read.
+
+const RELEASE_BODY = 'chore(main): release 0.18.0\n\n### Bug Fixes\n\n* the gate reads its own declaration (#70) closes [#42](https://github.com/o/r/issues/42)\n';
+
+/** A commit row as the PR commits payload gives it, with the account GitHub named. */
+const authored = (row, login) => ({ ...row, author: login === null ? null : { login } });
+
+test('release shape: the default shape is the release bot and the pending label, in both spellings gh answers (#94)', () => {
+  const viewSpelling = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  assert.equal(viewSpelling.ok, true);
+  assert.match(viewSpelling.why, /author 'app\/github-actions'/);
+  assert.match(viewSpelling.why, /label 'autorelease: pending'/);
+
+  // The REST spelling of the same account, which is what a commit row carries.
+  const restSpelling = releaseShape({ author: 'github-actions[bot]', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  assert.equal(restSpelling.ok, true);
+});
+
+test('release shape: half the shape is not the shape — a label is something an author can type (#94)', () => {
+  const noLabel = releaseShape({ author: 'app/github-actions', labels: [{ name: 'bug' }], declared: readRelease(undefined) });
+  assert.equal(noLabel.ok, false);
+  assert.match(noLabel.why, /carries no 'autorelease: pending' label/);
+
+  const human = releaseShape({ author: 'flosrn', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  assert.equal(human.ok, false);
+  assert.match(human.why, /author 'flosrn' is not 'github-actions\[bot\]'/);
+});
+
+test('release shape: an unread half never grants the exemption (F-028, #94)', () => {
+  // The shape is a POSITIVE finding: a receipt that named no author, or no
+  // labels, leaves the keyword ground refusing exactly as it did before, which
+  // is the direction absence is allowed to move.
+  assert.equal(releaseShape({ author: '', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) }).ok, false);
+  const noLabels = releaseShape({ author: 'app/github-actions', labels: undefined, declared: readRelease(undefined) });
+  assert.equal(noLabels.ok, false);
+  assert.match(noLabels.why, /names no labels/);
+});
+
+test('release shape: a declared label wins, and the author half still holds (#94)', () => {
+  const declared = readRelease({ label: 'release: pending' });
+  assert.equal(declared.ok, true);
+  assert.equal(releaseShape({ author: 'app/github-actions', labels: [{ name: 'release: pending' }], declared }).ok, true);
+  // The declared label does not replace the author half: a project declaring
+  // its label must not turn that label into a flag its contributors can add.
+  assert.equal(releaseShape({ author: 'flosrn', labels: [{ name: 'release: pending' }], declared }).ok, false);
+  // And the default label is no longer the shape once another one is declared.
+  assert.equal(releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared }).ok, false);
+
+  const bot = readRelease({ label: 'release: pending', author: 'release-bot[bot]' });
+  assert.equal(releaseShape({ author: 'app/release-bot', labels: [{ name: 'release: pending' }], declared: bot }).ok, true);
+});
+
+test('release shape: a declaration naming no label is unreadable, never the default shape (#94)', () => {
+  assert.equal(readRelease({}).ok, false);
+  assert.match(readRelease({}).reason, /prGate\.release names no label/);
+  assert.match(readRelease({ label: '  ' }).reason, /prGate\.release names no label/);
+  assert.match(readRelease('autorelease: pending').reason, /prGate\.release is not an object/);
+  assert.match(readRelease({ label: 'release', author: '' }).reason, /prGate\.release\.author is not a login/);
+  // Absent is the default shape, and says which one it is.
+  const absent = readRelease(undefined);
+  assert.equal(absent.ok, true);
+  assert.equal(absent.label, 'autorelease: pending');
+  assert.equal(absent.author, 'github-actions[bot]');
+  assert.equal(absent.declared, false);
+});
+
+test('closing keyword: a release PR is a pass — no ticket by construction (#94)', () => {
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  const out = keywordGround({
+    channels: bodyOnly(RELEASE_BODY),
+    tracker: undefined,
+    pr: '68',
+    slug: 'flosrn/ax',
+    baseBranch: 'main',
+    defaultBranch: 'main',
+    release,
+  });
+  assert.deepEqual(out.refusals, [], 'the release path is gateable, as test.yml promises');
+  assert.deepEqual(out.unknowns, []);
+  const named = out.notes.find(entry => /closing keyword/.test(entry.message));
+  assert.match(named.message, /release PR — no ticket by construction/);
+  assert.match(named.message, /label 'autorelease: pending'/);
+});
+
+test('closing keyword: the same changelog body without the shape still refuses (#94)', () => {
+  const out = keywordGround({
+    channels: bodyOnly(RELEASE_BODY),
+    tracker: undefined,
+    pr: '104',
+    slug: 'flosrn/ax',
+    baseBranch: 'main',
+    defaultBranch: 'main',
+    release: releaseShape({ author: 'flosrn', labels: [], declared: readRelease(undefined) }),
+  });
+  assert.equal(out.refusals.length, 1, 'the ground stays honest for every PR that could have a ticket');
+  assert.match(out.refusals[0].message, /closes no issue and expresses no intent to/);
+});
+
+test('commits since open: the release bump is the shape\'s own output, exempt and named (#94)', () => {
+  const { root } = repo();
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  const out = commitsGround(
+    commitOptions(root, {
+      release,
+      commits: commitsOk([
+        authored(commitRow('a'.repeat(40), 'feature work'), 'flosrn'),
+        authored(commitRow('b'.repeat(40), 'chore(main): release 0.18.0', LATE), 'github-actions[bot]'),
+      ]),
+    }),
+  );
+  assert.deepEqual(out.refusals, [], 'the version bump release-please pushes after opening its own PR is expected');
+  assert.deepEqual(out.unknowns, []);
+  const named = out.notes.find(entry => /commits since open/.test(entry.message));
+  assert.match(named.message, /1 release commit/);
+  assert.match(named.message, /bbbbbbbbbbbb/);
+  assert.match(named.message, /github-actions\[bot\]/);
+});
+
+test('commits since open: one human commit on a release PR still refuses, naming only it (#94)', () => {
+  const { root } = repo();
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  const out = commitsGround(
+    commitOptions(root, {
+      release,
+      commits: commitsOk([
+        authored(commitRow('b'.repeat(40), 'chore(main): release 0.18.0', LATE), 'github-actions[bot]'),
+        authored(commitRow('c'.repeat(40), 'fix: a hand edit on the release branch', LATE), 'flosrn'),
+      ]),
+    }),
+  );
+  assert.equal(out.refusals.length, 1, 'the exemption is the bot\'s commits, never the branch');
+  assert.match(out.refusals[0].message, /commits since open \[DETECTOR\]: 1 commit\(s\) landed after the PR was opened \(cccccccccccc\)/);
+  assert.match(out.refusals[0].repair, /--ack-body/);
+});
+
+test('commits since open: an author GitHub names as nobody is not the release bot (F-028, #94)', () => {
+  const { root } = repo();
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  const out = commitsGround(
+    commitOptions(root, { release, commits: commitsOk([authored(commitRow('d'.repeat(40), 'chore(main): release 0.18.0', LATE), null)]) }),
+  );
+  assert.equal(out.refusals.length, 1, 'an unnamed account withholds the exemption; it can never grant it');
+  assert.match(out.refusals[0].message, /dddddddddddd/);
+});
+
+test('commits since open: a bot-authored commit that is not the bump still refuses — identity alone is not the exemption (#94)', () => {
+  // The release App identity is reachable by every workflow this repository
+  // grants its token to, so "authored by the bot" is wider than "the version
+  // bump release-please wrote". A second commit under the same account, doing
+  // something else, is work no body written before it describes.
+  const { root } = repo();
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  const out = commitsGround(
+    commitOptions(root, {
+      release,
+      commits: commitsOk([
+        authored(commitRow('b'.repeat(40), 'chore(main): release 0.18.0', LATE), 'github-actions[bot]'),
+        authored(commitRow('e'.repeat(40), 'chore(deps): bump the lockfile', LATE), 'github-actions[bot]'),
+      ]),
+    }),
+  );
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].message, /1 commit\(s\) landed after the PR was opened \(eeeeeeeeeeee\)/);
+  assert.match(
+    out.notes.find(entry => /commits since open/.test(entry.message)).message,
+    /1 release commit/,
+    'the bump beside it is still exempt',
+  );
+});
+
+test('commits since open: the bump is recognised across release-please\'s message shapes (#94)', () => {
+  const { root } = repo();
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  // The template is `chore${scope}: release${component} ${version}`: the scope
+  // and the component are both optional in a project's configuration, and the
+  // version may carry a SemVer prerelease or build suffix.
+  for (const message of ['chore(main): release 0.18.0', 'chore: release 1.2.3', 'chore(main): release ax 0.18.0', 'chore: release v1.2.3-rc.1', 'chore: release 1.2.3+build.5']) {
+    const out = commitsGround(
+      commitOptions(root, { release, commits: commitsOk([authored(commitRow('b'.repeat(40), message, LATE), 'github-actions[bot]')]) }),
+    );
+    assert.deepEqual(out.refusals, [], `'${message}' is a release bump`);
+  }
+});
+
+test('commits since open: a bot commit that merely says "release" is no bump — the version is what a bump carries (#94)', () => {
+  // `\brelease\b` alone accepts prose: `chore: release-notes` and a bare
+  // `chore: release` are both release-shaped words with no version behind them,
+  // and the ruling exempts the bump, not the vocabulary. The last form is the
+  // one a loose version tail let through: text welded onto the digits, where
+  // only a SemVer prerelease or build suffix may follow.
+  const { root } = repo();
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  for (const message of ['chore: release-notes', 'chore: release', 'chore(main): release the docs site', 'chore: release 1.2.3release-notes']) {
+    const out = commitsGround(
+      commitOptions(root, { release, commits: commitsOk([authored(commitRow('e'.repeat(40), message, LATE), 'github-actions[bot]')]) }),
+    );
+    assert.equal(out.refusals.length, 1, `'${message}' is not a version bump`);
+    assert.match(out.refusals[0].message, /eeeeeeeeeeee/);
+    assert.deepEqual(out.notes, [], 'nothing was named exempt');
+  }
+});
+
+test('pr commits: the account GitHub named rides the same payload, unnamed as an empty login (#94)', () => {
+  const rows = [authored(commitRow('a'.repeat(40), 'fix: one'), 'github-actions[bot]'), authored(commitRow('b'.repeat(40), 'fix: two'), null)];
+  const answer = prCommits({ run: answering(rows), slug: 'o/r', pr: '7' });
+  assert.equal(answer.ok, true, answer.reason);
+  assert.deepEqual(
+    answer.commits.map(entry => entry.authorLogin),
+    ['github-actions[bot]', ''],
+  );
+});
+
+test('ticket binding: Ground 9 is NOT RUN on a release PR, and says so rather than passing (#94)', () => {
+  const release = releaseShape({ author: 'app/github-actions', labels: [{ name: 'autorelease: pending' }], declared: readRelease(undefined) });
+  const channels = bodyOnly(RELEASE_BODY);
+  const out = ticketGround({
+    binding: { ok: false, reason: "no dispatch record on this host names the ticket branch 'release-please--branches--main' was dispatched for", repair: 'ax pr gate --pr 68 --issue <n>' },
+    closes: closedIssuesOf(channels),
+    channels,
+    pr: '68',
+    slug: 'flosrn/ax',
+    release,
+  });
+  assert.deepEqual(out.refusals, []);
+  assert.deepEqual(out.unknowns, [], 'an unbound release PR is not an inability to establish');
+  assert.equal(out.notes.length, 1);
+  assert.match(out.notes[0].message, /ticket binding: NOT RUN/);
+  assert.match(out.notes[0].message, /an unrun check is never a passed one/);
 });

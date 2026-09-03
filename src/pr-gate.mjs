@@ -153,6 +153,7 @@ import { bad, fix, note, section } from './log.mjs';
 import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
 import {
+  DEFAULT_RELEASE,
   ciGround,
   canonical,
   clean,
@@ -167,6 +168,8 @@ import {
   must,
   payload,
   prCommits,
+  readRelease,
+  releaseShape,
   succeeded,
   threadsGround,
   ticketGround,
@@ -539,6 +542,19 @@ export function gate(
     );
   }
 
+  // The release shape's declaration, read at the same moment and with the same
+  // strictness as the expectation above (#94): a `prGate.release` nobody can
+  // read must not quietly become the default shape, which is a shape the
+  // project already answered differently. Absent is the default and is not a
+  // finding.
+  const declaredRelease = readRelease(loaded.prGate?.release);
+  if (!declaredRelease.ok) {
+    return cannot(
+      `${declaredRelease.reason} in ${loaded.path} — a release declaration nobody can read is not the default shape`,
+      `declare "release": { "label": "<the label a release PR carries>" } under prGate in ${CONFIG_FILE}, or remove the key for the default shape (${DEFAULT_RELEASE.author} + "${DEFAULT_RELEASE.label}")`,
+    );
+  }
+
   // ── The declaration a MERGE is measured by must be the committed one ──────
   // A detector mutates nothing, so it may report on whatever the disk holds; a
   // merge may not, because an uncommitted prGate is a declaration no review
@@ -640,12 +656,30 @@ export function gate(
    * does NOT overrule the poll: the issue's own state is the strongest evidence
    * there is, and refusing to establish a landed merge over a policy read would
    * escalate a delivery the tracker itself confirms. It is named instead.
+   *
+   * GROUND 9 STAYS UNRUN ON A RELEASE PR (#94), on this side of the merge as
+   * well as before it: a release has no dispatched ticket, so the unbound
+   * branch below would escalate a landed release merge to exit 3 over a
+   * comparison that has no left-hand side. What this merge DID close is named
+   * instead — a release merge closes every ticket its changelog names, and a
+   * closure nobody reports is the more expensive half of this defect. The
+   * shape is the one this run READ; the replay precheck runs before that read
+   * and answers as it always did, which is also the honest answer there: a
+   * merged release PR no longer carries the pending label.
    */
-  const verifyClosure = (body, title, binding) => {
+  const verifyClosure = (body, title, binding, release) => {
     const channels = channelsFor(body, title);
     const closes = closedIssuesOf(channels);
     for (const entry of channelOnce(title).unknowns) note(`closure: ${entry.message}`);
     if (!binding.ok) {
+      if (release?.ok) {
+        note(
+          `closure: NOT RUN — release PR (${release.why}): no dispatch record binds a ticket to a release branch, so there is no closure to verify${
+            closes.length === 0 ? '' : `; this merge closed ${closes.map(entry => `#${entry.issue}`).join(', ')}, which its changelog named and no ticket binding covers`
+          }`,
+        );
+        return 0;
+      }
       if (closes.length === 0) {
         note('closure: nothing this merge closed from names a same-repository #N to verify — that ticket moves by hand (declared tracker or cross-repository target)');
         return 0;
@@ -758,7 +792,7 @@ export function gate(
   // ── Setup. The head SHA is resolved ONCE and every ground below uses that one
   // value, so no step can validate one commit and speak about another.
   const receipt = payload(
-    run(['pr', 'view', pr, '--repo', slug, '--json', 'number,headRefOid,headRefName,baseRefName,body,title,createdAt,mergeStateStatus']),
+    run(['pr', 'view', pr, '--repo', slug, '--json', 'number,headRefOid,headRefName,baseRefName,body,title,createdAt,mergeStateStatus,author,labels']),
   );
   if (!receipt.ok) {
     return cannot(`'gh pr view ${pr} --repo ${slug}' ${receipt.reason}`, `gh pr view ${pr} --repo ${slug}   # read it by hand`);
@@ -794,6 +828,14 @@ export function gate(
   // whether either text lands on the default branch, and this gate does not get
   // to assume it does not (#86).
   const title = typeof receipt.value.title === 'string' ? receipt.value.title : '';
+  // WHO OPENED THIS PR AND WHAT IT IS LABELLED, on the receipt this run already
+  // fetched (#94). Neither is validated with `must`: the release shape is a
+  // POSITIVE finding, so a half this read did not answer leaves the shape
+  // unrecognised and every ground refuses exactly as it did before the
+  // exemption existed. An absence here cannot grant it, which is the only
+  // direction F-028 governs — and an author field this gate did not need before
+  // must not become a new exit-3 class on every ordinary PR.
+  const release = releaseShape({ author: receipt.value?.author?.login, labels: receipt.value?.labels, declared: declaredRelease });
 
   section(`pr gate — ${slug}#${pr}`);
   note(`head SHA         ${sha}  (resolved once; every ground below uses this value)`);
@@ -802,6 +844,12 @@ export function gate(
   // branch protection demands an up-to-date branch (F-033.2).
   note(`mergeStateStatus ${mergeState}  (context only — never a ground here, F-033.2)`);
   note(`expectation      ${declared.mode}: ${declared.expected.join(', ')}`);
+  // Printed when it decides something, or when it ALMOST did: a release PR
+  // missing its label refuses on grounds whose sentences cannot say why the
+  // exemption did not apply, and that near miss is the one an operator has to
+  // diagnose (#94). Every other PR prints nothing here.
+  if (release.ok) note(`release shape    recognised — ${release.why}; grounds 6, 7 and 9 answer to it`);
+  else if (release.near) note(`release shape    no — ${release.why}`);
 
   // ── The grounds, in execution order. Each returns its account, and nothing
   // short-circuits (F-033 recorded two grounds firing on the same merge). The
@@ -834,13 +882,13 @@ export function gate(
     // graph (#90), so it takes the same git reader and the same refresh
     // reading: a clean merge from the base is base movement, not work the body
     // was meant to describe, and an unreadable shape is not exempt.
-    commitsGround({ commits: commitsRead, git, root: paths.root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation }),
+    commitsGround({ commits: commitsRead, git, root: paths.root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation, release }),
     // The channel read answers before the two grounds that consume it, so its
     // own inability to establish is a named reason in this same verdict rather
     // than a silent narrowing to the body (#86).
     channel,
-    keywordGround({ channels, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch }),
-    ticketGround({ binding, closes: closedIssuesOf(channels), channels, pr, slug }),
+    keywordGround({ channels, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch, release }),
+    ticketGround({ binding, closes: closedIssuesOf(channels), channels, pr, slug, release }),
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);
@@ -994,7 +1042,7 @@ export function gate(
           const settledHead = String(settled.value?.headRefOid ?? '').trim();
           if (settledState === 'MERGED' && settledHead === sha) {
             note(`REPLAYED-SUCCESS — the recorded merge landed at ${sha} while this run waited for the lock; no second mutation minted`);
-            return verifyClosure(typeof settled.value?.body === 'string' ? settled.value.body : '', typeof settled.value?.title === 'string' ? settled.value.title : '', binding);
+            return verifyClosure(typeof settled.value?.body === 'string' ? settled.value.body : '', typeof settled.value?.title === 'string' ? settled.value.title : '', binding, release);
           }
           if (settledState === 'MERGED') {
             bad(
@@ -1063,7 +1111,7 @@ export function gate(
       fix(`gh pr view ${pr} --repo ${slug} --json body,title   # then verify the linked issue by hand`);
       return 3;
     }
-    return verifyClosure(landedBody, landedTitle, binding);
+    return verifyClosure(landedBody, landedTitle, binding, release);
   } finally {
     // Every path releases: a lock outliving its gesture wedges every later run.
     ownership.release();

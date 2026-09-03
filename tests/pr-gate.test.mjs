@@ -61,6 +61,11 @@ const prView = (over = {}) => ({
   body: 'Closes #1786',
   createdAt: OPENED,
   mergeStateStatus: 'CLEAN',
+  // The two halves of the release shape (#94), both deliberately NOT it: an
+  // ordinary contributor and no label. A fixture that carried the shape by
+  // default would exempt every other test from three grounds.
+  author: { is_bot: false, login: 'contributor' },
+  labels: [],
   ...over,
 });
 
@@ -1260,6 +1265,124 @@ test('#86: --merge without --method evaluates the squash channels alone — the 
     [`pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${headSha}`],
     'the run merged with the very method it evaluated',
   );
+});
+
+// ── The release shape: the PR with no ticket by construction (#94) ──────────
+//
+// PR #68, the release-please pull request for 0.18.0, refused on `closing
+// keyword` — a changelog names no ticket and never will — while
+// `.github/workflows/test.yml` promises in its own header that `workflow_dispatch`
+// "is what keeps the release path gateable instead of permanently hand-merged".
+// 0.18.0 was merged by hand. Ruled 2026-09-02: the release PR is a recognized
+// SHAPE — the release bot's authorship AND the release label — and the three
+// grounds that cannot hold on it answer to that shape, not to a flag.
+//
+// The author spelling is measured, not chosen: `gh pr view 68 --json author`
+// answered `app/github-actions` while the same PR's commits payload answered
+// `github-actions[bot]`.
+
+/** A release-please body: a changelog, whose closing references are markdown links. */
+const CHANGELOG =
+  'chore(main): release 0.18.0\n\n### Bug Fixes\n\n* the gate reads the declaration it is measured by ' +
+  '([#70](https://github.com/flosrn/ax/pull/70)) closes [#1786](https://github.com/flosrn/ax/issues/1786)\n';
+
+const releaseReceipt = (over = {}) =>
+  prView({
+    author: { is_bot: true, login: 'app/github-actions' },
+    labels: [{ name: 'autorelease: pending' }],
+    title: 'chore(main): release 0.18.0',
+    body: CHANGELOG,
+    ...over,
+  });
+
+/** A commit row carrying the account GitHub named for it. */
+const authored = (row, login) => ({ ...row, author: login === null ? null : { login } });
+
+/** The version bump release-please pushes AFTER opening its own pull request. */
+const bump = () => authored(commitRow('bbbbbbbbbb003333', 'chore(main): release 0.18.0', '2026-08-09T11:00:00Z'), 'github-actions[bot]');
+
+test('#94: the release path is gateable — the shape answers keyword, the bump and ticket binding', () => {
+  // A release branch has no dispatch record and the orchestrator passes no
+  // --issue, which is why teaching the parse alone would only move this run
+  // from exit 1 to exit 3.
+  const { code, out } = run(['--pr', '68'], { ...CLEAN, receipt: releaseReceipt(), commits: [bump()], record: null });
+  assert.equal(code, 0, out);
+  assert.match(out, /release shape\s+recognised/);
+  assert.match(out, /closing keyword: release PR — no ticket by construction/);
+  assert.match(out, /commits since open: 1 release commit .*bbbbbbbbbb00/);
+  assert.match(out, /ticket binding: NOT RUN/);
+  assert.match(out, /an unrun check is never a passed one/);
+});
+
+test('#94: the bot author alone is not the shape — a ticket-less PR it opened still refuses', () => {
+  // The label is what an author can type; the authorship is what they cannot.
+  // Neither half alone is the shape, so the ruled trade holds: a ticket-less
+  // docs PR stays hand-merged.
+  const { code, out } = run(['--pr', '104'], { ...CLEAN, receipt: releaseReceipt({ labels: [] }), commits: [bump()], record: null });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — closing keyword: neither the body nor the PR title closes an issue or expresses intent to/);
+  assert.match(out, /REFUSE — commits since open \[DETECTOR\]: 1 commit\(s\) landed after the PR was opened/);
+});
+
+test('#94: a human commit on a release branch still refuses — the exemption is the bot\'s commits, not the branch', () => {
+  const { code, out } = run(['--pr', '68'], {
+    ...CLEAN,
+    receipt: releaseReceipt(),
+    commits: [bump(), authored(commitRow('cccccccccc003333', 'fix: a hand edit', '2026-08-09T11:30:00Z'), 'flosrn')],
+    record: null,
+  });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — commits since open \[DETECTOR\]: 1 commit\(s\) landed after the PR was opened \(cccccccccc00\)/);
+  assert.match(out, /closing keyword: release PR — no ticket by construction/, 'the keyword ground still answers the shape');
+  assert.match(out, /commits since open: 1 release commit/, 'and the bump is still named as exempt');
+});
+
+test('#94: a declared prGate.release names this project\'s label, and the default stops being the shape', () => {
+  const declared = { aggregate: AGGREGATE, release: { label: 'release: pending' } };
+  const own = run(['--pr', '68'], {
+    ...CLEAN,
+    prGate: declared,
+    receipt: releaseReceipt({ labels: [{ name: 'release: pending' }] }),
+    commits: [bump()],
+    record: null,
+  });
+  assert.equal(own.code, 0, own.out);
+  assert.match(own.out, /label 'release: pending'/);
+
+  const defaulted = run(['--pr', '68'], { ...CLEAN, prGate: declared, receipt: releaseReceipt(), commits: [bump()], record: null });
+  assert.equal(defaulted.code, 1, 'a declaration REPLACES the default shape, it does not add to it');
+  assert.match(defaulted.out, /REFUSE — closing keyword/);
+});
+
+test('#94: a prGate.release naming no label is cannot-establish, never the default shape', () => {
+  const { code, out, calls } = run(['--pr', '68'], { ...CLEAN, prGate: { aggregate: AGGREGATE, release: {} } });
+  assert.equal(code, 3);
+  assert.match(out, /CANNOT ESTABLISH — prGate\.release names no label/);
+  assert.match(out, /→ declare "release": \{ "label"/);
+  assert.deepEqual(calls, [], 'an unreadable declaration stops the run before any ground');
+});
+
+test('#94: a release merge verifies no ticket binding, and its replay stays fail-closed', () => {
+  const storeDir = mkdtempSync(join(sandbox, 'store-'));
+  const release = { ...CLEAN, receipt: releaseReceipt(), commits: [bump()], record: null, store: storeDir };
+  const merged = run(['--pr', '68', '--merge'], release);
+  assert.equal(merged.code, 0, merged.out);
+  assert.match(merged.out, /MERGED — gapilabs\/gapila#68/);
+  assert.match(merged.out, /closure: NOT RUN — release PR/, 'the unbound branch would have escalated a landed release to exit 3');
+  assert.ok(!merged.calls.some(call => call.startsWith('issue view')), 'a release has no dispatched ticket to poll');
+
+  // The REPLAY precheck runs before the receipt the shape is read from, and a
+  // merged release PR no longer carries the pending label — GitHub's own
+  // release-please moves it to `autorelease: tagged`. So the shape is NOT
+  // remembered across runs (this module's rule for its sibling exemption too,
+  // #90) and the replay answers exactly what it answered before: a changelog
+  // names no same-repository closure to verify, and nothing is re-mutated.
+  const merges = [];
+  const replayed = run(['--pr', '68', '--merge'], { ...release, prStates: [prView({ state: 'MERGED', body: CHANGELOG })], onMerge: args => merges.push(args) });
+  assert.equal(replayed.code, 0, replayed.out);
+  assert.match(replayed.out, /REPLAYED-SUCCESS/);
+  assert.match(replayed.out, /closure: nothing this merge closed from names a same-repository #N to verify/);
+  assert.deepEqual(merges, [], 'a replayed release success issues no mutation');
 });
 
 // ── The second closure channel: the branch's commit messages (#86) ──────────

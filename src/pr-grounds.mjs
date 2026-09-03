@@ -7,6 +7,22 @@
 //
 // The grounds' incident history — why each exists, what it measured — lives on
 // each function below, moved intact from the file that paid for it.
+//
+// ONE SHAPE ANSWERS THREE OF THESE GROUNDS: the release pull request (#94).
+// `readRelease`/`releaseShape` below decide it — the release bot's authorship
+// AND the release label, or the `prGate.release` a project declares instead —
+// and Grounds 6, 7 and 9 each ask it, because a release body is a changelog: it
+// has no ticket by construction and never will. Measured on PR #68, the
+// release-please pull request for 0.18.0: the keyword ground refused it
+// structurally and 0.18.0 was merged by hand, while `.github/workflows/test.yml`
+// promises in its own header that `workflow_dispatch` "is what keeps the
+// release path gateable instead of permanently hand-merged".
+//
+// IT IS A SHAPE, NOT A FLAG. There is no `--no-keyword`, and `--ack-body` is
+// not widened: nothing an author of an ordinary pull request can type reaches
+// this exemption, which is why a ticket-less docs PR stays hand-merged. That is
+// the ruled trade (2026-09-02), and it is what keeps R8's rule — absent closing
+// intent is a refusal — honest for every PR that COULD have a ticket.
 
 import { CONFIG_FILE } from './config.mjs';
 
@@ -109,6 +125,148 @@ function account() {
     note: message => notes.push({ message }),
     unknown: (message, repair) => unknowns.push({ message, repair }),
     refuse: (message, repair) => refusals.push({ message, repair }),
+  };
+}
+
+/**
+ * The default release shape: the account release-please runs as, and the label
+ * it puts on its own pull request.
+ *
+ * `github-actions[bot]` is the canonical login. It is not the only spelling a
+ * read answers with, which is why the comparison below normalises rather than
+ * matching literally — see `sameLogin`.
+ *
+ * A NAMED EXCEPTION TO "THE REPOSITORY IS INPUT", made by ruling (#94,
+ * 2026-09-02: "declared wins; absent means the default shape"). AGENTS.md
+ * requires labels and merge grounds to come from `ax.config.json`, and the rule
+ * was paid for by `docs/residual-review-findings` — ONE project's directory
+ * layout hardcoded into a tool that runs in other people's repositories. These
+ * two strings are not that: they are release-please's own published contract,
+ * identical in every repository that runs it, and a project whose automation
+ * differs names its own with `prGate.release`, which then REPLACES this pair.
+ *
+ * The direction each choice fails in is what decided it. A required
+ * declaration leaves every consumer's release path refusing until someone
+ * discovers the key — the defect this shape exists to remove, one indirection
+ * over. The default's cost is a bot-authored PR wearing release-please's label
+ * in a repository that does not run release-please: it skips a body-staleness
+ * detector, a keyword ground and a ticket comparison — never CI, threads,
+ * staleness, residuals or the declaration guard — and producing it needs both
+ * a workflow holding this repository's own token and that label deliberately
+ * created.
+ */
+export const DEFAULT_RELEASE = { label: 'autorelease: pending', author: 'github-actions[bot]' };
+
+/**
+ * THE SUBJECT release-please COMMITS ITS BUMP UNDER. Its template is
+ * `chore${scope}: release${component} ${version}`, and both the scope and the
+ * component are optional in a project's configuration — measured on PR #68's
+ * own commit, `chore(main): release 0.18.0`.
+ *
+ * THE VERSION IS THE LOAD-BEARING PART, not the word `release`. A first form
+ * ended at `release\b` and accepted `chore: release-notes` and a bare
+ * `chore: release` — release-shaped vocabulary with no bump behind it, which is
+ * the vocabulary an exemption must not run on. A version is what a bump
+ * carries, and it is the one part of the subject release-please cannot write
+ * without.
+ *
+ * AND THE VERSION ENDS WHERE SEMVER ENDS. The second form closed on `\S*$`,
+ * meaning to admit a prerelease or build tail and admitting anything welded to
+ * the digits: `chore: release 1.2.3release-notes` read as a bump. What may
+ * follow the digits is exactly SemVer's `-prerelease` and `+build`, so that is
+ * what the pattern says. A tail nobody taught it is not a bump, which is the
+ * direction an exemption must fail in.
+ *
+ * It is still prose, and prose is weaker evidence than an account. It is read
+ * anyway, because the account is the strong half in the WRONG DIRECTION: the
+ * release App's token belongs to every workflow this repository hands it to, so
+ * authorship alone exempts commits release-please never wrote. Together they
+ * name the bump; a subject this pattern cannot place refuses, and `--ack-body`
+ * answers it — a cost one flag pays, unlike the structural refusal #94 removed.
+ */
+const RELEASE_SUBJECT = /^chore(\([^)]*\))?!?:\s+release\s+(?:\S+\s+)?v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/i;
+
+/**
+ * The release shape this checkout expects, or THE REASON ITS DECLARATION
+ * CANNOT BE READ.
+ *
+ * Absent means the default shape, and says which one it is. A declared
+ * `prGate.release` REPLACES it — a project whose release automation labels
+ * differently names its own label, and the default stops applying, because two
+ * shapes at once would mean the label a project did not declare still opens the
+ * exemption. An incoherent declaration is neither: it is unread, and the gate
+ * refuses to establish anything over it (Ground 0's disposition), because
+ * falling back to the default there would silently answer a question the
+ * project already answered differently.
+ *
+ * `author` stays part of a DECLARED shape, defaulting to the same bot. The
+ * ruling's property is that no author can type their way into the exemption,
+ * and a label is exactly something an author can add — so the identity half is
+ * not optional, only nameable.
+ */
+export function readRelease(declared) {
+  if (declared === undefined || declared === null) return { ok: true, ...DEFAULT_RELEASE, declared: false };
+  if (typeof declared !== 'object' || Array.isArray(declared)) return { ok: false, reason: 'prGate.release is not an object' };
+  const label = declared.label;
+  if (typeof label !== 'string' || label.trim() === '') return { ok: false, reason: 'prGate.release names no label' };
+  const author = declared.author === undefined ? DEFAULT_RELEASE.author : declared.author;
+  if (typeof author !== 'string' || author.trim() === '') return { ok: false, reason: 'prGate.release.author is not a login' };
+  return { ok: true, label: label.trim(), author: author.trim(), declared: true };
+}
+
+/**
+ * ONE ACCOUNT, TWO SPELLINGS, measured 2026-09-03 on PR #68: `gh pr view 68
+ * --json author` answers `app/github-actions` — gh's spelling for a GitHub App
+ * over GraphQL — while that same PR's commits payload answers
+ * `github-actions[bot]`. A literal comparison against either one alone is
+ * false on the other read, and both reads decide this shape: the PR's author
+ * comes from the receipt, each commit's from the commits endpoint.
+ *
+ * So `app/` and the `[bot]` suffix are normalised away and the comparison is
+ * case-insensitive. It cannot collapse two different accounts: the bare login
+ * of a GitHub App is reserved by that App, so `github-actions` names no other
+ * identity a PR could be authored by.
+ */
+const loginOf = value =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^app\//, '')
+    .replace(/\[bot\]$/, '');
+
+const sameLogin = (left, right) => loginOf(left) !== '' && loginOf(left) === loginOf(right);
+
+/**
+ * Is THIS pull request the release shape?
+ *
+ * Both halves, read from the receipt the gate already fetches: the author is
+ * the release bot, and the pull request carries the release label. Either half
+ * alone is not the shape — the label is something a contributor can add, and
+ * the bot opens ordinary pull requests too (a dependency bump carries no
+ * release label).
+ *
+ * THE SHAPE IS A POSITIVE FINDING, which is how F-028 reads here: an author or
+ * a label this run could not read leaves the shape unrecognised, and the ground
+ * that would have refused refuses exactly as it did before the exemption
+ * existed. Absence therefore cannot GRANT the exemption, which is the only
+ * direction that mutates. `near` marks the diagnostic case worth printing on a
+ * PR that is not exempt: the release bot's own pull request, missing the label.
+ */
+export function releaseShape({ author, labels, declared }) {
+  if (!declared?.ok) return { ok: false, why: 'the release declaration is unread, so no PR is the release shape' };
+  const login = String(author ?? '').trim();
+  if (login === '') return { ok: false, why: 'the PR receipt names no author, so the release shape is unread (F-028)' };
+  if (!sameLogin(login, declared.author)) return { ok: false, why: `author '${clean(login)}' is not '${clean(declared.author)}'` };
+  if (!Array.isArray(labels)) return { ok: false, near: true, why: `author '${clean(login)}' is the release bot, but the PR receipt names no labels, so the shape is unread (F-028)` };
+  const wanted = declared.label.toLowerCase();
+  if (!labels.some(entry => String(entry?.name ?? '').trim().toLowerCase() === wanted)) {
+    return { ok: false, near: true, why: `author '${clean(login)}' is the release bot, but the PR carries no '${clean(declared.label)}' label` };
+  }
+  return {
+    ok: true,
+    author: declared.author,
+    label: declared.label,
+    why: `author '${clean(login)}' and label '${clean(declared.label)}'${declared.declared ? ' (declared in prGate.release)' : ''}`,
   };
 }
 
@@ -468,6 +626,13 @@ export function prCommits({ run, slug, pr }) {
         message: String(must(commit, 'message', 'commit')),
         when,
         parents: parents.map(parent => String(must(parent, 'sha', "a PR commit's parent"))),
+        // THE ACCOUNT GITHUB NAMED for this commit, which is what the release
+        // exemption stands on (#94). Deliberately NOT `must`: this endpoint
+        // answers `author: null` for a commit whose email matches no account,
+        // and that is an ANSWER, not a missing key. An unnamed account
+        // withholds the exemption and can never grant it, so an absence here
+        // fails closed by construction — the one direction F-028 leaves open.
+        authorLogin: typeof entry.author?.login === 'string' ? entry.author.login : '',
       };
     });
     return { ok: true, commits };
@@ -601,8 +766,33 @@ export function mergePolicy({ run, slug }) {
  * detector for EVERY post-open commit, including the caller-authored ones the
  * body genuinely fails to describe — a one-commit exemption turned into a
  * blanket bypass of the ground.
+ *
+ * A SECOND SHAPE IS EXEMPT, AND ALSO BY PREDICATE: on a release pull request
+ * (#94), THE RELEASE COMMIT. release-please pushes the version bump after
+ * opening its own PR — measured on #68, `634d59af7c38` landed after the PR
+ * opened — so the detector listed and refused it, and the report's own
+ * diagnosis called that refusal expected. Two halves, both read: the account
+ * GitHub named for the commit is the release shape's author, AND its subject is
+ * a release commit (`chore: release <version>`, with release-please's optional
+ * scope and component).
+ *
+ * THE IDENTITY ALONE WAS REJECTED, and the reason is who holds it: the release
+ * App's token is reachable by every workflow this repository grants it to, so
+ * "authored by the bot" exempts commits release-please never wrote. The ruling
+ * says the detector accepts the bump; a second bot commit doing something else
+ * is any other post-open commit.
+ *
+ * The subject IS configurable prose, which is the cost this direction pays: a
+ * project that retemplates its release commit gets a refusal, with `--ack-body`
+ * to answer it. That asymmetry is deliberate — a refusal here is recoverable
+ * with one flag, while the keyword refusal this ticket removed had no flag at
+ * all, and a false EXEMPTION is a hole in a ground nobody can see.
+ *
+ * Every other post-open commit on a release branch refuses without
+ * `--ack-body`: a hand edit pushed to the release branch is work no body
+ * written before it describes, exactly as it is anywhere else.
  */
-export function commitsGround({ commits, git, root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation }) {
+export function commitsGround({ commits, git, root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation, release }) {
   const out = account();
   if (!commits.ok) {
     out.unknown(`commits since open: ${commits.reason}`, commits.repair);
@@ -627,10 +817,18 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
     return out;
   }
 
+  // The release commit, split off BEFORE any git read: a version bump asks no
+  // question of the commit graph, and a release PR whose only post-open commit
+  // is that bump costs this ground nothing (#94). Both halves read — the
+  // account, and the subject release-please writes.
+  const isBump = entry => release?.ok === true && sameLogin(entry.authorLogin, release.author) && RELEASE_SUBJECT.test(firstLine(entry.message));
+  const bumps = late.filter(isBump);
+  const authored = bumps.length === 0 ? late : late.filter(entry => !isBump(entry));
+
   const gitRun = args => git(args, root);
   // Resolved ONCE, and only because a two-parent commit is asking: a PR with no
   // post-open merge costs this ground no git read at all.
-  const merges = late.filter(entry => entry.parents.length === 2);
+  const merges = authored.filter(entry => entry.parents.length === 2);
   const baseRef = merges.length === 0 || !refsRefreshed ? '' : resolveRef(gitRun, baseBranch);
   // An undecided shape carries its OWN repair. Most of them are a read to
   // retry, so the fetch is the default; a git that does not have the read at
@@ -700,7 +898,7 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
 
   const exempt = [];
   const plain = [];
-  for (const entry of late) {
+  for (const entry of authored) {
     if (entry.parents.length !== 2) {
       plain.push(entry);
       continue;
@@ -721,6 +919,12 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
         shape.repair,
       );
     }
+  }
+  if (bumps.length > 0) {
+    out.note(
+      `commits since open: ${bumps.length} release commit${bumps.length === 1 ? '' : 's'} — exempt: ${bumps.map(entry => short(entry.sha)).join(' ')} ` +
+        `(authored by ${clean(release.author)} on a '${clean(release.label)}' pull request: the version bump release-please writes after opening its own PR, which no body written before it could describe)`,
+    );
   }
   if (exempt.length > 0) {
     out.note(
@@ -936,9 +1140,34 @@ const firstIn = (channels, verbs) => {
  * issue" about a merge that closes one, which is the false sentence this ground
  * exists to remove, arriving from the other channel. A match away from the body
  * names the commit that carries it, because that is where the repair happens.
+ *
+ * ONE SHAPE IS EXEMPT (#94): the release pull request. Its body is a changelog,
+ * it names no ticket and never will, so both readings the refusal above hands
+ * to a human — "no ticket behind it" and "an author who forgot" — are decided
+ * in advance by the shape itself. That refusal made every release-please PR
+ * structurally unmergeable through this gate, which is what `test.yml`'s header
+ * says the release path must not be. The ground still ANSWERS on that shape,
+ * with the reason, because an exemption nobody can read in the report is
+ * indistinguishable from a ground that quietly passed; and a construct the
+ * changelog does carry is still named, because GitHub acts on it and saying "no
+ * ticket by construction" alone would be a false sentence about that body — the
+ * species this ground exists to remove.
  */
-export function keywordGround({ channels, tracker, pr, slug, baseBranch = '', defaultBranch = '' }) {
+export function keywordGround({ channels, tracker, pr, slug, baseBranch = '', defaultBranch = '', release }) {
   const out = account();
+  // The shape answers before anything else this ground asks. Base inertness is
+  // not asked either: there is no ticket to be inert about, and a release PR
+  // that targets something other than the default branch closes nothing
+  // whichever way this ground answers.
+  if (release?.ok) {
+    const carried = firstIn(channels, KEYWORDS);
+    out.note(
+      `closing keyword: release PR — no ticket by construction (${release.why}); its body is a changelog${
+        carried ? `, and '${clean(carried.phrase)}'${carried.where} is recognised — GitHub will close that issue on merge` : ' and names no ticket'
+      }`,
+    );
+    return out;
+  }
   const base = String(baseBranch ?? '').trim();
   const head = String(defaultBranch ?? '').trim();
   let inert = false;
@@ -1141,9 +1370,27 @@ const closureOf = entry => `${sourcesOf(entry)} closes #${entry.issue}`;
  * named when it does. The distinction is not politeness: the body is the text a
  * review reads as the statement of what this merge delivers, and the repair for
  * every other channel is a reword of that channel, not a description edit.
+ *
+ * THIS GROUND IS NOT RUN ON A RELEASE PR (#94), and says so rather than
+ * passing. A release has no dispatched ticket: no `--issue` names one and no
+ * dispatch record claims a release branch, so the comparison this ground makes
+ * has no left-hand side. Running it anyway is not neutral — it takes its
+ * "unbound while the body DOES close a ticket here" branch and answers CANNOT
+ * ESTABLISH, which is the exit-3 verdict a parse repair alone would have moved
+ * PR #68 to. Printing NOT RUN keeps the report honest in the direction that
+ * matters: an unrun check is never a passed one, and a reader of this verdict
+ * must not believe a binding was verified.
  */
-export function ticketGround({ binding, closes, channels, pr, slug }) {
+export function ticketGround({ binding, closes, channels, pr, slug, release }) {
   const out = account();
+  if (release?.ok) {
+    out.note(
+      `ticket binding: NOT RUN — release PR (${release.why}): no dispatch record binds a ticket to a release branch and a changelog names none, so this ground has nothing to compare${
+        closes.length === 0 ? '' : `, though this merge closes ${closes.map(entry => `#${entry.issue}`).join(', ')}`
+      } — an unrun check is never a passed one`,
+    );
+    return out;
+  }
   const named = closes.map(entry => `#${entry.issue}`).join(', ');
   if (!binding.ok) {
     if (closes.length === 0) return out;
