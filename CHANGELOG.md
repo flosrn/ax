@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.21.1](https://github.com/flosrn/ax/compare/v0.21.0...v0.21.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **worker:** a worker-start that recorded no argv is an unreadable phase, never a local one ([#131](https://github.com/flosrn/ax/issues/131)) ([d9854dc](https://github.com/flosrn/ax/commit/d9854dc520da9a6f794ece5b56429804063ddba2))
+
 ## [0.21.0](https://github.com/flosrn/ax/compare/v0.20.0...v0.21.0) (2026-09-03)
 
 
