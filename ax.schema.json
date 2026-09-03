@@ -226,6 +226,17 @@
           "type": "string",
           "description": "Repository-relative directory holding residual review findings, if this project keeps one. Declared rather than assumed: the Bash hardcoded `docs/residual-review-findings`, which is one project's layout living in a tool. Absent means that ground is not run, and the gate says so instead of passing it."
         },
+        "release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["label"],
+          "description": "The shape of THIS project's release pull request, on which the closing-keyword ground answers `no ticket by construction`, the commits-since-open detector expects the version bump, and ticket binding is not run. Absent means the default shape: author `github-actions[bot]` carrying the label `autorelease: pending`, which is what release-please writes. Declared REPLACES that default — the label a project does not declare stops opening the exemption. Measured on PR #68: the keyword ground refused every release PR structurally, and `.github/workflows/test.yml` promises the release path stays gateable.",
+          "properties": {
+            "$comment": { "type": "string", "description": "Why this project's release PR looks like this — which automation opens it, and what labels that automation writes." },
+            "label": { "type": "string", "description": "The label the release automation puts on its own pull request, e.g. `autorelease: pending`. Required: a label with no release author would be a flag any contributor could add, so both halves are read." },
+            "author": { "type": "string", "description": "The login the release automation runs as. Absent means `github-actions[bot]`. Both `app/<slug>` and `<slug>[bot]` spellings of one App match: gh answers the first on `pr view --json author` and the second on the commits endpoint." }
+          }
+        },
         "tracker": {
           "type": "object",
           "additionalProperties": false,
