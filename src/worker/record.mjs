@@ -929,6 +929,39 @@ export function staleClaim(path, callerRun) {
 }
 
 /**
+ * The repository a record NAMES, trimmed — `''` when it names none.
+ *
+ * F-028, and the whole scope rule of `ax worker settle`: this store is
+ * HOST-GLOBAL, so a record naming another repository is another checkout's
+ * business, and one naming NOTHING is unknown rather than local. `repo` is
+ * additive (see initRecord), so every record written before `--tracker-repo`
+ * existed carries none — reading that absence as "this repository" would let
+ * any checkout flip a frontier classification for all of them at once.
+ */
+export function recordRepo(path) {
+  const repo = load(path).repo;
+  return typeof repo === 'string' ? repo.trim() : '';
+}
+
+/**
+ * The last attempt's settlement state, and whether anything in it is still open.
+ *
+ * `openPhase` is `staleClaim`'s first test isolated for the caller that must
+ * REFUSE rather than reclaim: a phase with no exit and no receipt is a mutation
+ * that may have committed, and writing `settled: true` over one is F-001 by
+ * another road. `phases` carries the same doubt with nothing to name — a record
+ * with no phase at all has its first mutation possibly in flight.
+ */
+export function lastAttemptState(path) {
+  const attempt = lastAttempt(load(path));
+  const phases = must(attempt, 'phases', 'last attempt');
+  const settled = must(attempt, 'settled', 'last attempt');
+  if (typeof settled !== 'boolean') throw new Error("last attempt: 'settled' is not a boolean");
+  const open = phases.find(ph => ph === null || typeof ph !== 'object' || ph.exit === null || ph.exit === undefined || ph.receipt === null || ph.receipt === undefined);
+  return { settled, phases: phases.length, openPhase: open === undefined ? null : String(open.name ?? 'unnamed') };
+}
+
+/**
  * Close the last attempt WITHOUT opening another — the release verb's
  * settlement gesture. Until this existed, `settled: true` was written only by
  * `attemptNew`, so a released-but-unmerged dispatch read as a live attempt
