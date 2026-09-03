@@ -641,8 +641,14 @@ export function dispatch(
       const path = join(specDir, `${request}.spec.txt`);
       mkdirSync(specDir, { recursive: true });
       writeFileSync(path, `${spec}\n`);
+      // `--tracker-repo` is RECORDED, never forwarded (ax-owned, like
+      // `--because`): it is what places this pane in a repository. The dispatch
+      // store is host-global, and `ax worker release` scopes by that key — a
+      // record naming no repository is UNKNOWN and authorizes no close (F-028,
+      // #83), so a pass dispatched without it hands `ax triage release` a pane
+      // it can never free.
       code = startFn(
-        ['--request', request, '--run', runId, '--spec-file', path, ...(bin ? ['--orca', bin] : []), '--', '--worktree', 'current', '--agent', 'omp'],
+        ['--request', request, '--run', runId, '--spec-file', path, '--tracker-repo', slug, ...(bin ? ['--orca', bin] : []), '--', '--worktree', 'current', '--agent', 'omp'],
         { env, runner: run },
       );
     }
