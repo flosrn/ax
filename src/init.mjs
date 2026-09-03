@@ -81,6 +81,28 @@ export const agentsBody = () =>
     'that needs one of those values reads it from there rather than restating it.',
   ].join('\n');
 
+/**
+ * The body of each managed block, keyed by the file the plan names, plus the
+ * reason this verb writes nothing when the plan exempts that file — so an
+ * exempted block is a line in the report and not a file `ax init` quietly
+ * stopped touching.
+ *
+ * `body` is a thunk: `agentsBody()` reads the command registry, and this table
+ * is module state. `tests/init-doctor.test.mjs` pins it against
+ * `MANAGED_BLOCKS`, because a plan entry with no body here is a crash in the
+ * verb rather than a finding.
+ */
+export const BLOCK_BODIES = {
+  '.gitignore': {
+    body: () => GITIGNORE_BODY,
+    reason: 'nothing else in the repository ignores the AX runtime state this layer writes',
+  },
+  'AGENTS.md': {
+    body: agentsBody,
+    reason: "the file is this checkout's own authored doctrine, and the block is consumer instruction",
+  },
+};
+
 /** The app roots ax manages here, inferred from the layout on disk. */
 function inferApps(root) {
   const apps = { web: existsSync(join(root, 'apps', 'web')) ? 'apps/web' : '.' };
@@ -329,14 +351,20 @@ export function init(root, { dryRun = false, vendor } = {}) {
     if (omp.legacy !== null) report(LEGACY_OMP_LOADER, omp.legacy);
   }
 
-  for (const [file, body] of [
-    ['.gitignore', GITIGNORE_BODY],
-    ['AGENTS.md', agentsBody()],
-  ]) {
+  // WHICH blocks is the plan's answer (./plan.mjs), never this loop's: the pair
+  // was hardcoded here and again in `ax doctor`, and on the checkout that
+  // publishes ax that made this verb the named repair for appending a generated
+  // consumer section into the package's own authored doctrine (#96). The bodies
+  // stay here, because they are what ax writes; the decision is the plan's.
+  for (const [file, wanted] of Object.entries(plan.blocks)) {
+    if (!wanted) {
+      note(`${file} (BEGIN:${BLOCK_ID}) — not written here: ${BLOCK_BODIES[file].reason}`);
+      continue;
+    }
     const path = join(root, file);
     const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
     try {
-      const next = applyBlock(source, { id: BLOCK_ID, body, style: styleFor(file) });
+      const next = applyBlock(source, { id: BLOCK_ID, body: BLOCK_BODIES[file].body(), style: styleFor(file) });
       report(`${file} (BEGIN:${BLOCK_ID})`, next.changed ? writeFile(path, next.text, { dryRun, root }) : 'unchanged');
     } catch (error) {
       bad(`${file} — ${error.message}`);

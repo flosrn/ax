@@ -12,7 +12,8 @@ import { after, before, test } from 'node:test';
 import { readBlock } from '../src/blocks.mjs';
 import { loadConfig, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
-import { LEGACY_OMP_LOADER_SOURCE, init } from '../src/init.mjs';
+import { BLOCK_BODIES, LEGACY_OMP_LOADER_SOURCE, init } from '../src/init.mjs';
+import { MANAGED_BLOCKS } from '../src/plan.mjs';
 
 let dir = '';
 const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
@@ -486,6 +487,9 @@ test('the package repository neither pins itself nor carries the bootstrap shim'
     assert.equal(manifest.devDependencies?.['@flosrn/ax'], undefined, 'a package does not depend on itself');
     assert.equal(manifest.scripts?.ax, undefined, 'no script points at a shim that is not written');
     assert.equal(existsSync(join(own, 'bin', 'ax')), false);
+    // A file the plan wants no block in is a file this verb does not create
+    // either: the block was the only reason `ax init` ever wrote AGENTS.md.
+    assert.equal(existsSync(join(own, 'AGENTS.md')), false);
 
     // The schema pointer follows the same fact: `./node_modules/@flosrn/ax/`
     // cannot exist in the checkout that publishes it.
@@ -512,6 +516,74 @@ test('the package repository neither pins itself nor carries the bootstrap shim'
     assert.match(drifted.out, /declares scripts\.ax in the checkout that publishes/);
   } finally {
     rmSync(own, { recursive: true, force: true });
+  }
+});
+
+// The managed blocks are per FILE, not per checkout (#96). On the checkout that
+// PUBLISHES ax, `AGENTS.md` is the package's own authored doctrine — graded as
+// such by `tests/docs.test.mjs` — and it has never carried a block
+// (`git log -S'BEGIN:ax' -- AGENTS.md` is empty). `ax doctor` still named
+// `ax init` as the repair for the block it lacks: a fix that, if run, appends a
+// generated consumer section into that doctrine, so it was never run and the
+// verb read red on this checkout for the whole dogfood wave.
+//
+// `.gitignore` is the opposite case and the reason one rule for both files was
+// the mistake: its body is AX runtime state (`.worktrees/`, `.agent/`,
+// `.scratch/`) that this checkout produces exactly like a consumer's, supplied
+// here only by machine-local git config that does not travel with the clone.
+test('the package repository carries the .gitignore block and no AGENTS.md block', () => {
+  const own = mkdtempSync(join(tmpdir(), 'ax-self-blocks-'));
+  try {
+    mkdirSync(join(own, 'node_modules'), { recursive: true });
+    writeFileSync(join(own, 'package.json'), JSON.stringify({ name: '@flosrn/ax', bin: { ax: './bin/ax.mjs' } }, null, 2));
+    writeFileSync(join(own, 'AGENTS.md'), '# AGENTS.md\n\nThe package own authored doctrine.\n');
+    execFileSync('git', ['init', '-q'], { cwd: own, stdio: 'ignore' });
+
+    assert.equal(init(own), 0);
+
+    const authored = readFileSync(join(own, 'AGENTS.md'), 'utf8');
+    assert.equal(
+      readBlock(authored, { id: 'ax', style: 'markdown' }),
+      null,
+      'ax init wrote a generated consumer block into the package own doctrine',
+    );
+    assert.match(authored, /own authored doctrine/);
+    assert.equal(readBlock(readFileSync(join(own, '.gitignore'), 'utf8'), { id: 'ax', style: 'hash' }), '.worktrees/\n.agent/\n.scratch/');
+
+    const graded = capture(() => doctor(own));
+    assert.equal(graded.code, 0);
+    assert.match(graded.out, /\.gitignore: managed block present/);
+    // NOTHING about the file at all, ruled on #96 — not the old repair, and not
+    // a `·` line reporting that a file the plan wants nothing in has nothing in
+    // it. The exemption is legible where it is decided: `ax init` names the
+    // file it skipped and why on every run.
+    assert.doesNotMatch(graded.out, /AGENTS\.md/, 'doctor reports nothing about the file whose block the plan refuses');
+
+    // The exemption stops WANTING the block, never stops MEASURING the file: a
+    // block that reached the doctrine file is a finding with its own repair,
+    // exactly as the self-pin above is — otherwise one unrunnable repair is
+    // traded for one unmeasured file.
+    writeFileSync(join(own, 'AGENTS.md'), `${authored}\n<!-- BEGIN:ax -->\n## ax tooling\n<!-- END:ax -->\n`);
+    const drifted = capture(() => doctor(own));
+    assert.equal(drifted.code, 1);
+    assert.match(drifted.out, /AGENTS\.md carries a BEGIN:ax block/);
+    assert.match(drifted.out, /→ remove the BEGIN:ax block from AGENTS\.md/);
+  } finally {
+    rmSync(own, { recursive: true, force: true });
+  }
+});
+
+// The seam the split creates: the plan names the files, `src/init.mjs` holds
+// their bodies, and a plan entry with no body there is a TypeError inside the
+// verb rather than a finding it reports.
+test('every managed block the plan names has a body and a reason', () => {
+  assert.deepEqual(
+    Object.keys(BLOCK_BODIES).sort(),
+    MANAGED_BLOCKS.map(block => block.file).sort(),
+  );
+  for (const [file, entry] of Object.entries(BLOCK_BODIES)) {
+    assert.equal(typeof entry.body(), 'string', `${file} has no block body`);
+    assert.match(entry.reason, /\S/, `${file} has no reason for the plan to exempt it`);
   }
 });
 

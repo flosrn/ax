@@ -1,4 +1,9 @@
 node_modules/
 .DS_Store
 *.log
+
+# BEGIN:ax
+.worktrees/
+.agent/
 .scratch/
+# END:ax
