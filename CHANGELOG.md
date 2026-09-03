@@ -8,6 +8,24 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.21.0](https://github.com/flosrn/ax/compare/v0.20.0...v0.21.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **dispatch:** `ORCA_TRIAGE_SESSION_CAP` and `ORCA_READY_SESSION_CAP` are no longer read. Both are refused by name, with the repair naming `dispatch.machineCap` in ax.config.json. A checkout that relied on the old implicit machine-wide 3 loses it: the per-repository `dispatch.cap` default of 3 takes over, and the machine ceiling is unset until it is declared.
+
+### Bug Fixes
+
+* **dispatch:** cap panes per repository, with an opt-in machine ceiling ([#129](https://github.com/flosrn/ax/issues/129)) ([6a4e128](https://github.com/flosrn/ax/commit/6a4e12876860c06d4c006ec02a6eac64cd8e092f))
+* **dispatch:** reuse the worktree a subject already has, wherever ax placed it ([#122](https://github.com/flosrn/ax/issues/122)) ([f3fdb9c](https://github.com/flosrn/ax/commit/f3fdb9ce594c36166148a79f314524a81bf6d644))
+* **pr-gate:** a clean merge from the base is movement, not a commit to acknowledge ([#119](https://github.com/flosrn/ax/issues/119)) ([33e616e](https://github.com/flosrn/ax/commit/33e616e7209f87bd25227a2f3aa90d5edd711acd))
+* **pr-gate:** a release PR is a recognized shape, not a PR whose ticket is missing ([#127](https://github.com/flosrn/ax/issues/127)) ([ddb0fe7](https://github.com/flosrn/ax/commit/ddb0fe7086e6d62150e5db1564db838683b41180))
+* **triage:** size the role window to a measurement, and make its verdict re-derivable ([#124](https://github.com/flosrn/ax/issues/124)) ([20cbc56](https://github.com/flosrn/ax/commit/20cbc56df74d8dc997298c2104b4cc94d332e669))
+* **worker:** a dispatch record names the checkout that dispatched it, whatever the tracker ([#123](https://github.com/flosrn/ax/issues/123)) ([08d0ef5](https://github.com/flosrn/ax/commit/08d0ef5157926b11d0549877c4e5c7f392c4a1a1))
+* **worker:** a request names its pass through the record's dispatch id, never the prose the child was handed ([#128](https://github.com/flosrn/ax/issues/128)) ([4936899](https://github.com/flosrn/ax/commit/4936899d2c921c48767cb2ee88dc318e0044bd5e))
+* **worker:** release places a row by the repository its record names ([#83](https://github.com/flosrn/ax/issues/83)) ([#118](https://github.com/flosrn/ax/issues/118)) ([518a36b](https://github.com/flosrn/ax/commit/518a36b990b8f5130e6c0ceccd0e8f262cfbbd8f))
+
 ## [0.20.0](https://github.com/flosrn/ax/compare/v0.19.0...v0.20.0) (2026-09-03)
 
 
