@@ -18,13 +18,14 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
 | `src/worker/start.mjs`, `src/worker/dispatch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs`, `src/worker/settle.mjs` | write-ahead plumbing, the one creation verb, repair, close, and the ending written for an attempt the gate proved dead |
 | `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a DISPATCHED receipt carries |
-| `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes |
+| `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes — including the host-aware inventory a cap is counted against |
+| `src/worker/capacity.mjs` | the two live-pane counts and the two caps: this repository's `dispatch.cap`, the opt-in `dispatch.machineCap`, and the one refusal both dispatch verbs print |
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |
 | `src/worker/sweep.mjs` | reclaiming processes a dead worktree left behind, by pgid and never by name |
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup — including the AX bundle a child must load before it is dispatched — tracker, placement and parent route |
 | `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication — and the provenance refusal that keeps triage an on-ramp for inbound work only |
-| `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the cap and the anti-rival pass gates |
+| `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the anti-rival pass gates (the caps left for `src/worker/capacity.mjs`, which both dispatch verbs read) |
 | `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
 | `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
 | `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |

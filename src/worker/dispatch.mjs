@@ -66,8 +66,11 @@ import { redactSecrets } from '../redact.mjs';
 import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { checkoutSkew } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
+import { capLines, capVerdict, liveCount, machineCapOf, repoCapOf } from './capacity.mjs';
+import { hostScopes, liveInventory, terminalInventory } from './pane.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
+import { defaultStore, dispatchIndex } from './record.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
@@ -467,8 +470,26 @@ export function dispatch(
   // ── 3. everything else knowable BEFORE anything is created ─────────────────
   // A dispatch that can never be issued must not leave a worktree, a mandate, a
   // pinned identity or a lineage behind: exit 1 says nothing was created, and it
-  // has to be true. So the ref, the contract, the Run and the operator's notes —
-  // all four knowable now — are settled before placement.
+  // has to be true. So the caps, the ref, the contract, the Run and the
+  // operator's notes — all knowable now — are settled before placement.
+  //
+  // THE CAPS COME FIRST, and until #88 this verb had none at all: measured
+  // 2026-09-02, it admitted a 4th and a 5th pane without a word while `ax triage
+  // dispatch` refused at the same moment, over the same store, on the same
+  // machine. Two verbs, one machine, two cap semantics — and the count `ax
+  // worker ls` labelled "the cap count" gated neither. Both now answer through
+  // ./capacity.mjs, which is also what `ls` prints, so a reader who counts with
+  // `ls` before dispatching reads the number that will actually refuse.
+  //
+  // The repository is read HERE rather than at the `worker start` argv, because
+  // it is what scopes this repository's own count — and it is the same read that
+  // later records the pane (`--tracker-repo`, §7), so it happens once.
+  const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
+  const room = capRoom({ run, env, config, repo: trackerRepo });
+  if (room.cannot) return cannot(room.cannot, room.repair);
+  for (const line of room.lines) note(line);
+  if (!room.verdict.ok) return refuse(room.verdict.message, room.verdict.repair);
+
   if (flags.needsRef !== '') {
     const proven = needsRef(flags.needsRef, { exec, cwd });
     if (!proven.ok) return refuse(proven.reason, 'git ls-remote --refs origin   # what origin actually carries');
@@ -657,7 +678,11 @@ export function dispatch(
   // `unknown` branch forever (review of #118). The URL is now only the fallback
   // for a checkout whose forge `gh` cannot name; with neither, the record stays
   // unknown, and nothing here guesses one (F-028).
-  const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
+  //
+  // `trackerRepo` was read in §3, where the per-repository cap needed it: the
+  // pane this argv records and the count that authorised it are placed in the
+  // same repository BY THE SAME READ, so a cap counted against one name cannot
+  // record a pane under another.
   const owned = [
     '--request', request,
     '--run', runId,
@@ -765,6 +790,77 @@ function setLineage({ run, worktree, on, dry, env }) {
     return `NOT SET — parentWorktreeId reads ${recorded}, not the ${parent} this dispatch set (F-002: the set was discarded and answered ok); this child reports to whoever that is, not to this session`;
   }
   return recorded;
+}
+
+/**
+ * Whether this machine and this repository have room for ONE more pane — the
+ * two counts, the two caps, and the verdict, read from the same store `ax worker
+ * ls` prints and gated by the same contract `ax triage dispatch` uses
+ * (./capacity.mjs).
+ *
+ * FAIL-CLOSED, for `ls`'s reason: the caller is about to decide whether it has
+ * room for another child, so an unreadable terminal list or an unreadable record
+ * is cannot-establish rather than a count of zero — an absence of information is
+ * not an absence of a child (F-028). An ENOENT store is the exception and the
+ * only one: a machine that has never dispatched, where zero is the true count
+ * and refusing would block the first dispatch ever.
+ *
+ * A cap it cannot COUNT is different from a count it cannot READ, and the
+ * difference is deliberate: a checkout `gh` cannot name still dispatches, with
+ * the absence announced. That is the boundary this verb already holds for a
+ * record's `repo` key, and moving it would refuse every dispatch from a
+ * checkout whose forge `gh` has no token for.
+ */
+function capRoom({ run, env, config, repo }) {
+  const local = terminalInventory(run);
+  if (!local.ok) {
+    return { cannot: local.reason, repair: 'orca open   # the cap is counted, never assumed — it does not fail open', lines: [] };
+  }
+  const store = defaultStore(env);
+  const index = dispatchIndex(store);
+  if (!index.missing && index.reason !== '') {
+    return {
+      cannot: `the dispatch store ${store} cannot be read, so live panes cannot be counted: ${index.reason.slice(0, 160)}`,
+      repair: `ls -ld ${store}`,
+      lines: [],
+    };
+  }
+  if (index.unreadable.length > 0) {
+    const first = index.unreadable[0];
+    return {
+      cannot: `${index.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live panes cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+      repair: `ax worker ls --store ${store}   # see every record, then repair or remove the unreadable one`,
+      lines: [],
+    };
+  }
+
+  const ceiling = machineCapOf(config, env);
+  if (!ceiling.ok) {
+    return {
+      verdict: {
+        ok: false,
+        message: `${ceiling.from} is set — the cap is declared in ax.config.json now, and this repository's own cap is what binds`,
+        repair: `unset ${ceiling.from} and declare ${ceiling.to} in ax.config.json if this machine needs a ceiling`,
+      },
+      lines: [],
+    };
+  }
+
+  // The same liveness `ax worker ls` prints: this runtime's list, plus every
+  // pane a host named by a record says it still owns (./pane.mjs). Counting the
+  // local list alone would fence a repository whose remote children are working,
+  // for exactly as long as the local scope omits their host.
+  const scopes = hostScopes(run, () => ({ ok: true, config }));
+  const inventory = liveInventory({ local, index, scopes });
+  const live = liveCount({ index, inventory, repo });
+  const repoCap = repoCapOf(config);
+  const verdict = capVerdict({ live, adding: 1, repo, repoCap, machineCap: ceiling.cap });
+  const lines = [...capLines({ live, repo, repoCap, machineCap: ceiling.cap }), ...verdict.notes];
+  for (const [host, scope] of scopes.unaskable()) {
+    lines.push(`host '${host}' could not be asked, so its panes are NOT in either count: ${scope.reason}`);
+  }
+  if (inventory.omitted) lines.push('hosts are omitted from this terminal list: a pane on one of them is UNKNOWN here, not counted');
+  return { verdict, lines };
 }
 
 /** The contract a project declares, or ax's own mechanics when it declares none. */

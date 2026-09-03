@@ -11,10 +11,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { ls } from '../src/worker/ls.mjs';
+import { ls as lsVerb } from '../src/worker/ls.mjs';
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
 
 const store = () => mkdtempSync(join(tmpdir(), 'ax-worker-ls-'));
+
+/** A `gh` that names this checkout — the read that scopes the per-repository count. */
+const ghSlug = (slug = 'acme/widgets') => (bin, args) =>
+  bin === 'gh' && args[0] === 'repo' ? { status: 0, stdout: `${slug}\n`, stderr: '' } : { status: 0, stdout: '', stderr: '' };
+
+/**
+ * The verb, with the machine's two answers injected: `gh` (which repository is
+ * this checkout) and the checkout whose `ax.config.json` declares the caps. A
+ * suite reaching a real `gh` would be neither offline nor deterministic, and a
+ * suite reading THIS repository's own config would grade itself.
+ */
+const ls = (argv, options = {}) => lsVerb(argv, { exec: ghSlug(), cwd: repo(), ...options });
 
 /**
  * A real checkout whose `ax.config.json` declares the hosts passed here — the
@@ -22,10 +34,12 @@ const store = () => mkdtempSync(join(tmpdir(), 'ax-worker-ls-'));
  * remote pane can be asked about at all. `repo()` with nothing declared is the
  * machine every pre-#76 test ran on.
  */
-function repo(hosts = {}) {
+function repo(hosts = {}, caps = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-worker-ls-repo-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-  const dispatch = Object.keys(hosts).length === 0 ? {} : { dispatch: { entry: '/entry', hosts } };
+  const declaredHosts = Object.keys(hosts).length === 0 ? {} : { entry: '/entry', hosts };
+  const block = { ...declaredHosts, ...caps };
+  const dispatch = Object.keys(block).length === 0 ? {} : { dispatch: block };
   writeFileSync(join(dir, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, ...dispatch }));
   return dir;
 }
@@ -36,9 +50,9 @@ function repo(hosts = {}) {
  * which is what decides whether an omitted REMOTE host can explain its pane's
  * absence.
  */
-function writeRecord(dir, request, phases, { on = '' } = {}) {
+function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets' } = {}) {
   const { path } = claimRecord(dir, request);
-  initRecord(path, { request, orca: 'orca' });
+  initRecord(path, { request, orca: 'orca', repo: named });
   for (const phase of phases) {
     phaseBegin(path, {
       name: phase.name,
@@ -186,7 +200,7 @@ test('F-048: a live pane with no worker-list entry is counted, flagged, and give
   assert.match(line, /task_live/, 'the id comes from the same receipt as the pane');
   assert.match(line, /^ {2}✗ /, 'a disagreement is a failure line, never a note');
   assert.match(out, /worker-release --dispatch ctx_live/, 'the repair is named by the dispatch that owns that pane');
-  assert.match(out, /1 live pane\(s\) — this is the cap count/, 'the count comes from panes, never from worker-list');
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/, 'the count comes from panes, never from worker-list');
 });
 
 test('F-048, second shape: a live pane whose worker-list terminal is `retained` is the same drift', () => {
@@ -369,7 +383,7 @@ test('#70: the default receipt lists the panes that carry a decision, --all keep
   assert.match(shown.out, /ax worker ls --all/, 'and it names the view that has them');
 
   // The three lines the orchestrator reads before every dispatch.
-  assert.match(shown.out, /1 live pane\(s\) — this is the cap count/);
+  assert.match(shown.out, /1 live pane\(s\) in acme\/widgets/);
   // NOT the blanket omission line: every record here is local, this list read
   // `local`, so the omitted remote runtime explains no row on this machine
   // (#76 — the line is now per host, and only for a host that bears on a pane).
@@ -380,7 +394,7 @@ test('#70: the default receipt lists the panes that carry a decision, --all keep
   assert.equal(all.code, 0);
   assert.equal(paneRows(all.out).length, 4, 'the archaeology stays reachable, unchanged');
   for (const dead of ['dead-1', 'dead-2', 'dead-3']) assert.match(all.out, new RegExp(`${dead}.*pane MORT`));
-  assert.match(all.out, /1 live pane\(s\) — this is the cap count/, 'the capacity line is the same line in both views');
+  assert.match(all.out, /1 live pane\(s\) in acme\/widgets/, 'the capacity line is the same line in both views');
   assert.doesNotMatch(all.out, /omitted from the terminal-list scope/, 'and it stays absent in both views');
   assert.doesNotMatch(all.out, /MORT record\(s\) not shown/, 'nothing is hidden under --all, so nothing is disclosed');
 });
@@ -430,7 +444,7 @@ test('#70: a dead attempt leaves the default as a count; an unasked host keeps i
   // that lengthens the list and no gesture that settles anything.
   assert.match(shown.out, /1 unsettled record\(s\) whose pane is MORT — ax worker settle <request>/, 'the count names the verb that owns the answer');
   assert.match(shown.out, /ax worker ls --all/, 'and still names the view that lists them');
-  assert.match(shown.out, /1 live pane\(s\) — this is the cap count/);
+  assert.match(shown.out, /1 live pane\(s\) in acme\/widgets/);
 
   const all = capture(() => ls(['--all'], { runner: orca(), env: { ORCA_DISPATCH_STORE: dir }, cwd: undeclared }));
   assert.equal(paneRows(all.out).length, 3, 'every record is still one row here');
@@ -443,7 +457,7 @@ test('#70: a dead attempt leaves the default as a count; an unasked host keeps i
   // resolves no repository slug and grades no row by settleability — settle's
   // own refusal is the applicable repair for a row that cannot be settled here.
   assert.match(all.out, /ax worker settle dead-attempt-1/, 'the row that carries the debt names the verb that writes it');
-  assert.match(all.out, /1 live pane\(s\) — this is the cap count/, 'the cap count is the same count in both views');
+  assert.match(all.out, /1 live pane\(s\) in acme\/widgets/, 'the cap count is the same count in both views');
   assert.doesNotMatch(all.out, /unsettled record\(s\) whose pane is MORT — ax/, 'nothing is withheld here, so nothing is disclosed');
 });
 
@@ -498,7 +512,7 @@ test('#76: a declared host answers for its own panes, and they are capacity', ()
   assert.equal(code, 0);
   assert.match(lineWith('far-1'), /pane VIVANT/, 'the host said this pane is up, so it is up');
   assert.match(lineWith('far-2'), /pane VIVANT/);
-  assert.match(out, /3 live pane\(s\) — this is the cap count/, 'a live pane on an asked host is capacity in use');
+  assert.match(out, /3 live pane\(s\) in acme\/widgets/, 'a live pane on an asked host is capacity in use');
   assert.doesNotMatch(out, /could not be asked/, 'a host that answered is no omission at all');
   assert.doesNotMatch(out, /omitted from the terminal-list scope/, 'and no row is left leaning on the local list’s omission');
 
@@ -587,7 +601,7 @@ test('#91: a pane the first list already carries survives a host that stops answ
 
   const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
   assert.match(lineWith('far-live'), /pane VIVANT/, 'a pane this run saw is not un-seen by a host that went quiet');
-  assert.match(out, /1 live pane\(s\) — this is the cap count/);
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/);
   assert.deepEqual(run.calls.filter(args => args.includes('--environment')), [], 'and the ask is spent only where the first list cannot answer');
   assert.doesNotMatch(out, /could not be asked/, 'a host whose answer would change nothing is no omission');
 });
@@ -777,4 +791,62 @@ test('--store reads the named store, and worker-list entries with no record are 
   const { code, out } = capture(() => ls(['--store', dir], { runner: run, env: {} }));
   assert.equal(code, 0);
   assert.match(out, /worker-list reports 2 entry\(ies\), 1 of them with no local record/);
+});
+
+// ── the two counts, each labelled by its scope (#88) ─────────────────────────
+// Measured 2026-09-02 from the ofmchat checkout: `ls` ended with `3 live
+// pane(s) — this is the cap count`, and all three panes belonged to flosrn/ax.
+// An orchestrator that honours "count with ls, never from memory" read that as
+// being blocked by another project's workers, and spent a turn deciding whether
+// it was allowed to dispatch at all.
+
+test('#88: the per-repository count and the machine total are two labelled lines, never one', () => {
+  const dir = store();
+  writeRecord(dir, 'mine-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_m', handle: 'term_m' }) }]);
+  writeRecord(dir, 'theirs-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_t1', handle: 'term_t1' }) }], {
+    repo: 'goodluckagency/ofmchat',
+  });
+  writeRecord(dir, 'theirs-2', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_t2', handle: 'term_t2' }) }], {
+    repo: 'goodluckagency/ofmchat',
+  });
+  // A record written before `--tracker-repo` existed: UNKNOWN, and the machine
+  // total is the only count that may carry it (F-028).
+  writeRecord(dir, 'nameless-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_n', handle: 'term_n' }) }], { repo: '' });
+
+  const run = fakeRunner({ terminals: [pane('term_m'), pane('term_t1'), pane('term_t2'), pane('term_n')] });
+  const { code, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+
+  assert.equal(code, 0);
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/, "this repository's count, and it is the one that gates");
+  assert.match(out, /dispatch\.cap 3/, 'named with the cap it is measured against');
+  assert.match(out, /4 live pane\(s\) on this machine/, 'the machine total, on its own line');
+  assert.match(out, /no dispatch\.machineCap/, 'saying that nothing here gates on it');
+  assert.match(out, /1 .*name no repository/, 'and the nameless pane the machine total alone carries');
+  assert.doesNotMatch(out, /this is the cap count/, 'the label that cost the reported turn is gone');
+});
+
+test('#88: an armed machine ceiling is printed as the ceiling it is', () => {
+  const dir = store();
+  writeRecord(dir, 'mine-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_m', handle: 'term_m' }) }]);
+  const run = fakeRunner({ terminals: [pane('term_m')] });
+  const { out } = capture(() =>
+    ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo({}, { cap: 5, machineCap: 9 }) }),
+  );
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/);
+  assert.match(out, /dispatch\.cap 5/, 'the declared cap, not the default');
+  assert.match(out, /dispatch\.machineCap 9/);
+});
+
+test('#88: a checkout gh cannot name gets NOT MEASURED, never a zero it would read as room', () => {
+  const dir = store();
+  writeRecord(dir, 'theirs-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_t', handle: 'term_t' }) }], {
+    repo: 'goodluckagency/ofmchat',
+  });
+  const run = fakeRunner({ terminals: [pane('term_t')] });
+  const { code, out } = capture(() =>
+    ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, exec: () => ({ status: 1, stdout: '', stderr: 'gh: no auth token\n' }) }),
+  );
+  assert.equal(code, 0, 'the list still renders: a slug is not a pane count');
+  assert.match(out, /NOT MEASURED/);
+  assert.match(out, /1 live pane\(s\) on this machine/, 'the count it CAN establish is still answered');
 });

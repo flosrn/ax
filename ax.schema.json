@@ -160,8 +160,18 @@
     "dispatch": {
       "type": "object",
       "additionalProperties": false,
-      "description": "What `ax worker dispatch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
+      "description": "What `ax worker dispatch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default, with ONE exception named at `cap`: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
       "properties": {
+        "cap": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many live child panes THIS repository may hold at once, counted from the dispatch records that name it — per REPOSITORY and never per checkout, so a linked worktree and its primary checkout share one cap. Enforced by `ax worker dispatch` and `ax triage dispatch` alike, and printed by `ax worker ls`. Absent means 3, the one defaulted key in this block: a cap that binds only where somebody declared it does not bind, which is what #88 measured — the store is host-global, so before this key the only count anything could read was machine-wide, and a 13-issue wave here ran at one slot while another checkout held two panes. It is a fairness number rather than a measurement of any machine's appetite, which is what makes a default safe here where a memory floor's would not be. Zero is legal and stops every new pane for this repository. A record naming no repository is UNKNOWN and counts toward machineCap alone (F-028). The default lives in `src/worker/capacity.mjs` (REPO_CAP_DEFAULT), its only reader."
+        },
+        "machineCap": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "A ceiling on EVERY live child pane on this machine, whoever owns it — the fuse, not the fairness mechanism. Absent means there is no ceiling at all: it does not exist until an operator declares it, and that absence is the behaviour #88 ruled for, because an unset ceiling that still meant 3 (the old ORCA_TRIAGE_SESSION_CAP default) let another checkout's panes eat the fuse while this repository never reached its own cap. Declare it where the machine has a real shared limit — Orca's long-poll cap is 16 — and both dispatch verbs refuse against it, naming both numbers and which cap refused. It is declared per project even though it is a fact about the machine: whoever arms the fuse arms it from the checkout they dispatch from, and `ax worker ls` prints the declaration it read. Both retired env knobs, ORCA_TRIAGE_SESSION_CAP and ORCA_READY_SESSION_CAP, are refused by name in favour of this key."
+        },
         "entry": {
           "type": "string",
           "description": "The instruction a child is given when --task is not passed — the entry point that decides what it does with the ticket. Absent means every dispatch must pass --task: ax cannot invent the verb a project's agents answer to."

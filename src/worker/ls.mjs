@@ -50,6 +50,25 @@
 // the F-048 drift and the worker-list comparison are facts about the store, so
 // the flag changes what is SHOWN and never what was established.
 //
+// TWO COUNTS, AND THE LABEL SAYS WHICH GATES (#88). This verb used to end with
+// `N live pane(s) — this is the cap count`, where N was every live pane on the
+// machine: the store is host-global (./record.mjs), so read from one checkout it
+// counted another's children under a label claiming to be a fence. Measured
+// 2026-09-02 from the ofmchat checkout: three panes, all of them flosrn/ax's,
+// and an orchestrator that honours "count with `ls`, never from memory" spent a
+// turn deciding whether it was allowed to dispatch at all. So the count is now
+// two counts — this repository's, which `dispatch.cap` gates, and the machine
+// total, which `dispatch.machineCap` gates only once an operator declares it —
+// and both come from ./capacity.mjs, the same contract both dispatch verbs
+// refuse with. A record naming NO repository is UNKNOWN: it counts toward the
+// machine total alone, and the line says how many (F-028).
+//
+// WHICH REPOSITORY THIS IS comes from `gh repo view`, the read every other
+// repository-scoped verb here uses. It is not a pane count, so a checkout `gh`
+// cannot name does not lose the listing: the per-repository line reads NOT
+// MEASURED, the machine total still stands, and the verbs that authorise a
+// mutation refuse for themselves.
+//
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
 //   0  the list was rendered, including the honest "0 record"
 //   2  usage error
@@ -61,9 +80,11 @@ import { join } from 'node:path';
 
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
+import { defaultExec } from '../exec.mjs';
+import { repoSlug } from '../gh.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { hostFor } from './hosts.mjs';
-import { paneVerdict, terminalInventory } from './pane.mjs';
+import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
+import { hostScopes, paneVerdict, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore } from './record.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
@@ -107,9 +128,15 @@ function agentPane(effects) {
 }
 
 /**
- * One record, read into the three facts a line needs. Never throws: a record
- * this verb cannot parse is a NAMED unknown on its own line — dropping it is
- * how a working child disappears from a count.
+ * One record, read into the facts a line needs. Never throws: a record this
+ * verb cannot parse is a NAMED unknown on its own line — dropping it is how a
+ * working child disappears from a count.
+ *
+ * `repo` is the repository the record NAMES, trimmed, or `''` when it names
+ * none — the same reading `recordRepo` and `dispatchIndex` give, and what
+ * places a live pane in this repository's count rather than only in the
+ * machine's (#88). An unreadable record names none: it is UNKNOWN twice over,
+ * and the row already says so.
  */
 function describeRecord(dir, file) {
   const stem = file.slice(0, -'.json'.length);
@@ -117,10 +144,11 @@ function describeRecord(dir, file) {
   try {
     rec = JSON.parse(readFileSync(join(dir, file), 'utf8'));
   } catch (error) {
-    return { request: stem, taskId: null, dispatchId: null, handle: null, unsettled: null, why: `record unreadable: ${error.message}` };
+    return { request: stem, taskId: null, dispatchId: null, handle: null, repo: '', unsettled: null, why: `record unreadable: ${error.message}` };
   }
 
   const request = typeof rec.request === 'string' && rec.request !== '' ? rec.request : stem;
+  const repo = typeof rec.repo === 'string' ? rec.repo.trim() : '';
   const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
   const last = attempts[attempts.length - 1];
   const phases = last !== undefined && last !== null && Array.isArray(last.phases) ? last.phases : [];
@@ -173,7 +201,7 @@ function describeRecord(dir, file) {
   }
 
   if (latest === null) {
-    return { request, taskId: labelTask, dispatchId: null, handle: null, host: undefined, unsettled, why: 'no usable receipt yet' };
+    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, why: 'no usable receipt yet' };
   }
 
   const tid = (latest.task ?? {}).id ?? latest.taskId;
@@ -183,6 +211,7 @@ function describeRecord(dir, file) {
     taskId: typeof tid === 'string' ? tid : labelTask,
     dispatchId: typeof latest.dispatchId === 'string' ? latest.dispatchId : null,
     handle,
+    repo,
     host: latestHost,
     unsettled: handle === null ? unsettled : null,
     why: handle === null ? 'no agent pane in the last usable receipt' : '',
@@ -212,6 +241,34 @@ function workerIndex(run) {
 }
 
 /**
+ * THE CHECKOUT'S OWN DECLARATION, read at most once and shared by both readers
+ * of it: the hosts a record may be asked about, and the caps this repository
+ * declares (#88). Two loads of one file would be two derivations of it
+ * (AGENTS.md), and the divergence would be silent — a config invalid enough to
+ * lose its hosts would still have answered a cap.
+ *
+ * LAZY, because a store with no remote record spends no read at all: this verb
+ * counts records, never machines. The cap lines force it, so the laziness now
+ * only spares the `--store` reader outside a checkout.
+ */
+function declarationOf(cwd) {
+  let memo;
+  return () => {
+    if (memo !== undefined) return memo;
+    const paths = repoPaths(cwd);
+    if (paths.root === null) {
+      memo = { ok: false, reason: `${cwd} is not inside a repository, so nothing is declared here` };
+      return memo;
+    }
+    const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+    if (!loaded.exists) memo = { ok: false, reason: `no ax.config.json under ${paths.root}, so nothing is declared here` };
+    else if (loaded.errors.length > 0) memo = { ok: false, reason: `ax.config.json is invalid, so its declarations cannot be read: ${loaded.errors[0]}` };
+    else memo = { ok: true, config: loaded.config };
+    return memo;
+  };
+}
+
+/**
  * THE HOSTS A RECORD NAMES, asked for their own inventory.
  *
  * A record dispatched with `--on <env>` names its host by the name the project
@@ -236,7 +293,7 @@ function workerIndex(run) {
  * thing a covering scope is required to read. So the first, unscoped list
  * decides whenever it can, and the host is asked only where it cannot: a
  * transient failure on that ask can then never take back a pane this very
- * invocation observed, nor drop the cap count that authorises the next dispatch.
+ * invocation observed, nor drop the count that authorises the next dispatch.
  *
  * A host that could not be asked is a NAMED refusal carrying the reason it
  * answered, never an empty inventory (F-028): its panes stay INCONNU, and only
@@ -250,35 +307,14 @@ function workerIndex(run) {
  * undeclared name so no floor is ever inherited by a repo that did not declare
  * it. Widening that to a second, machine-global authority is a doctrine change
  * with an owner, not a review round's licence.
+ *
+ * THE ASKING ITSELF lives in `./pane.mjs` (`hostScopes`), because both dispatch
+ * verbs now count against the same answers (#88): a fence that counted only the
+ * local list while this listing counted a remote pane as capacity would promise
+ * a number it does not enforce. What stays here is the DISPOSITION — which
+ * verdict a row gets, and whether an absence may read as a corpse.
  */
-function hostReader(run, cwd, local) {
-  const asked = new Map();
-  let declaration;
-
-  const declarations = () => {
-    if (declaration !== undefined) return declaration;
-    const paths = repoPaths(cwd);
-    if (paths.root === null) {
-      declaration = { ok: false, reason: `${cwd} is not inside a repository, so nothing declares how to reach a host` };
-      return declaration;
-    }
-    const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
-    if (!loaded.exists) declaration = { ok: false, reason: `no ax.config.json under ${paths.root}, so no host is declared here` };
-    else if (loaded.errors.length > 0) declaration = { ok: false, reason: `ax.config.json is invalid, so its host declarations cannot be read: ${loaded.errors[0]}` };
-    else declaration = { ok: true, config: loaded.config };
-    return declaration;
-  };
-
-  const scopeOf = name => {
-    const declared = declarations();
-    if (!declared.ok) return { ok: false, reason: declared.reason };
-    const found = hostFor(declared.config, name);
-    // The declaration is the transport: without one there is no call to make,
-    // and a bare guess at a host name is exactly what `hostFor` refuses.
-    if (!found.ok) return { ok: false, reason: found.reason };
-    return terminalInventory(run, { environment: name });
-  };
-
+function hostReader(scopes, local) {
   return {
     /**
      * The verdict for ONE recorded handle, and whether the answer behind it came
@@ -291,16 +327,15 @@ function hostReader(run, cwd, local) {
       if (handle === null || local.byHandle.has(handle) || host === undefined || host === '') {
         return { verdict: paneVerdict(handle, why, local, { host }), asked: false };
       }
-      if (!asked.has(host)) asked.set(host, scopeOf(host));
-      const scope = asked.get(host);
+      const scope = scopes.scopeFor(host);
       return { verdict: paneVerdict(handle, why, scope, { host, asked: scope.ok === true }), asked: scope.ok === true };
     },
     /** Every host that was asked and could not answer, with what it answered. */
-    unaskable: () => [...asked].filter(([, scope]) => scope.ok !== true),
+    unaskable: () => scopes.unaskable(),
   };
 }
 
-export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env, cwd = process.cwd() } = {}) {
+export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   let storeArg = '';
   let all = false;
   for (let i = 0; i < argv.length; i += 1) {
@@ -370,16 +405,26 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
   }
   const workers = workerIndex(run);
 
-  // EVERY record is joined, whatever the view. The capacity count, the F-048
-  // drift and the worker-list comparison are facts about the whole store, and a
-  // flag that narrowed them would make the two views disagree about the machine
-  // — while the count is this verb's entire job.
+  // EVERY record is joined, whatever the view. The two capacity counts, the
+  // F-048 drift and the worker-list comparison are facts about the whole store,
+  // and a flag that narrowed them would make the two views disagree about the
+  // machine — while the count is this verb's entire job.
+  //
+  // `slug` is which repository THIS checkout is, and it decides only which
+  // count a live pane joins — never whether the row is shown, and never a
+  // verdict. A checkout `gh` cannot name loses the per-repository number and
+  // keeps everything else (#88).
+  const declarations = declarationOf(cwd);
+  const declared = declarations();
+  const slug = repoSlug(args => exec('gh', args, cwd));
   let alive = 0;
+  let mine = 0;
+  let nameless = 0;
   let suspects = 0;
   let unplaced = 0;
   const drift = [];
   const matched = new Set();
-  const hosts = hostReader(run, cwd, terminals);
+  const hosts = hostReader(hostScopes(run, declarations), terminals);
 
   const views = files.map(file => {
     const row = describeRecord(dir, file);
@@ -388,7 +433,15 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     // carries; a remote handle it does not carry is put to that host itself.
     const { verdict } = hosts.verdictFor(row.handle, row.why, row.host);
     const { pane, detail } = verdict;
-    if (pane === 'VIVANT') alive += 1;
+    if (pane === 'VIVANT') {
+      alive += 1;
+      // The record's own `repo` places the pane, never the path its worktree
+      // sits at: the store is host-global, and a linked worktree of another
+      // checkout is still that checkout's pane. An absent key is UNKNOWN, so it
+      // joins the machine total alone and is disclosed as its own count (F-028).
+      if (row.repo === '') nameless += 1;
+      else if (slug !== '' && row.repo.toLowerCase() === slug.toLowerCase()) mine += 1;
+    }
     // A row left unknowable by the LOCAL list's own omission — a record whose
     // placement no phase could name, so no host could be asked for it. That is
     // the only case the blanket disclosure below still explains.
@@ -523,7 +576,23 @@ export function ls(argv = [], { resolve = resolveOrca, runner, env = process.env
     }
   }
 
-  note(`${alive} live pane(s) — this is the cap count`);
+  // THE TWO COUNTS (#88), from the one contract both dispatch verbs refuse with,
+  // so a reader who counts here reads the number that will actually refuse. The
+  // caps come from THIS checkout's declaration; a checkout with none declares
+  // the default per-repository cap and no ceiling, and a checkout `gh` cannot
+  // name gets NOT MEASURED on the per-repository line rather than a zero it
+  // would read as room.
+  const config = declared.ok ? declared.config : {};
+  const ceiling = machineCapOf(config, env);
+  const live = { machine: alive, mine, unknown: nameless };
+  for (const line of capLines({ live, repo: slug, repoCap: repoCapOf(config), machineCap: ceiling.ok ? ceiling.cap : null })) note(line);
+  if (!ceiling.ok) {
+    // The ceiling is DECLARED now, and a retired knob left in a shell would
+    // read as the one in force. This verb counts rather than dispatches, so it
+    // discloses instead of refusing — the two dispatch verbs refuse on it.
+    note(`${ceiling.from} is set and is no longer read: declare ${ceiling.to} in ax.config.json to arm a ceiling`);
+  }
+  if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
   if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
   // A shortened list says so, one line per class withheld, each with the flag
   // that lengthens it: an omission a reader cannot see is the same defect as a

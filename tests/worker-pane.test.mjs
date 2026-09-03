@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { paneReadable, readPane, terminalCursor, terminalInventory } from '../src/worker/pane.mjs';
+import { hostScopes, liveInventory, paneReadable, readPane, terminalCursor, terminalInventory } from '../src/worker/pane.mjs';
 
 const HANDLE = 'term_a51ccbf8-23e1-4aa7-8735-9d0cbf09a521';
 
@@ -105,4 +105,97 @@ test('readability is the cursor watchers\u2019 predicate, and it needs the exit 
   // A non-zero exit is a verdict (ADR 0003): the pane was not read, whatever the text said.
   assert.equal(paneReadable(readPane(stub(alive(), 1).run, HANDLE)), false);
   assert.equal(paneReadable(readPane(stub(JSON.stringify({ ok: false, error: {} })).run, HANDLE)), false);
+});
+
+// ── the inventory a CAP is counted against (#88 review) ──────────────────────
+
+/** A runner answering the local list and, per environment, that host's own. */
+function listing({ local = [], hosts = {}, omittedHostIds = [] } = {}) {
+  const calls = [];
+  const run = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      calls.push(args.join(' '));
+      const at = args.indexOf('--environment');
+      const terminals = at === -1 ? local : hosts[args[at + 1]];
+      if (terminals === undefined) return { status: 1, stdout: '', stderr: 'no such environment' };
+      return {
+        status: 0,
+        stdout: JSON.stringify({ ok: true, result: { terminals, truncated: false, hostScope: { hostIds: ['local'], omittedHostIds: at === -1 ? omittedHostIds : [] } } }),
+        stderr: '',
+      };
+    },
+  });
+  return { run, calls };
+}
+
+const declared = () => ({ ok: true, config: { dispatch: { hosts: { gapicore: { ssh: 'orca@vps' } } } } });
+
+test('#88: a pane the local scope omits and its declared host confirms IS in the count', () => {
+  // `ax worker ls` has judged a remote pane by asking its host since #76, while
+  // both dispatch gates counted the local list alone — so a repository with
+  // working remote children read as UNKNOWN and its cap did not bind. The
+  // listing and the fence read the same liveness now, through this.
+  const { run, calls } = listing({
+    local: [{ handle: 'term_here' }],
+    hosts: { gapicore: [{ handle: 'term_far' }] },
+    omittedHostIds: ['runtime:7930a317'],
+  });
+  const local = terminalInventory(run);
+  const index = {
+    byDispatch: new Map([
+      ['d1', { handle: 'term_here', env: '' }],
+      ['d2', { handle: 'term_far', env: 'gapicore' }],
+    ]),
+  };
+
+  const inventory = liveInventory({ local, index, scopes: hostScopes(run, declared) });
+  assert.deepEqual([...inventory.byHandle.keys()].sort(), ['term_far', 'term_here']);
+  assert.equal(inventory.omitted, true, 'the local scope’s own omission is carried, not laundered');
+  assert.equal(calls.filter(line => line.includes('--environment')).length, 1, 'one ask per host, and only where the first list cannot answer');
+});
+
+test('#88: the union never upgrades an absence, and spends nothing where it cannot change the count', () => {
+  const { run, calls } = listing({ local: [{ handle: 'term_here' }], hosts: { gapicore: [] } });
+  const local = terminalInventory(run);
+  const index = {
+    byDispatch: new Map([
+      // Already proven alive locally: no ask, and no host may take it back (#91).
+      ['d1', { handle: 'term_here', env: 'gapicore' }],
+      // No pane recorded at all: nothing a host could answer about.
+      ['d2', { handle: null, env: 'gapicore' }],
+      // The host answered, and does not know this handle: it stays absent.
+      ['d3', { handle: 'term_gone', env: 'gapicore' }],
+    ]),
+  };
+
+  const inventory = liveInventory({ local, index, scopes: hostScopes(run, declared) });
+  assert.deepEqual([...inventory.byHandle.keys()], ['term_here']);
+  assert.equal(calls.filter(line => line.includes('--environment')).length, 1, 'asked once, for the one row it could decide');
+});
+
+test('#88: a host that cannot be asked leaves its pane OUT of the count, and says so', () => {
+  const { run } = listing({ local: [], hosts: {} });
+  const local = terminalInventory(run);
+  const index = { byDispatch: new Map([['d1', { handle: 'term_far', env: 'gapicore' }]]) };
+  const scopes = hostScopes(run, declared);
+
+  const inventory = liveInventory({ local, index, scopes });
+  assert.equal(inventory.byHandle.size, 0, 'an absence of information is not a pane (F-028)');
+  assert.deepEqual(
+    scopes.unaskable().map(([host]) => host),
+    ['gapicore'],
+    'and the caller can disclose which host could not answer',
+  );
+});
+
+test('#88: an undeclared host is never asked — the declaration is the only transport', () => {
+  const { run, calls } = listing({ local: [], hosts: { gapicore: [{ handle: 'term_far' }] } });
+  const local = terminalInventory(run);
+  const index = { byDispatch: new Map([['d1', { handle: 'term_far', env: 'someone-elses-host' }]]) };
+  const scopes = hostScopes(run, declared);
+
+  assert.equal(liveInventory({ local, index, scopes }).byHandle.size, 0);
+  assert.deepEqual(calls.filter(line => line.includes('--environment')), [], 'hostFor refuses a name no project declared');
+  assert.equal(scopes.unaskable().length, 1, 'and the undercount is disclosed rather than silent');
 });
