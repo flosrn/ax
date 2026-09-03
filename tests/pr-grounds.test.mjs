@@ -657,47 +657,65 @@ test('commits since open: a merge that DROPS the base\'s change is work, though 
   assert.deepEqual(out.notes, [], 'a dropped upstream change was reported as base movement');
 });
 
-test('commits since open: a shape this checkout cannot read is not exempt, and the repair is the fetch (F-028, #90)', () => {
+test('commits since open: a shape this checkout cannot read is cannot-establish, never exempt and never authored work (F-028, #90)', () => {
   const { root } = mergedRepo();
-  // A two-parent commit whose objects this checkout does not hold: nothing
-  // about it can be measured, so it refuses — and the repair is the read that
-  // would decide it, never the acknowledgement of a commit nobody described.
+  // A read that failed is this module's `unknown` — exit 3, CANNOT ESTABLISH —
+  // exactly like an unreadable base ref in the staleness ground beside it. It
+  // fails closed either way, but calling it a REFUSAL tells the caller a
+  // transient git failure is established authored work, and hands them an
+  // `--ack-body` they must not pass (#119 P2). Every one of these names the read
+  // that would decide it instead.
   const absent = commitsGround(
     commitOptions(root, { commits: commitsOk([commitRow('d'.repeat(40), 'a merge this checkout lacks', LATE, [{ sha: 'e'.repeat(40) }, { sha: 'f'.repeat(40) }])]) }),
   );
-  assert.equal(absent.refusals.length, 1);
-  assert.match(absent.refusals[0].message, /unknown is not exempt/);
-  assert.match(absent.refusals[0].repair, /git fetch origin main feature/);
+  assert.deepEqual(absent.refusals, []);
+  assert.equal(absent.unknowns.length, 1);
+  assert.match(absent.unknowns[0].message, /unknown is not exempt/);
+  assert.match(absent.unknowns[0].repair, /git fetch origin main feature/);
 
   // The base ref itself unread: the reachability question has no base side.
   const unrefreshed = commitsGround(commitOptions(root, { refsRefreshed: false, commits: commitsOk([realRow(root, 'feature')]) }));
-  assert.equal(unrefreshed.refusals.length, 1);
-  assert.match(unrefreshed.refusals[0].message, /'main' cannot be read here/);
-  assert.match(unrefreshed.refusals[0].repair, /git fetch origin main/);
+  assert.deepEqual(unrefreshed.refusals, []);
+  assert.equal(unrefreshed.unknowns.length, 1);
+  assert.match(unrefreshed.unknowns[0].message, /'main' cannot be read here/);
+  assert.match(unrefreshed.unknowns[0].repair, /git fetch origin main/);
 
-  // The recompute failing is the same answer: undecided, never exempt. This is
-  // also the shape a git older than 2.38 produces — `--write-tree` does not
-  // exist there, so the flag is a usage error and the ground fails closed
-  // instead of exempting on an unasked question.
-  const unreadable = commitsGround(
+  // A git older than 2.38 has no `--write-tree` and answers 129. Fetching
+  // cannot add a git capability, so the repair that names a fetch would loop
+  // forever: this one names the version the read needs (#119 P2).
+  const oldGit = commitsGround(
     commitOptions(root, {
-      git: (args, at) => (args[0] === 'merge-tree' ? { status: 129, stdout: '', stderr: 'error: unknown option `write-tree', error: undefined } : realGit(args, at)),
+      git: (args, at) => (args[0] === 'merge-tree' ? { status: 129, stdout: '', stderr: 'error: unknown option `write-tree\'', error: undefined } : realGit(args, at)),
       commits: commitsOk([realRow(root, 'feature')]),
     }),
   );
-  assert.equal(unreadable.refusals.length, 1);
-  assert.match(unreadable.refusals[0].message, /git merge-tree --write-tree.*could not answer/);
-  assert.match(unreadable.refusals[0].repair, /git fetch origin main feature/);
+  assert.deepEqual(oldGit.refusals, []);
+  assert.equal(oldGit.unknowns.length, 1);
+  assert.match(oldGit.unknowns[0].message, /'git merge-tree --write-tree' is not available here/);
+  assert.match(oldGit.unknowns[0].repair, /git 2\.38/);
+  assert.doesNotMatch(oldGit.unknowns[0].repair, /git fetch/, 'a fetch cannot add a git capability');
+
+  // Any OTHER failed recompute is a read to retry, so the fetch is its repair.
+  const unreadable = commitsGround(
+    commitOptions(root, {
+      git: (args, at) => (args[0] === 'merge-tree' ? { status: 128, stdout: '', stderr: 'fatal: not a valid object name', error: undefined } : realGit(args, at)),
+      commits: commitsOk([realRow(root, 'feature')]),
+    }),
+  );
+  assert.equal(unreadable.unknowns.length, 1);
+  assert.match(unreadable.unknowns[0].message, /git merge-tree --write-tree.*could not answer/);
+  assert.match(unreadable.unknowns[0].repair, /git fetch origin main feature/);
 
   // A conflicted recompute writes a tree ANYWAY, so the exit code alone cannot
   // separate "the ordinary merge conflicts" from "the read failed" — the tree
-  // id on stdout is what does. A failed read carries none, and stays undecided.
+  // id on stdout is what does. THAT one is authored content, so it refuses.
   const conflicting = commitsGround(
     commitOptions(root, {
       git: (args, at) => (args[0] === 'merge-tree' ? { status: 1, stdout: `${'9'.repeat(40)}\n`, stderr: '', error: undefined } : realGit(args, at)),
       commits: commitsOk([realRow(root, 'feature')]),
     }),
   );
+  assert.deepEqual(conflicting.unknowns, []);
   assert.equal(conflicting.refusals.length, 1);
   assert.match(conflicting.refusals[0].message, /an ordinary merge of its parents CONFLICTS/);
   assert.match(conflicting.refusals[0].repair, /--ack-body/);
@@ -709,9 +727,10 @@ test('commits since open: a shape this checkout cannot read is not exempt, and t
       commits: commitsOk([realRow(root, 'feature')]),
     }),
   );
-  assert.equal(noTree.refusals.length, 1);
-  assert.match(noTree.refusals[0].message, /git rev-parse .*\^\{tree\}' could not answer/);
-  assert.match(noTree.refusals[0].repair, /git fetch origin main feature/);
+  assert.deepEqual(noTree.refusals, []);
+  assert.equal(noTree.unknowns.length, 1);
+  assert.match(noTree.unknowns[0].message, /git rev-parse .*\^\{tree\}' could not answer/);
+  assert.match(noTree.unknowns[0].repair, /git fetch origin main feature/);
 });
 
 test('commits since open: --ack-body answers for every late commit and reads no git at all (#90)', () => {

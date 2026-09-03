@@ -582,9 +582,17 @@ export function mergePolicy({ run, slug }) {
  * refuse, and are named as such.
  *
  * THE READS ARE READS — a base ref this checkout cannot resolve, a
- * `merge-tree` that cannot answer (an absent object, or a git older than 2.38,
- * which does not have `--write-tree`), or a tree that cannot be resolved leaves
- * the shape undecided, and undecided is not exempt (F-028).
+ * `merge-tree` that cannot answer, or a tree that cannot be resolved leaves the
+ * shape undecided, and undecided is not exempt (F-028). An undecided shape is
+ * this module's `unknown` — CANNOT ESTABLISH, exit 3 — and never a refusal.
+ * Both fail closed, but a refusal says "established authored work" and hands
+ * the caller an `--ack-body` they must not pass for a commit no read decided;
+ * every other unreadable git read in this file answers the same way.
+ *
+ * Each undecided shape carries its OWN repair, because "re-run the read" is not
+ * one for all of them: `merge-tree --write-tree` arrived in git 2.38, so an
+ * older git answers 129, and a repair naming a fetch there would fail
+ * identically forever — no fetch adds a capability. That one names the version.
  *
  * The rejected alternative, named so it is not re-invented: having the
  * self-repair append `--ack-body` to its own re-run. That suppresses the
@@ -622,7 +630,12 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
   // post-open merge costs this ground no git read at all.
   const merges = late.filter(entry => entry.parents.length === 2);
   const baseRef = merges.length === 0 || !refsRefreshed ? '' : resolveRef(gitRun, baseBranch);
-  const undecided = reason => ({ kind: 'undecided', reason });
+  // An undecided shape carries its OWN repair. Most of them are a read to
+  // retry, so the fetch is the default; a git that does not have the read at
+  // all is a different repair, and handing it a fetch would loop forever on a
+  // capability no fetch can add (#119 P2).
+  const fetchRepair = `git fetch origin ${baseBranch} ${headBranch}   # then: ${invocation()}`;
+  const undecided = (reason, repair = fetchRepair) => ({ kind: 'undecided', reason, repair });
   const shapeOf = entry => {
     if (baseRef === '') {
       return undecided(
@@ -658,6 +671,15 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
     // writes one, a failed read writes nothing.
     const wrote = firstLine(recomputed.stdout);
     if (!/^[0-9a-f]{40,64}$/.test(wrote)) {
+      // git's usage exit. `--write-tree` arrived in git 2.38, and a fetch
+      // cannot add it: naming one here would print a repair that fails
+      // identically forever (#119 P2).
+      if (recomputed.status === 129) {
+        return undecided(
+          `'git merge-tree --write-tree' is not available here (${clean(firstLine(recomputed.stderr)) || 'exit 129'}), so what an ordinary merge of its parents produces cannot be recomputed`,
+          `git --version   # 'merge-tree --write-tree' needs git 2.38 or newer; upgrade git, then: ${invocation()}`,
+        );
+      }
       return undecided(`'git merge-tree --write-tree ${short(entry.parents[0])} ${short(second)}' could not answer (${clean(firstLine(recomputed.stderr)) || `exit ${recomputed.status}`})`);
     }
     if (!succeeded(recomputed)) {
@@ -686,9 +708,14 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
     else if (shape.kind === 'work') {
       out.refuse(`commits since open [DETECTOR]: ${short(entry.sha)} ${shape.why}`, ackRepair);
     } else {
-      out.refuse(
+      // A READ THAT FAILED IS THIS MODULE'S `unknown`, not a refusal: it fails
+      // closed either way (exit 3 merges nothing), but calling it a refusal
+      // tells the caller a transient git failure is established authored work
+      // and hands them an `--ack-body` they must not pass (#119 P2). Every
+      // other unreadable git read in this file answers the same way.
+      out.unknown(
         `commits since open: ${short(entry.sha)} landed after the PR opened and ${shape.reason}, so whether it is base movement or work is undecided — unknown is not exempt (F-028)`,
-        `git fetch origin ${baseBranch} ${headBranch}   # then: ${invocation()}`,
+        shape.repair,
       );
     }
   }

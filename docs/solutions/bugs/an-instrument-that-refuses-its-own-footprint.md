@@ -107,10 +107,19 @@ recomputed one. **A diff filtered for human interest cannot answer a question ab
 `--cc`, `-c`, `--first-parent` and every "show me what matters" view exist to be read by a person,
 and a guard that consumes one is measuring the filter.
 
-**Unknown is not exempt (F-028).** A base ref this checkout cannot resolve, a `merge-tree` that
-cannot answer — an absent object, or a git older than 2.38, which has no `--write-tree` — or an
-unresolvable tree leaves the shape undecided, and undecided refuses, with the fetch in the repair
-rather than an acknowledgement of a commit nobody described.
+**Unknown is not exempt (F-028) — and unknown is not a refusal either.** A base ref this checkout
+cannot resolve, a `merge-tree` that cannot answer, or an unresolvable tree leaves the shape
+undecided, and an undecided shape is the module's `unknown`: CANNOT ESTABLISH, exit 3. Both fail
+closed, so the first version called it a refusal and nothing merged either way — but a refusal
+asserts *established authored work* and prints the `--ack-body` repair, which tells a caller to
+acknowledge a commit no read ever decided. Whenever fail-closed can be reached through two
+channels, pick the one whose SENTENCE is true; the exit code is what other tooling routes on.
+
+**A repair that cannot repair is not a repair.** `merge-tree --write-tree` arrived in git 2.38, so
+an older host answers 129 — and the common "re-run the fetch" repair would fail identically
+forever, because no fetch adds a git capability. Each undecided shape carries its own repair, and
+that one names the version. A single repair string shared by every failure mode of a ground is a
+smell: the modes differ, so the fixes do.
 
 **One git exit code can carry two different answers.** `git merge-tree --write-tree` exits 1 both
 when the ordinary merge conflicts and when an object is missing. The tree id on stdout is what
