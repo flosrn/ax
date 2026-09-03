@@ -68,7 +68,10 @@ export function answer(argv = [], { resolve = resolveOrca, runner, exec = defaul
     else if (arg === '--repo') repo = value();
     else if (arg === '--pass') passArg = value();
     else if (arg === '--dry-run') dry = true;
-    else if (arg === '-h' || arg === '--help') return (raw(`${USAGE}\n`), 0);
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89). Here it
+    // is an unknown argument like any other, which is what keeps a second path
+    // answering the same question from coming back by accident.
     else return usageError(`unknown argument "${arg}"`);
   }
 

@@ -729,11 +729,16 @@ test('a persistent runtime_busy names what it tried and hands the child an exit'
   assert.doesNotMatch(r.out, /--resume/);
 });
 
-test('--help carries the exit codes, because a child routes on them alone', () => {
+test('the usage carries the exit codes, because a child routes on them alone', () => {
   // The shipped help was two usage lines and a flag list. A child meeting exit 1
   // or 3 had to choose between retry, resume and report with nothing to read.
-  const r = capture(() => ask(['--help']));
-  assert.equal(r.code, 0);
+  //
+  // Read off the REFUSAL, not off `--help`: this verb no longer answers that
+  // flag. `runCli` answers it from the registry, anywhere in the noun's argv,
+  // before the verb is reached (#89, ../src/cli.mjs) — so what has to keep
+  // carrying the codes is `USAGE`, which every usage error below prints.
+  const r = capture(() => ask(['--nope']));
+  assert.equal(r.code, 2);
   for (const line of [/0\s+answered/, /1\s+refused/, /3\s+cannot establish/, /4\s+PENDING/]) {
     assert.match(r.out, line);
   }

@@ -1088,19 +1088,24 @@ test('a recorded release_unknown is replayed, never reported as already released
   assert.match(again.out, /closed_agent_terminal/);
 });
 
-test('--help prints the rules a caller needs and touches nothing', () => {
-  // The bash verb carried this text and agents read it; the port keeps the
-  // affordance rather than moving the rules into a file only humans open.
+test('--help is not this verb’s to answer, and asking it mutates nothing', () => {
+  // The bash verb carried a long `--help` and the port kept it, which made two
+  // code paths answer one question — the shape that had twenty subverbs
+  // answering it five different ways, three of them by RUNNING (#93). `runCli`
+  // answers it from the registry now, anywhere in the noun's argv, before this
+  // verb is reached (#89, ../src/cli.mjs), and the rules that decide a close
+  // live in this module's header. Reaching the function with the flag is
+  // therefore an unknown argument — and, still, nothing asked and nothing done.
   const { runner, calls } = fakeOrca({ workers: THREE_CAUSES });
 
   const { exec, calls: shell } = fakeExec();
   const r = capture(() => release(['--help'], { runner, exec, env: {}, cwd: SCOPE, sleep: () => {} }));
 
-  assert.equal(r.code, 0);
-  assert.match(r.out, /MERGED pull request/);
-  assert.match(r.out, /--no-proof/);
-  assert.deepEqual(calls, [], 'help asks the runtime nothing');
-  assert.deepEqual(shell, [], 'help asks git and gh nothing');
+  assert.equal(r.code, 2);
+  assert.match(r.out, /unknown argument "--help"/);
+  assert.match(r.out, /--no-proof/, 'the usage line still names the flags it takes');
+  assert.deepEqual(calls, [], 'a refused argv asked the runtime something');
+  assert.deepEqual(shell, [], 'a refused argv asked git and gh something');
 });
 
 test('a claimed release with nothing recorded yet belongs to its owner', () => {

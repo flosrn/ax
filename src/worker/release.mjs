@@ -148,36 +148,20 @@ const USAGE =
  */
 const ORCA_BINARY = /(^|\/)(orca|orca-ide|orca-dev)$/;
 
-/**
- * What a caller has to know before closing someone's pane, in the order it
- * decides: what proof is, what is never proof, then what the flags do.
+/*
+ * `--help` is not answered here. `runCli` answers it from the registry, anywhere
+ * in this noun's argv, before the verb is reached (../cli.mjs, #89) — a second
+ * code path answering one question is how twenty subverbs came to answer it
+ * five different ways, three of them by running (#93).
+ *
+ * The long help this verb used to hold in a `HELP` string did NOT go away with
+ * it: what proof is, what is never proof, the flags and the exit codes are
+ * declared as `helpBody.release` in the registry and printed by that one read
+ * (../commands.mjs). The distinction is who each text is for — this header is
+ * for whoever patches the verb, `--help` is for whoever is typing it, and an
+ * operator deciding whether to close someone's pane is reading the terminal.
  */
-const HELP = `${USAGE}
 
-A pane closes because the WORK LANDED, never because the session said it was done.
-
-  triage / brief    a comment on that issue, created AFTER the dispatch
-  implementation    a MERGED pull request for that branch. Nothing else.
-
-Never proof: an OPEN PR (it may still owe its review threads), commits with no PR,
-an empty diff against the base (squash-safe for minutes, then wrong forever), the
-child's own word, and silence. A pane still emitting is BUSY, not closed.
-
-  --close            act; without it this is a report and nothing mutates
-  --all              also LIST this repository's archaeology (released, gone, no
-                     pane recorded) — never another repository's panes
-  --dispatch <id>    exactly one, still placed by the repository its record names
-  --no-proof         you looked at that one pane; never valid for a batch
-  --base <ref>       the base landing is measured against (default origin/main)
-  --gap <s>          seconds between the two liveness samples (default 2)
-
-Placement is the repository a dispatch RECORD names, never the path its worktree
-sits at: an Orca-placed child is a candidate from any checkout of its repository,
-another repository's row is counted and named, and a record naming no repository
-is UNKNOWN and closes nothing.
-
-Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
-      3 cannot establish (no CLI, silent runtime, unreadable inventory, no gh)`;
 
 /** The store namespace release records live in — never beside the dispatches. */
 export const RELEASE_NS = 'release';
@@ -661,13 +645,7 @@ export function release(
     else if (arg === '--base') base = value() ?? '';
     else if (arg === '--store') storeArg = value() ?? '';
     else if (arg === '--gap') gap = Number(value());
-    // The bash verb carried a long `--help`, and agents used it. Losing it in the
-    // port would remove an affordance the surface already taught, so the rules
-    // that decide a close are printed here rather than left to a file header.
-    else if (arg === '-h' || arg === '--help') {
-      raw(HELP);
-      return 0;
-    } else return usageError(`unknown argument "${arg}"`);
+    else return usageError(`unknown argument "${arg}"`);
   }
 
   if (only === '' && argv.includes('--dispatch')) return usageError('--dispatch needs a dispatch id');

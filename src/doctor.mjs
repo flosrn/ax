@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote, version } from './config.mjs';
 import { EXACT_VERSION } from './delegation.mjs';
-import { LEGACY_OMP_LOADER, OMP_SETTINGS, retiredConfigKeyFixes } from './init.mjs';
+import { BLOCK_BODIES, LEGACY_OMP_LOADER, OMP_SETTINGS, retiredConfigKeyFixes } from './init.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { CONTRACTS, planProject, readManifest } from './plan.mjs';
 import { worktreeFindings } from './worktree/doctor.mjs';
@@ -162,13 +162,50 @@ export function doctor(cwd = process.cwd()) {
   else if (!EXACT_VERSION.test(pinned)) fail(`package.json: ${PACKAGE_NAME} is pinned to the range ${pinned} — a range changes this repo's tooling on someone else's install`, `ax pin ${version}`);
   else ok(`package.json: pinned to ${PACKAGE_NAME} ${pinned}`);
 
-  for (const file of ['.gitignore', 'AGENTS.md']) {
+  // WHICH blocks belong here is the plan's answer (./plan.mjs), and it is per
+  // FILE. This loop graded a hardcoded pair, so on the checkout that publishes
+  // ax it named `ax init` as the repair for a block whose body is consumer
+  // instruction and whose file is that package's own authored doctrine — a fix
+  // nobody could run, red for seven tickets (#96).
+  //
+  // AN EXEMPT FILE IS STILL MEASURED, AND SILENT WHEN IT IS RIGHT. The plan
+  // refusing the block makes its PRESENCE the finding, exactly like the
+  // self-pin above — an exemption that stopped reading the file would trade one
+  // unrunnable repair for one unmeasured file. But the correct state prints
+  // NOTHING (ruled on #96): a `·` line saying a file the plan wants nothing in
+  // has nothing in it is one more line on the report for every reader, forever,
+  // and the exemption is already legible where it is decided — `ax init` names
+  // the file it skipped and why, every run. Loud when wrong, quiet when right.
+  //
+  // `ax init` cannot remove what it never writes, so the repair here is the
+  // removal itself and never this verb.
+  for (const [file, wanted] of Object.entries(plan.blocks)) {
     const path = join(root, file);
     if (!existsSync(path)) {
-      fail(`${file} is missing`, 'ax init');
+      if (wanted) fail(`${file} is missing`, 'ax init');
       continue;
     }
-    const block = readBlock(readFileSync(path, 'utf8'), { id: 'ax', style: styleFor(file) });
+    // MALFORMED IS ITS OWN ANSWER, neither a body nor an absence. An orphaned
+    // opening marker — half a conflict resolution — used to read as null, so a
+    // wanted file was told `ax init`, the one call that THROWS on it, and an
+    // exempt file passed in silence while carrying a marker the plan refuses.
+    // The repair names the marker, because removing it is what both states
+    // need and no verb here can do it: `ax init` cannot rewrite a block whose
+    // end it cannot find, and it writes nothing at all in an exempt file.
+    let block;
+    try {
+      block = readBlock(readFileSync(path, 'utf8'), { id: 'ax', style: styleFor(file) });
+    } catch (error) {
+      const repair = `remove the orphaned BEGIN:ax marker from ${file}`;
+      fail(`${file} — ${error.message}`, wanted ? `${repair}, then ax init` : repair);
+      continue;
+    }
+    if (!wanted) {
+      if (block !== null) {
+        fail(`${file} carries a BEGIN:ax block and the plan for this checkout wants none — ${BLOCK_BODIES[file].reason}`, `remove the BEGIN:ax block from ${file}`);
+      }
+      continue;
+    }
     if (block === null) fail(`${file} carries no BEGIN:ax block`, 'ax init');
     // PRESENCE IS NOT CONTENT, and for `.gitignore` the difference is a pane
     // nobody can release. Every line of `plan.ignore` is a path ax's own tooling

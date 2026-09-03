@@ -241,10 +241,9 @@ export function dispatch(
     const arg = argv[i];
     if (arg === '--probe') probe = true;
     else if (arg === '--dry-run') dry = true;
-    else if (arg === '-h' || arg === '--help') {
-      raw(USAGE);
-      return 0;
-    } else if (NAMED[arg] !== undefined) {
+    // No help branch: `runCli` answers the flag from the registry, anywhere in
+    // this noun's argv, before the verb is reached (../cli.mjs, #89).
+    else if (NAMED[arg] !== undefined) {
       // A valued flag with no value is a caller bug, and it is refused rather
       // than consumed: the Bash this ports had to guard the same thing, where a
       // lone trailing flag made the parse loop spin instead of stopping.

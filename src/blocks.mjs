@@ -25,6 +25,16 @@ export function styleFor(filename) {
 }
 
 /**
+ * The one condition both readers refuse, so they refuse it identically: an
+ * opening marker with no closing one. A file in that state cannot be rewritten
+ * (a second block after a stray BEGIN leaves two openers and a file no rewrite
+ * repairs) and it cannot be READ as an absence either — that reading let
+ * `ax doctor` grade a half-resolved conflict as "no block here" and name
+ * `ax init`, the very call that throws on it (PR #117).
+ */
+const unterminated = (id, open, close) => new Error(`unterminated managed block "${id}": found ${open} without ${close}`);
+
+/**
  * Write `body` into the `id` block of `source`, in place if the block exists,
  * appended otherwise. Returns `{ text, changed }`; `changed` is false when the
  * file already says exactly this, which is what makes a second `ax init` quiet.
@@ -40,9 +50,7 @@ export function applyBlock(source, { id, body, style }) {
   const startIndex = source.indexOf(open);
   if (startIndex !== -1) {
     const endIndex = source.indexOf(close, startIndex);
-    if (endIndex === -1) {
-      throw new Error(`unterminated managed block "${id}": found ${open} without ${close}`);
-    }
+    if (endIndex === -1) throw unterminated(id, open, close);
     const before = source.slice(0, startIndex);
     const after = source.slice(endIndex + close.length);
     const text = `${before}${block}${after}`;
@@ -54,7 +62,13 @@ export function applyBlock(source, { id, body, style }) {
   return { text, changed: true };
 }
 
-/** Read back the body of a block, or null when the file has none. */
+/**
+ * Read back the body of a block, `null` when the file carries no opening marker
+ * — and a THROW when it carries one with no close, because that is neither a
+ * body nor an absence. A caller that grades files it does not own catches it
+ * and reports the orphan (`src/doctor.mjs`); the disposition is `applyBlock`'s
+ * above, for the same condition in the same file.
+ */
 export function readBlock(source, { id, style }) {
   const marks = STYLES[style];
   const open = marks.open(id);
@@ -62,7 +76,7 @@ export function readBlock(source, { id, style }) {
   const startIndex = source.indexOf(open);
   if (startIndex === -1) return null;
   const endIndex = source.indexOf(close, startIndex);
-  if (endIndex === -1) return null;
+  if (endIndex === -1) throw unterminated(id, open, close);
   return source.slice(startIndex + open.length, endIndex).replace(/^\n/, '').replace(/\n$/, '');
 }
 

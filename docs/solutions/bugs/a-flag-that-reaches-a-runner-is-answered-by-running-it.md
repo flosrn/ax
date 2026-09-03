@@ -65,6 +65,11 @@ Two boundaries make the rule cheap to hold:
   verb parses its own flags and answers its own `--help` (`ax triage ask --help`), and every
   argument after `ax supabase` is the Supabase CLI's. Claiming more would swallow a flag that was
   never ax's to answer.
+  **SUPERSEDED (#89, 2026-09-03.)** That second boundary was wrong, and it left this same defect
+  alive one slot to the right — `ax init --vendor <x> --help` still ran init, `ax worktree clean
+  --help` still reclaimed. Slot 1 was not the line between owners; the line is registry data (flag
+  arity, and a passthrough marker for a foreign CLI's argv). See
+  `one-argv-slot-is-not-an-ownership-boundary.md`. The first boundary above still holds.
 
 ## Lesson
 
