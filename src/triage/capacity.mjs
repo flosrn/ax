@@ -1,66 +1,21 @@
-// The dispatch capacity rules: how many children this machine tolerates,
-// counted by live pane (F-048), and which PASS each issue is about to run,
-// with the two anti-rival gates in front of `--fresh` (F-001, F-028).
-// Extracted from dispatch.mjs so the duplicate-prevention state machine
-// answers through its own interface; dispatch maps the outcomes back to its
-// own exit codes and printing.
+// Which PASS each issue is about to run, with the two anti-rival gates in front
+// of `--fresh` (F-001, F-028). Extracted from dispatch.mjs so the
+// duplicate-prevention state machine answers through its own interface; dispatch
+// maps the outcomes back to its own exit codes and printing.
+//
+// THE CAPS ARE NOT HERE, and that is #88's other half. `capOf` and `liveCount`
+// lived in this file while `ax worker dispatch` enforced nothing, so the only
+// verb with a fence was the one whose module owned it — and the fence it had was
+// machine-wide. The two counts, the two caps and the refusal are now
+// `../worker/capacity.mjs`: one contract, read by both dispatch verbs and by
+// `ax worker ls`, none of them reaching into another's module. What stays here
+// is what is genuinely about a triage PASS.
 
 import { join } from 'node:path';
 
 import { paneVerdict } from '../worker/pane.mjs';
 import { handlesByRequest, heldRepaired, report } from '../worker/record.mjs';
 import { passesIn, readDraft, requestFor } from './draft.mjs';
-
-/**
- * How many live child panes this machine tolerates. Counted, never remembered
- * (F-028), and counted by PANE rather than by `worker-list` (F-048: that counter
- * answered zero while children were working).
- *
- * An unreadable value is a refusal, not a default: `Number('bad')` is NaN, and
- * `live + new > NaN` is false for every input — the fence would vanish silently,
- * on the one guard whose whole job is to fail closed. Zero is legal, and means
- * "no new session on this machine right now".
- *
- * `ORCA_READY_SESSION_CAP` is not read as a fallback. A silent fallback would
- * drop a still-exported cap to the default of 3; refusing and naming
- * `ORCA_TRIAGE_SESSION_CAP` is the migration, the same way `ax doctor` refuses
- * the legacy `ready` config key rather than reading it. Empty is absence.
- *
- * BOTH NAMES HAVE NOW BEEN THE LIVE ONE, and that is why the refusal is keyed
- * on the retired spelling rather than on "the one that is not mine": the knob
- * followed the noun to `ready` in 0.15 and back to `triage` in 0.16
- * (`docs/adr/0001`). A shell that exported the 0.15 name keeps exporting it, so
- * it is refused BY NAME — a fallback chain reading whichever is set would make
- * the two spellings interchangeable, which is precisely how a rename stops
- * being one.
- */
-export function capOf(env) {
-  const retired = env.ORCA_READY_SESSION_CAP;
-  if (retired !== undefined && retired !== '') {
-    return { ok: false, from: 'ORCA_READY_SESSION_CAP', to: 'ORCA_TRIAGE_SESSION_CAP' };
-  }
-  const raw = env.ORCA_TRIAGE_SESSION_CAP;
-  if (raw === undefined || raw === '') return { ok: true, cap: 3 };
-  const cap = Number(raw);
-  if (!Number.isInteger(cap) || cap < 0) return { ok: false, raw: String(raw) };
-  return { ok: true, cap };
-}
-
-/**
- * The record↔pane association `ls` reads liveness from: a dispatch record
- * whose recorded handle is still alive. Never `worker-list` (F-048: that
- * counter answered zero while children were working), and never the raw pane
- * count — an editor's pane is not triage capacity.
- */
-export function liveCount({ index, inventory }) {
-  const alive = new Set();
-  for (const row of index.byDispatch.values()) {
-    if (row.handle === null) continue;
-    const terminal = inventory.byHandle.get(row.handle);
-    if (terminal !== undefined && terminal.orphaned !== true) alive.add(row.handle);
-  }
-  return alive.size;
-}
 
 /**
  * Which PASS each issue is about to run — `{ ok: true, plan }`, or

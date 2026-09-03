@@ -25,6 +25,8 @@
 // receipt `tail` refuses, and that difference is deliberate rather than a
 // disagreement between three copies.
 
+import { hostFor } from './hosts.mjs';
+
 const safeParse = text => {
   try {
     return JSON.parse(text);
@@ -240,4 +242,92 @@ export function paneVerdict(handle, why, terminals, { host, asked = false } = {}
   }
   if (terminal.orphaned === true) return { pane: 'MORT', detail: `${handle} orphaned` };
   return { pane: 'VIVANT', detail: handle };
+}
+
+/**
+ * THE HOSTS A RECORD NAMES, asked for their own inventory — at most once each.
+ *
+ * A record dispatched with `--on <env>` names its host by the name the project
+ * declared it under, and `dispatch.hosts.<env>` is what says how ax reaches it,
+ * so that host's OWN terminal list is available and answers for its panes (#76).
+ * `declarations` is a memoized reader of this checkout's config — injected
+ * rather than read here, because the callers already hold one and two loads of
+ * one file would be two derivations of it.
+ *
+ * A host that could not be asked is a NAMED refusal carrying the reason it
+ * answered, never an empty inventory (F-028), and the caller discloses it once
+ * rather than once per row.
+ */
+export function hostScopes(run, declarations) {
+  const asked = new Map();
+
+  const scopeOf = name => {
+    const declared = declarations();
+    if (!declared.ok) return { ok: false, reason: declared.reason };
+    const found = hostFor(declared.config, name);
+    // The declaration is the transport: without one there is no call to make,
+    // and a bare guess at a host name is exactly what `hostFor` refuses.
+    if (!found.ok) return { ok: false, reason: found.reason };
+    return terminalInventory(run, { environment: name });
+  };
+
+  return {
+    /** That host's own inventory, or the named refusal it answered with. */
+    scopeFor(host) {
+      if (!asked.has(host)) asked.set(host, scopeOf(host));
+      return asked.get(host);
+    },
+    /** Every host that was asked and could not answer, with what it answered. */
+    unaskable: () => [...asked].filter(([, scope]) => scope.ok !== true),
+  };
+}
+
+/**
+ * The inventory a CAP is counted against: this runtime's list, plus every pane a
+ * host named by a record says it still owns.
+ *
+ * WHY THE UNION IS THE COUNT (#88 review). `ax worker ls` has judged a remote
+ * pane by asking its host since #76 — "a live pane on an asked host is capacity
+ * in use" — while both dispatch gates counted the local list alone. On this Mac
+ * `hostScope.omittedHostIds` is non-empty, so a repository with three working
+ * remote children read as three UNKNOWNs and its cap did not bind. Printing one
+ * number as "the count that gates" while the fence counted a smaller one is the
+ * defect #88 is about, in a new place — so the listing and the fence read the
+ * same liveness, through the same asking mechanism above.
+ *
+ * LIVENESS IS A UNION, and only liveness: a handle the local list carries is
+ * proven alive by it (#91, and no later ask can take that back), a handle a host
+ * reports is alive too, and everything else stays absent — which `liveCount`
+ * reads as "not capacity" and `paneVerdict` reads as MORT or INCONNU depending
+ * on whether the answer covered it. Nothing here upgrades an absence.
+ *
+ * AN ABSENCE NO HOST ANSWERED FOR IS NOT AN ABSENCE (F-028), and that is what
+ * `unresolved` carries: a record whose handle the local list does not hold,
+ * whose host was named, and whose host could not be asked — undeclared, or its
+ * list did not come back. Dropping those rows silently is what the review of
+ * PR #129 caught: their panes may be alive and consuming capacity, so leaving
+ * them out makes the count UNDERSTATED, and a fence built on it can admit a pane
+ * past a cap that is already full. `capVerdict` turns this list into an
+ * inability, scoped by the repository each row names, so one project's
+ * unreachable host cannot park another (#88).
+ *
+ * ASKED ONLY WHERE IT CAN CHANGE THE COUNT: a record with no pane, a local
+ * dispatch, and a handle the first list already carries all spend nothing.
+ */
+export function liveInventory({ local, index, scopes }) {
+  const byHandle = new Map(local.byHandle);
+  const unresolved = [];
+  for (const row of index.byDispatch.values()) {
+    if (row.handle === null || byHandle.has(row.handle)) continue;
+    const host = String(row.env ?? '');
+    if (host === '') continue;
+    const scope = scopes.scopeFor(host);
+    if (scope.ok !== true) {
+      unresolved.push({ handle: row.handle, repo: String(row.repo ?? ''), host, reason: scope.reason });
+      continue;
+    }
+    const terminal = scope.byHandle.get(row.handle);
+    if (terminal !== undefined) byHandle.set(row.handle, terminal);
+  }
+  return { ok: true, byHandle, unresolved, omitted: local.omitted, omittedHosts: local.omittedHosts, hosts: local.hosts };
 }

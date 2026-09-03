@@ -90,7 +90,7 @@ function provisioned(root, name) {
  * from (#84) — and every argv is recorded so "nothing was dispatched" is
  * asserted rather than assumed.
  */
-function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' }, workspaces = [] } = {}) {
+function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, hostTerminals = {}, created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' }, workspaces = [] } = {}) {
   const calls = [];
   let reads = 0;
   const runner = createRunner({
@@ -111,7 +111,22 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/paren
         return seen ? receipt({ worktree: { path: 'x', parentWorktreeId: parent } }) : { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'selector_not_found' } }), stderr: '' };
       }
       if (line.startsWith('worktree set')) return receipt({ worktree: {} });
-      if (line.startsWith('terminal list')) return receipt({ terminals: terminals ?? [{ handle: 'term_me', worktreePath: '/parent/wt' }], hostScope: { omittedHostIds: [] }, truncated: false });
+      if (line.startsWith('terminal list')) {
+        // A host's OWN list, when one is asked for: that is what turns a pane the
+        // local scope omits into capacity in use (#88), and the local scope here
+        // omits a remote runtime exactly as this Mac's does.
+        const at = args.indexOf('--environment');
+        if (at !== -1) {
+          const own = hostTerminals[args[at + 1]];
+          if (own === undefined) return { status: 1, stdout: '', stderr: 'ssh_unreachable' };
+          return receipt({ terminals: own, hostScope: { hostIds: ['local'], omittedHostIds: [] }, truncated: false });
+        }
+        return receipt({
+          terminals: terminals ?? [{ handle: 'term_me', worktreePath: '/parent/wt' }],
+          hostScope: { omittedHostIds: Object.keys(hostTerminals).length === 0 ? [] : ['runtime:7930a317'] },
+          truncated: false,
+        });
+      }
       if (line.startsWith('terminal read')) {
         const cursor = cursors[Math.min(reads, cursors.length - 1)];
         reads += 1;
@@ -178,6 +193,16 @@ function transcript(root, needle, role, { sessionRole = 'worker', skills = ['imp
   return root;
 }
 
+/**
+ * One dispatch, fully injected.
+ *
+ * `slug` is what `gh repo view` answers for this checkout, and it is answered by
+ * the harness rather than by each test's own `exec`: it places the pane this
+ * dispatch records AND scopes the per-repository cap counted before it, so a
+ * fixture without one is a checkout nothing can name — which since #88 is
+ * cannot-establish rather than an ordinary dispatch. Pass `slug: ''` to model
+ * exactly that.
+ */
 const run = (argv, options = {}) => {
   const { runner, calls } = fakeOrca(options.orca ?? {});
   const root = options.root ?? repo();
@@ -197,7 +222,13 @@ const run = (argv, options = {}) => {
   const result = capture(() =>
     dispatch([...argv], {
       runner: options.runnerOverride ?? runner,
-      exec: options.exec ?? (() => ({ status: 0, stdout: '', stderr: '' })),
+      exec: (bin, args, at) => {
+        if (bin === 'gh' && args[0] === 'repo') {
+          const slug = options.slug ?? 'acme/widgets';
+          return slug === '' ? { status: 1, stdout: '', stderr: 'gh: no auth token\n' } : { status: 0, stdout: `${slug}\n`, stderr: '' };
+        }
+        return options.exec ? options.exec(bin, args, at) : { status: 0, stdout: '', stderr: '' };
+      },
       env: { HOME: home, ORCA_TERMINAL_HANDLE: 'term_me', ORCA_DISPATCH_STORE: store, AX_DISPATCH_SPEC_DIR: join(home, 'specs'), AX_DISPATCH_TICK: '1', AX_DISPATCH_SEE_WAIT: '0', ...options.env },
       cwd: root,
       sleep: options.sleep ?? (() => {}),
@@ -470,28 +501,27 @@ test('the record names the dispatching checkout, whatever the tracker — the ti
   assert.equal(trackerRepoOf('https://ghe.example.com/owner/repo/issues/7'), 'owner/repo');
   assert.equal(trackerRepoOf('https://linear.test/GAP-353'), '');
 
-  const forge = (bin, args) => (bin === 'gh' && args[0] === 'repo' && args[1] === 'view'
-    ? { status: 0, stdout: 'flosrn/ax\n', stderr: '' }
-    : { status: 0, stdout: '', stderr: '' });
-
   // A Linear ticket, from a checkout gh can name: the checkout's identity.
   const linear = repo();
   provisioned(linear, `${ISSUE}-${SLUG}`);
-  const l = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root: linear, exec: forge });
+  const l = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root: linear, slug: 'flosrn/ax' });
   assert.equal(l.code, 0, l.out);
   assert.match(l.started[0], /--tracker-repo flosrn\/ax/, 'a Linear ticket records the checkout that dispatched it');
 
   // No ticket at all, same checkout: still the checkout's identity.
   const named = repo();
   provisioned(named, 'pilot-smoke');
-  const n = run(['--name', 'pilot-smoke', '--task', 'smoke the pilot', '--wait', '0'], { root: named, exec: forge, request: 'pilot-smoke' });
+  const n = run(['--name', 'pilot-smoke', '--task', 'smoke the pilot', '--wait', '0'], { root: named, slug: 'flosrn/ax', request: 'pilot-smoke' });
   assert.equal(n.code, 0, n.out);
   assert.match(n.started[0], /--tracker-repo flosrn\/ax/, 'a --name dispatch records the checkout that dispatched it');
 
-  // A checkout gh cannot name, and a non-GitHub ticket: nothing to record.
-  const noForge = repo();
+  // A checkout gh cannot name, and a non-GitHub ticket: nothing to record — and
+  // since #88 nothing to count either, so the dispatch only happens at all when
+  // a declared machineCap bounds this machine instead. The record still names no
+  // repository: unknown, never guessed (F-028).
+  const noForge = repo({ dispatch: { machineCap: 4 } });
   provisioned(noForge, `${ISSUE}-${SLUG}`);
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root: noForge });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root: noForge, slug: '' });
   assert.equal(r.code, 0, r.out);
   assert.doesNotMatch(r.started[0], /--tracker-repo/, 'no forge and no GitHub-shaped URL writes no repo key — unknown, never guessed');
 });
@@ -532,6 +562,229 @@ test('a --needs-ref origin does not carry creates nothing, and a pattern is refu
   });
   assert.equal(glob.code, 1);
   assert.match(glob.out, /is a pattern, not a ref/);
+});
+
+// ── the caps, before anything is created (#88) ────────────────────────────────
+// This verb enforced NOTHING: measured 2026-09-02, it admitted a 4th and 5th
+// pane without a word while `ax triage dispatch` refused at the same moment,
+// against the same store, on the same machine. Two verbs, one machine, two cap
+// semantics — and the count `ax worker ls` labelled "the cap count" gated
+// neither.
+
+/** A live pane already recorded in the store, placed in the repository it names. */
+function livePane(store, request, { handle, dispatchId = `ctx-${request}`, repo = 'acme/widgets', on = '' } = {}) {
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, `${request}.json`),
+    JSON.stringify({
+      request,
+      orca: 'stub-orca',
+      createdAt: '2026-09-02T10:00:00.000Z',
+      ...(repo === '' ? {} : { repo }),
+      attempts: [
+        {
+          n: 1,
+          settled: false,
+          phases: [
+            {
+              name: 'worker-start',
+              identity: `id-${request}`,
+              argv: ['stub-orca', 'orchestration', 'worker-start', ...(on === '' ? [] : ['--on', on])],
+              beganAt: '2026-09-02T10:00:00.000Z',
+              exit: 0,
+              receipt: { ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: handle }] } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+}
+
+test('#88: a remote pane the local scope omits, confirmed by its declared host, IS capacity', () => {
+  // `ax worker ls` has counted it since #76; the fence counted the local list
+  // alone. On this Mac the local scope omits a remote runtime, so a repository
+  // with a working remote child had no cap at all.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'far-1', { handle: 'term_far', on: 'gapicore' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    home,
+    root: repo({ dispatch: { cap: 1, hosts: { gapicore: { ssh: 'orca@vps' } } } }),
+    orca: { terminals: [{ handle: 'term_me', worktreePath: '/parent/wt' }], hostTerminals: { gapicore: [{ handle: 'term_far' }] } },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /1 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 1/);
+  assert.deepEqual(r.started, []);
+});
+
+test('#88: one over dispatch.cap is refused, and NOTHING is created', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'gap-1-work', { handle: 'term_a' });
+  livePane(store, 'gap-2-work', { handle: 'term_b' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    home,
+    root: repo({ dispatch: { cap: 2 } }),
+    orca: { terminals: [{ handle: 'term_a' }, { handle: 'term_b' }, { handle: 'term_me', worktreePath: '/parent/wt' }] },
+  });
+  assert.equal(r.code, 1, 'a refusal, so nothing was created');
+  assert.match(r.out, /2 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 2/);
+  assert.match(r.out, /raise dispatch\.cap/);
+  assert.deepEqual(r.started, [], 'no dispatch was issued');
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'and no worktree was placed');
+});
+
+test('#88: panes belonging to another repository do not consume this one’s cap', () => {
+  // The reported cost: a full orchestrator turn spent deciding whether it was
+  // allowed to dispatch at all, because the only count it could read was
+  // machine-wide.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'far-1', { handle: 'term_x', repo: 'goodluckagency/ofmchat' });
+  livePane(store, 'far-2', { handle: 'term_y', repo: 'goodluckagency/ofmchat' });
+  livePane(store, 'far-3', { handle: 'term_z', repo: '' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], {
+    home,
+    root: repo({ dispatch: { cap: 2 } }),
+    orca: { terminals: [{ handle: 'term_x' }, { handle: 'term_y' }, { handle: 'term_z' }, { handle: 'term_me', worktreePath: '/parent/wt' }] },
+  });
+  assert.equal(r.code, 0, "another checkout's wave is not this repository's cap");
+  assert.match(r.out, /0 live pane\(s\) in acme\/widgets/);
+  assert.match(r.out, /3 live pane\(s\) on this machine/);
+  assert.match(r.out, /1 .*name no repository/, 'a record naming none counts toward the machine total only (F-028)');
+});
+
+test('#88: an armed dispatch.machineCap refuses on the machine total, naming the ceiling', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'far-1', { handle: 'term_x', repo: 'goodluckagency/ofmchat' });
+  livePane(store, 'far-2', { handle: 'term_y', repo: 'goodluckagency/ofmchat' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    home,
+    root: repo({ dispatch: { cap: 3, machineCap: 2 } }),
+    orca: { terminals: [{ handle: 'term_x' }, { handle: 'term_y' }, { handle: 'term_me', worktreePath: '/parent/wt' }] },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /2 live pane\(s\) on this machine \+ 1 new > dispatch\.machineCap 2/);
+  assert.match(r.out, /0 of them in acme\/widgets/);
+  assert.deepEqual(r.started, []);
+});
+
+test('#88: a checkout gh cannot name AUTHORIZES NO DISPATCH — exit 3, and nothing created', () => {
+  // Ruled 2026-09-03: `gh repo view` is what places a record in a repository,
+  // so without it `dispatch.cap` has no count to gate — and an unmeasurable cap
+  // is an inability, not room (F-028). A mutation never proceeds on a container
+  // that could not be read, and the repair names both routes out.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'far-1', { handle: 'term_x', repo: 'goodluckagency/ofmchat' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    home,
+    root: repo({ dispatch: { cap: 1 } }),
+    slug: '',
+    orca: { terminals: [{ handle: 'term_x' }, { handle: 'term_me', worktreePath: '/parent/wt' }] },
+  });
+  assert.equal(r.code, 3, 'cannot-establish: about the machine, never about the ticket');
+  assert.match(r.out, /CANNOT ESTABLISH/);
+  assert.match(r.out, /NOT MEASURED/);
+  assert.match(r.out, /origin/, 'route one: make gh able to name this checkout');
+  assert.match(r.out, /dispatch\.machineCap/, 'route two: declare the ceiling that bounds it');
+  assert.deepEqual(r.started, [], 'nothing was dispatched');
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'and nothing was created');
+});
+
+test('#88: a declared machineCap BOUNDS a checkout gh cannot name, so the dispatch proceeds', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'far-1', { handle: 'term_x', repo: 'goodluckagency/ofmchat' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], {
+    home,
+    root: repo({ dispatch: { cap: 1, machineCap: 4 } }),
+    slug: '',
+    orca: { terminals: [{ handle: 'term_x' }, { handle: 'term_me', worktreePath: '/parent/wt' }] },
+  });
+  assert.equal(r.code, 0, 'a bounded mutation may proceed');
+  assert.match(r.out, /NOT MEASURED/, 'with the absent per-repository count still disclosed');
+  assert.match(r.out, /dispatch\.machineCap 4/, 'and the ceiling named as what bounds it');
+});
+
+test('#88: a pane of THIS repository on an unaskable host authorizes no dispatch — exit 3', () => {
+  // The P1 review finding on PR #129: excluding an unknown pane from the count
+  // makes the count understated, and a fence built on it can admit a pane past
+  // a cap that is already full.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'mine-far', { handle: 'term_far', on: 'gapicore' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG], {
+    home,
+    root: repo({ dispatch: { cap: 3, hosts: { gapicore: { ssh: 'orca@vps' } } } }),
+    orca: { terminals: [{ handle: 'term_me', worktreePath: '/parent/wt' }], hostTerminals: { other: [] } },
+  });
+  assert.equal(r.code, 3);
+  assert.match(r.out, /cannot be established/);
+  assert.match(r.out, /1 pane\(s\) in acme\/widgets/);
+  assert.match(r.out, /host 'gapicore' could not be asked/);
+  assert.deepEqual(r.started, []);
+});
+
+test('#88: an unaskable host in ANOTHER repository stops nothing until a ceiling is armed', () => {
+  // The other edge of the same rule: treating it as an inability would park this
+  // repository on another checkout's unreachable host, which is #88 through a
+  // new door. Armed, the ceiling counts every pane, so it becomes unmeasurable.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'far-1', { handle: 'term_far', repo: 'goodluckagency/ofmchat', on: 'gapicore' });
+  const hosts = { gapicore: { ssh: 'orca@vps' } };
+  const orca = { terminals: [{ handle: 'term_me', worktreePath: '/parent/wt' }], hostTerminals: { other: [] } };
+
+  const unarmed = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], {
+    home,
+    root: repo({ dispatch: { cap: 3, hosts } }),
+    orca,
+  });
+  assert.equal(unarmed.code, 0, "another repository's unreachable host is not this repository's fence");
+  assert.match(unarmed.out, /stop nothing|in neither count/);
+
+  const armed = run(['--issue', ISSUE, '--slug', SLUG], {
+    home,
+    root: repo({ dispatch: { cap: 3, machineCap: 2, hosts } }),
+    orca,
+  });
+  assert.equal(armed.code, 3, 'an armed ceiling counts every pane, so an unknown one makes its number unmeasurable');
+  assert.match(armed.out, /machine total dispatch\.machineCap 2/);
+  assert.deepEqual(armed.started, []);
+});
+
+test('#88: a dead pane is not capacity, and the cap is counted from records, not from the sidebar', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'gap-1-work', { handle: 'term_gone' });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], {
+    home,
+    root: repo({ dispatch: { cap: 1 } }),
+    // The recorded pane is orphaned; the other three belong to no record at all.
+    orca: {
+      terminals: [
+        { handle: 'term_gone', orphaned: true },
+        { handle: 'term_me', worktreePath: '/parent/wt' },
+        { handle: 'term_editor' },
+      ],
+    },
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /0 live pane\(s\) in acme\/widgets/);
+});
+
+test('#88: an unreadable dispatch record cannot establish a cap, and dispatches nothing', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(store, 'gap-9-work.json'), '{ not json');
+  const r = run(['--issue', ISSUE, '--slug', SLUG], { home });
+  assert.equal(r.code, 3, 'an absence of information is not an absence of a child (F-028)');
+  assert.match(r.out, /cannot be read/);
+  assert.deepEqual(r.started, []);
 });
 
 // ── placement ────────────────────────────────────────────────────────────────
