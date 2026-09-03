@@ -310,6 +310,218 @@ test('a request id selects one triage session among siblings sharing the current
   assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
 });
 
+// The P1 on PR #124, and the reason it matters more than a sibling collision:
+// the repair line this whole feature advertises is run FROM the orchestrator
+// session, in the same checkout the children share. That session's own
+// transcript names the request — it printed the dispatch output, and it typed
+// the command — so a whole-file `.includes(request)` match counts the caller
+// as a candidate beside the child and refuses on an ambiguity it invented.
+//
+// Measured on this host, 2026-09-03: for four real triage passes, the whole-file
+// match found 9, 14, 15 and 16 candidate files; the session whose FIRST TASK
+// SPEC names the request was exactly one, every time. Reconciliation would have
+// exited 1 on every invocation.
+//
+// OWNERSHIP IS THE FIRST TASK SPEC, which is what a dispatch actually writes
+// into its child. A later mention is discussion, not ownership.
+test('a session that merely MENTIONS the request is not a candidate for owning it', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+  const request = 'triage-acme-7';
+
+  // The child: the request arrives in its first task spec.
+  writeFileSync(
+    join(dir, 'child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
+    ].join('\n'),
+  );
+
+  // The orchestrator: its own first turn is its own work, and the request shows
+  // up later — in the dispatch output it read and the repair it was told to run.
+  writeFileSync(
+    join(dir, 'orchestrator.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'run the triage wave over this pile' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'orchestrator', skills: [], status: 'applied' } }),
+      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `issue #7 → session '${request}' (pass 1)` }] } }),
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `ax worker transcript --dispatch-proof current --request ${request}` }] } }),
+    ].join('\n'),
+  );
+
+  const proof = dispatchProof({ needle: 'current', request, sessionsRoot: root });
+  assert.notEqual(proof, null, 'the caller naming the request must not make its own read ambiguous');
+  assert.deepEqual(proof.sessionRole, { status: 'applied', role: 'triage-worker', skills: ['triage'] }, 'the child that OWNS the request, not the session discussing it');
+});
+
+// WHY THE MATCH IS TEXTUAL-WITHIN-THE-FIRST-TURN AND NOT A DECLARED FIELD, which
+// review asked about on #124 and this test is the answer to.
+//
+// Nothing a dispatch writes carries the id in a structured slot. It reaches the
+// child inside PROSE, in two different shapes, and this ONE resolver serves both:
+//
+//   triage (`../triage/spec.mjs`)   the draft path — `…/.scratch/triage/<request>.md`
+//   delivered (`./delivered.mjs`)   the preamble sentence naming `ctx_…`
+//
+// So a "structural" tightening — requiring the id to look like a path basename —
+// would pass the first shape and BREAK the second, and the second is what
+// authorizes closing someone's pane (`briefDelivered`). Both shapes are pinned
+// here so a future tightening cannot satisfy one and silently lose the other.
+test('one resolver owns both shapes a dispatch writes: a draft path and a preamble dispatch id', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+
+  // The triage shape: the request appears only as the draft path it must write.
+  writeFileSync(
+    join(dir, 'triage-child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Write your verdict to /repo/.scratch/triage/triage-acme-7.md.' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
+    ].join('\n'),
+  );
+  // The delivered shape: a `ctx_…` id in the preamble, as prose and never a path
+  // (`tests/worker-start.test.mjs` writes exactly this sentence).
+  writeFileSync(
+    join(dir, 'worker-child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker. Your dispatch is ctx_abc123' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'worker', skills: ['implementation'], status: 'applied' } }),
+    ].join('\n'),
+  );
+
+  assert.equal(
+    dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole.role,
+    'triage-worker',
+    'the draft-path shape resolves',
+  );
+  assert.equal(
+    dispatchProof({ needle: 'current', request: 'ctx_abc123', sessionsRoot: root })?.sessionRole.role,
+    'worker',
+    'and so does the preamble shape a path-based rule would have lost',
+  );
+});
+
+// Issue #97: the point-in-time CANNOT-ESTABLISH verdict of `ax triage dispatch`
+// is re-derivable only by the verb that actually reads the session file — and
+// it could not be pointed at ONE pass of a wave. Triage children run
+// `--worktree current` and share the needle, so `request` is the only
+// disambiguator; `dispatchProof` always took it and the CLI could not pass it.
+//
+// The three propositions below are the whole flag: it selects, it refuses
+// ambiguity instead of falling back to newest, and a malformed value is a
+// usage error rather than an unscoped read.
+
+/** The proof mode with the streams kept apart: stdout is the proof, and only that. */
+function proofRun(argv) {
+  const outs = [];
+  const errs = [];
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  process.stdout.write = chunk => (outs.push(String(chunk)), true);
+  process.stderr.write = chunk => (errs.push(String(chunk)), true);
+  let code;
+  try {
+    code = transcript(argv, { env: { HOME: '/nonexistent-home' } });
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return { code, out: outs.join(''), err: errs.join('') };
+}
+
+/**
+ * A checkout shared by N triage passes, each naming its own request id.
+ *
+ * Every pass carries a DISTINGUISHABLE payload — the skill and the model name
+ * carry the request id — because the sibling files are otherwise byte-identical
+ * proofs, and an unscoped newest-mtime read would then satisfy an assertion
+ * about the pass it did not select. Written in order, so the LAST request is
+ * the newest and is what a newest-wins fallback would answer.
+ */
+function wave(requests) {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+  for (const request of requests) {
+    writeFileSync(
+      join(dir, `${request}.jsonl`),
+      [
+        JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
+        JSON.stringify({ type: 'model_change', model: `anthropic/claude-opus-5-${request}`, role: 'default' }),
+        JSON.stringify({
+          type: 'custom_message',
+          customType: 'skill-prompt',
+          details: { role: 'triage-worker', skills: ['triage', request], status: 'applied' },
+        }),
+      ].join('\n'),
+    );
+  }
+  return root;
+}
+
+test('--dispatch-proof --request names one pass of a wave, as one JSON line on stdout', () => {
+  const root = wave(['triage-acme-8', 'triage-acme-7']);
+
+  const r = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-8', '--sessions', root]);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.trimEnd().split('\n').length, 1, 'the remote reader takes the FIRST stdout line as the proof');
+  assert.deepEqual(
+    JSON.parse(r.out),
+    dispatchProof({ needle: 'current', request: 'triage-acme-8', sessionsRoot: root }),
+    'the CLI answers exactly what the reader it wraps answers',
+  );
+  assert.match(r.out, /triage-acme-8/, 'the named pass, not the newest one beside it');
+  assert.doesNotMatch(r.out, /triage-acme-7/, 'an unscoped newest-wins read would answer the sibling');
+});
+
+test('--request with two or zero candidates cannot establish — exit 1, and never newest-wins', () => {
+  const root = wave(['triage-acme-7', 'triage-acme-8']);
+
+  const two = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme', '--sessions', root]);
+  assert.equal(two.code, 1, 'two matches is an ambiguity, not a pick');
+  assert.equal(two.out, '', 'nothing on stdout, so no caller reads a neighbouring pass as this one');
+
+  const none = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-9', '--sessions', root]);
+  assert.equal(none.code, 1);
+  assert.equal(none.out, '');
+});
+
+test('--request without a value, or a value that is a flag, is a usage error', () => {
+  const root = wave(['triage-acme-7']);
+  // `bad`/`fix` write to stdout by this repository's convention (src/log.mjs),
+  // exactly as the missing-needle check beside this one does. What must never
+  // appear is a PROOF line: the remote reader parses the first stdout line, and
+  // a silently-defaulted read would hand it a neighbouring pass as this one.
+  const noProof = out => assert.throws(() => JSON.parse(out.split('\n')[0]), 'no caller can parse a proof out of a usage error');
+
+  const bare = proofRun(['--dispatch-proof', 'current', '--sessions', root, '--request']);
+  assert.equal(bare.code, 2);
+  assert.match(bare.out, /--request expects the request id/);
+  noProof(bare.out);
+
+  const flagged = proofRun(['--dispatch-proof', 'current', '--request', '--sessions', root]);
+  assert.equal(flagged.code, 2, 'a flag consumed as a value would read an unscoped newest-wins proof');
+  assert.match(flagged.out, /--request expects the request id/);
+  noProof(flagged.out);
+});
+
+test('the retired --launch-proof spelling carries --request identically', () => {
+  const root = wave(['triage-acme-7', 'triage-acme-8']);
+
+  const r = proofRun(['--launch-proof', 'current', '--request', 'triage-acme-7', '--sessions', root]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(JSON.parse(r.out), dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root }));
+  assert.doesNotMatch(r.out, /triage-acme-8/, 'the alias scopes, it does not fall back to newest');
+  assert.match(r.err, /retired/, 'the alias still warns, and still on stderr');
+});
+
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
   const root = scratch();
   const dir = join(root, '--srv-orca-gapila-.worktrees-worker--');
