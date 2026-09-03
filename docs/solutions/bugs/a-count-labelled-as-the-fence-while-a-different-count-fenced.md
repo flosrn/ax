@@ -70,6 +70,21 @@ omits a remote runtime, so three working remote children read as UNKNOWN and no 
 `liveInventory` in `src/worker/pane.mjs` is now the one union both sides count — the local list plus
 each host a record names, asked once, and only where the answer can still change the count.
 
+**An unmeasurable count authorizes no mutation** (ruled 2026-09-03, and the review finding on the
+PR that carried this fix). Three shapes cannot be counted, and each is `cannot-establish` — exit 3,
+about the machine, never about the ticket — rather than a zero spent as room:
+
+| what could not be read | what it makes unmeasurable | the way out |
+|---|---|---|
+| `gh` cannot name this checkout | `dispatch.cap` has no count to gate | fix `origin` so `gh` names it, or declare `dispatch.machineCap` as the bound |
+| a pane of THIS repository on a host that could not be asked | the number `dispatch.cap` gates is understated | declare the host, or settle/release those records |
+| any pane on an unaskable host, once a ceiling is armed | the number `dispatch.machineCap` gates is understated | the same |
+
+The scoping is what keeps this from becoming the original bug again: an unknown pane in ANOTHER
+repository, with no ceiling armed, stops nothing — reading it as an inability would park this
+repository on another checkout's unreachable host. A declared ceiling is also what lets an
+unnameable checkout dispatch at all: a bounded mutation may proceed, an unbounded one may not.
+
 ## Reusable rule
 
 **A printed number that claims to be a fence must be the number the fence uses.** When one count
@@ -77,10 +92,14 @@ serves two questions — "how much is running" and "may I add one" — the label
 surfaces first, and it surfaces in someone else's turn: an agent reading the receipt cannot see that
 the enforcement path counted something else.
 
-Two cheap checks name it before it costs a turn:
+Three cheap checks name it before it costs a turn:
 
 1. Every verb that prints a capacity number and every verb that refuses on one import the same
    function. A second derivation of "how many are live" is the defect, not the different wording.
 2. A scope that appears in the label appears in the count. `N live pane(s)` with no scope named is
    either machine-wide or repository-scoped, and the reader cannot tell which — so it will be read
    as whichever one is wrong.
+3. Every `continue` in a counting loop is a claim that the skipped row is not capacity. Where the
+   row was skipped because something could not be READ, that claim is false, and the number becomes
+   a fence with a hole in it. Carry those rows out of the loop by name — then the caller can refuse
+   as an inability instead of spending an understated count.

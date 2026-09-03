@@ -107,18 +107,28 @@ export function machineCapOf(config = {}, env = {}) {
  * (F-048: that counter answered zero while children were working), and never the
  * raw pane count — an editor's pane is not dispatch capacity.
  *
- *   `machine`  every live recorded pane on this host
- *   `mine`     those whose record names `repo`, compared case-insensitively
- *              because that is the comparison `./start.mjs` already makes when
- *              it refuses a foreign record for the same request id
- *   `unknown`  those whose record names no repository at all — carried in
- *              `machine`, absent from `mine`, and disclosed by every caller
+ *   `machine`     every live recorded pane on this host
+ *   `mine`        those whose record names `repo`, compared case-insensitively
+ *                 because that is the comparison `./start.mjs` already makes
+ *                 when it refuses a foreign record for the same request id
+ *   `unknown`     those whose record names no repository at all — carried in
+ *                 `machine`, absent from `mine`, and disclosed by every caller
+ *   `unmeasured`  the panes whose LIVENESS could not be established at all,
+ *                 scoped the same way. NOT a count of dead panes: a container
+ *                 that could not be read, which is why `capVerdict` treats it
+ *                 as an inability rather than as room (F-028)
+ *
+ * `inventory.unresolved` is where the third number comes from — the rows
+ * `liveInventory` could not decide because the host their record names could not
+ * be asked (../worker/pane.mjs). An inventory carrying no such list is a caller
+ * that asked no host, so every row was decided by the list it passed.
  *
  * A caller that cannot name its own repository gets `mine: 0`, which is an
- * absence to announce and never a zero to spend: `capVerdict` says so.
+ * absence to act on and never a zero to spend: `capVerdict` says so.
  */
 export function liveCount({ index, inventory, repo = '' }) {
   const ours = String(repo ?? '').trim().toLowerCase();
+  const named = row => String(row.repo ?? '').trim().toLowerCase();
   const machine = new Set();
   const mine = new Set();
   const unknown = new Set();
@@ -129,12 +139,25 @@ export function liveCount({ index, inventory, repo = '' }) {
     if (terminal === undefined || terminal.orphaned === true) continue;
     machine.add(row.handle);
 
-    const named = String(row.repo ?? '').trim().toLowerCase();
-    if (named === '') unknown.add(row.handle);
-    else if (ours !== '' && named === ours) mine.add(row.handle);
+    if (named(row) === '') unknown.add(row.handle);
+    else if (ours !== '' && named(row) === ours) mine.add(row.handle);
   }
 
-  return { machine: machine.size, mine: mine.size, unknown: unknown.size };
+  const undecided = Array.isArray(inventory.unresolved) ? inventory.unresolved : [];
+  const unmeasuredMachine = new Set();
+  const unmeasuredMine = new Set();
+  for (const row of undecided) {
+    if (row.handle === null || machine.has(row.handle)) continue;
+    unmeasuredMachine.add(row.handle);
+    if (ours !== '' && named(row) === ours) unmeasuredMine.add(row.handle);
+  }
+
+  return {
+    machine: machine.size,
+    mine: mine.size,
+    unknown: unknown.size,
+    unmeasured: { machine: unmeasuredMachine.size, mine: unmeasuredMine.size },
+  };
 }
 
 /** Which repository a count belongs to, said the same way in every message. */
@@ -165,40 +188,86 @@ export function capLines({ live, repo = '', repoCap, machineCap }) {
       `${live.unknown} of them name no repository — the machine total alone carries those, never ${inRepo(repo)}'s count (F-028)`,
     );
   }
+  if (live.unmeasured.machine > 0) {
+    lines.push(
+      `${live.unmeasured.machine} pane(s) are on a host that could not be asked — their liveness is unknown, so neither count includes them (F-028)`,
+    );
+  }
   return lines;
 }
 
 /**
- * May `adding` new panes be created? `{ ok: true, notes }`, or a refusal naming
- * WHICH cap stopped it, BOTH numbers, and the repair.
+ * May `adding` new panes be created? `{ ok: true, notes }`, or a stop carrying
+ * `kind` — `'refuse'` when a cap really is full, `'cannot'` when the count that
+ * would gate this dispatch could not be established.
  *
- * The per-repository cap is tested first, because its repair is the one the
- * caller can act on inside its own project: release one of its own panes, or
- * raise its own declaration. Reaching the ceiling first would print "raise
- * dispatch.machineCap" at a caller whose real problem is its own wave.
+ * THE TWO KINDS ARE NOT THE SAME ANSWER (ruled 2026-09-03 on #88, and the review
+ * finding on PR #129). A refusal is about the subject: this repository is full,
+ * come back when a pane finishes. An inability is about the machine: the
+ * container that decides could not be read, and a mutation never proceeds on
+ * one (F-028 — absent is not zero). Both stop the dispatch; only the first says
+ * anything about the ticket, which is why the verbs map them to different exit
+ * codes (1 and 3).
+ *
+ * Three shapes are unmeasurable, and each has a repair:
+ *
+ *   1. NOTHING NAMES THIS CHECKOUT. `gh repo view` is what places a pane in a
+ *      repository, so without it `dispatch.cap` has no count to gate. A declared
+ *      `dispatch.machineCap` BOUNDS the machine instead, and a bounded mutation
+ *      may proceed; with neither, nothing gates it at all and it stops.
+ *   2. A PANE OF THIS REPOSITORY WHOSE LIVENESS IS UNKNOWN — a record naming a
+ *      host that could not be asked. Its absence understates the very number
+ *      `dispatch.cap` gates, so authorizing against it can admit a pane past a
+ *      cap that is already full.
+ *   3. AN UNKNOWN PANE ELSEWHERE, once a ceiling is armed. Unarmed, nothing
+ *      gates the machine total, and treating it as an inability would park this
+ *      repository on another checkout's unreachable host — #88 through a new
+ *      door. Armed, the ceiling counts every pane, so an unknown one makes the
+ *      number it gates unmeasurable.
+ *
+ * The per-repository question is answered first throughout, because its repair
+ * is the one the caller can act on inside its own project. Reaching the ceiling
+ * first would print "raise dispatch.machineCap" at a caller whose real problem
+ * is its own wave.
  *
  * The boundary is greater-than, unchanged: exactly at the cap the dispatch runs.
- *
- * A count that could not be established is a DISCLOSURE, not a refusal. The
- * slug comes from `gh repo view`, and a checkout it cannot name still deserves
- * to dispatch — but silence there would be the very shape #88 is about, so the
- * absence is announced, and when no ceiling is armed either, the fact that
- * NOTHING gates this dispatch is announced too.
  */
 export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
   const notes = [];
+  const unmeasured = live.unmeasured;
+  const asked = 'ax worker ls   # the host and why it could not answer; declare it under dispatch.hosts, or settle the records naming it, then re-run';
+
   if (repo === '') {
-    notes.push(
-      `the per-repository cap is NOT MEASURED: nothing here names this checkout, so dispatch.cap ${repoCap} cannot be counted against ${live.machine} live pane(s) (F-028)`,
-    );
     if (machineCap === null) {
-      notes.push('no cap gates this dispatch — declare dispatch.machineCap in ax.config.json to arm the machine ceiling');
+      return {
+        ok: false,
+        kind: 'cannot',
+        scope: 'repository',
+        notes,
+        message: `the per-repository cap is NOT MEASURED: nothing here names this checkout, so dispatch.cap ${repoCap} has no count to gate — and no dispatch.machineCap is declared to bound this machine instead, so nothing at all would gate this dispatch (F-028: absent is not zero)`,
+        repair: "fix this checkout's origin so gh can name it (git remote -v; gh repo view), or declare dispatch.machineCap in ax.config.json as the ceiling that bounds it",
+      };
     }
+    notes.push(
+      `the per-repository cap is NOT MEASURED: nothing here names this checkout, so dispatch.cap ${repoCap} cannot be counted — the declared dispatch.machineCap ${machineCap} is what bounds this dispatch (F-028)`,
+    );
+  }
+
+  if (unmeasured.mine > 0) {
+    return {
+      ok: false,
+      kind: 'cannot',
+      scope: 'repository',
+      notes,
+      message: `the count dispatch.cap ${repoCap} gates cannot be established: ${unmeasured.mine} pane(s) in ${inRepo(repo)} are on a host that could not be asked, so their liveness is unknown and ${live.mine} understates it (F-028)`,
+      repair: asked,
+    };
   }
 
   if (repo !== '' && live.mine + adding > repoCap) {
     return {
       ok: false,
+      kind: 'refuse',
       scope: 'repository',
       notes,
       message: `cap: ${live.mine} live pane(s) in ${repo} + ${adding} new > dispatch.cap ${repoCap} — ${live.machine} live on this machine, ${live.unknown} of them naming no repository`,
@@ -206,9 +275,21 @@ export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
     };
   }
 
+  if (machineCap !== null && unmeasured.machine > 0) {
+    return {
+      ok: false,
+      kind: 'cannot',
+      scope: 'machine',
+      notes,
+      message: `the machine total dispatch.machineCap ${machineCap} gates cannot be established: ${unmeasured.machine} pane(s) are on a host that could not be asked, so their liveness is unknown and ${live.machine} understates it (F-028)`,
+      repair: asked,
+    };
+  }
+
   if (machineCap !== null && live.machine + adding > machineCap) {
     return {
       ok: false,
+      kind: 'refuse',
       scope: 'machine',
       notes,
       message: `machine cap: ${live.machine} live pane(s) on this machine + ${adding} new > dispatch.machineCap ${machineCap} — ${
@@ -216,6 +297,15 @@ export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
       }`,
       repair: 'let any pane finish (ax worker ls), dispatch fewer, or raise dispatch.machineCap in ax.config.json',
     };
+  }
+
+  if (unmeasured.machine > 0) {
+    // Unarmed ceiling: the understated total gates nothing, so this is a
+    // disclosure. It is still printed, because the reader's NEXT decision may be
+    // to arm the ceiling, and then these panes decide.
+    notes.push(
+      `${unmeasured.machine} pane(s) are on a host that could not be asked and are in neither count — nothing gates the machine total here, so they stop nothing (F-028)`,
+    );
   }
 
   return { ok: true, notes };

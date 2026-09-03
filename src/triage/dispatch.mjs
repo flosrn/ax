@@ -578,7 +578,11 @@ export function dispatch(
     note(`host '${host}' could not be asked, so its panes are in neither count: ${scope.reason}`);
   }
   if (inventory.omitted) note('hosts are omitted from this terminal list: a child on one of them is UNKNOWN here, not counted');
-  if (!room.ok) return refuse(room.message, room.repair);
+  // An inability is exit 3, a full cap is exit 1 — this verb's own alphabet says
+  // 1 means "the input was wrong and NOTHING was dispatched, fix it and re-run"
+  // and 3 means "could not be established". A count that could not be read is
+  // the second (../worker/capacity.mjs, ADR 0003).
+  if (!room.ok) return room.kind === 'cannot' ? cannot(room.message, room.repair) : refuse(room.message, room.repair);
 
   // ── 5. every issue prechecked before any is dispatched ────────────────────
   section(`precheck — ${slug} (job: ${job})`);

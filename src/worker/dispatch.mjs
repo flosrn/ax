@@ -488,7 +488,15 @@ export function dispatch(
   const room = capRoom({ run, env, config, repo: trackerRepo });
   if (room.cannot) return cannot(room.cannot, room.repair);
   for (const line of room.lines) note(line);
-  if (!room.verdict.ok) return refuse(room.verdict.message, room.verdict.repair);
+  // An inability is exit 3 and a full cap is exit 1, because they are different
+  // answers: one says the machine could not be read, the other says this
+  // repository is busy. A caller told "refused" re-reads the ticket; a caller
+  // told "cannot establish" reads the machine (ADR 0003, ../worker/capacity.mjs).
+  if (!room.verdict.ok) {
+    return room.verdict.kind === 'cannot'
+      ? cannot(room.verdict.message, room.verdict.repair)
+      : refuse(room.verdict.message, room.verdict.repair);
+  }
 
   if (flags.needsRef !== '') {
     const proven = needsRef(flags.needsRef, { exec, cwd });
@@ -839,6 +847,7 @@ function capRoom({ run, env, config, repo }) {
     return {
       verdict: {
         ok: false,
+        kind: 'refuse',
         message: `${ceiling.from} is set — the cap is declared in ax.config.json now, and this repository's own cap is what binds`,
         repair: `unset ${ceiling.from} and declare ${ceiling.to} in ax.config.json if this machine needs a ceiling`,
       },

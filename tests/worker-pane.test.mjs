@@ -174,19 +174,45 @@ test('#88: the union never upgrades an absence, and spends nothing where it cann
   assert.equal(calls.filter(line => line.includes('--environment')).length, 1, 'asked once, for the one row it could decide');
 });
 
-test('#88: a host that cannot be asked leaves its pane OUT of the count, and says so', () => {
+test('#88: a host that cannot be asked leaves its pane OUT of the count, and NAMES it as unresolved', () => {
   const { run } = listing({ local: [], hosts: {} });
   const local = terminalInventory(run);
-  const index = { byDispatch: new Map([['d1', { handle: 'term_far', env: 'gapicore' }]]) };
+  const index = { byDispatch: new Map([['d1', { handle: 'term_far', repo: 'flosrn/ax', env: 'gapicore' }]]) };
   const scopes = hostScopes(run, declared);
 
   const inventory = liveInventory({ local, index, scopes });
-  assert.equal(inventory.byHandle.size, 0, 'an absence of information is not a pane (F-028)');
+  assert.equal(inventory.byHandle.size, 0, 'an absence of information is not a live pane');
+  // …and it is not silence either: the row is carried out with the repository it
+  // names, so a cap counted against it can refuse as an INABILITY rather than
+  // spend an understated number (F-028, review of PR #129).
+  assert.deepEqual(
+    inventory.unresolved.map(({ handle, repo, host }) => ({ handle, repo, host })),
+    [{ handle: 'term_far', repo: 'flosrn/ax', host: 'gapicore' }],
+  );
+  assert.match(inventory.unresolved[0].reason, /gapicore|terminal list|environment/i, 'carrying why it could not answer');
   assert.deepEqual(
     scopes.unaskable().map(([host]) => host),
     ['gapicore'],
     'and the caller can disclose which host could not answer',
   );
+});
+
+test('#88: a row the local list or its host DID decide is never unresolved', () => {
+  const { run } = listing({ local: [{ handle: 'term_here' }], hosts: { gapicore: [{ handle: 'term_far' }] } });
+  const local = terminalInventory(run);
+  const index = {
+    byDispatch: new Map([
+      ['d1', { handle: 'term_here', repo: 'flosrn/ax', env: '' }],
+      ['d2', { handle: 'term_far', repo: 'flosrn/ax', env: 'gapicore' }],
+      // The host answered and does not know it: decided, and decided DEAD.
+      ['d3', { handle: 'term_gone', repo: 'flosrn/ax', env: 'gapicore' }],
+      ['d4', { handle: null, repo: 'flosrn/ax', env: 'gapicore' }],
+    ]),
+  };
+
+  const inventory = liveInventory({ local, index, scopes: hostScopes(run, declared) });
+  assert.deepEqual([...inventory.byHandle.keys()].sort(), ['term_far', 'term_here']);
+  assert.deepEqual(inventory.unresolved, [], 'a decided row is not an unmeasurable one');
 });
 
 test('#88: an undeclared host is never asked — the declaration is the only transport', () => {

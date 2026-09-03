@@ -712,12 +712,19 @@ test('an empty store answers "0 record" and exit 0 — without pretending to hav
   assert.equal(code, 0);
   assert.match(out, /^0 record\n/);
   assert.deepEqual(run.calls, [['status', '--json']], 'nothing to join, nothing read');
+  // An empty store is a real answer to "have I room" — it is the first dispatch
+  // on this machine, and that reader needs the same two scoped counts as the
+  // reader of 250 records (#88). Both are zero, said rather than inferred.
+  assert.match(out, /0 live pane\(s\) in acme\/widgets/);
+  assert.match(out, /0 live pane\(s\) on this machine/);
 });
 
-test('a store directory that does not exist is 0 record, said as such', () => {
+test('a store directory that does not exist is 0 record, said as such, and still answers both counts', () => {
   const { code, out } = capture(() => ls([], { runner: fakeRunner(), env: { ORCA_DISPATCH_STORE: join(store(), 'never-created') } }));
   assert.equal(code, 0);
   assert.match(out, /nothing was ever claimed on this host/);
+  assert.match(out, /0 live pane\(s\) in acme\/widgets/);
+  assert.match(out, /0 live pane\(s\) on this machine/);
 });
 
 test('an unreadable terminal list is cannot-establish, named, exit 3 — this verb never guesses a count', () => {

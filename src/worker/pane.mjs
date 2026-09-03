@@ -301,19 +301,33 @@ export function hostScopes(run, declarations) {
  * reads as "not capacity" and `paneVerdict` reads as MORT or INCONNU depending
  * on whether the answer covered it. Nothing here upgrades an absence.
  *
+ * AN ABSENCE NO HOST ANSWERED FOR IS NOT AN ABSENCE (F-028), and that is what
+ * `unresolved` carries: a record whose handle the local list does not hold,
+ * whose host was named, and whose host could not be asked — undeclared, or its
+ * list did not come back. Dropping those rows silently is what the review of
+ * PR #129 caught: their panes may be alive and consuming capacity, so leaving
+ * them out makes the count UNDERSTATED, and a fence built on it can admit a pane
+ * past a cap that is already full. `capVerdict` turns this list into an
+ * inability, scoped by the repository each row names, so one project's
+ * unreachable host cannot park another (#88).
+ *
  * ASKED ONLY WHERE IT CAN CHANGE THE COUNT: a record with no pane, a local
  * dispatch, and a handle the first list already carries all spend nothing.
  */
 export function liveInventory({ local, index, scopes }) {
   const byHandle = new Map(local.byHandle);
+  const unresolved = [];
   for (const row of index.byDispatch.values()) {
     if (row.handle === null || byHandle.has(row.handle)) continue;
     const host = String(row.env ?? '');
     if (host === '') continue;
     const scope = scopes.scopeFor(host);
-    if (scope.ok !== true) continue;
+    if (scope.ok !== true) {
+      unresolved.push({ handle: row.handle, repo: String(row.repo ?? ''), host, reason: scope.reason });
+      continue;
+    }
     const terminal = scope.byHandle.get(row.handle);
     if (terminal !== undefined) byHandle.set(row.handle, terminal);
   }
-  return { ok: true, byHandle, omitted: local.omitted, omittedHosts: local.omittedHosts, hosts: local.hosts };
+  return { ok: true, byHandle, unresolved, omitted: local.omitted, omittedHosts: local.omittedHosts, hosts: local.hosts };
 }

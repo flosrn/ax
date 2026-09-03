@@ -373,6 +373,28 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     return 3;
   }
 
+  // WHICH REPOSITORY, AND WHICH CAPS — read once, and printed by every path that
+  // answers at all. An empty store is a real answer to "have I room": it is the
+  // first dispatch on this machine, and the reader deciding it needs the same two
+  // scoped counts as the reader of 250 records (#88). Both are zero there, and
+  // saying so beats making the caller infer it from "0 record".
+  const declarations = declarationOf(cwd);
+  const slug = repoSlug(args => exec('gh', args, cwd));
+  const capSummary = live => {
+    const declared = declarations();
+    const config = declared.ok ? declared.config : {};
+    const ceiling = machineCapOf(config, env);
+    for (const line of capLines({ live, repo: slug, repoCap: repoCapOf(config), machineCap: ceiling.ok ? ceiling.cap : null })) note(line);
+    if (!ceiling.ok) {
+      // The ceiling is DECLARED now, and a retired knob left in a shell would
+      // read as the one in force. This verb counts rather than dispatches, so it
+      // discloses instead of refusing — the two dispatch verbs refuse on it.
+      note(`${ceiling.from} is set and is no longer read: declare ${ceiling.to} in ax.config.json to arm a ceiling`);
+    }
+    if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
+  };
+  const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0 } };
+
   const dir = storeArg || defaultStore(env);
   let files;
   try {
@@ -384,6 +406,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     if (error.code === 'ENOENT') {
       section('0 record');
       note(`no dispatch store at ${dir} — nothing was ever claimed on this host`);
+      capSummary(NONE);
       return 0;
     }
     bad(`dispatch store unreadable at ${dir}: ${error.message}`);
@@ -394,6 +417,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   if (files.length === 0) {
     section('0 record');
     note(`the dispatch store ${dir} is empty — no request was ever claimed on this host`);
+    capSummary(NONE);
     return 0;
   }
 
@@ -414,14 +438,12 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // count a live pane joins — never whether the row is shown, and never a
   // verdict. A checkout `gh` cannot name loses the per-repository number and
   // keeps everything else (#88).
-  const declarations = declarationOf(cwd);
-  const declared = declarations();
-  const slug = repoSlug(args => exec('gh', args, cwd));
   let alive = 0;
   let mine = 0;
   let nameless = 0;
   let suspects = 0;
   let unplaced = 0;
+  const unmeasured = { machine: 0, mine: 0 };
   const drift = [];
   const matched = new Set();
   const hosts = hostReader(hostScopes(run, declarations), terminals);
@@ -433,6 +455,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // carries; a remote handle it does not carry is put to that host itself.
     const { verdict } = hosts.verdictFor(row.handle, row.why, row.host);
     const { pane, detail } = verdict;
+    const ours = row.repo !== '' && slug !== '' && row.repo.toLowerCase() === slug.toLowerCase();
     if (pane === 'VIVANT') {
       alive += 1;
       // The record's own `repo` places the pane, never the path its worktree
@@ -440,7 +463,15 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // checkout is still that checkout's pane. An absent key is UNKNOWN, so it
       // joins the machine total alone and is disclosed as its own count (F-028).
       if (row.repo === '') nameless += 1;
-      else if (slug !== '' && row.repo.toLowerCase() === slug.toLowerCase()) mine += 1;
+      else if (ours) mine += 1;
+    } else if (pane === 'INCONNU' && row.handle !== null) {
+      // A RECORDED PANE NOBODY COULD DECIDE — neither count carries it, and
+      // that is the number both dispatch verbs turn into cannot-establish
+      // (../worker/capacity.mjs). Printing it here is what lets a reader see
+      // why a dispatch it is about to attempt may refuse without any cap being
+      // full: an absence of information is not an absence of a child (F-028).
+      unmeasured.machine += 1;
+      if (ours) unmeasured.mine += 1;
     }
     // A row left unknowable by the LOCAL list's own omission — a record whose
     // placement no phase could name, so no host could be asked for it. That is
@@ -577,22 +608,10 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   }
 
   // THE TWO COUNTS (#88), from the one contract both dispatch verbs refuse with,
-  // so a reader who counts here reads the number that will actually refuse. The
-  // caps come from THIS checkout's declaration; a checkout with none declares
-  // the default per-repository cap and no ceiling, and a checkout `gh` cannot
-  // name gets NOT MEASURED on the per-repository line rather than a zero it
-  // would read as room.
-  const config = declared.ok ? declared.config : {};
-  const ceiling = machineCapOf(config, env);
-  const live = { machine: alive, mine, unknown: nameless };
-  for (const line of capLines({ live, repo: slug, repoCap: repoCapOf(config), machineCap: ceiling.ok ? ceiling.cap : null })) note(line);
-  if (!ceiling.ok) {
-    // The ceiling is DECLARED now, and a retired knob left in a shell would
-    // read as the one in force. This verb counts rather than dispatches, so it
-    // discloses instead of refusing — the two dispatch verbs refuse on it.
-    note(`${ceiling.from} is set and is no longer read: declare ${ceiling.to} in ax.config.json to arm a ceiling`);
-  }
-  if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
+  // so a reader who counts here reads the number that will actually refuse — the
+  // same summary the empty-store paths above print, with the numbers this store
+  // established.
+  capSummary({ machine: alive, mine, unknown: nameless, unmeasured });
   if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
   // A shortened list says so, one line per class withheld, each with the flag
   // that lengthens it: an omission a reader cannot see is the same defect as a

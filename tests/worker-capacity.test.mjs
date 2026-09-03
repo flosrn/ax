@@ -31,7 +31,7 @@ test('liveCount counts only recorded handles whose pane is alive and owned', () 
   ]);
   // term_b is orphaned, term_gone has no pane, term_editor has no record:
   // none of them is dispatch capacity.
-  assert.deepEqual(liveCount({ index, inventory, repo: 'acme/widgets' }), { machine: 1, mine: 1, unknown: 0 });
+  assert.deepEqual(liveCount({ index, inventory, repo: 'acme/widgets' }), { machine: 1, mine: 1, unknown: 0, unmeasured: { machine: 0, mine: 0 } });
 });
 
 test('liveCount scopes the per-repository count by the repository each record NAMES', () => {
@@ -53,14 +53,51 @@ test('liveCount scopes the per-repository count by the repository each record NA
     ['term_theirs_2', { orphaned: false }],
     ['term_nameless', { orphaned: false }],
   ]);
-  assert.deepEqual(liveCount({ index, inventory, repo: 'flosrn/ax' }), { machine: 4, mine: 1, unknown: 1 });
+  const none = { machine: 0, mine: 0 };
+  assert.deepEqual(liveCount({ index, inventory, repo: 'flosrn/ax' }), { machine: 4, mine: 1, unknown: 1, unmeasured: none });
   // The same store read from the other checkout: a slug differing only in case
   // is the same repository, which is the comparison `ax worker start` already
   // makes when it refuses a foreign record.
-  assert.deepEqual(liveCount({ index, inventory, repo: 'goodluckagency/ofmchat' }), { machine: 4, mine: 2, unknown: 1 });
+  assert.deepEqual(liveCount({ index, inventory, repo: 'goodluckagency/ofmchat' }), { machine: 4, mine: 2, unknown: 1, unmeasured: none });
   // A caller that cannot name itself owns NOTHING it can count, and says so
   // through capVerdict rather than reading zero as room.
-  assert.deepEqual(liveCount({ index, inventory, repo: '' }), { machine: 4, mine: 0, unknown: 1 });
+  assert.deepEqual(liveCount({ index, inventory, repo: '' }), { machine: 4, mine: 0, unknown: 1, unmeasured: none });
+});
+
+test('liveCount: a pane its host could not answer for is UNMEASURED, scoped by the repository it names', () => {
+  // Not "not capacity": a container that could not be read (F-028). The scope
+  // matters, because only this repository's own unknowns can make the count
+  // `dispatch.cap` gates unmeasurable.
+  const index = {
+    byDispatch: new Map([
+      ['d1', { handle: 'term_mine', repo: 'flosrn/ax', env: '' }],
+      ['d2', { handle: 'term_mine_far', repo: 'flosrn/ax', env: 'gapicore' }],
+      ['d3', { handle: 'term_far', repo: 'goodluckagency/ofmchat', env: 'gapicore' }],
+    ]),
+  };
+  const inventory = {
+    ok: true,
+    byHandle: new Map([['term_mine', { orphaned: false }]]),
+    omitted: true,
+    unresolved: [
+      { handle: 'term_mine_far', repo: 'flosrn/ax', host: 'gapicore', reason: 'ssh_unreachable' },
+      { handle: 'term_far', repo: 'goodluckagency/ofmchat', host: 'gapicore', reason: 'ssh_unreachable' },
+    ],
+  };
+  assert.deepEqual(liveCount({ index, inventory, repo: 'flosrn/ax' }), {
+    machine: 1,
+    mine: 1,
+    unknown: 0,
+    unmeasured: { machine: 2, mine: 1 },
+  });
+  // Read from the other checkout, the same store: its own unknown is the one
+  // that could make ITS cap unmeasurable, and mine is only a machine-total fact.
+  assert.deepEqual(liveCount({ index, inventory, repo: 'goodluckagency/ofmchat' }), {
+    machine: 1,
+    mine: 0,
+    unknown: 0,
+    unmeasured: { machine: 2, mine: 1 },
+  });
 });
 
 test('repoCapOf: dispatch.cap is the fairness cap, and an undeclared one is 3', () => {
@@ -98,7 +135,12 @@ test('machineCapOf refuses BOTH retired env knobs by name, and names the declara
   assert.equal(machineCapOf({ dispatch: { machineCap: 8 } }, { ORCA_TRIAGE_SESSION_CAP: '2' }).ok, false);
 });
 
-const live = (machine, mine, unknown = 0) => ({ machine, mine, unknown });
+/**
+ * `unmeasured` is the panes whose LIVENESS could not be established — a record
+ * on a host that could not be asked. They are not "not capacity": they are a
+ * container that could not be read, scoped by the repository each names.
+ */
+const live = (machine, mine, unknown = 0, unmeasured = { mine: 0, machine: 0 }) => ({ machine, mine, unknown, unmeasured });
 
 test('capVerdict refuses on the per-repository cap, naming both numbers and the repair', () => {
   const out = capVerdict({ live: live(5, 3), adding: 1, repo: 'flosrn/ax', repoCap: 3, machineCap: null });
@@ -137,20 +179,80 @@ test('capVerdict: the per-repository cap is checked first, so the repair a check
   assert.equal(out.scope, 'repository', 'the cap this checkout can act on names itself first');
 });
 
-test('capVerdict discloses a per-repository count it could not establish (F-028)', () => {
+test('capVerdict: a per-repository cap that cannot be COUNTED authorizes no dispatch (F-028)', () => {
+  // Ruled 2026-09-03 on #88: an unmeasurable cap is an inability, not room. A
+  // mutation never proceeds on a container that could not be read, so this is
+  // cannot-establish — about the machine, not about the subject.
   const out = capVerdict({ live: live(4, 0, 4), adding: 1, repo: '', repoCap: 3, machineCap: null });
-  assert.equal(out.ok, true, 'an uncountable cap is a disclosed absence, not a refusal');
-  assert.ok(
-    out.notes.some(line => /NOT MEASURED/.test(line) && /dispatch\.cap/.test(line)),
-    `the absence is announced, not read as room: ${JSON.stringify(out.notes)}`,
-  );
-  // With no ceiling either, NOTHING gates this dispatch, and that is the one
-  // state #88 is about: it may not pass in silence.
-  assert.ok(out.notes.some(line => /no cap gates/.test(line)), JSON.stringify(out.notes));
+  assert.equal(out.ok, false);
+  assert.equal(out.kind, 'cannot', 'an inability, never a refusal about the ticket');
+  assert.equal(out.scope, 'repository');
+  assert.match(out.message, /NOT MEASURED|cannot be counted/);
+  assert.match(out.repair, /origin/, 'route one: make gh able to name this checkout');
+  assert.match(out.repair, /dispatch\.machineCap/, 'route two: declare the ceiling that then bounds it');
+});
+
+test('capVerdict: a declared ceiling BOUNDS a checkout that cannot be named, so the dispatch proceeds', () => {
+  const bounded = capVerdict({ live: live(4, 0, 4), adding: 1, repo: '', repoCap: 3, machineCap: 6 });
+  assert.equal(bounded.ok, true, 'the ceiling is the bound the ruling names');
+  assert.ok(bounded.notes.some(line => /NOT MEASURED/.test(line)), 'and the absent per-repository count is still disclosed');
+
+  const over = capVerdict({ live: live(6, 0, 6), adding: 1, repo: '', repoCap: 3, machineCap: 6 });
+  assert.equal(over.ok, false, 'and it really bounds: the ceiling still refuses');
+  assert.equal(over.kind, 'refuse');
+  assert.equal(over.scope, 'machine');
+});
+
+test('capVerdict: a pane of THIS repository whose liveness is unestablished stops the dispatch', () => {
+  // The review finding on PR #129, and the same rule: a record on a host that
+  // could not be asked understates the count the fence uses, so authorizing
+  // against it would admit a pane past a cap that is already full.
+  const out = capVerdict({
+    live: live(1, 1, 0, { mine: 1, machine: 1 }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.kind, 'cannot');
+  assert.equal(out.scope, 'repository');
+  assert.match(out.message, /1 pane\(s\) in flosrn\/ax/);
+  assert.match(out.message, /could not be asked|liveness/);
+  assert.match(out.repair, /ax worker ls/);
+});
+
+test('capVerdict: an unestablished pane of ANOTHER repository stops nothing until a ceiling is armed (#88)', () => {
+  // The other edge of the same rule. An unknown pane elsewhere understates the
+  // MACHINE total alone, and nothing gates on that total until an operator arms
+  // the fuse — reading it as a hard inability would park this repository on
+  // another checkout's unreachable host, which is #88 through a new door.
+  const unarmed = capVerdict({
+    live: live(1, 0, 0, { mine: 0, machine: 1 }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  });
+  assert.equal(unarmed.ok, true);
+  assert.ok(unarmed.notes.some(line => /could not be asked|not in either count/.test(line)), JSON.stringify(unarmed.notes));
+
+  const armed = capVerdict({
+    live: live(1, 0, 0, { mine: 0, machine: 1 }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: 3,
+  });
+  assert.equal(armed.ok, false, 'an armed ceiling counts every pane, so an unknown one makes the total unmeasurable');
+  assert.equal(armed.kind, 'cannot');
+  assert.equal(armed.scope, 'machine');
+  assert.match(armed.repair, /ax worker ls/);
 });
 
 test('capLines label each count by its scope, and never call a machine total the cap count', () => {
-  const lines = capLines({ live: live(5, 2, 1), repo: 'flosrn/ax', repoCap: 3, machineCap: null }).join('\n');
+  const lines = capLines({ live: live(5, 2, 1, { mine: 0, machine: 2 }), repo: 'flosrn/ax', repoCap: 3, machineCap: null }).join('\n');
+  assert.match(lines, /2 pane\(s\).*could not be asked/, 'a pane whose liveness is unknown is in neither count, and the line says so');
   assert.match(lines, /2 live pane\(s\) in flosrn\/ax/, 'this repository’s count, said as such');
   assert.match(lines, /dispatch\.cap 3/, 'with the cap that gates it');
   assert.match(lines, /5 live pane\(s\) on this machine/, 'the machine total, on its own line');
