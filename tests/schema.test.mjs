@@ -20,6 +20,41 @@ test('the shipped schema only uses keywords the validator implements', () => {
   assert.deepEqual(validate(minimal(), schema), []);
 });
 
+// The case above is blind in exactly one direction, by construction: it walks
+// the shipped schema through the same admission gate, so a keyword LISTED as
+// supported and implemented nowhere passes it. `patternProperties` was that
+// keyword, and both of its modes were measured on the unfixed validator — with
+// nothing beside it, a value violating the pattern subschema produced zero
+// errors; beside `additionalProperties: false`, a key the pattern MATCHED was
+// refused as `unknown key`, an error that denies the keyword exists. So the
+// admission list is pinned from the other side too: what it does not name is
+// refused, by name, at the node that declared it.
+const refusal = at => ({
+  name: 'Error',
+  message: `ax.schema.json uses unsupported keyword "patternProperties" at ${at}`,
+});
+
+test('a keyword the validator does not implement is refused, never admitted unimplemented', () => {
+  const open = { type: 'object', patternProperties: { '^[a-z]+$': { type: 'integer' } } };
+  assert.throws(() => validate({ abc: 'not-an-integer' }, open), refusal('root'));
+
+  // The inverted mode: a matching key carrying a valid value, which the key loop
+  // used to reach `additionalProperties` with the pattern map never consulted.
+  const closed = { type: 'object', additionalProperties: false, patternProperties: { '^[a-z]+$': { type: 'integer' } } };
+  assert.throws(() => validate({ abc: 1 }, closed), refusal('root'));
+});
+
+test('the refusal names the node that declares the keyword', () => {
+  const onAChild = { type: 'object', properties: { apps: { type: 'object', patternProperties: { '^[a-z]+$': { type: 'string' } } } } };
+  assert.throws(() => validate({ apps: { web: 'apps/web' } }, onAChild), refusal('apps'));
+
+  const deeper = {
+    type: 'object',
+    properties: { triage: { type: 'object', properties: { labels: { type: 'object', patternProperties: { '^[a-z]+$': { type: 'string' } } } } } },
+  };
+  assert.throws(() => validate({ triage: { labels: { bug: 'ready-for-agent' } } }, deeper), refusal('triage.labels'));
+});
+
 test('a minimal config validates and gains every default', () => {
   const config = applyDefaults(minimal(), schema);
   assert.deepEqual(config.ports.dev, [3100, 3999]);
