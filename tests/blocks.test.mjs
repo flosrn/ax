@@ -38,9 +38,18 @@ test('a half-deleted block is refused, not silently duplicated', () => {
   );
 });
 
-test('readBlock reports absence rather than an empty body', () => {
+test('readBlock reports absence rather than an empty body, and refuses an orphan', () => {
   assert.equal(readBlock('nothing here\n', { id: 'ax', style: 'hash' }), null);
   assert.equal(readBlock('# BEGIN:ax\n# END:ax\n', { id: 'ax', style: 'hash' }), '');
+  // AN ORPHANED MARKER IS NOT AN ABSENCE. Returning null for both let a grader
+  // read a half-resolved conflict as "no block here" and name `ax init` as the
+  // repair — the one call that THROWS on this exact file (Codex, PR #117). One
+  // condition, one disposition, and it is the disposition applyBlock already
+  // has.
+  assert.throws(
+    () => readBlock('# BEGIN:ax\norphan\n', { id: 'ax', style: 'hash' }),
+    /unterminated managed block "ax"/,
+  );
 });
 
 test('comment style comes from the filename, and an unknown one is refused', () => {
