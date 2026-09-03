@@ -292,8 +292,12 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
   // name one pass of a wave: triage children run `--worktree current`, so every
   // pass of the wave shares the needle and the unscoped read answers whichever
   // file was touched last — a neighbouring pass reported as this one. The
-  // request id is the only disambiguator, `dispatchProof` always took it, and
-  // until now the CLI had no way to pass what `verifyPassRole` passes.
+  // request id is the only disambiguator an operator holds, `dispatchProof`
+  // always took it, and until now the CLI had no way to pass what
+  // `verifyPassRole` passes. Behind the flag, the request names its pass
+  // through its RECORD (`ORCA_DISPATCH_STORE`): the newest `worker-start`
+  // receipt's `ctx_…`, which Orca wrote into the first turn of the one session
+  // it created — never the prose the child was handed (#126).
   const proofFlag = argv.includes('--dispatch-proof') ? '--dispatch-proof' : '--launch-proof';
   const proofAt = argv.indexOf(proofFlag);
   if (proofAt !== -1) {
@@ -320,10 +324,11 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
       }
     }
     const rootAt = argv.indexOf('--sessions');
-    // Zero or two candidates under a named request is an inability to
-    // establish, never newest-wins: `sessionFileForNeedle` answers null and
-    // this exits 1 with nothing on stdout, so no caller can read a sibling
-    // pass as this one (F-028 — an ambiguity is not an answer).
+    // A request with no dispatch on record, and zero or two owners of the
+    // dispatch it names, are all an inability to establish, never newest-wins:
+    // `dispatchProof` answers null and this exits 1 with nothing on stdout, so
+    // no caller can read a sibling pass as this one (F-028 — an ambiguity is
+    // not an answer).
     const found = dispatchProof({
       needle,
       request: requestAt === -1 ? '' : argv[requestAt + 1],
@@ -569,8 +574,15 @@ function sessionsById(root, target) {
  * message says whether the top-level role and every declared autoload skill
  * reached the first turn. Neither proposition can stand in for the other.
  */
-export function dispatchProof({ needle, request = '', env = process.env, sessionsRoot } = {}) {
-  const file = sessionFileForNeedle({ needle, request, env, sessionsRoot });
+export function dispatchProof({ needle, request = '', env = process.env, sessionsRoot, store = defaultStore(env) } = {}) {
+  // A request names a pass through its RECORD — the newest `worker-start`
+  // receipt's `ctx_…` — never through the prose the child was handed (#126).
+  // A request with no dispatch on record owns no session, and that is `null`
+  // here rather than a fall back to the unscoped newest-wins read: a caller
+  // that named a pass must never be answered with a neighbouring one.
+  const dispatchId = request === '' ? '' : dispatchOfRequest(store, request);
+  if (request !== '' && dispatchId === '') return null;
+  const file = sessionFileForNeedle({ needle, dispatchId, env, sessionsRoot });
   if (file === null) return null;
 
   let model = null;
@@ -685,31 +697,41 @@ function sessionFilesForCwd({ cwd, env = process.env, sessionsRoot } = {}) {
 }
 
 /**
- * Does this session OWN the request — i.e. did the dispatch write it into the
- * session's first task spec — as opposed to merely mentioning it later?
+ * Does this session OWN the dispatch — i.e. is it the session Orca created for
+ * it — as opposed to merely mentioning it later?
  *
  * A whole-file substring match cannot tell those apart, and the difference is
  * not academic: the reconciliation read this resolver serves is typed BY the
  * orchestrator, IN the checkout its children share, and that session's own
- * transcript carries the request id twice over — the dispatch output it read,
+ * transcript carries the dispatch twice over — the dispatch output it read,
  * and the command it just ran. Measured on this host 2026-09-03, four real
  * triage passes: the whole-file match found 9, 14, 15 and 16 candidate files
- * each, and the session whose first task spec named the request was exactly one
+ * each, and the session whose first turn carried the dispatch was exactly one
  * every time. So the "exactly one match" rule below was not selecting a pass —
  * it was refusing on an ambiguity the caller created by asking.
  *
- * The FIRST user turn is what a dispatch actually writes (`--spec-file`), and
- * nothing a session says afterwards can add to it. A session with no user turn
- * at all owns nothing, which is the honest answer for a pane that never took a
- * turn (F-028 — an unknown is not a match).
+ * The FIRST user turn is what Orca writes when it creates the session — the
+ * preamble naming `ctx_…`, then the spec — and nothing a session says afterwards
+ * can add to it. A session with no user turn at all owns nothing, which is the
+ * honest answer for a pane that never took a turn (F-028 — an unknown is not a
+ * match).
+ *
+ * THE TOKEN IS THE DISPATCH ID, MATCHED WHOLE (#126). The request id was the key
+ * until 2026-09-03, and it reaches a triage child only as prose — its draft
+ * path — with two defects measured on this host: `triage-flosrn-ax-10` is a
+ * prefix of the #100–#103 children's first turns, and pass 2 of an issue names
+ * pass 1's draft path in its own spec, so one request owned two sessions and
+ * refused. `ctx_…` is minted per dispatch and written by Orca into the session
+ * it created; the record maps a request to its newest one (`newestDispatch`).
  */
-function ownsRequest(path, request) {
+function ownsDispatch(path, dispatchId) {
   let text;
   try {
     text = readFileSync(path, 'utf8');
   } catch {
     return false;
   }
+  const whole = new RegExp(`(^|[^A-Za-z0-9_])${dispatchId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
   for (const line of text.split('\n')) {
     if (line === '' || !line.includes('"user"')) continue;
     let entry;
@@ -721,23 +743,65 @@ function ownsRequest(path, request) {
     if (entry?.type !== 'message' || entry.message?.role !== 'user') continue;
     const content = entry.message.content;
     const parts = Array.isArray(content) ? content : [{ type: 'text', text: String(content ?? '') }];
-    return parts
+    return whole.test(parts
       .filter(part => part.type === 'text')
       .map(part => String(part.text ?? ''))
-      .join('\n')
-      .includes(request);
+      .join('\n'));
   }
   return false;
 }
 
-function sessionFileForNeedle({ needle, request = '', env = process.env, sessionsRoot } = {}) {
+/**
+ * The newest `worker-start` phase's dispatch id and issue time, or `''`.
+ *
+ * ONLY a `worker-start` phase may name a dispatch — every other phase that
+ * happens to carry a `dispatchId` is display metadata. That rule, and the
+ * `beganAt` floor `./delivered.mjs` applies, are record.mjs's
+ * (`dispatchIndex`), and they are restated here rather than re-derived
+ * loosely: a witness that picks a different dispatch than the verb deciding
+ * whether a pane may be closed is worse than no witness.
+ *
+ * WHY `beganAt`: "a record claimed at 10:00 whose worker-start ran at 11:00
+ * would accept a 10:30 comment as after the dispatch" — a `--resume` or
+ * `--replace` can issue its mutation hours after the record was claimed, and
+ * `createdAt` is only the fallback for records written before the field existed.
+ */
+export function newestDispatch(rec) {
+  const attempts = Array.isArray(rec?.attempts) ? rec.attempts : [];
+  for (let a = attempts.length - 1; a >= 0; a -= 1) {
+    const phases = Array.isArray(attempts[a].phases) ? attempts[a].phases : [];
+    for (let p = phases.length - 1; p >= 0; p -= 1) {
+      const phase = phases[p];
+      if (phase.name !== 'worker-start') continue;
+      const id = ((phase.receipt ?? {}).result ?? {}).dispatchId;
+      if (typeof id === 'string' && id !== '') return { id, issuedAt: String(phase.beganAt ?? '') };
+    }
+  }
+  return { id: '', issuedAt: '' };
+}
+
+/**
+ * The dispatch a request's record names, or `''` when there is no record, it
+ * cannot be read, or no `worker-start` came back with an id. All three are the
+ * same absence to a caller: a request that names no dispatch owns no session,
+ * and nothing here reaches for the prose instead (F-028).
+ */
+function dispatchOfRequest(store, request) {
+  try {
+    return newestDispatch(JSON.parse(readFileSync(join(store, `${request}.json`), 'utf8'))).id;
+  } catch {
+    return '';
+  }
+}
+
+function sessionFileForNeedle({ needle, dispatchId = '', env = process.env, sessionsRoot } = {}) {
   const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
   if (files.length === 0) return null;
-  if (request !== '') {
+  if (dispatchId !== '') {
     // Still exactly one, and still never newest-wins: zero owners and two
-    // owners are both an inability to establish. What changed is only WHICH
-    // files count as candidates.
-    const matching = files.filter(path => ownsRequest(path, request));
+    // owners are both an inability to establish. What the key changed is only
+    // WHICH files count as candidates.
+    const matching = files.filter(path => ownsDispatch(path, dispatchId));
     return matching.length === 1 ? matching[0] : null;
   }
   return files.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);

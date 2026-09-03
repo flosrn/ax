@@ -56,44 +56,7 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
-import { sessionFileForNeedle, stampOf, worktreesOf } from './transcript.mjs';
-
-/**
- * The newest `worker-start` phase's dispatch id and issue time, or `''`.
- *
- * ONLY a `worker-start` phase may name a dispatch — every other phase that
- * happens to carry a `dispatchId` is display metadata. That rule, and the
- * `beganAt` floor below, are record.mjs's (`dispatchIndex`), and they are
- * restated here rather than re-derived loosely: a witness that picks a different
- * dispatch than the verb deciding whether a pane may be closed is worse than no
- * witness.
- *
- * WHY THE ID AT ALL: it is the one token identifying one dispatch inside a
- * worktree's session history. Measured 2026-08-24 on the live #56 file, every
- * session record carries `cwd`
- * (`{"type":"session",…,"cwd":"…/.worktrees/56-work"}`), so the request id
- * matches EVERY session ever opened in that worktree, a stranger's included.
- * `ctx_…` is minted per Dispatch and injected into the worker's preamble, and it
- * was verified present in that same file.
- *
- * WHY `beganAt`: "a record claimed at 10:00 whose worker-start ran at 11:00
- * would accept a 10:30 comment as after the dispatch" — a `--resume` or
- * `--replace` can issue its mutation hours after the record was claimed, and
- * `createdAt` is only the fallback for records written before the field existed.
- */
-function newestDispatch(rec) {
-  const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
-  for (let a = attempts.length - 1; a >= 0; a -= 1) {
-    const phases = Array.isArray(attempts[a].phases) ? attempts[a].phases : [];
-    for (let p = phases.length - 1; p >= 0; p -= 1) {
-      const phase = phases[p];
-      if (phase.name !== 'worker-start') continue;
-      const id = ((phase.receipt ?? {}).result ?? {}).dispatchId;
-      if (typeof id === 'string' && id !== '') return { id, issuedAt: String(phase.beganAt ?? '') };
-    }
-  }
-  return { id: '', issuedAt: '' };
-}
+import { newestDispatch, sessionFileForNeedle, stampOf, worktreesOf } from './transcript.mjs';
 
 /**
  * `{ known: false, reason }` | `{ known: true, delivered, at, lastAt, count, file }`.
@@ -149,14 +112,15 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
   // genuine repair and write the marker that tells the watcher a child runs.
   //
   // The request id cannot draw that line — every session record carries `cwd`,
-  // so it names the worktree whoever opened it. `sessionFileForNeedle` takes any
-  // content needle, and the one that is unique per dispatch is `ctx_…`. Zero or
-  // two matches is an inability to testify, which is the safe direction (F-028).
+  // so it names the worktree whoever opened it. The one token unique per
+  // dispatch is `ctx_…`, read from the record by the reader every family shares
+  // (`newestDispatch`, in transcript.mjs since #126). Zero or two matches is an
+  // inability to testify, which is the safe direction (F-028).
   const { id: dispatchId, issuedAt } = newestDispatch(rec);
   if (dispatchId === '') {
     return { known: false, reason: `the record at ${recordPath} names no dispatched worker, so no session can be tied to it` };
   }
-  const file = sessionFileForNeedle({ needle: basename(worktree), request: dispatchId, env, sessionsRoot });
+  const file = sessionFileForNeedle({ needle: basename(worktree), dispatchId, env, sessionsRoot });
   if (file === null) return { known: false, reason: `no single session under ${worktree} names ${dispatchId}` };
 
   // And a session older than the mutation that created the pane cannot be that

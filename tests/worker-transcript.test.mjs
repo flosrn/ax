@@ -283,64 +283,74 @@ test('dispatch proof carries the exact pre-turn role refusal', () => {
   });
 });
 
+/**
+ * One pass as the dispatch store knows it: a record whose newest `worker-start`
+ * receipt names the `ctx_…` Orca minted. The reader keys on THAT id, never on
+ * the request id in the child's prose (#126).
+ */
+function passRecord(store, request, dispatchId) {
+  const { path } = claimRecord(store, request);
+  initRecord(path, { request, orca: 'orca', host: 'mac', now: () => '2026-09-03T08:00:00.000Z' });
+  phaseBegin(path, { name: 'worker-start', identity: `id-${dispatchId}`, argv: ['worker-start'] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { dispatchId, state: 'ready', stage: 'input_accepted' } }) });
+  return path;
+}
+
+/** A child's session file: Orca's preamble names the dispatch, the spec names the draft path. */
+function childSession(dir, name, { dispatchId, request, role = 'triage-worker', skills = ['triage'], model = 'anthropic/claude-opus-5' }) {
+  writeFileSync(
+    join(dir, `${name}.jsonl`),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `You are a dispatched worker. Your dispatch is ${dispatchId}. Write your verdict to /repo/.scratch/triage/${request}.md.` }] } }),
+      JSON.stringify({ type: 'model_change', model, role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role, skills, status: 'applied' } }),
+    ].join('\n'),
+  );
+}
+
 test('a request id selects one triage session among siblings sharing the current checkout', () => {
   const root = scratch();
+  const store = join(root, 'store');
   const dir = join(root, '-repo-current');
   mkdirSync(dir, { recursive: true });
-  for (const request of ['triage-acme-7', 'triage-acme-8']) {
-    writeFileSync(
-      join(dir, `${request}.jsonl`),
-      [
-        JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
-        JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
-        JSON.stringify({
-          type: 'custom_message',
-          customType: 'skill-prompt',
-          details: { role: 'triage-worker', skills: ['triage'], status: 'applied' },
-        }),
-      ].join('\n'),
-    );
+  for (const [request, dispatchId] of [['triage-acme-7', 'ctx_a7a7a7a7a7a7'], ['triage-acme-8', 'ctx_b8b8b8b8b8b8']]) {
+    passRecord(store, request, dispatchId);
+    childSession(dir, request, { dispatchId, request, skills: ['triage', request] });
   }
 
-  assert.deepEqual(dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole, {
+  assert.deepEqual(dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store })?.sessionRole, {
     status: 'applied',
     role: 'triage-worker',
-    skills: ['triage'],
+    skills: ['triage', 'triage-acme-7'],
   });
-  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root }), null, 'two matches are ambiguity');
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme', sessionsRoot: root, store }), null, 'a request with no record names no dispatch, so it owns nothing (F-028)');
 });
 
 // The P1 on PR #124, and the reason it matters more than a sibling collision:
 // the repair line this whole feature advertises is run FROM the orchestrator
 // session, in the same checkout the children share. That session's own
-// transcript names the request — it printed the dispatch output, and it typed
-// the command — so a whole-file `.includes(request)` match counts the caller
-// as a candidate beside the child and refuses on an ambiguity it invented.
+// transcript names the dispatch — it printed the dispatch output, and it typed
+// the command — so a whole-file match counts the caller as a candidate beside
+// the child and refuses on an ambiguity it invented.
 //
 // Measured on this host, 2026-09-03: for four real triage passes, the whole-file
-// match found 9, 14, 15 and 16 candidate files; the session whose FIRST TASK
-// SPEC names the request was exactly one, every time. Reconciliation would have
+// match found 9, 14, 15 and 16 candidate files; the session whose FIRST TURN
+// carried the dispatch was exactly one, every time. Reconciliation would have
 // exited 1 on every invocation.
 //
-// OWNERSHIP IS THE FIRST TASK SPEC, which is what a dispatch actually writes
-// into its child. A later mention is discussion, not ownership.
-test('a session that merely MENTIONS the request is not a candidate for owning it', () => {
+// OWNERSHIP IS THE FIRST TURN, which is where Orca's preamble names the
+// dispatch it created the session for. A later mention is discussion.
+test('a session that merely MENTIONS the dispatch is not a candidate for owning it', () => {
   const root = scratch();
+  const store = join(root, 'store');
   const dir = join(root, '-repo-current');
   mkdirSync(dir, { recursive: true });
   const request = 'triage-acme-7';
+  const dispatchId = 'ctx_a7a7a7a7a7a7';
+  passRecord(store, request, dispatchId);
+  childSession(dir, 'child', { dispatchId, request });
 
-  // The child: the request arrives in its first task spec.
-  writeFileSync(
-    join(dir, 'child.jsonl'),
-    [
-      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
-      JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
-      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
-    ].join('\n'),
-  );
-
-  // The orchestrator: its own first turn is its own work, and the request shows
+  // The orchestrator: its own first turn is its own work, and the dispatch shows
   // up later — in the dispatch output it read and the repair it was told to run.
   writeFileSync(
     join(dir, 'orchestrator.jsonl'),
@@ -348,64 +358,81 @@ test('a session that merely MENTIONS the request is not a candidate for owning i
       JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'run the triage wave over this pile' }] } }),
       JSON.stringify({ type: 'model_change', model: 'anthropic/claude-opus-5', role: 'default' }),
       JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'orchestrator', skills: [], status: 'applied' } }),
-      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `issue #7 → session '${request}' (pass 1)` }] } }),
+      JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `RAN — dispatch=${dispatchId} stage=input_accepted state=ready` }] } }),
       JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `ax worker transcript --dispatch-proof current --request ${request}` }] } }),
     ].join('\n'),
   );
 
-  const proof = dispatchProof({ needle: 'current', request, sessionsRoot: root });
+  const proof = dispatchProof({ needle: 'current', request, sessionsRoot: root, store });
   assert.notEqual(proof, null, 'the caller naming the request must not make its own read ambiguous');
-  assert.deepEqual(proof.sessionRole, { status: 'applied', role: 'triage-worker', skills: ['triage'] }, 'the child that OWNS the request, not the session discussing it');
+  assert.deepEqual(proof.sessionRole, { status: 'applied', role: 'triage-worker', skills: ['triage'] }, 'the child that OWNS the dispatch, not the session discussing it');
 });
 
-// WHY THE MATCH IS TEXTUAL-WITHIN-THE-FIRST-TURN AND NOT A DECLARED FIELD, which
-// review asked about on #124 and this test is the answer to.
-//
-// Nothing a dispatch writes carries the id in a structured slot. It reaches the
-// child inside PROSE, in two different shapes, and this ONE resolver serves both:
-//
-//   triage (`../triage/spec.mjs`)   the draft path — `…/.scratch/triage/<request>.md`
-//   delivered (`./delivered.mjs`)   the preamble sentence naming `ctx_…`
-//
-// So a "structural" tightening — requiring the id to look like a path basename —
-// would pass the first shape and BREAK the second, and the second is what
-// authorizes closing someone's pane (`briefDelivered`). Both shapes are pinned
-// here so a future tightening cannot satisfy one and silently lose the other.
-test('one resolver owns both shapes a dispatch writes: a draft path and a preamble dispatch id', () => {
+// #126 — WHY THE KEY IS THE DISPATCH ID FROM THE RECORD, AND NOT THE REQUEST ID
+// IN THE CHILD'S PROSE. The request reaches a triage child only as its draft
+// path, and a substring match on it has two defects measured on this host
+// 2026-09-03: `triage-flosrn-ax-10` is a prefix of the #100–#103 children's
+// first turns (four owners, so #10's read refuses for as long as they exist),
+// and pass 2 of any issue names pass 1's draft path in its own spec, so one
+// request owns two sessions. `ctx_…` has neither defect: Orca mints it per
+// dispatch, fixed length, and writes it into the first turn of the session it
+// created — the worker family (`./delivered.mjs`) always keyed on it. The record
+// is what maps a request to its newest dispatch, and it does so for every
+// record ever written, so nothing falls back to prose.
+test('the request resolves through the record to the dispatch Orca minted — a prose prefix and a pass 1 draft path own nothing', () => {
   const root = scratch();
+  const store = join(root, 'store');
   const dir = join(root, '-repo-current');
   mkdirSync(dir, { recursive: true });
 
-  // The triage shape: the request appears only as the draft path it must write.
-  writeFileSync(
-    join(dir, 'triage-child.jsonl'),
-    [
-      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Write your verdict to /repo/.scratch/triage/triage-acme-7.md.' }] } }),
-      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
-      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
-    ].join('\n'),
-  );
-  // The delivered shape: a `ctx_…` id in the preamble, as prose and never a path
-  // (`tests/worker-start.test.mjs` writes exactly this sentence).
-  writeFileSync(
-    join(dir, 'worker-child.jsonl'),
-    [
-      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker. Your dispatch is ctx_abc123' }] } }),
-      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
-      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'worker', skills: ['implementation'], status: 'applied' } }),
-    ].join('\n'),
+  // #10 beside #100: the request id of the first is a prefix of the second's prose.
+  passRecord(store, 'triage-acme-10', 'ctx_101010101010');
+  childSession(dir, 'ten', { dispatchId: 'ctx_101010101010', request: 'triage-acme-10', skills: ['triage', 'ten'] });
+  passRecord(store, 'triage-acme-100', 'ctx_100100100100');
+  childSession(dir, 'hundred', { dispatchId: 'ctx_100100100100', request: 'triage-acme-100', skills: ['triage', 'hundred'] });
+  assert.deepEqual(
+    dispatchProof({ needle: 'current', request: 'triage-acme-10', sessionsRoot: root, store })?.sessionRole.skills,
+    ['triage', 'ten'],
+    '#10 owns exactly its own session, whatever prose #100 carries',
   );
 
-  assert.equal(
-    dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole.role,
-    'triage-worker',
-    'the draft-path shape resolves',
+  // Pass 2 of #7: its spec names pass 1's draft path, and the record's newest
+  // worker-start names the second dispatch.
+  const path = passRecord(store, 'triage-acme-7', 'ctx_070707070707');
+  childSession(dir, 'seven-pass-1', { dispatchId: 'ctx_070707070707', request: 'triage-acme-7', skills: ['triage', 'pass-1'] });
+  phaseBegin(path, { name: 'worker-start', identity: 'id-pass-2', argv: ['worker-start', '--resume'] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_727272727272', state: 'ready' } }) });
+  writeFileSync(
+    join(dir, 'seven-pass-2.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker. Your dispatch is ctx_727272727272. This is PASS 2 on this issue. Pass 1 already ran and its verdict is at /repo/.scratch/triage/triage-acme-7.md — read it first. Write your verdict to /repo/.scratch/triage/triage-acme-7.2.md.' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage', 'pass-2'], status: 'applied' } }),
+    ].join('\n'),
   );
-  assert.equal(
-    dispatchProof({ needle: 'current', request: 'ctx_abc123', sessionsRoot: root })?.sessionRole.role,
-    'worker',
-    'and so does the preamble shape a path-based rule would have lost',
+  assert.deepEqual(
+    dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store })?.sessionRole.skills,
+    ['triage', 'pass-2'],
+    'the newest dispatch of the request, not both passes that name its path',
   );
+
+  // A dispatch id that is a prefix of another owns nothing it did not create.
+  passRecord(store, 'triage-acme-9', 'ctx_09');
+  childSession(dir, 'nine-long', { dispatchId: 'ctx_09090909', request: 'triage-acme-9' });
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-9', sessionsRoot: root, store }), null, 'the id is matched whole, never as a prefix');
+
+  // Two sessions carrying the same dispatch id is an ambiguity, never newest-wins.
+  passRecord(store, 'triage-acme-11', 'ctx_111111111111');
+  childSession(dir, 'eleven-a', { dispatchId: 'ctx_111111111111', request: 'triage-acme-11' });
+  childSession(dir, 'eleven-b', { dispatchId: 'ctx_111111111111', request: 'triage-acme-11' });
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-11', sessionsRoot: root, store }), null, 'two owners cannot be established');
+
+  // A record whose worker-start never came back names no dispatch, and an
+  // unknown is not a match (F-028).
+  const { path: bare } = claimRecord(store, 'triage-acme-12');
+  initRecord(bare, { request: 'triage-acme-12', orca: 'orca', host: 'mac', now: () => '2026-09-03T08:00:00.000Z' });
+  childSession(dir, 'twelve', { dispatchId: 'ctx_121212121212', request: 'triage-acme-12' });
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-12', sessionsRoot: root, store }), null, 'no dispatch on the record, no owner');
 });
 
 // Issue #97: the point-in-time CANNOT-ESTABLISH verdict of `ax triage dispatch`
@@ -419,7 +446,7 @@ test('one resolver owns both shapes a dispatch writes: a draft path and a preamb
 // usage error rather than an unscoped read.
 
 /** The proof mode with the streams kept apart: stdout is the proof, and only that. */
-function proofRun(argv) {
+function proofRun(argv, env = { HOME: '/nonexistent-home' }) {
   const outs = [];
   const errs = [];
   const stdout = process.stdout.write;
@@ -428,7 +455,7 @@ function proofRun(argv) {
   process.stderr.write = chunk => (errs.push(String(chunk)), true);
   let code;
   try {
-    code = transcript(argv, { env: { HOME: '/nonexistent-home' } });
+    code = transcript(argv, { env });
   } finally {
     process.stdout.write = stdout;
     process.stderr.write = stderr;
@@ -437,87 +464,88 @@ function proofRun(argv) {
 }
 
 /**
- * A checkout shared by N triage passes, each naming its own request id.
+ * A checkout shared by N triage passes, each with its own record and dispatch.
  *
  * Every pass carries a DISTINGUISHABLE payload — the skill and the model name
  * carry the request id — because the sibling files are otherwise byte-identical
  * proofs, and an unscoped newest-mtime read would then satisfy an assertion
  * about the pass it did not select. Written in order, so the LAST request is
- * the newest and is what a newest-wins fallback would answer.
+ * the newest and is what a newest-wins fallback would answer. The CLI reads the
+ * store through `ORCA_DISPATCH_STORE`, exactly as an operator's shell would.
  */
 function wave(requests) {
   const root = scratch();
+  const store = join(root, 'store');
   const dir = join(root, '-repo-current');
   mkdirSync(dir, { recursive: true });
   for (const request of requests) {
-    writeFileSync(
-      join(dir, `${request}.jsonl`),
-      [
-        JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `write .scratch/triage/${request}.md` }] } }),
-        JSON.stringify({ type: 'model_change', model: `anthropic/claude-opus-5-${request}`, role: 'default' }),
-        JSON.stringify({
-          type: 'custom_message',
-          customType: 'skill-prompt',
-          details: { role: 'triage-worker', skills: ['triage', request], status: 'applied' },
-        }),
-      ].join('\n'),
-    );
+    const dispatchId = `ctx_${request.replace(/[^a-z0-9]/g, '')}`;
+    passRecord(store, request, dispatchId);
+    childSession(dir, request, { dispatchId, request, skills: ['triage', request], model: `anthropic/claude-opus-5-${request}` });
   }
-  return root;
+  return { root, store, env: { HOME: '/nonexistent-home', ORCA_DISPATCH_STORE: store } };
 }
 
 test('--dispatch-proof --request names one pass of a wave, as one JSON line on stdout', () => {
-  const root = wave(['triage-acme-8', 'triage-acme-7']);
+  const { root, store, env } = wave(['triage-acme-8', 'triage-acme-7']);
 
-  const r = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-8', '--sessions', root]);
+  const r = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-8', '--sessions', root], env);
   assert.equal(r.code, 0);
   assert.equal(r.out.trimEnd().split('\n').length, 1, 'the remote reader takes the FIRST stdout line as the proof');
   assert.deepEqual(
     JSON.parse(r.out),
-    dispatchProof({ needle: 'current', request: 'triage-acme-8', sessionsRoot: root }),
+    dispatchProof({ needle: 'current', request: 'triage-acme-8', sessionsRoot: root, store }),
     'the CLI answers exactly what the reader it wraps answers',
   );
   assert.match(r.out, /triage-acme-8/, 'the named pass, not the newest one beside it');
   assert.doesNotMatch(r.out, /triage-acme-7/, 'an unscoped newest-wins read would answer the sibling');
 });
 
-test('--request with two or zero candidates cannot establish — exit 1, and never newest-wins', () => {
-  const root = wave(['triage-acme-7', 'triage-acme-8']);
+test('--request with two or zero owners cannot establish — exit 1, and never newest-wins', () => {
+  const { root, store, env } = wave(['triage-acme-7', 'triage-acme-8']);
 
-  const two = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme', '--sessions', root]);
-  assert.equal(two.code, 1, 'two matches is an ambiguity, not a pick');
-  assert.equal(two.out, '', 'nothing on stdout, so no caller reads a neighbouring pass as this one');
+  const unrecorded = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme', '--sessions', root], env);
+  assert.equal(unrecorded.code, 1, 'a request with no record names no dispatch');
+  assert.equal(unrecorded.out, '', 'nothing on stdout, so no caller reads a neighbouring pass as this one');
 
-  const none = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-9', '--sessions', root]);
+  const none = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-9', '--sessions', root], env);
   assert.equal(none.code, 1);
   assert.equal(none.out, '');
+
+  // Two sessions opened for one dispatch id: an ambiguity, not a pick.
+  const dir = join(root, '-repo-current');
+  childSession(dir, 'triage-acme-7-again', { dispatchId: 'ctx_triageacme7', request: 'triage-acme-7' });
+  const two = proofRun(['--dispatch-proof', 'current', '--request', 'triage-acme-7', '--sessions', root], env);
+  assert.equal(two.code, 1, 'two owners is an ambiguity, not a pick');
+  assert.equal(two.out, '');
+  assert.equal(dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store }), null);
 });
 
 test('--request without a value, or a value that is a flag, is a usage error', () => {
-  const root = wave(['triage-acme-7']);
+  const { root, env } = wave(['triage-acme-7']);
   // `bad`/`fix` write to stdout by this repository's convention (src/log.mjs),
   // exactly as the missing-needle check beside this one does. What must never
   // appear is a PROOF line: the remote reader parses the first stdout line, and
   // a silently-defaulted read would hand it a neighbouring pass as this one.
   const noProof = out => assert.throws(() => JSON.parse(out.split('\n')[0]), 'no caller can parse a proof out of a usage error');
 
-  const bare = proofRun(['--dispatch-proof', 'current', '--sessions', root, '--request']);
+  const bare = proofRun(['--dispatch-proof', 'current', '--sessions', root, '--request'], env);
   assert.equal(bare.code, 2);
   assert.match(bare.out, /--request expects the request id/);
   noProof(bare.out);
 
-  const flagged = proofRun(['--dispatch-proof', 'current', '--request', '--sessions', root]);
+  const flagged = proofRun(['--dispatch-proof', 'current', '--request', '--sessions', root], env);
   assert.equal(flagged.code, 2, 'a flag consumed as a value would read an unscoped newest-wins proof');
   assert.match(flagged.out, /--request expects the request id/);
   noProof(flagged.out);
 });
 
 test('the retired --launch-proof spelling carries --request identically', () => {
-  const root = wave(['triage-acme-7', 'triage-acme-8']);
+  const { root, store, env } = wave(['triage-acme-7', 'triage-acme-8']);
 
-  const r = proofRun(['--launch-proof', 'current', '--request', 'triage-acme-7', '--sessions', root]);
+  const r = proofRun(['--launch-proof', 'current', '--request', 'triage-acme-7', '--sessions', root], env);
   assert.equal(r.code, 0);
-  assert.deepEqual(JSON.parse(r.out), dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root }));
+  assert.deepEqual(JSON.parse(r.out), dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store }));
   assert.doesNotMatch(r.out, /triage-acme-8/, 'the alias scopes, it does not fall back to newest');
   assert.match(r.err, /retired/, 'the alias still warns, and still on stderr');
 });
