@@ -184,8 +184,11 @@ const pidAlive = pid => {
   }
 };
 
+/** A synchronous pause, for the one caller here that has nothing else to do. */
+const sleepSync = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
 /**
- * The exclusive right to REPLACE this record, host-local, held for the whole
+ * The exclusive right to WRITE this record, host-local, held for the whole
  * gesture.
  *
  * `claimRecord` guards the birth of a record; nothing guarded its replacement.
@@ -200,31 +203,48 @@ const pidAlive = pid => {
  * reapers can each delete the other's new lock. Normal release removes only
  * the token it created; a crashed holder needs explicit repair after the
  * operator proves no replacement survives.
+ *
+ * THE WAIT (#95). The claim winner and the claim loser contend for one lock,
+ * and the loser's automatic replay must survive meeting it: a `held: false`
+ * answered at once turned every honest overlap into an exit 3 against a live
+ * owner. With `waitMs > 0` a lock held by a LIVE process on this host is
+ * waited out — the window re-arms on every proof of liveness, so an honestly
+ * slow holder (two Orca calls under CI load) is never refused, however long
+ * its mint takes. What cannot be proven is bounded: a holder on another host,
+ * or a lock file caught between its `wx` and its write, gets the whole window
+ * once and then the same named refusal as before. A holder proven DEAD is
+ * refused immediately, exactly as before — the wait is never a takeover.
  */
-export function acquireLock(path, { pid = process.pid, host = hostname(), suffix = '.lock' } = {}) {
+export function acquireLock(path, { pid = process.pid, host = hostname(), suffix = '.lock', waitMs = 0, pollMs = 50, sleep = sleepSync, clock = Date.now } = {}) {
   const lock = `${path}${suffix}`;
   const token = randomUUID();
-  try {
-    const fd = openSync(lock, 'wx', 0o600);
+  let armedAt = clock();
+  for (;;) {
     try {
-      writeFileSync(fd, JSON.stringify({ pid, host, token, at: new Date().toISOString() }));
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    try {
-      const holder = JSON.parse(readFileSync(lock, 'utf8'));
-      const stale = holder.host === host && !pidAlive(Number(holder.pid));
-      return {
-        held: false,
-        reason: stale
-          ? `pre-existing stale lock at ${lock} from dead pid ${holder.pid}; automatic takeover is refused`
-          : `pre-existing lock at ${lock} belongs to ${holder.host} pid ${holder.pid}`,
-      };
-    } catch (readError) {
-      return { held: false, reason: `the replace lock at ${lock} is unreadable: ${String(readError.message ?? readError)}` };
+      const fd = openSync(lock, 'wx', 0o600);
+      try {
+        writeFileSync(fd, JSON.stringify({ pid, host, token, at: new Date().toISOString() }));
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      let refusal;
+      try {
+        const holder = JSON.parse(readFileSync(lock, 'utf8'));
+        const local = holder.host === host;
+        if (local && !pidAlive(Number(holder.pid))) {
+          return { held: false, reason: `pre-existing stale lock at ${lock} from dead pid ${holder.pid}; automatic takeover is refused` };
+        }
+        if (local) armedAt = clock();
+        refusal = `pre-existing lock at ${lock} belongs to ${holder.host} pid ${holder.pid}`;
+      } catch (readError) {
+        refusal = `the replace lock at ${lock} is unreadable: ${String(readError.message ?? readError)}`;
+      }
+      if (waitMs <= 0 || clock() >= armedAt + waitMs) return { held: false, reason: refusal };
+      sleep(pollMs);
     }
   }
 
