@@ -87,6 +87,20 @@
 // the rule above forbids ax from minting, so the honest repair is a command the
 // operator runs — never a `worker-show`, which is a look and not an action.
 //
+// PLACEMENT IS BY REPOSITORY, NEVER BY PATH (#83)
+// Landing proof is asked of ONE repository, so a row may only be judged when it
+// belongs to the repository this run can ask about. That predicate was path
+// containment against the checkout's toplevel until 2026-09-02, and ax places
+// every child under Orca's workspace root — outside the checkout by
+// construction. So no ax-dispatched pane was ever a candidate: the first pane
+// this repository had to release (PR #79 merged, pane alive) was `continue`d
+// before any tally, absent from all five buckets of a 92-row receipt, while the
+// `--dispatch` route printed the same fact honestly. The key that places a row
+// is the dispatch record's own `repo` (`--tracker-repo`), and a record naming
+// none is UNKNOWN — not ours, not foreign, authorizing nothing (F-028). Whatever
+// is declined is COUNTED and NAMED; a silent `continue` is how a receipt reports
+// a clean sweep over the row it existed to close.
+//
 // DEFAULT IS A REPORT. Nothing closes without --close.
 //
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
@@ -121,7 +135,7 @@ import {
   requestIdOk,
   attemptSettle,
 } from './record.mjs';
-import { physical, withinPath } from '../worktree/locate.mjs';
+import { physical } from '../worktree/locate.mjs';
 
 const USAGE =
   'ax worker release [--all] [--close] [--dispatch <id>] [--no-proof] [--base <ref>] [--gap <s>] [--store <dir>]';
@@ -147,6 +161,7 @@ const ORCA_BINARY = /(^|\/)(orca|orca-ide|orca-dev)$/;
  * for whoever patches the verb, `--help` is for whoever is typing it, and an
  * operator deciding whether to close someone's pane is reading the terminal.
  */
+
 
 /** The store namespace release records live in — never beside the dispatches. */
 export const RELEASE_NS = 'release';
@@ -656,22 +671,39 @@ export function release(
   const git = (at, args) => exec('git', ['-c', `safe.directory=${at}`, '-C', at, ...args], cwd);
   const gh = args => exec('gh', args, cwd);
 
-  // THE CHECKOUT THIS RUN CAN PROVE THINGS ABOUT. Landing proof is a question
+  // THE REPOSITORY THIS RUN CAN PROVE THINGS ABOUT. Landing proof is a question
   // asked of ONE repository — `gh repo view` here, in this working directory —
-  // so a candidate may only be proven when its worktree lives inside that
-  // checkout. Without this, `--all` and `--dispatch` asked repository A about a
-  // pane belonging to repository B: a same-named branch merged in A would close
-  // a live session in B, which is the exact failure the proof rule exists to
-  // prevent.
+  // so a row may only be judged when it BELONGS to that repository. Without the
+  // scope, `--all` and `--dispatch` asked repository A about a pane belonging to
+  // repository B: a same-named branch merged in A would close a live session in
+  // B, which is the exact failure the proof rule exists to prevent.
+  //
+  // THE PREDICATE IS SAME-REPOSITORY, NEVER SAME-PATH (#83). It was path
+  // containment against this checkout's toplevel until 2026-09-02, and ax places
+  // every child under Orca's workspace root — outside the checkout by
+  // construction. So on the first pane this repository ever had to release (PR
+  // #79 merged, pane alive) the sweep tallied 92 rows and offered none of them:
+  // the live merged row was `continue`d before any tally, absent from all five
+  // buckets. A worktree of THIS repository is provable from here wherever Orca
+  // put it — Orca placement is a linked git worktree of the same repository, so
+  // the `git -C <worktree>` calls below are correct over it — and the key that
+  // says so is the one the dispatch record carries (`--tracker-repo`).
+  //
+  // `git worktree list` cannot be that predicate: the case this verb exists for
+  // is the post-merge row whose worktree is already GONE, and a removed worktree
+  // is in no worktree list. It can corroborate a tree that still exists, nothing
+  // more.
   const top = exec('git', ['rev-parse', '--show-toplevel'], cwd);
   const home = physical(firstLine(top.stdout));
-  // A machine-wide sweep is opt-in: this verb closes panes, and doing it to every
-  // repository on the host because the caller happened to sit outside one is not
-  // a default. `--dispatch` names its own row and needs no path scope.
-  if (!all && only === '' && (top.status !== 0 || home === '')) {
-    return cannot('not inside a git repository and --all not given — refusing to sweep machine-wide by accident', 'ax worker release --all   # every repo on this machine');
+  // A sweep needs a repository to scope itself to, and this working directory is
+  // where the answer comes from. `--dispatch` names one row and still compares
+  // its record against `repo` below.
+  if (only === '' && (top.status !== 0 || home === '')) {
+    return cannot(
+      'not inside a git repository, so this sweep has no repository to scope itself to — placement is the repository a record NAMES',
+      'cd <a checkout of the repository whose panes you are releasing> && ax worker release',
+    );
   }
-  const scope = all || only !== '' ? '' : home;
 
   const viewed = repoView(gh);
   const repo = viewed.slug;
@@ -700,7 +732,7 @@ export function release(
   const rows = [...workers.rows, ...unaccounted(index, seen)];
 
   const selfHandle = env.ORCA_TERMINAL_HANDLE ?? '';
-  const tally = { released: 0, pending: 0, noTerminal: 0, gone: 0, unprovable: 0 };
+  const tally = { released: 0, pending: 0, noTerminal: 0, gone: 0, unprovable: 0, foreign: 0, unplaced: 0 };
   const lines = [];
   const candidates = [];
   let matched = 0;
@@ -711,23 +743,151 @@ export function release(
     lines.push({ level: 'note', text: line, repair });
   };
 
+  // ARCHAEOLOGY, BEHIND --all. A row declined for a reason that needs no
+  // repository to establish — a pane already released, gone, never recorded, or
+  // one whose release is in flight — is COUNTED on every route and shown one
+  // line each under `--all`: the same reading `ax worker ls --all` settled
+  // (#82), where the flag changes what is SHOWN and never what was established.
+  // `--all` is this repository's archaeology and nothing else — it stopped
+  // meaning "every repo on this machine" when placement stopped being a path
+  // (#83), so a row belonging to another repository is never listed here as if
+  // this run had read it.
+  const archaeology = [];
+  // How much of those buckets nothing places: a share of the counts above, and
+  // never a bucket beside them (see `caused` below).
+  let unplacedByCause = 0;
+
   for (const row of rows) {
     if (only !== '' && row.dispatchId !== only) continue;
     matched += 1;
 
     const terminal = row.handle === '' ? undefined : terminals.byHandle.get(row.handle);
-    // Canonical paths on both sides: `withinPath` compares physical paths, and a
-    // raw `/scope/../elsewhere` from an inventory starts with the scope as a
-    // string while naming a tree outside it.
+    // Canonical on both sides: the proof calls below ask the filesystem and git
+    // about this path, and a raw `/scope/../elsewhere` from an inventory names a
+    // tree other than the one it reads like.
     const worktree = physical(row.worktree || String(terminal?.worktreePath ?? ''));
-    if (scope !== '' && worktree !== '' && !withinPath(worktree, scope)) continue;
+
+    // WHICH REPOSITORY THIS ROW BELONGS TO — from the record that dispatched it,
+    // never from where its worktree sits. `ours` is judged on artifacts; the
+    // other two are declined by `decline()`, each in its own named bucket.
+    //
+    // An absent `repo` key is UNKNOWN: a record written before `--tracker-repo`
+    // existed carries none, and reading that absence as "this repository" would
+    // let any checkout close every legacy pane on a host-global store (F-028;
+    // that legacy gap is #78's). It is unknown even when the worktree lies
+    // inside this checkout — path containment is not evidence about a
+    // repository, which is the whole finding of #83.
+    //
+    // THE IDENTITY IS THE BARE SLUG, trimmed and case-folded, because that is
+    // already what a repository IS in this package: `../pr-gate.mjs` binds a
+    // ticket with the same comparison and `./settle.mjs` scopes its write with
+    // it. A second identity shape introduced here would be a second convention
+    // beside a shipped one, and it would read every existing record as unknown.
+    //
+    // `--no-proof` asks no artifact question, so it has no repository to scope:
+    // that route is ONE named pane an operator says they have looked at, and
+    // closing a pane belongs to no repository. It is also the only route left
+    // for a row nothing places, which is why `decline()` names it.
+    //
+    // TWO RESIDUALS THIS PREDICATE HAS AND CANNOT CLOSE FROM HERE (both found in
+    // review on #118, both needing the WRITE side to change first):
+    //   * A dispatch class that records no repository is unplaceable by
+    //     construction, not just historically: `../worker/dispatch.mjs` omits
+    //     `--tracker-repo` for `--name` and for any tracker whose URL is not
+    //     GitHub-shaped (every Linear ticket). Their panes take the `unknown`
+    //     branch forever, and `--no-proof` is their route until the write side
+    //     records the checkout that dispatched them.
+    //   * The key names `owner/repo` and no forge. `trackerRepoOf` accepts a
+    //     GitHub Enterprise URL and keeps only the slug, and `repoView` answers
+    //     `nameWithOwner`, so one host-global store cannot tell
+    //     `github.com/owner/repo` from `ghe.example.com/owner/repo`. Comparing a
+    //     host neither side records would make EVERY row unknown, so the fix is
+    //     to record it at dispatch first — until then, two same-named
+    //     repositories on two forges, dispatched from one machine, compare equal.
+    const entry = index.byDispatch.get(row.dispatchId);
+    const belongsTo = entry?.repo ?? '';
+    const placed = noProof
+      ? 'ours'
+      : belongsTo === ''
+        ? 'unknown'
+        : belongsTo.toLowerCase() === repo.trim().toLowerCase()
+          ? 'ours'
+          : 'foreign';
+    // A CAUSE ESTABLISHED WITHOUT ANY REPOSITORY — the pane is released, gone,
+    // never recorded, or its release is in flight. Two disclosures ride on it:
+    // the row is listed under `--all` when it is OURS, and it is COUNTED as
+    // unplaced-by-record when nothing places it, so the receipt can say how much
+    // of its own tally has no repository on record (F-028, #78's gap: 219 of the
+    // 243 records on this machine, 2026-09-03). That second number is stated as
+    // a share OF those buckets, never as a bucket beside them — a row counted
+    // twice is how these numbers stop being readable.
+    const caused = reason => {
+      if (placed === 'unknown') unplacedByCause += 1;
+      if (all && placed === 'ours') archaeology.push(`${row.dispatchId} · ${row.workerState}/${row.terminalState} · ${reason}`);
+    };
+
+    // ONE DECLINE, IN TWO MOMENTS. On a sweep a declined row is counted in the
+    // bucket that says why; when the caller NAMED it, it is printed with the
+    // command that can judge it from where it belongs.
+    const decline = () => {
+      if (only === '') {
+        if (placed === 'foreign') tally.foreign += 1;
+        else tally.unplaced += 1;
+        return;
+      }
+      keep(
+        placed === 'foreign'
+          ? `${row.dispatchId} · ${row.workerState}/${row.terminalState} · KEEP · its record names ${belongsTo}, and this run can only prove landing in ${repo}`
+          : `${row.dispatchId} · ${row.workerState}/${row.terminalState} · KEEP · nothing places this pane: ${
+              entry === undefined ? 'this host recorded no request for it' : 'its record names no repository'
+            }, and an absent repository is UNKNOWN, never "this one" (F-028)`,
+        placed === 'foreign'
+          ? worktree === ''
+            ? `cd <your ${belongsTo} checkout> && ax worker release --close --dispatch ${row.dispatchId}`
+            : `cd ${worktree} && ax worker release --close --dispatch ${row.dispatchId}`
+          // A REPAIR THAT CHANGES THE OUTCOME, not a second look at the absence
+          // (validated review finding on #118). Reading the record again still
+          // computes `unknown`, so this row would refuse forever: what closes it
+          // is the route that already exists for one pane an operator has read —
+          // `--no-proof`, which asks no artifact question and therefore needs no
+          // repository. The transcript is named first because that is what makes
+          // the operator's claim ("I looked at it") true rather than asserted,
+          // and no ax verb may make it for them.
+          : `orca orchestration worker-read --dispatch ${row.dispatchId} --json   # read the pane, then close it on your own word: ax worker release --close --dispatch ${row.dispatchId} --no-proof${
+              entry === undefined
+                ? '. This host recorded no request for it, so nothing here can place it'
+                : `. Its record ${join(store, entry.file)} names no repository — written before --tracker-repo existed, and nothing here may guess one (#78)`
+            }`,
+      );
+    };
+
+    // A PROVEN FOREIGN ROW LEAVES HERE, before any pane-state tally. This run
+    // says nothing about another repository's pane — not even that it is already
+    // released or gone, which would count it among THIS checkout's archaeology
+    // and show it under `--all`.
+    //
+    // UNKNOWN is not the same claim (F-028): a record naming no repository is
+    // not proven foreign, so the facts establishable about its pane without any
+    // repository at all — released, gone, no pane recorded, a release in flight —
+    // are still counted under their own cause, and only the JUDGEMENT is
+    // declined, at the placement site further down. Folding those into the
+    // placement bucket would rebuild the residual this file was written to
+    // remove: 219 of the 243 records on this machine carry no repository, and
+    // `129 already released · 104 terminal gone` would become one unreadable
+    // number.
+    if (placed === 'foreign') {
+      decline();
+      continue;
+    }
 
     if (row.terminalState === 'released') {
       tally.released += 1;
+      caused('already released — nothing to close');
       continue;
     }
     if (row.terminalState === 'release_pending') {
       tally.pending += 1;
+      caused('a release is in flight — it settles on its own or it is chased, never re-issued from here');
       continue;
     }
     if (row.terminalState === 'release_unknown') {
@@ -750,6 +910,7 @@ export function release(
     }
     if (row.handle === '') {
       tally.noTerminal += 1;
+      caused('no terminal recorded — this dispatch never named a pane to close');
       continue;
     }
 
@@ -769,12 +930,18 @@ export function release(
       // runtimes, and no mapping between the two is established.
       const owner = index.byDispatch.get(row.dispatchId)?.env;
       const localProven = owner === '' && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
-      if (terminals.omitted && !localProven) tally.unprovable += 1;
-      else tally.gone += 1;
+      if (terminals.omitted && !localProven) {
+        tally.unprovable += 1;
+        caused(`pane ${row.handle} is absent from a terminal list that omitted hosts — UNKNOWN here, never a corpse`);
+      } else {
+        tally.gone += 1;
+        caused(`pane ${row.handle} is gone — the terminal this dispatch opened no longer exists`);
+      }
       continue;
     }
     if (terminal.orphaned === true) {
       tally.gone += 1;
+      caused(`pane ${row.handle} is orphaned — its process is gone`);
       continue;
     }
 
@@ -872,20 +1039,17 @@ export function release(
       );
       continue;
     }
-    // And the pane has to sit in the checkout whose repository this run can ask
-    // about. A pane we cannot place is never proven — asking THIS repo about
-    // ANOTHER repo's branch is how a same-named merged PR closes a live session.
-    if (worktree === '' || !withinPath(worktree, home)) {
-      keep(
-        `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · ${worktree === '' ? 'no worktree recorded' : `outside ${home}`} — this run can only prove landing in ${repo || 'this checkout'}`,
-        worktree === ''
-          ? `orca orchestration worker-show --dispatch ${row.dispatchId} --json   # establish where it belongs, then release from there`
-          : `cd ${worktree} && ax worker release --close --dispatch ${row.dispatchId}`,
-      );
+    // PLACEMENT'S SECOND MOMENT, at the last instant before the artifact
+    // question: only `unknown` reaches here (a proven foreign row left before
+    // any pane-state tally), and it is declined by the SAME helper — one decline
+    // in one place, so a route cannot drift into naming a repair the other does
+    // not (it did, for one commit on #118: the late copy still named a
+    // `worker-show` that changes nothing).
+    if (placed !== 'ours') {
+      decline();
       continue;
     }
 
-    const entry = index.byDispatch.get(row.dispatchId);
     candidates.push({
       ...row,
       worktree,
@@ -966,12 +1130,27 @@ export function release(
   // Every row is in exactly ONE place: printed with its repair above, or counted
   // here. A cause that appeared in both would make these numbers unreadable, and
   // an unreadable summary is what the residual this replaced already was.
+  //
+  // The last two buckets are the silent `continue` #83 removed: a row is
+  // declined by PLACEMENT, and a decline this receipt does not name is how 92
+  // tallied rows hid the one live merged pane the run existed to close.
   note(
     `not offered: ${tally.released} already released · ${tally.gone} terminal gone · ${tally.noTerminal} no terminal recorded · ` +
-      `${tally.pending} release in flight · ${tally.unprovable} pane not establishable`,
+      `${tally.pending} release in flight · ${tally.unprovable} pane not establishable · ` +
+      `${tally.foreign} in another repository · ${tally.unplaced} no repository on record`,
   );
   if (tally.unprovable > 0) {
     note(`hosts omitted from this terminal list (${terminals.omittedHosts.join(', ')}): a handle absent from it is UNKNOWN here, never a corpse`);
+  }
+  if (tally.unplaced + unplacedByCause > 0) {
+    note(
+      `no repository on record: ${tally.unplaced} declined at placement · ${unplacedByCause} of the buckets above — UNKNOWN, never assumed ours (F-028), so nothing there authorizes a close; ` +
+        '`ax worker release --dispatch <id>` prints each one with the pane read and the --no-proof close that is its only route',
+    );
+  }
+  if (archaeology.length > 0) {
+    note(`--all: the ${archaeology.length} row(s) counted above, one line each — this repository's archaeology, and nothing another repository owns`);
+    for (const line of archaeology) note(`  ${redactSecrets(line)}`);
   }
   if (index.missing) note(`no dispatch store at ${store} — no provenance on this host, so no bulk proof either`);
   for (const broken of index.unreadable) note(`record ${broken.file} is unreadable (${broken.error}) — the dispatches it names have no provenance here`);

@@ -13,6 +13,7 @@ import {
   attemptNew,
   claimRecord,
   dispatchFields,
+  dispatchIndex,
   dispatcherRunForPane,
   initRecord,
   newIdentity,
@@ -400,6 +401,40 @@ test('dispatch fields take the newest worker but recover --run from older phases
   noTerminal.attempts[0].phases[1].receipt.result.effects = [{ kind: 'worktree', id: 'wt_1' }];
   writeFileSync(path, JSON.stringify(noTerminal));
   assert.throws(() => dispatchFields(path), /terminal effect/);
+});
+
+// ── the repository a dispatch belongs to, on the index entry ─────────────────
+//
+// #83: `ax worker release` scoped its sweep by PATH — the checkout's toplevel —
+// so no Orca-placed child (`~/orca/workspaces/<slug>`) was ever a candidate. The
+// predicate that expresses the real intent is the record's own `repo`, and the
+// index never surfaced it, which is why this is a prerequisite of that fix
+// rather than an afterthought.
+
+test('the index surfaces the repository a record names, and absence is not a repository', () => {
+  const dir = store();
+  const dispatched = (request, dispatchId, options) => {
+    const path = join(dir, `${request}.json`);
+    claimRecord(dir, request);
+    initRecord(path, { request, orca: 'orca', ...options });
+    phaseBegin(path, { name: 'worker-start', identity: `${request}-1`, argv: ['orca', 'orchestration', 'worker-start'] });
+    phaseEnd(path, 'last', {
+      exit: 0,
+      receiptText: JSON.stringify({ ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: `term_${dispatchId}` }] } }),
+    });
+  };
+
+  dispatched('83-env-sweep', 'ctx_ours', { repo: '  flosrn/ax  ' });
+  dispatched('7-other', 'ctx_theirs', { repo: 'goodluckagency/ofmchat' });
+  // A record written before `--tracker-repo` existed (pre-0.17.0): it carries no
+  // key at all, and reading that as "this repository" would let any checkout
+  // claim every legacy pane on a host-global store (F-028).
+  dispatched('legacy-1', 'ctx_legacy', {});
+
+  const index = dispatchIndex(dir);
+  assert.equal(index.byDispatch.get('ctx_ours').repo, 'flosrn/ax', 'trimmed, as initRecord wrote it');
+  assert.equal(index.byDispatch.get('ctx_theirs').repo, 'goodluckagency/ofmchat');
+  assert.equal(index.byDispatch.get('ctx_legacy').repo, '', 'no key is the empty name, never a guessed one');
 });
 
 // ── which Run dispatched the session sitting in THIS pane ─────────────────────

@@ -13,7 +13,7 @@ import { readBlock } from '../src/blocks.mjs';
 import { loadConfig, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
 import { BLOCK_BODIES, LEGACY_OMP_LOADER_SOURCE, init } from '../src/init.mjs';
-import { MANAGED_BLOCKS } from '../src/plan.mjs';
+import { MANAGED_BLOCKS, planProject } from '../src/plan.mjs';
 
 let dir = '';
 const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
@@ -143,7 +143,7 @@ test('the preflight guards what the plan will write, not a file it exempts', () 
     // Exempt means untouched, and a symlink is the sharpest proof available:
     // following it would rewrite a file outside the checkout entirely.
     assert.equal(readFileSync(outside, 'utf8'), '# Someone else doctrine\n');
-    assert.equal(readBlock(readFileSync(join(own, '.gitignore'), 'utf8'), { id: 'ax', style: 'hash' }), '.worktrees/\n.agent/\n.scratch/');
+    assert.equal(readBlock(readFileSync(join(own, '.gitignore'), 'utf8'), { id: 'ax', style: 'hash' }), planProject({ manifest: { name: '@flosrn/ax' } }).ignore.join('\n'));
 
     // And the guard is not weakened where the plan DOES write: the same symlink
     // in a consumer is still refused before anything is provisioned.
@@ -251,6 +251,53 @@ test('a second init changes nothing', () => {
     MANAGED.map(file => readFileSync(join(dir, file), 'utf8')),
     before,
   );
+});
+
+// The checkout ignores what setup provisions (#83). `ax worktree setup` writes
+// `${config.apps.web}/.env.local`, and release's dirty proof — `git status
+// --porcelain`, untracked files included — returned
+// `KEEP · uncommitted changes on feat/73-schema-comment-everywhere` over a child
+// worktree whose only dirt was that file. Measured 2026-09-02: removing it by
+// hand made the same command answer `CLOSE · PR #79 merged`. On a MakerKit
+// consumer the vendor `.gitignore` already covers the path, which is why it
+// never showed there.
+
+test('the managed block ignores the .env.local setup writes, at any depth', () => {
+  const block = readBlock(readFileSync(join(dir, '.gitignore'), 'utf8'), { id: 'ax', style: 'hash' });
+  const lines = block.split('\n');
+
+  assert.ok(lines.includes('.env.local'), `.env.local must be ignored: ${JSON.stringify(lines)}`);
+  // No slash, so it matches at any depth: this repository's root write and a
+  // consumer's apps/web/.env.local alike.
+  assert.ok(!lines.some(line => line.includes('/.env.local')), 'a rooted pattern would miss apps/web/.env.local');
+});
+
+test('doctor reports a consumer whose managed block lacks .env.local, with a repair', () => {
+  const path = join(dir, '.gitignore');
+  const whole = readFileSync(path, 'utf8');
+  const capture = fn => {
+    const written = [];
+    const stdout = process.stdout.write;
+    process.stdout.write = chunk => (written.push(String(chunk)), true);
+    try {
+      return { code: fn(), out: written.join('') };
+    } finally {
+      process.stdout.write = stdout;
+    }
+  };
+
+  // The state every consumer initialised by an older ax is in: the block is
+  // present, and one line ax owns is missing from it.
+  writeFileSync(path, whole.replace('.env.local\n', ''));
+  try {
+    const r = capture(() => doctor(dir));
+    assert.equal(r.code, 1);
+    assert.match(r.out, /\.gitignore: the managed block does not list \.env\.local/);
+    assert.match(r.out, /ax init/);
+  } finally {
+    writeFileSync(path, whole);
+  }
+  assert.equal(doctor(dir), 0, 'restored, the fixture is coherent again');
 });
 
 test('doctor fails on a guarded tree path claimed by neither side', () => {
@@ -595,11 +642,13 @@ test('the package repository carries the .gitignore block and no AGENTS.md block
       'ax init wrote a generated consumer block into the package own doctrine',
     );
     assert.match(authored, /own authored doctrine/);
-    assert.equal(readBlock(readFileSync(join(own, '.gitignore'), 'utf8'), { id: 'ax', style: 'hash' }), '.worktrees/\n.agent/\n.scratch/');
+    assert.equal(readBlock(readFileSync(join(own, '.gitignore'), 'utf8'), { id: 'ax', style: 'hash' }), planProject({ manifest: { name: '@flosrn/ax' } }).ignore.join('\n'));
 
     const graded = capture(() => doctor(own));
     assert.equal(graded.code, 0);
-    assert.match(graded.out, /\.gitignore: managed block present/);
+    // Content, not just presence (#83): the block is graded against `plan.ignore`,
+    // so an older release's block missing a path ax writes is a finding here.
+    assert.match(graded.out, /\.gitignore: managed block lists the 4 paths ax writes/);
     // NOTHING about the file at all, ruled on #96 — not the old repair, and not
     // a `·` line reporting that a file the plan wants nothing in has nothing in
     // it. The exemption is legible where it is decided: `ax init` names the
@@ -680,7 +729,7 @@ test('every managed block the plan names has a body and a reason', () => {
     MANAGED_BLOCKS.map(block => block.file).sort(),
   );
   for (const [file, entry] of Object.entries(BLOCK_BODIES)) {
-    assert.equal(typeof entry.body(), 'string', `${file} has no block body`);
+    assert.equal(typeof entry.body(planProject()), 'string', `${file} has no block body`);
     assert.match(entry.reason, /\S/, `${file} has no reason for the plan to exempt it`);
   }
 });

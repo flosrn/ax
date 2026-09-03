@@ -717,6 +717,14 @@ export function dispatchFields(path) {
  * a phase timestamp exists: a record claimed at 10:00 whose worker-start ran at
  * 11:00 would accept a 10:30 comment as "after the dispatch".
  *
+ * `repo` is the repository the record NAMES, trimmed, or `''` when it names
+ * none — the same reading `recordRepo` gives by path, on the entry a bulk
+ * reader already holds. `ax worker release` scopes its sweep by it (#83): the
+ * store is host-global, so a row is placed by the repository its record names
+ * and never by the path its worktree happens to sit at. An absent key is
+ * UNKNOWN, not ours and not foreign (F-028), which is why it is surfaced as the
+ * empty name rather than defaulted.
+ *
  * Reading is lenient PER FILE and never silent: one unreadable record is named
  * in `unreadable` and the scan continues, because a store this verb cannot fully
  * parse still knows about the other dispatches — but a caller that concludes "no
@@ -749,6 +757,7 @@ export function dispatchIndex(store) {
       unreadable.push({ file, error: `record names request ${JSON.stringify(rec.request)}, which is not ${stem}` });
       continue;
     }
+    const recorded = typeof rec.repo === 'string' ? rec.repo.trim() : '';
     const created = Date.parse(rec.createdAt ?? '');
     const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
 
@@ -779,6 +788,7 @@ export function dispatchIndex(store) {
           request: stem,
           issuedAt: Number.isFinite(began) ? began : Number.isFinite(created) ? created : null,
           file,
+          repo: recorded,
           handle: agentTerminal(result),
           env: Array.isArray(ph.argv) ? argvValue(ph.argv, '--on') ?? '' : '',
           ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',

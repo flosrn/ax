@@ -207,7 +207,23 @@ export function doctor(cwd = process.cwd()) {
       continue;
     }
     if (block === null) fail(`${file} carries no BEGIN:ax block`, 'ax init');
-    else ok(`${file}: managed block present`);
+    // PRESENCE IS NOT CONTENT, and for `.gitignore` the difference is a pane
+    // nobody can release. Every line of `plan.ignore` is a path ax's own tooling
+    // writes, so one missing from a block written by an older release leaves
+    // that file reading as uncommitted work — `ax worker release` then KEEPS the
+    // child worktree forever (#83, measured over the `.env.local` `ax worktree
+    // setup` provisions). Recorded value vs PLAN value, like every other finding
+    // here: the list lives in ./plan.mjs, which `ax init` writes from.
+    //
+    // AGENTS.md is graded on presence alone: its body is generated prose,
+    // rewritten by every release, and diffing it would report drift on every
+    // consumer that has not re-run `ax init`.
+    else if (file === '.gitignore') {
+      const lines = block.split('\n').map(line => line.trim());
+      const missing = plan.ignore.filter(line => !lines.includes(line));
+      if (missing.length > 0) fail(`${file}: the managed block does not list ${missing.join(', ')} — paths ax writes and this checkout does not ignore`, 'ax init');
+      else ok(`${file}: managed block lists the ${plan.ignore.length} paths ax writes`);
+    } else ok(`${file}: managed block present`);
   }
 
   // 4. Vendor ownership is optional. When declared, the remote is found by URL

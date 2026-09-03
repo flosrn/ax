@@ -38,15 +38,10 @@ export const LEGACY_OMP_LOADER_SOURCE = [
   '',
 ].join('\n');
 
-/**
- * Lines ax owns in .gitignore: runtime state of the AX layer, nothing else.
- *
- * `.orca-worktree.json` is deliberately absent while the Orca adapter still
- * lives in the project — ofmchat already ignores it, with a comment saying
- * which script writes it. Claiming it here too would print the same path twice
- * in a file a human reads. It joins this list when `ax orca` does.
- */
-export const GITIGNORE_BODY = ['.worktrees/', '.agent/', '.scratch/'].join('\n');
+// The lines ax owns in `.gitignore` live on the PROJECT PLAN (`./plan.mjs`,
+// `plan.ignore`): `ax init` writes that block and `ax doctor` grades the block
+// it finds against the same field, so target state decided inside either verb
+// would be drift by construction.
 
 function assertManagedPath(root, target) {
   const base = resolve(root);
@@ -87,14 +82,16 @@ export const agentsBody = () =>
  * exempted block is a line in the report and not a file `ax init` quietly
  * stopped touching.
  *
- * `body` is a thunk: `agentsBody()` reads the command registry, and this table
- * is module state. `tests/init-doctor.test.mjs` pins it against
- * `MANAGED_BLOCKS`, because a plan entry with no body here is a crash in the
- * verb rather than a finding.
+ * `body` is a thunk TAKING THE PLAN: `agentsBody()` reads the command registry,
+ * this table is module state, and the `.gitignore` lines are a plan field
+ * (`plan.ignore`) precisely so the verb that writes them and the verb that
+ * grades them read one list. `tests/init-doctor.test.mjs` pins the table
+ * against `MANAGED_BLOCKS`, because a plan entry with no body here is a crash
+ * in the verb rather than a finding.
  */
 export const BLOCK_BODIES = {
   '.gitignore': {
-    body: () => GITIGNORE_BODY,
+    body: plan => plan.ignore.join('\n'),
     reason: 'nothing else in the repository ignores the AX runtime state this layer writes',
   },
   'AGENTS.md': {
@@ -386,7 +383,7 @@ export function init(root, { dryRun = false, vendor } = {}) {
     const path = join(root, file);
     const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
     try {
-      const next = applyBlock(source, { id: BLOCK_ID, body: BLOCK_BODIES[file].body(), style: styleFor(file) });
+      const next = applyBlock(source, { id: BLOCK_ID, body: BLOCK_BODIES[file].body(plan), style: styleFor(file) });
       report(`${file} (BEGIN:${BLOCK_ID})`, next.changed ? writeFile(path, next.text, { dryRun, root }) : 'unchanged');
     } catch (error) {
       bad(`${file} — ${error.message}`);

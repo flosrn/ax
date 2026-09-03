@@ -158,11 +158,17 @@ an empty diff against the base (squash-safe for minutes, then wrong forever), th
 child's own word, and silence. A pane still emitting is BUSY, not closed.
 
   --close            act; without it this is a report and nothing mutates
-  --all              every repo on this machine, not just this checkout
-  --dispatch <id>    exactly one, and it names its own scope
+  --all              also LIST this repository's archaeology (released, gone, no
+                     pane recorded) — never another repository's panes
+  --dispatch <id>    exactly one, still placed by the repository its record names
   --no-proof         you looked at that one pane; never valid for a batch
   --base <ref>       the base landing is measured against (default origin/main)
   --gap <s>          seconds between the two liveness samples (default 2)
+
+Placement is the repository a dispatch RECORD names, never the path its worktree
+sits at: an Orca-placed child is a candidate from any checkout of its repository,
+another repository's row is counted and named, and a record naming no repository
+is UNKNOWN and closes nothing — read its pane, then --no-proof closes it.
 
 Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
       3 cannot establish (no CLI, silent runtime, unreadable inventory, no gh)`,
