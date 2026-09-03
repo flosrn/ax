@@ -358,6 +358,56 @@ test('a session that merely MENTIONS the request is not a candidate for owning i
   assert.deepEqual(proof.sessionRole, { status: 'applied', role: 'triage-worker', skills: ['triage'] }, 'the child that OWNS the request, not the session discussing it');
 });
 
+// WHY THE MATCH IS TEXTUAL-WITHIN-THE-FIRST-TURN AND NOT A DECLARED FIELD, which
+// review asked about on #124 and this test is the answer to.
+//
+// Nothing a dispatch writes carries the id in a structured slot. It reaches the
+// child inside PROSE, in two different shapes, and this ONE resolver serves both:
+//
+//   triage (`../triage/spec.mjs`)   the draft path — `…/.scratch/triage/<request>.md`
+//   delivered (`./delivered.mjs`)   the preamble sentence naming `ctx_…`
+//
+// So a "structural" tightening — requiring the id to look like a path basename —
+// would pass the first shape and BREAK the second, and the second is what
+// authorizes closing someone's pane (`briefDelivered`). Both shapes are pinned
+// here so a future tightening cannot satisfy one and silently lose the other.
+test('one resolver owns both shapes a dispatch writes: a draft path and a preamble dispatch id', () => {
+  const root = scratch();
+  const dir = join(root, '-repo-current');
+  mkdirSync(dir, { recursive: true });
+
+  // The triage shape: the request appears only as the draft path it must write.
+  writeFileSync(
+    join(dir, 'triage-child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Write your verdict to /repo/.scratch/triage/triage-acme-7.md.' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
+    ].join('\n'),
+  );
+  // The delivered shape: a `ctx_…` id in the preamble, as prose and never a path
+  // (`tests/worker-start.test.mjs` writes exactly this sentence).
+  writeFileSync(
+    join(dir, 'worker-child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker. Your dispatch is ctx_abc123' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'm', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'worker', skills: ['implementation'], status: 'applied' } }),
+    ].join('\n'),
+  );
+
+  assert.equal(
+    dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root })?.sessionRole.role,
+    'triage-worker',
+    'the draft-path shape resolves',
+  );
+  assert.equal(
+    dispatchProof({ needle: 'current', request: 'ctx_abc123', sessionsRoot: root })?.sessionRole.role,
+    'worker',
+    'and so does the preamble shape a path-based rule would have lost',
+  );
+});
+
 // Issue #97: the point-in-time CANNOT-ESTABLISH verdict of `ax triage dispatch`
 // is re-derivable only by the verb that actually reads the session file — and
 // it could not be pointed at ONE pass of a wave. Triage children run
