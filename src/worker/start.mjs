@@ -88,9 +88,10 @@ function parse(argv) {
   // by a mutation — so a record that carries it and one that does not are the
   // same record to every recovery path.
   let because = '';
-  // WHICH repository the dispatched ticket lives in (`--tracker-repo`,
-  // ax-owned like `--because`): the store is host-global, and the frontier
-  // uses this name to tell one checkout's `42-…` record from another's.
+  // WHICH repository this dispatch belongs to (`--tracker-repo`, ax-owned like
+  // `--because`): the identity of the checkout that dispatched — the store is
+  // host-global, and the frontier, release and settle use this name to tell
+  // one checkout's `42-…` record from another's.
   let trackerRepo = '';
   let passthru = [];
 

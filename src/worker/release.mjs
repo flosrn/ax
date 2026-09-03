@@ -789,14 +789,12 @@ export function release(
     // closing a pane belongs to no repository. It is also the only route left
     // for a row nothing places, which is why `decline()` names it.
     //
-    // TWO RESIDUALS THIS PREDICATE HAS AND CANNOT CLOSE FROM HERE (both found in
-    // review on #118, both needing the WRITE side to change first):
-    //   * A dispatch class that records no repository is unplaceable by
-    //     construction, not just historically: `../worker/dispatch.mjs` omits
-    //     `--tracker-repo` for `--name` and for any tracker whose URL is not
-    //     GitHub-shaped (every Linear ticket). Their panes take the `unknown`
-    //     branch forever, and `--no-proof` is their route until the write side
-    //     records the checkout that dispatched them.
+    // ONE RESIDUAL THIS PREDICATE HAS AND CANNOT CLOSE FROM HERE (found in
+    // review on #118; the other, a dispatch class recording no repository,
+    // closed 2026-09-03 when `../worker/dispatch.mjs` began recording the
+    // dispatching checkout's own identity for `--name` and Linear alike —
+    // records written before that still take the `unknown` branch, and
+    // `--no-proof` stays their route):
     //   * The key names `owner/repo` and no forge. `trackerRepoOf` accepts a
     //     GitHub Enterprise URL and keeps only the slug, and `repoView` answers
     //     `nameWithOwner`, so one host-global store cannot tell
@@ -804,6 +802,10 @@ export function release(
     //     host neither side records would make EVERY row unknown, so the fix is
     //     to record it at dispatch first — until then, two same-named
     //     repositories on two forges, dispatched from one machine, compare equal.
+    //     Ruled 2026-09-03: the key stays `owner/repo` until a second forge is
+    //     measured on a host; every repository this machine dispatches lives on
+    //     github.com, and a key-format change touches three readers and every
+    //     record already written.
     const entry = index.byDispatch.get(row.dispatchId);
     const belongsTo = entry?.repo ?? '';
     const placed = noProof

@@ -438,20 +438,43 @@ test('--because without --task is a recorded redispatch reason, never a usage er
   assert.match(r.started[0], /--because gate-refusal/, 'the reason travels with the recorded dispatch');
 });
 
-test('the tracker repo travels only for a GitHub-shaped ticket URL', () => {
-  // The dispatch store is host-global; a record must NAME its repository or a
-  // `42-api.json` from another checkout hides this repository's #42 forever.
-  // The GitHub half is the pure mapping (start.mjs pins the record root); this
-  // harness speaks Linear, which pins the negative: no URL match, no key.
+// The dispatch store is host-global; a record must NAME its repository or a
+// `42-api.json` from another checkout hides this repository's #42 forever, and
+// `ax worker release` cannot place its pane. Until 2026-09-03 the name came
+// from the ticket's URL, so `--name` and every Linear ticket recorded none —
+// unplaceable by construction (review of #118). The name is now the identity
+// of the CHECKOUT that dispatches — `gh repo view`'s nameWithOwner, the same
+// read the frontier and release compare against — and the ticket URL is only
+// the fallback for a checkout whose forge `gh` cannot name.
+test('the record names the dispatching checkout, whatever the tracker — the ticket URL only as fallback', () => {
   assert.equal(trackerRepoOf('https://github.com/gapilabs/gapila/issues/42'), 'gapilabs/gapila');
   assert.equal(trackerRepoOf('https://ghe.example.com/owner/repo/issues/7'), 'owner/repo');
   assert.equal(trackerRepoOf('https://linear.test/GAP-353'), '');
-  const root = repo();
-  provisioned(root, `${ISSUE}-${SLUG}`);
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root });
+
+  const forge = (bin, args) => (bin === 'gh' && args[0] === 'repo' && args[1] === 'view'
+    ? { status: 0, stdout: 'flosrn/ax\n', stderr: '' }
+    : { status: 0, stdout: '', stderr: '' });
+
+  // A Linear ticket, from a checkout gh can name: the checkout's identity.
+  const linear = repo();
+  provisioned(linear, `${ISSUE}-${SLUG}`);
+  const l = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root: linear, exec: forge });
+  assert.equal(l.code, 0, l.out);
+  assert.match(l.started[0], /--tracker-repo flosrn\/ax/, 'a Linear ticket records the checkout that dispatched it');
+
+  // No ticket at all, same checkout: still the checkout's identity.
+  const named = repo();
+  provisioned(named, 'pilot-smoke');
+  const n = run(['--name', 'pilot-smoke', '--task', 'smoke the pilot', '--wait', '0'], { root: named, exec: forge, request: 'pilot-smoke' });
+  assert.equal(n.code, 0, n.out);
+  assert.match(n.started[0], /--tracker-repo flosrn\/ax/, 'a --name dispatch records the checkout that dispatched it');
+
+  // A checkout gh cannot name, and a non-GitHub ticket: nothing to record.
+  const noForge = repo();
+  provisioned(noForge, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root: noForge });
   assert.equal(r.code, 0, r.out);
-  assert.equal(r.started.length, 1);
-  assert.doesNotMatch(r.started[0], /--tracker-repo/, 'a non-GitHub ticket writes no repo key');
+  assert.doesNotMatch(r.started[0], /--tracker-repo/, 'no forge and no GitHub-shaped URL writes no repo key — unknown, never guessed');
 });
 
 test('a ticket the tracker has NOT called complete takes --task with no reason asked', () => {
