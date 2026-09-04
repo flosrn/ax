@@ -100,6 +100,11 @@ test('both rules refuse the same records, and neither invents a path key', () =>
     ['no worktree', record([])],
     ['two worktrees', record([{ kind: 'worktree', id: 'repo::/wt-a' }, { kind: 'worktree', id: 'repo::/wt-b' }])],
     ['a traversal request', record([{ kind: 'worktree', id: 'repo::/wt' }], '../../outside')],
+    // Reachable, and newly worded by #136's `reportPathFor`: an effect naming a
+    // relative directory. Both rules must refuse it the same way, in the same
+    // order relative to the request check.
+    ['a relative worktree', record([{ kind: 'worktree', id: 'repo::wt/relative' }])],
+    ['a relative worktree and a bad request', record([{ kind: 'worktree', id: 'repo::wt/relative' }], '..')],
   ];
 
   for (const [why, rec] of cases) {
@@ -219,7 +224,7 @@ test('a CRITERIA section larger than the cap is refused by name, never shown in 
 
   expect(block).toContain('FINDING: the Report\'s `## CRITERIA` section alone is');
   expect(block).toContain('no complete criteria list can be injected');
-  expect(block).toContain(`read it at ${wt.derived}`);
+  expect(block).toContain(`Repair: read ${wt.derived}`);
   // Not one criterion line reaches the model, and no `---` body fence opens.
   expect(block).not.toContain('- a criterion line');
 });
@@ -382,6 +387,61 @@ test('the wired defaults answer from a real dispatch store, with nothing injecte
     expect(block).toContain(wt.derived);
     // No `--on` on the recorded argv, so the worktree is here and the read ran.
     expect(block).not.toContain('inaccessible from this host');
+  } finally {
+    if (previous === undefined) delete process.env.ORCA_DISPATCH_STORE_DIR;
+    else process.env.ORCA_DISPATCH_STORE_DIR = previous;
+    resetDispatchNames();
+  }
+});
+
+test('the wired defaults classify a remote dispatch from the recorded argv alone', () => {
+  // The `--on` half of the default. The disposition above is reached through the
+  // injected seam; this is `environmentOfDispatch` reading a record off disk, so
+  // the classification that decides whether a file is even touched is proven on
+  // the code path the receiver runs. A Report exists at the derived path HERE,
+  // holding something else, and must not be read.
+  const store = mkdtempSync(join(tmpdir(), 'ax-store-remote-'));
+  const dispatch = 'ctx_defaults_remote';
+  const wt = withReport('REMOTE-IMPOSTOR-71fc\n', 'remote-work');
+  writeFileSync(
+    join(store, 'remote-work.json'),
+    JSON.stringify({
+      ...wt.rec,
+      attempts: [
+        {
+          n: 1,
+          settled: false,
+          phases: [
+            {
+              name: 'worker-start',
+              argv: ['orca', 'orchestration', 'worker-start', '--task', 'task_1', '--on', 'gapicore'],
+              receipt: {
+                ok: true,
+                result: { dispatchId: dispatch, effects: [{ kind: 'worktree', id: `repo::${wt.path}` }] },
+              },
+              exit: 0,
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const previous = process.env.ORCA_DISPATCH_STORE_DIR;
+  process.env.ORCA_DISPATCH_STORE_DIR = store;
+  resetDispatchNames();
+  try {
+    const block = completionReport({
+      id: 'm1',
+      type: 'worker_done',
+      body: 'Opened PR #99.',
+      from_handle: `dispatch:${dispatch}`,
+    });
+
+    expect(block).toContain('Report inaccessible from this host');
+    expect(block).toContain('gapicore');
+    expect(block).toContain(wt.derived);
+    expect(block).not.toContain('REMOTE-IMPOSTOR-71fc');
   } finally {
     if (previous === undefined) delete process.env.ORCA_DISPATCH_STORE_DIR;
     else process.env.ORCA_DISPATCH_STORE_DIR = previous;

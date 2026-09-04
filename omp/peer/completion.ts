@@ -96,9 +96,15 @@ function worktreesOf(rec) {
 }
 
 /**
- * `{ path, worktree }` | `{ reason }` — the runtime-local twin of
- * `reportPath` in `src/worker/report.mjs`, whose refusals it repeats word for
- * word so the parity test can compare them.
+ * `{ path, worktree }` | `{ reason }` — the runtime-local twin of `reportPath`
+ * in `src/worker/report.mjs`, whose refusals it repeats word for word so the
+ * parity test can compare them.
+ *
+ * It twins BOTH halves of that rule as #136 split them (`087c3be`): the record
+ * resolution, and the `reportPathFor` recipe the brief also crosses. That split
+ * moved one wording — "the record's request violates …" became "the request
+ * violates …" — and the parity test caught it on the merged base, which is the
+ * entire argument for having the test rather than trusting two copies.
  *
  * Failure carries `reason` and NO `path` key, so a caller cannot read an empty
  * string as a location (F-028). `worktree` rides along because the containment
@@ -115,14 +121,24 @@ export function reportPath(rec) {
           : `the record names ${trees.length} worktrees, so which Report path it means cannot be established`,
     };
   }
+  const worktree = trees[0];
+  // The worktree BEFORE the request, in that order, because the other rule
+  // answers them in that order and a record can be malformed in both ways at
+  // once. The empty branch is unreachable from a record — `worktreesOf` drops an
+  // effect that names no path — and is carried anyway: the twin is a twin of the
+  // whole wording, not of the subset today's caller can reach.
+  if (!isAbsolute(worktree)) {
+    return {
+      reason:
+        worktree === ''
+          ? 'no worktree is named on this host, so the Report path cannot be established'
+          : `the worktree '${worktree}' is not absolute, so the Report path cannot be established`,
+    };
+  }
   if (!requestIdOk(rec?.request)) {
-    return { reason: "the record's request violates the request-id grammar, so the Report path cannot be established" };
+    return { reason: 'the request violates the request-id grammar, so the Report path cannot be established' };
   }
-  const path = join(trees[0], REPORT_DIR, `${rec.request}.md`);
-  if (!isAbsolute(path)) {
-    return { reason: "the record's worktree is not absolute, so the Report path cannot be established" };
-  }
-  return { path, worktree: trees[0] };
+  return { path: join(worktree, REPORT_DIR, `${rec.request}.md`), worktree };
 }
 
 /** JSON or null. Local, because this module borrows nothing from the host. */
@@ -161,7 +177,8 @@ function bounded(text, cap, path) {
   const criteria = criteriaBytes(clean);
   if (criteria !== null && criteria > cap) {
     return {
-      reason: `the Report's \`## CRITERIA\` section alone is ${criteria} bytes, past the ${cap}-byte cap, so no complete criteria list can be injected. Nothing partial stands in for it — read it at ${path}`,
+      reason: `the Report's \`## CRITERIA\` section alone is ${criteria} bytes, past the ${cap}-byte cap, so no complete criteria list can be injected and nothing partial stands in for it`,
+      repair: `Repair: read ${path} — the criteria are there in full, and this block would only have shown part of them.`,
     };
   }
 
@@ -241,7 +258,12 @@ export function completionReport(msg, deps = {}) {
     if (rec === null || rec === undefined) return '';
 
     const derived = reportPath(rec.json);
-    if (derived.path === undefined) return block(null, [`FINDING: ${derived.reason}.`]);
+    if (derived.path === undefined) {
+      return block(null, [
+        `FINDING: ${derived.reason}.`,
+        `Repair: read the dispatch record for \`${rec.request}\` in ax's store — it is the only thing that establishes where this worker's Report is, and it names no single worktree here.`,
+      ]);
+    }
 
     const lines = [];
     // A statement about the SENDER, made before any file is touched, because it
@@ -333,10 +355,16 @@ export function completionReport(msg, deps = {}) {
     const shown = bounded(text, cap, derived.path);
     if (shown.body === undefined) {
       lines.push(`FINDING: ${shown.reason}.`);
+      lines.push(shown.repair);
       return block(derived.path, lines);
     }
     return block(derived.path, lines, shown.body);
   } catch (err) {
-    return block(null, [`FINDING: the Report could not be established: ${err}`]);
+    // A fault in THIS receiver, not in the completion above it. Saying so is the
+    // repair: the reader must not go looking for a worker that misbehaved.
+    return block(null, [
+      `FINDING: the Report could not be established: ${err}`,
+      'Repair: the fault is in this receiver, not in the completion above — the Summary stands, and the Report is still on disk under the worktree the dispatch record names.',
+    ]);
   }
 }
