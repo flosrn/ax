@@ -611,6 +611,20 @@ export function workerPane(path) {
 }
 
 /**
+ * WHERE the newest worker-start sent the child: the host named by `--on`, or
+ * `''` for this machine. Read from the phase's argv alone, so it answers for a
+ * start whose receipt failed or names no terminal — the shape `settle` judges.
+ *
+ * This is the fact `worker-list` never carries (#160): a settle that judged a
+ * pane without it read every absence as "maybe on a host I did not ask", and
+ * on a Mac that always omits one paired remote that refused every local corpse
+ * forever. The record wrote the host before the dispatch; it is the authority.
+ */
+export function dispatchHost(path) {
+  return argvValue(must(lastWorkerStart(load(path)), 'argv', 'worker-start phase'), '--on') ?? '';
+}
+
+/**
  * The brief this record dispatched — the `task-create --spec` text, byte for
  * byte, found NEWEST-PHASE-FIRST across the whole record.
  *

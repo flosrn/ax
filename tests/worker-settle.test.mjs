@@ -35,7 +35,7 @@ function writeRecord(dir, request, phases, { repo = REPO } = {}) {
   const { path } = claimRecord(dir, request);
   initRecord(path, { request, orca: 'orca', repo });
   for (const phase of phases) {
-    phaseBegin(path, { name: phase.name, identity: `id-${phase.name}`, argv: ['orca', 'orchestration', phase.name, '--json'] });
+    phaseBegin(path, { name: phase.name, identity: `id-${phase.name}`, argv: phase.argv ?? ['orca', 'orchestration', phase.name, '--json'] });
     if ('receipt' in phase) phaseEnd(path, 'last', { exit: phase.exit ?? 0, receiptText: JSON.stringify(phase.receipt) });
   }
   return path;
@@ -386,7 +386,13 @@ test("the record's own recorded pane never decides death: a live pane there sett
   assert.equal(settledFlag(path), true);
 });
 
-test('a pane absent from a list that omits hosts is an inability, never a corpse — the gate\'s opposite disposition', () => {
+test('a LOCAL pane absent from a list that read the local scope is a corpse, whatever remote hosts were omitted', () => {
+  // Measured 2026-09-04 (#160): on this Mac one paired remote runtime is omitted
+  // from every `terminal list`, so the previous ruling — absent + any omission
+  // = INCONNU — made settle refuse EVERY local corpse on this machine, forever,
+  // with a repair naming a runtime that would never answer for a local pane. The
+  // record says where the dispatch went (`--on`, or nothing = here), and the
+  // list says it read `local`: that is the same evidence `release` closes on.
   const dir = store();
   const path = deadAttempt(dir, '71-rls-refute');
   const r = settling(path, dir, {
@@ -395,9 +401,26 @@ test('a pane absent from a list that omits hosts is an inability, never a corpse
     omittedHostIds: ['runtime:7930a317'],
   });
 
-  assert.equal(r.code, 3, 'the gate answers 0 here; a verb that WRITES must not');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(settledFlag(path), true);
+  assert.doesNotMatch(r.out, /runtime:7930a317/, 'an omitted REMOTE is not this local pane\u2019s doubt');
+});
+
+test('a pane dispatched --on a host is an inability here, naming that host — never a corpse read off the local list', () => {
+  const dir = store();
+  const path = writeRecord(dir, '71-rls-refute', [
+    { name: 'task-create', receipt: taskCreated() },
+    { name: 'worker-start', receipt: startFailed('term_7f0854ba'), argv: ['orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--json'] },
+  ]);
+  const r = settling(path, dir, {
+    workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')],
+    terminals: [],
+    omittedHostIds: ['runtime:7930a317'],
+  });
+
+  assert.equal(r.code, 3, 'a verb that WRITES must not settle a pane it never read');
   assert.match(r.out, /CANNOT ESTABLISH/);
-  assert.match(r.out, /runtime:7930a317/, 'the host whose absence is the whole doubt is named');
+  assert.match(r.out, /gapicore/, 'the host the record names is the whole doubt, and it is named');
   assert.equal(r.after, r.before);
 });
 

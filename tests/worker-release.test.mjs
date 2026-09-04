@@ -531,6 +531,32 @@ test('a LOCAL pane absent while only a REMOTE host is omitted is a corpse, not a
   assert.match(r.out, /0 pane not establishable/);
 });
 
+test('a NAMED dispatch whose pane is gone says so and names the surviving-process read, never a kill', () => {
+  // Measured 2026-09-04 (#160): after a runtime restart the new runtime listed
+  // no pane for 149-work — `1 terminal gone`, exit 0, nothing printed — while
+  // `ps` showed the omp agent still running in that worktree 41 minutes later.
+  // Orca's daemon keeps the pty across an app restart; the pane is gone from
+  // the inventory, the process is not gone from the machine. A sweep counts
+  // the row; the caller who NAMED it is told what to read before anything is
+  // killed. The repair is a read, never a kill of an unverified pid.
+  const dir = store();
+  record(dir, '149-work', 'ctx_local_gone');
+  const r = run(['--dispatch', 'ctx_local_gone'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_local_gone', { resource: { worktreeId: 'repo::/tmp/ws/149-work' } })],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: ['runtime:7930a317'] },
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /1 terminal gone/);
+  assert.match(r.out, /ctx_local_gone .*pane term_ctx_local_gone is gone from the runtime/);
+  assert.match(r.out, /→ pgrep -fl .*149-work/, 'the residual process is read from the worktree the record names');
+  assert.doesNotMatch(r.out, /kill -9|pkill/, 'no kill is ever named for an unverified pid');
+});
+
 // ── proof of landing ────────────────────────────────────────────────────────
 
 test('a merged PR closes the pane; an open one keeps it', () => {

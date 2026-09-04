@@ -25,6 +25,17 @@
 // This verb asks whether death may be WRITTEN, where the same unknown must fail
 // closed toward not writing. Same evidence, opposite safe direction.
 //
+// AND "UNKNOWN" IS DECIDED WITH THE HOST THE RECORD NAMES (#160). Until
+// 2026-09-04 this verb judged every pane with no host at all — worker-list
+// carries none — so a pane absent from a list that omitted ANY remote read
+// as unknown. On a Mac whose list always omits one paired remote, that made
+// every local corpse unsettleable forever, with a repair naming a runtime
+// that answers for no local pane: the record `worker=ready terminal=active`
+// after a runtime restart could never leave the frontier. The record wrote
+// where the dispatch went before it went (`--on`, or nothing = here); a local
+// pane absent from a list that read `local` is the corpse `release` closes
+// on, and only a pane sent `--on` a host stays unknown here, naming that host.
+//
 // SCOPE IS THE CHECKOUT WHOSE FRONTIER THE FLIP CHANGES. Settling moves a
 // request from `already-dispatched` to `attempt-ended-unmerged` in
 // `../frontier.mjs`, so the record must name THIS repository: the comparison is
@@ -89,7 +100,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { namedList } from './gate.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
-import { acquireLock, attemptSettle, defaultStore, lastAttemptState, recordRepoNaming, requestIdOk, taskIdScan } from './record.mjs';
+import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordRepoNaming, requestIdOk, taskIdScan } from './record.mjs';
 
 const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
@@ -447,15 +458,31 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
       );
     }
 
-    note(`Dispatches for ${task}: ${rows.length}`);
+    // WHERE the dispatch went is the record's fact, not worker-list's (#160):
+    // `--on <host>` in the recorded argv, or nothing for this machine. Judging
+    // without it read every absence as "maybe on a host I did not ask", and on
+    // a Mac whose terminal list always omits one paired remote that refused
+    // every LOCAL corpse forever, with a repair naming a runtime that answers
+    // for no local pane. A local pane absent from a list that read `local` is
+    // the corpse `release` already closes on; a pane sent `--on` a host stays
+    // an inability here, and the refusal names that host.
+    let host;
+    try {
+      host = dispatchHost(path);
+    } catch (error) {
+      return cannot(
+        `the record ${path} does not say where its last attempt was dispatched: ${String(error.message ?? error)}`,
+        `ax worker ls --all   # a worker-start phase with an argv is what names the host`,
+      );
+    }
+
+    note(`Dispatches for ${task}: ${rows.length}${host === '' ? '' : ` (dispatched --on ${host})`}`);
     const live = [];
     const unknown = [];
     for (const worker of rows) {
       const handle = typeof worker.agentTerminalHandle === 'string' ? worker.agentTerminalHandle : null;
-      // One verdict definition (./pane.mjs), and the conservative branch on
-      // purpose: `worker-list` carries no per-dispatch host, so a pane absent from
-      // a list that omitted hosts is INCONNU rather than MORT.
-      const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, {});
+      // One verdict definition (./pane.mjs); the host comes from the record above.
+      const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, { host });
       if (verdict.pane === 'VIVANT') live.push(worker);
       else if (verdict.pane !== 'MORT') unknown.push({ worker, verdict });
       note(
@@ -472,11 +499,14 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     }
 
     if (unknown.length > 0) {
+      // The doubt is the HOST the record names, never the runtimes this list
+      // happened to omit: a local pane is judged above, so an unknown here is a
+      // pane dispatched `--on` a host this call did not read (#160).
       return cannot(
-        `${unknown.length} pane(s) of ${task} cannot be established${terminals.omitted ? `, and this terminal list omits ${terminals.omittedHosts.join(', ')}` : ''} — ${unknown[0].verdict.detail}`,
-        terminals.omitted
-          ? `ax worker settle ${request}   # once ${terminals.omittedHosts.join(', ')} answers; or read the pane from the host it was dispatched to`
-          : `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`,
+        `${unknown.length} pane(s) of ${task} cannot be established from here${host === '' ? '' : ` — dispatched --on ${host}, whose panes this host's terminal list does not carry`} — ${unknown[0].verdict.detail}`,
+        host === ''
+          ? `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`
+          : `orca terminal list --environment ${host} --json   # read the pane where it lives; settle once that host proves it gone`,
       );
     }
 

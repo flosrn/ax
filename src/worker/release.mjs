@@ -1143,6 +1143,23 @@ export function release(
       } else {
         tally.gone += 1;
         caused(`pane ${row.handle} is gone — the terminal this dispatch opened no longer exists`);
+        // A GONE PANE IS NOT A GONE PROCESS (#160). Orca's daemon keeps the pty
+        // across an app restart, so a runtime that lists no pane for a dispatch
+        // may still have its agent running in the worktree — measured 2026-09-04:
+        // `1 terminal gone`, exit 0, and `ps` showing the omp agent alive there
+        // 41 minutes later. The sweep counts the row; the caller who NAMED it is
+        // told what to read. The repair is a read, never a kill: this verb never
+        // touches a process, and a pid nobody verified is not one to signal.
+        if (only !== '') {
+          lines.push({
+            level: 'note',
+            text: `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane ${row.handle} is gone from the runtime — nothing here to close, and no release archived its transcript`,
+            repair:
+              worktree === ''
+                ? `orca orchestration worker-show --dispatch ${row.dispatchId} --json   # the worktree it ran in; then read what still runs there before anything is killed`
+                : `pgrep -fl '${worktree}'   # a runtime restart keeps the pty's process alive with no pane (#160): read it before anything is killed, never by name alone`,
+          });
+        }
       }
       continue;
     }
