@@ -25,6 +25,7 @@ import { createRunner } from '../src/orca-bin.mjs';
 // either string moved.
 import { READY_LABEL } from '../src/triage/spec.mjs';
 import { dispatch, requestIdFor, retiredKnobs, trackerRepoOf } from '../src/worker/dispatch.mjs';
+import { reportPathFor } from '../src/worker/report.mjs';
 import { READY_LABEL as TICKET_READY_LABEL } from '../src/worker/ticket.mjs';
 import { readProof, verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
@@ -1088,6 +1089,24 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.match(r.out, /would run: ax worker start/);
   assert.deepEqual(r.started, [], 'a dry run dispatches nothing');
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
+});
+
+test('the brief a dispatch composes names the Report path the record rule answers', () => {
+  // `docs/adr/0002`: the child is told where its Report goes in the last text it
+  // reads, and the location is derived — never a path the worker names. This is
+  // the whole join: the worktree this dispatch is about to place a child in, and
+  // the request id it is about to record, crossing the one rule in
+  // src/worker/report.mjs. A dry run answers it before anything is created,
+  // which is what makes the path readable BEFORE a child depends on it.
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root });
+
+  assert.equal(r.code, 0);
+  const expected = reportPathFor({ worktree: join(root, '.worktrees', `${ISSUE}-${SLUG}`), request: REQUEST }).path;
+  assert.ok(expected, 'the fixture placement resolves a path');
+  assert.ok(r.out.includes(expected), `the brief must carry ${expected}`);
+  assert.match(r.out, /this brief wins/, 'and the precedence rule that lets it override the preamble');
 });
 
 /**

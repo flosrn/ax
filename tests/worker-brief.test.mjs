@@ -11,6 +11,9 @@ import { progressOnly } from '../src/worker/stall.mjs';
 
 const TICKET = { id: 'T-353', title: 'Loading states are missing on the dashboard', url: 'https://tracker.test/issue/T-353' };
 
+/** What the rule of the dispatch record answers for this dispatch (src/worker/report.mjs). */
+const REPORT = '/Users/x/workspaces/353-work/.scratch/report/t-353-loading-states.md';
+
 const brief = (extra = {}) =>
   renderBrief({
     model: '@task',
@@ -18,6 +21,7 @@ const brief = (extra = {}) =>
     ticket: TICKET,
     readCommand: 'tracker MCP `get_issue`, then `list_comments` on the same issue',
     run: 'run_abc',
+    report: { path: REPORT },
     ...extra,
   });
 
@@ -130,6 +134,93 @@ test('the taught read command and the ticket URL are both in the brief', () => {
 test('the contract header names the dispatching Run and the execution host', () => {
   assert.match(brief(), /PILOT CONTRACT — dispatching Run run_abc, execution host here/);
   assert.match(brief({ host: 'other-host' }), /PILOT CONTRACT — dispatching Run run_abc, execution host other-host/);
+});
+
+// ── the Report, and the one precedence rule that lets it override the preamble ─
+//
+// Two contracts govern a worker's completion, and until `docs/adr/0002` they
+// competed: Orca's injected preamble rules the lifecycle message (three
+// sentences in `--body`, long-form in `--report-path`), while ax's playbook
+// ruled that "every report opens on `## CRITERIA`" and named no artifact.
+// Measured on the 2026-09-03 wave: of eight workers, none delivered that
+// section in the channel their dispatcher reads, and no send used
+// `--report-path`. Every one of them obeyed the preamble. So the brief — the
+// LAST text the child reads — states the precedence once and then names the
+// artifact.
+
+test('the mechanics section opens on the precedence rule, and nothing else overrides the preamble', () => {
+  const lines = brief().split('\n');
+  const header = lines.findIndex(line => line.startsWith('PILOT CONTRACT'));
+  assert.notEqual(header, -1);
+  assert.equal(lines[header + 1], 'The preamble above speaks for the runtime; where this brief says otherwise, this brief wins.');
+
+  // ONCE. A rule restated per point is how the eight-worker wave came to have
+  // two contracts and obey the older one; the ADR's whole repair is that this
+  // sentence REPLACES point-by-point overrides, so a second mention of the
+  // preamble anywhere in ax's own text is the defect returning.
+  assert.equal(brief().split(/preamble/i).length - 1, 1);
+});
+
+test('the brief carries the Report path it was GIVEN, and derives none of its own', () => {
+  const text = brief();
+  assert.ok(text.includes(REPORT), 'the derived path is what the child is told');
+
+  // The rule lives in one module (src/worker/report.mjs). A renderer that knew
+  // `.scratch/report/<request>.md` would be a second copy of it, and two copies
+  // disagree the day one moves — which is the same failure `draftPath` exists to
+  // prevent. So the path arrives as data and nothing here reconstructs it.
+  const elsewhere = brief({ report: { path: '/tmp/elsewhere/anything.md' } });
+  assert.ok(elsewhere.includes('/tmp/elsewhere/anything.md'));
+  assert.ok(!elsewhere.includes('.scratch'), 'the brief must not know how the path is built');
+});
+
+test('the brief states the Report shape, and that a failed outcome writes one too', () => {
+  const text = brief();
+  assert.match(text, /`## CRITERIA`/);
+  assert.match(text, /`NOT MET: <what you observed instead>`/);
+  assert.match(text, /`## LEARNINGS`/);
+  assert.match(text, /--outcome failed/, 'the outcome that needs the Report most is the one a worker skips');
+});
+
+test('the brief says what the completion carries, where a question goes, and what a late refusal is', () => {
+  const text = brief();
+  // The two contracts nest instead of competing: the preamble's body stays the
+  // Summary, the Report travels by reference.
+  assert.match(text, /Summary in `--body`/);
+  assert.match(text, /Report in `--report-path`/);
+  // The preamble offers `orca orchestration ask`; nothing on the dispatching
+  // session's side waits on it, so a question sent there is a question nobody
+  // answers.
+  assert.match(text, /never through `orca orchestration ask`/);
+  // And the repair round the runtime cannot express: one settled Task, one
+  // living Report file (`96-work` sent six completions for one slice).
+  assert.match(text, /rewrite the Report in place/);
+  assert.match(text, /board card/);
+  assert.match(text, /[Nn]ever a second `worker_done`/);
+});
+
+test('a dispatch that cannot name the Report path says so, and guesses none', () => {
+  // A child placed on another host has no path this host can derive, and the
+  // absence must arrive as an absence: a guessed path sends the Report where the
+  // receiver does not look, and an empty one reads as "here" (F-028).
+  const named = brief({ report: { reason: 'the record names no worktree, so the Report path cannot be established' } });
+  assert.match(named, /cannot be established/);
+  assert.ok(!named.includes('.scratch'));
+  // Same for a caller that passed nothing at all: silence is not a pass.
+  const missing = brief({ report: undefined });
+  assert.match(missing, /Report/);
+  assert.match(missing, /cannot be established/);
+});
+
+test("the Report contract survives a project's own contract, because ax is what reads it", () => {
+  // `contract` replaces ax's PROPOSITIONS — one fleet's doctrine on how it ships.
+  // The Report is not doctrine: ax derives its path from the dispatch record and
+  // ax's receiver opens that path and no other. A fleet that declared a contract
+  // and lost this block would have children writing Reports nothing reads.
+  const text = brief({ contract: '- Ship it the way this repo ships things.\n' });
+  assert.ok(text.includes(REPORT));
+  assert.match(text, /this brief wins/);
+  assert.ok(!text.includes('You do not merge'), 'the propositions are still replaced, and never both');
 });
 
 test("a project's own contract replaces MECHANICS, and never both", () => {

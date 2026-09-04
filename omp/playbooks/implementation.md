@@ -79,19 +79,27 @@ anything the orchestrator must decide. If you stopped short, report the concrete
 blocker — what you tried, and what is missing — rather than a summary that reads
 like completion.
 
-Open every report with a `## CRITERIA` heading — the first section. One line per
-acceptance criterion the ticket names (its body, its brief, its rulings), quoted
-closely enough to be found again, followed by the evidence you observed for it:
-the command you ran and the value you read back, or the artifact and what it
-says. A criterion you could not prove reads `NOT MET: <what you observed
-instead>`. This section is the only check in the whole channel of the diff
-against what was asked — the review bot reads the diff and the merge gate reads
-its grounds, and neither can see a criterion quietly skipped. A criterion the
-ticket never named is never a line to invent: its absence was the decision
-gate's failure, and it goes to the orchestrator as a question.
+Your completion carries two things, and they are not the same artifact. The
+**Summary** is its body: three sentences — what you did, what you found, what is
+left — that point at the Report rather than standing in for it. The **Report**
+is a file, and your brief names the absolute path it goes to; it travels with
+the completion by reference, in `--report-path`. Write it on a failed outcome
+too (`--outcome failed`): a slice that stopped short is the one whose criteria
+are read hardest.
 
-Close every report with a `## LEARNINGS` heading — the last section, present
-even when empty. Each bullet is prose prefixed by the scope it belongs to:
+The Report's first section is `## CRITERIA`. One line per acceptance criterion
+the ticket names (its body, its brief, its rulings), quoted closely enough to be
+found again, followed by the evidence you observed for it: the command you ran
+and the value you read back, or the artifact and what it says. A criterion you
+could not prove reads `NOT MET: <what you observed instead>`. This section is
+the only check in the whole channel of the diff against what was asked — the
+review bot reads the diff and the merge gate reads its grounds, and neither can
+see a criterion quietly skipped. A criterion the ticket never named is
+never a line to invent: its absence was the decision gate's failure, and it
+goes to the orchestrator as a question.
+
+The Report's last section is `## LEARNINGS`, present even when empty. Each
+bullet is prose prefixed by the scope it belongs to:
 
 - `durable:` — true of the repository next month. Land it yourself, inside this
   slice, before reporting: prefer an ADDITIVE file (a new solutions entry, one
@@ -106,6 +114,10 @@ even when empty. Each bullet is prose prefixed by the scope it belongs to:
 
 Scope is the routing: a bullet with the wrong prefix either dies with the wave
 or outlives its truth.
+
+One Report per slice, and it is a living file: a repair round after your
+completion rewrites it in place, at the same path, and whoever decides reads it
+as it is then.
 
 ## Subagents
 

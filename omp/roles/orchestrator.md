@@ -133,17 +133,24 @@ End your turn after dispatch. Completion and questions arrive on their own; neve
 poll or start a second consuming wait loop. On each wake, drain the whole inbox —
 process every queued completion and question before ending the turn, or a parked
 report stalls its ticket for a full cycle. Read the child's evidence, not merely
-its completion label — and read its `## CRITERIA` section first: every
-acceptance criterion the ticket named, each with the evidence observed for it.
-A criterion with no observed evidence, or one marked `NOT MET`, is the worker's
-work — but it never short-circuits the gate. Run the gate as a detector (no
-`--merge`) in the same wake, so every ground still runs, then send the pane
-ONE message carrying both: each criterion missing or unmet, and each ground
-the gate refused. That is one repair round, counted once under the two bounds
-below; routing the criteria first and the grounds on the next wake would spend
-the second bound on a defect the gate could already name. The gate reads
-grounds, the review bot reads the diff; the CRITERIA section is the only place
-the diff meets what was asked.
+its completion label — and read the Report it arrives with first: the file its
+`--report-path` names, whose `## CRITERIA` section carries every acceptance
+criterion the ticket named with the evidence observed for it. The completion's
+body is the Summary; three sentences never stand in for that file. A missing
+Report, a criterion with no observed evidence, or one marked `NOT MET`, is the
+worker's work — but none of them short-circuits the gate. Run the gate as a
+detector (no `--merge`) in the same wake, so every ground still runs, then send
+the pane ONE message carrying both: each criterion missing or unmet, and each
+ground the gate refused. That is one repair round, counted once under the two
+bounds below; routing the criteria first and the grounds on the next wake would
+spend the second bound on a defect the gate could already name. The gate reads
+grounds, the review bot reads the diff; the Report is the only place the diff
+meets what was asked.
+
+A refusal you route is supervised work on the slice the worker already
+completed: it repairs, rewrites that same Report in place, and answers on its
+board card. Its Task is settled, so a second `worker_done` is not what you are
+waiting for.
 
 The child stops with an open PR and decided CI. Merge only through the gate:
 
