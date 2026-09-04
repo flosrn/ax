@@ -43,6 +43,18 @@ _Avoid_: brief for wave notes, condensed output, or any file passed on dispatch.
 The one file a triage worker writes: a recommendation the orchestrator reads, corrects and
 publishes. A draft never mutates the tracker.
 
+**Report**:
+The one file an implementation worker writes when its slice ends: every acceptance criterion
+of its ticket with the evidence observed for it first, its learnings last. It travels by
+reference in the worker's completion, at a location its dispatch decides — never one the
+worker names.
+_Avoid_: summary, last message, report for the completion's body.
+
+**Summary**:
+The three sentences a worker's completion carries in its body — what it did, what it found,
+what is left. It points at the Report; it never stands in for it.
+_Avoid_: report, executive summary.
+
 **Ruling**:
 The orchestrator's recorded answer to one `Q<n>:` question a blocked child sent.
 _Avoid_: escalation (the exception, not the mechanism).
