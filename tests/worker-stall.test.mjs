@@ -704,15 +704,26 @@ test('card watch is off for a same-host dispatch, whose peer report already reac
 
 // THE DELIVERY FORM, not the fact of a message. Every test above proves that an
 // alert was SENT; none of them proves it lands on a session that has ended its
-// turn. The documented coordinator wait is
-// `check --wait --types worker_done,escalation,question`, and Orca's own guide
-// states that the type filter decides when a waiter wakes — so `--type status`
-// is mail an idle orchestrator reads whenever it happens to look, which is the
-// gap KTD8 names: a child dying between PR-open and report freezes the loop
-// until the operator returns. `escalation` is the one waking type the watcher
-// may use: `question` promises a reply route this detached process does not
-// survive to consume, and `worker_done` is Dispatch-lifecycle authority that
-// would settle the very task nobody has finished.
+// turn.
+//
+// Measured 2026-09-02 (#109), and that measurement is what decides the type
+// below: the watcher inherits the environment of the pane that DISPATCHED, and a
+// top-level orchestrator's pane holds no Dispatch by construction — so
+// `escalation`, a coordinator mutation whose sender must hold an active one, was
+// refused `sender_not_assignee` every time, and the wake arrived as the
+// REJECTION's `status` carrying the original body under
+// `_orcaLifecycleRejection`. An envelope whose only delivery path is its own
+// rejection is not a delivery form.
+//
+// `status` is the accepted envelope, and the ruling that makes it sufficient is
+// this repository's own peer-messaging rule: an orchestrator dispatched through
+// ax is an ax session, whose receiver owns the single consuming loop on its Run
+// and injects every directed message as a wake — `omp/peer/receive.ts`, pinned
+// for these two subjects by `omp/peer/receive.test.ts`. Orca's documented
+// `check --wait --types worker_done,escalation,question` loop is never that
+// session's, so the type filter that argued for `escalation` never governed this
+// channel. The subject prefixes are the readable half of the contract and are
+// unchanged: `stall-watch:` and `card:` are the strings that receiver test names.
 const typeOf = args => args[args.indexOf('--type') + 1];
 
 test('every alert is issued in the WAKE delivery form, with its words unchanged', () => {
@@ -723,7 +734,7 @@ test('every alert is issued in the WAKE delivery form, with its words unchanged'
     }).calls,
   );
   assert.equal(silence.length, 1);
-  assert.equal(typeOf(silence[0]), 'escalation');
+  assert.equal(typeOf(silence[0]), 'status');
   assert.match(silence[0][silence[0].indexOf('--subject') + 1], /has gone silent/);
 
   const gone = sends(
@@ -734,7 +745,7 @@ test('every alert is issued in the WAKE delivery form, with its words unchanged'
     }).calls,
   );
   assert.equal(gone.length, 1);
-  assert.equal(typeOf(gone[0]), 'escalation');
+  assert.equal(typeOf(gone[0]), 'status');
   assert.match(gone[0][gone[0].indexOf('--subject') + 1], /is GONE without reporting/);
 
   // The card is the one channel that crosses hosts, and `progressOnly` already
@@ -750,7 +761,7 @@ test('every alert is issued in the WAKE delivery form, with its words unchanged'
     }).calls,
   );
   assert.equal(card.length, 1);
-  assert.equal(typeOf(card[0]), 'escalation');
+  assert.equal(typeOf(card[0]), 'status');
   assert.match(card[0][card[0].indexOf('--subject') + 1], /published a checkpoint/);
 });
 
@@ -763,7 +774,7 @@ test('a wake that fails to deliver changes nothing but the log', () => {
   assert.equal(r.code, 0);
   const sent = sends(r.calls);
   assert.equal(sent.length, 2);
-  for (const attempt of sent) assert.equal(typeOf(attempt), 'escalation');
+  for (const attempt of sent) assert.equal(typeOf(attempt), 'status');
   assert.match(r.log, /stall alert failed; will retry next tick/);
   assert.match(r.log, /ALERT sent to run:run_test123; exiting/);
 });

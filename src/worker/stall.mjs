@@ -186,11 +186,13 @@ function sendOk(out) {
  * runtime unreachable, no receipt at all) is worth the next tick, because only
  * that can change.
  *
- * What this does NOT fix, and is filed separately: a top-level orchestrator's
- * pane never holds a Dispatch, so an `escalation` sent from its environment is
- * refused by construction, and the wake arrives as the rejection's `status`
- * rather than as the envelope this file chose (see WAKE_TYPE). The envelope,
- * not the retry, is the defect there.
+ * That measurement condemned the ENVELOPE too, and #149 fixed that half: a
+ * top-level orchestrator's pane never holds a Dispatch, so the `escalation` this
+ * file used to send was refused by construction and the wake arrived as the
+ * rejection rather than as the message (see WAKE_TYPE, now `status`). This
+ * refusal set stays regardless of the envelope: Orca decides which sends it
+ * lifecycle-validates and this file does not, so a code arriving on an envelope
+ * believed exempt must still end the watch once rather than retry for ten hours.
  */
 const LIFECYCLE_REFUSALS = new Set(['sender_not_assignee', 'task_dispatch_mismatch', 'dispatch_capability_invalid']);
 
@@ -205,28 +207,39 @@ const refusalLine = (alert, out) =>
 // THE DELIVERY FORM OF EVERY ALERT IN THIS FILE.
 //
 // Addressing was never the gap: all three alerts already reach the dispatching
-// Run. Waking it is. The documented coordinator wait is
-// `orchestration check --wait --types worker_done,escalation,question`, and Orca's
-// own guide says in so many words that the type filter decides when a waiter
-// wakes. A `status` alert therefore sits in the mailbox of an orchestrator that
-// waits that way, and a child that died between opening its pull request and
-// reporting freezes the loop until the operator returns — exactly the stop this
-// file exists to announce.
+// Run. Being ACCEPTED there was, and this constant is what the measurement
+// decided.
 //
-// THE BOUND ON THAT CLAIM, because it is not a universal one: a session whose
-// consuming loop filters nothing wakes on any directed message whatever its type
-// (`omp/peer/receive.ts` injects with `triggerTurn: true`). So this constant buys
-// the FILTERED waiter — the loop Orca documents — and costs the unfiltered one
-// nothing.
+// Measured 2026-09-02 (#109): this file sent `escalation`, a coordinator
+// mutation whose sender must hold an active Dispatch. The watcher inherits the
+// environment of the pane that DISPATCHED, and a top-level orchestrator's pane
+// holds no Dispatch by construction — so every alert was refused
+// `sender_not_assignee`, and the wake arrived as the REJECTION's `status`
+// carrying the original body under `_orcaLifecycleRejection`. The rationale that
+// stood here argued `escalation` from Orca's documented coordinator wait
+// (`check --wait --types worker_done,escalation,question`) and from that filter
+// deciding when a waiter wakes. It is measured wrong for this channel, and not
+// because the filter does not exist: the waiter does not.
 //
-// `escalation` and not the other two types in that filter: `question` is a
-// PENDING thread awaiting a `reply` (`src/triage/index.mjs` counts them, and
-// `answer.mjs` will answer nothing else), and this watcher exits the moment it
-// sends, so it would promise a reply route no process survives to consume;
-// `worker_done` carries Dispatch lifecycle authority and would settle the very
-// task nobody finished. The words of each alert are unchanged; only the envelope
-// wakes.
-const WAKE_TYPE = 'escalation';
+// THE RULING. An orchestrator dispatched through ax is an ax session, and this
+// package's peer receiver owns the single consuming loop on that session's Run
+// (`omp/peer/receive.ts`) — two consumers on one Run would race for the same
+// delivery, so Orca's `check --wait --types …` loop is never the one running
+// there. That receiver injects every directed message with `triggerTurn: true`,
+// which wakes an idle session and steers a streaming one, whatever the type. So
+// the type filter never governed this wake, and `status` — the envelope Orca
+// accepts from a pane holding no Dispatch — is the one that arrives AS a message
+// instead of as the rejection of one. `omp/peer/receive.test.ts` pins that
+// injection for the two subject prefixes below, so a future type-aware delivery
+// cannot demote the alert silently.
+//
+// The words of each alert are unchanged, and so are its subjects: `stall-watch:`
+// and `card:` are read on the far side by `WATCHER_ALERT` in
+// `omp/peer/receive.ts`, which is also what exempts an alert arriving under the
+// orchestrator's OWN handle from that loop's self-send drop — this process
+// inherits the dispatching pane's environment and names no `--from`, so Orca
+// resolves its sender to that pane (`./capability.mjs`).
+const WAKE_TYPE = 'status';
 
 function alertStall(run, fields, request, silentSeconds, status, signal) {
   const terminalRepair = ['orca terminal read', '--terminal', fields.handle];

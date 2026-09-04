@@ -77,6 +77,10 @@ function harness(overrides: Partial<ReceiveDeps> = {}) {
   const injected: string[] = [];
   const retries: Retry[] = [];
   const sent: Record<string, unknown>[] = [];
+  // The SECOND argument, which every assertion about waking needs: `triggerTurn`
+  // is what turns an injected message into a turn, and a harness that dropped it
+  // could not tell a wake from mail the model reads whenever it next looks.
+  const sentOptions: (Record<string, unknown> | undefined)[] = [];
   const timers = {
     setTimeout(fn: () => void, ms: number) {
       retries.push({ fn, ms });
@@ -84,8 +88,9 @@ function harness(overrides: Partial<ReceiveDeps> = {}) {
     },
   };
   const pi = {
-    sendMessage(msg: Record<string, unknown>) {
+    sendMessage(msg: Record<string, unknown>, opts?: Record<string, unknown>) {
       sent.push(msg);
+      sentOptions.push(opts);
     },
   };
 
@@ -115,7 +120,7 @@ function harness(overrides: Partial<ReceiveDeps> = {}) {
     ...overrides,
   };
 
-  return { deps, notes, health, spawned, injected, retries, sent, timers, pi };
+  return { deps, notes, health, spawned, injected, retries, sent, sentOptions, timers, pi };
 }
 
 /** A receiver whose lifecycle calls are recorded in order. */
@@ -1001,4 +1006,109 @@ test('a status message gets no Report block, and a host without the dep still de
     from_handle: 'dispatch:ctx_1',
   });
   expect(bare.sent).toHaveLength(1);
+});
+
+/**
+ * THE STALL WATCHER'S ALERT IS A WAKE, AND `status` IS THE ENVELOPE IT ARRIVES IN.
+ *
+ * Measured 2026-09-02 (#109): the watcher ax arms at dispatch sent `escalation`,
+ * a coordinator mutation whose sender must hold an active Dispatch — from the
+ * environment of the pane that dispatched, a top-level orchestrator's, which
+ * holds none by construction. Every alert was refused `sender_not_assignee` and
+ * the wake arrived as the REJECTION's own `status`, carrying the original body
+ * under `_orcaLifecycleRejection`. `src/worker/stall.mjs` now sends `status`
+ * outright with its subjects unchanged, on this ruling: an orchestrator
+ * dispatched through ax is an ax session, this loop is the only consumer on its
+ * Run, and it wakes on a directed message whatever the type.
+ *
+ * This is the receiving half of that ruling, and the pin is deliberately not
+ * "a message was injected" — it is `triggerTurn: true` for a `status` whose
+ * subject carries one of the watcher's two prefixes. A type-aware delivery is on
+ * the table (`docs/research/2026-09-04-orchestration-layer-competitors.md`
+ * proposes `status` → `deliverAs: 'nextTurn'`), and demoting these two to mail
+ * the model reads whenever it next looks would re-open #109 with every other
+ * assertion in this file still green: a child that died between opening its pull
+ * request and reporting freezes the loop until the operator returns. A change
+ * that wants the demotion has to exempt these subjects out loud, here.
+ */
+test('a stall-watch or card status wakes the session, because nothing else will say the worker stopped', async () => {
+  for (const subject of [
+    "stall-watch: dispatched worker '149-work' has gone silent",
+    "stall-watch: dispatched worker '149-work' is GONE without reporting",
+    "card: '149-work' published a checkpoint",
+  ]) {
+    const h = await deliverPane({
+      id: 'm1',
+      type: 'status',
+      subject,
+      body: 'Dispatch ctx_1 for request 149-work has shown no sign of life for 6 minute(s).',
+      from_handle: 'term_orchestrator',
+    });
+
+    expect(h.sent).toHaveLength(1);
+    // The alert's own words, not a notice that something arrived: the watcher
+    // exits after sending, so this delivery is the only account of the stop.
+    expect(h.sent[0]?.details).toMatchObject({ type: 'status' });
+    expect(h.sentOptions[0]).toEqual({ triggerTurn: true });
+  }
+});
+
+/**
+ * THE ALERT ARRIVES UNDER THIS SESSION'S OWN HANDLE, AND MUST STILL BE HEARD.
+ *
+ * Not a hypothetical: `--from` self-resolves off `ORCA_TERMINAL_HANDLE` in
+ * Orca's own handler (`src/cli/handlers/orchestration/terminal-identity.ts`,
+ * recorded in `src/worker/capability.mjs`), the watcher is spawned detached with
+ * the dispatching pane's whole environment (`src/worker/start.mjs`:
+ * `env: { ...env, ORCA_DISPATCH_STORE: … }`) and it names no `--from`. So its
+ * alert reaches this loop carrying THIS session's handle as `from_handle`.
+ *
+ * The self-send drop exists for a measured echo — a child re-reading its own
+ * report off the relay, 2026-08-15 — and it would swallow the one message a
+ * killed pane can never send for itself. Under the old `escalation` the wake
+ * still arrived, as Orca's REJECTION of it, from the runtime rather than from
+ * this handle. `status` is accepted (Orca gates the lifecycle codes on
+ * `worker_done | heartbeat | escalation | decision_gate` only), so there is no
+ * rejection left to fall back on and the drop would be total silence.
+ *
+ * The exemption is those two subjects and nothing else: an echo of this session's
+ * own words still dies here, which is the noise the fence was built for.
+ */
+test('a watcher alert under this session own handle is heard; an echo of its own words still is not', async () => {
+  const previous = process.env.ORCA_TERMINAL_HANDLE;
+  process.env.ORCA_TERMINAL_HANDLE = 'term_self';
+  try {
+    const alert = await deliverPane({
+      id: 'm1',
+      type: 'status',
+      subject: "stall-watch: dispatched worker '149-work' is GONE without reporting",
+      body: 'Dispatch ctx_1 for request 149-work has NO PANE LEFT.',
+      from_handle: 'term_self',
+    });
+    expect(alert.sent).toHaveLength(1);
+    expect(alert.sentOptions[0]).toEqual({ triggerTurn: true });
+    expect(alert.notes.join('\n')).toContain('stall watcher alert under our own handle');
+
+    const card = await deliverPane({
+      id: 'm2',
+      type: 'status',
+      subject: "card: '149-work' published a checkpoint",
+      body: 'in-review\t1/4 · DECISION: portails',
+      from_handle: 'term_self',
+    });
+    expect(card.sent).toHaveLength(1);
+
+    const echo = await deliverPane({
+      id: 'm3',
+      type: 'worker_done',
+      subject: 'peer:149-work',
+      body: 'my own report, back down the relay',
+      from_handle: 'term_self',
+    });
+    expect(echo.sent).toEqual([]);
+    expect(echo.notes.join('\n')).toContain('dropped a message this session sent itself');
+  } finally {
+    if (previous === undefined) delete process.env.ORCA_TERMINAL_HANDLE;
+    else process.env.ORCA_TERMINAL_HANDLE = previous;
+  }
 });
