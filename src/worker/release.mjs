@@ -194,6 +194,32 @@ const SETTLED = new Set(['succeeded', 'failed']);
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
+/**
+ * ONE ARGUMENT, QUOTED FOR A POSIX SHELL — and every repair in this file that
+ * interpolates a path goes through it.
+ *
+ * Found in review on #157. A repair is a command an operator PASTES, and a
+ * worktree path is not a token: ax places children under a workspace root it
+ * does not choose, so `/Users/me/My Project/ws-147` printed bare is three
+ * arguments, and a `$` or a backtick in a directory name is read by the shell
+ * before `git` ever sees it. A row that says "the exact call this proof makes"
+ * and then prints a different one is the same finding this verb exists to
+ * remove, one layer down.
+ *
+ * Quoted ONLY when it has to be: an unquoted path is what an operator reads
+ * every day, and `'…'` on all five words of `git -C … status --porcelain` is
+ * noise that trains the reader to skim. The safe set is the shell-portable one
+ * (no `~`, which must expand, and no `!`, which csh-style history would eat).
+ * Single quotes are the only shape needing no escape table — a literal quote
+ * is closed, escaped and reopened.
+ */
+const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+const shq = value => {
+  const text = String(value);
+  return text !== '' && SHELL_SAFE.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
+};
+
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
 // A proof answer carries the REPAIR with the verdict, never a verdict alone:
 // `missing` takes no default for it, so a reason added without one prints a
@@ -356,7 +382,11 @@ function unaccounted(index, seen) {
  * alone: a `worker-show` changes nothing, which is what #100 paid for on the
  * `release_unknown` row.
  */
-const rerun = args => `${args.join(' ')}   # the exact call this proof makes — read its refusal whole, then re-run this verb`;
+// `why` is a PARAMETER and never an extra element of `args`: every word of
+// `args` is shell-quoted, so a sentence appended to that array would come back
+// quoted as if it were an argument.
+const rerun = (args, why = 'read its refusal whole, then re-run this verb') =>
+  `${args.map(shq).join(' ')}   # the exact call this proof makes — ${why}`;
 
 const readThenSay = (dispatchId, why) =>
   `orca orchestration worker-read --dispatch ${dispatchId} --json   # ${why}: read the pane, then close it on your own word — ax worker release --close --dispatch ${dispatchId} --no-proof`;
@@ -424,12 +454,12 @@ function proveClean(stdout, { branch, worktree, checkout, ignore }) {
   if (rows.every(row => row.untracked && provisions(row.path, ignore))) {
     return missing(
       `uncommitted changes on ${branch} — all of it untracked state ax provisions and this checkout does not ignore: ${paths}`,
-      `cd ${checkout} && ax init   # writes the managed .gitignore block that covers ${paths} (plan.ignore, src/plan.mjs). The verdict stays KEEP until this tree is clean — the block reaches this worktree with its branch, or those paths are removed there; no path is ever exempted inside the proof (#83)`,
+      `cd ${shq(checkout)} && ax init   # writes the managed .gitignore block that covers ${paths} (plan.ignore, src/plan.mjs). The verdict stays KEEP until this tree is clean — the block reaches this worktree with its branch, or those paths are removed there; no path is ever exempted inside the proof (#83)`,
     );
   }
   return missing(
     `uncommitted changes on ${branch} — work the merge gate never saw`,
-    `git -C ${worktree} status --porcelain   # read it, then commit or stash it before this pane closes: a merged PR with local dirt is work no gate and no reviewer ever saw`,
+    `git -C ${shq(worktree)} status --porcelain   # read it, then commit or stash it before this pane closes: a merged PR with local dirt is work no gate and no reviewer ever saw`,
   );
 }
 
@@ -549,7 +579,7 @@ function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, igno
   if (mine.length > 1) {
     return missing(
       `${mine.length} PRs claim head ${branch}`,
-      rerun(prQuery.concat('   # close or retarget the duplicates: one head, one PR, or nothing here can name the one that proves this pane')),
+      rerun(prQuery, 'close or retarget the duplicates: one head, one PR, or nothing here can name the one that proves this pane'),
     );
   }
   if (mine.length === 1) {
@@ -558,7 +588,7 @@ function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, igno
     // AN OPEN PR IS NOT PROOF (F-031), so the repair is the merge decision and
     // not this verb: `ax pr gate` names every ground that still refuses it.
     if (pr.state === 'OPEN') {
-      return missing(`PR #${pr.number} still open`, `cd ${worktree} && ax pr gate --pr ${pr.number}   # this pane closes when that PR is MERGED and never before; the gate names what still blocks it`);
+      return missing(`PR #${pr.number} still open`, `cd ${shq(worktree)} && ax pr gate --pr ${pr.number}   # this pane closes when that PR is MERGED and never before; the gate names what still blocks it`);
     }
     if (pr.state === 'CLOSED') {
       return missing(`PR #${pr.number} closed unmerged`, readThenSay(dispatchId, `PR #${pr.number} was closed without merging, so nothing this pane did ever landed`));
@@ -675,7 +705,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       return {
         settled: false,
         line: `${dispatchId}  the existing release record is unreadable: ${String(error.message ?? error)}`,
-        repair: `cat ${claim.path}   # repair or recover that record; do NOT mint a second release identity`,
+        repair: `cat ${shq(claim.path)}   # repair or recover that record; do NOT mint a second release identity`,
       };
     }
     if (count === 0) return owned;
@@ -702,7 +732,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       return {
         settled: false,
         line: `${dispatchId}  the recorded release cannot be reconstructed: ${String(error.message ?? error)}`,
-        repair: `cat ${claim.path}   # a request that cannot be replayed is never re-minted`,
+        repair: `cat ${shq(claim.path)}   # a request that cannot be replayed is never re-minted`,
       };
     }
     const unbound = releaseBinding(claim.path, dispatchId, argv, index, bin);
@@ -710,7 +740,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       return {
         settled: false,
         line: `${dispatchId}  the release record at ${claim.path} does not describe this release: ${unbound}`,
-        repair: `cat ${claim.path}   # settle it by hand; a record that does not bind is never replayed`,
+        repair: `cat ${shq(claim.path)}   # settle it by hand; a record that does not bind is never replayed`,
       };
     }
     outcome = attempt(claim.path, index, argv);
@@ -900,7 +930,7 @@ export function release(
   // A store that cannot be enumerated is not an absence of provenance. Left
   // unread, this is exactly "I could not look" reported as "nothing is there".
   if (!index.missing && index.reason) {
-    return cannot(`the dispatch store at ${store} cannot be read: ${index.reason}`, `ls -ld ${store}   # provenance decides which proof applies to a pane`);
+    return cannot(`the dispatch store at ${store} cannot be read: ${index.reason}`, `ls -ld ${shq(store)}   # provenance decides which proof applies to a pane`);
   }
 
   const seen = new Set(workers.rows.map(row => row.dispatchId));
@@ -1021,7 +1051,7 @@ export function release(
         placed === 'foreign'
           ? worktree === ''
             ? `cd <your ${belongsTo} checkout> && ax worker release --close --dispatch ${row.dispatchId}`
-            : `cd ${worktree} && ax worker release --close --dispatch ${row.dispatchId}`
+            : `cd ${shq(worktree)} && ax worker release --close --dispatch ${row.dispatchId}`
           // A REPAIR THAT CHANGES THE OUTCOME, not a second look at the absence
           // (validated review finding on #118). Reading the record again still
           // computes `unknown`, so this row would refuse forever: what closes it
@@ -1212,7 +1242,9 @@ export function release(
     if (index.ambiguous.has(row.dispatchId)) {
       keep(
         `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · two records claim this dispatch — provenance is ambiguous, so nothing is proven`,
-        `grep -l ${row.dispatchId} ${store}/*.json   # settle which request owns it`,
+        // The glob stays OUTSIDE the quotes: quoting `*.json` too would hand
+        // grep a literal filename that does not exist.
+        `grep -l ${row.dispatchId} ${shq(store)}/*.json   # settle which request owns it`,
       );
       continue;
     }
@@ -1391,7 +1423,7 @@ export function release(
           attemptSettle(join(store, `${entry.request}.json`));
         } catch (error) {
           note(`the release settled but its dispatch record did not: ${String(error.message ?? error).slice(0, 160)}`);
-          fix(`cat ${join(store, `${entry.request}.json`)}   # settle the last attempt by hand`);
+          fix(`cat ${shq(join(store, `${entry.request}.json`))}   # settle the last attempt by hand`);
         }
       }
     } else {

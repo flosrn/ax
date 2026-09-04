@@ -1351,6 +1351,43 @@ test('a KEEP carrying any other dirt names the status call and the commit-or-sta
   assert.match(r.out, /0 closeable/);
 });
 
+test('a repair over a path a shell would split is still the argv the proof ran', () => {
+  // P2 on #157. `args.join(' ')` printed a command that is NOT the call the
+  // proof made the moment a worktree carries a space: ax places children under
+  // a workspace root it does not choose, and `/…/My Project/ws` pasted bare is
+  // three arguments — with `$HOME` and a quote in the name, it is also a
+  // different path. A repair that does not run is the same finding #147 exists
+  // to remove, so the proof of this one is a shell doing the splitting: `for
+  // word in <the repair>` reconstructs the argv, and it must equal the argv
+  // `git` was actually given.
+  const dir = store();
+  record(dir, 'ws-quoted', 'ctx_quoted');
+  const here = join(SCOPE, "My Project 'x' $HOME", 'ws-quoted');
+  mkdirSync(here, { recursive: true });
+
+  const r = run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_quoted')],
+      terminals: [terminal('term_ctx_quoted', { worktreePath: here })],
+      cursors: { term_ctx_quoted: [4, 4] },
+    },
+    execOptions: {
+      answers: {
+        'git rev-parse': { status: 0, stdout: 'feat/quoted\n', stderr: '' },
+        'git status': { status: 0, stdout: ' M src/a.mjs\n', stderr: '' },
+      },
+    },
+  });
+
+  const line = r.out.split('\n').find(text => text.includes('→ git -C'));
+  assert.ok(line, `no git repair was printed:\n${r.out}`);
+  const command = line.slice(line.indexOf('→ ') + 2).split('   #')[0].trim();
+  const split = defaultExec('/bin/sh', ['-c', `for word in ${command}; do printf '%s\\n' "$word"; done`], SCOPE);
+  assert.equal(split.status, 0, split.stderr);
+  assert.deepEqual(split.stdout.split('\n').filter(Boolean), ['git', '-C', here, 'status', '--porcelain']);
+});
+
 /**
  * Every KEEP row a report printed, paired with the line under it. `fix()`
  * writes `      → <command>` directly beneath the row it repairs, so the
