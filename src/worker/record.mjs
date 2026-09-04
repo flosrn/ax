@@ -1002,6 +1002,31 @@ export function recordRepo(path) {
 }
 
 /**
+ * The same field, read by the caller that WRITES it — and that caller needs a
+ * third answer `recordRepo` cannot give.
+ *
+ *   named      a non-empty string: this record's owner is not in doubt
+ *   none       the key absent, `null`, or blank — the pre-0.20 shape (#146)
+ *   malformed  present and not a name: an object, a list, a number
+ *
+ * `recordRepo` collapses `malformed` into `''`, which is correct for a reader
+ * asking only "which repository" — the answer is "none it can name". A writer
+ * inheriting that collapse would overwrite corrupted metadata while reporting
+ * success, so the distinction is made here rather than by widening the reader
+ * every other caller depends on (review of PR #155, P1). `null` is NOT in that
+ * class: it is how a record written before `--tracker-repo` spells the absence
+ * `ax worker settle --repo` exists to fill.
+ */
+export function recordRepoNaming(path) {
+  const repo = load(path).repo;
+  if (repo === undefined || repo === null) return { state: 'none', repo: '' };
+  if (typeof repo !== 'string') {
+    return { state: 'malformed', repo: '', detail: `\`repo\` is ${Array.isArray(repo) ? 'a list' : typeof repo}, not a repository name` };
+  }
+  return repo.trim() === '' ? { state: 'none', repo: '' } : { state: 'named', repo: repo.trim() };
+}
+
+/**
  * The last attempt's settlement state, and whether anything in it is still open.
  *
  * `openPhase` is `staleClaim`'s first test isolated for the caller that must
@@ -1026,10 +1051,30 @@ export function lastAttemptState(path) {
  * forever and the frontier's `attempt-ended-unmerged` state was unreachable
  * (validated review finding, 2026-09-01). Idempotent: settling a settled
  * attempt changes nothing.
+ *
+ * `repo` BACKFILLS the repository name on a record that carries none (#146,
+ * finding #133) — every record written before `--tracker-repo` existed. It
+ * rides this one function rather than a writer of its own because the two
+ * writes must be ONE: a `repo` landing without the flag would scope a record
+ * that is still unsettled, and a flag landing without the `repo` would settle a
+ * record the frontier still reads in every repository on the host. The caller
+ * (./settle.mjs) is what establishes that the name is true — this is the
+ * invariant guard behind it, and a record whose `repo` is anything but an
+ * absence (a name, or a value that is not a name at all) throws rather than
+ * being overwritten: the guard reads through `recordRepoNaming`, so the writer
+ * and the verb that authorises it cannot disagree about what "carries none"
+ * means.
  */
-export function attemptSettle(path) {
+export function attemptSettle(path, { repo = '' } = {}) {
   const rec = load(path);
   const attempts = must(rec, 'attempts', 'record root');
+  const backfill = String(repo).trim();
+  if (backfill !== '') {
+    const naming = recordRepoNaming(path);
+    if (naming.state === 'named') throw new Error(`record already names ${naming.repo}: a backfill writes a repository, it never re-attributes one`);
+    if (naming.state === 'malformed') throw new Error(`${naming.detail}: a backfill fills an absence, it never overwrites a value it cannot read`);
+    rec.repo = backfill;
+  }
   attempts[attempts.length - 1].settled = true;
   save(rec, path);
 }

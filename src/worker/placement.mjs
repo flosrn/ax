@@ -34,6 +34,31 @@
 // answer is resolved against the cwd it ran in, here, where it is accepted —
 // no consumer downstream has to know it might have been relative (review of
 // PR #141: a relative answer reached the Orca selector and the Report path).
+//
+// AND THE SAME SENTENCE, TRANSPOSED, FOR A DISPATCH ONTO A DECLARED HOST
+// (#103). `placeRemote` asks THE HOST's runtime which worktrees it carries for
+// the repository this verb has already resolved — `worktree list --repo
+// <repoId> --environment <host>`, over the same Orca federation `repo list
+// --environment` already rides, never ssh and never a workspaces root spelled
+// here, which would be wrong on the next host and silently wrong on this one
+// after a settings change. Lendable is every condition at once, as it is
+// locally: not the host's primary, the same repository, #84's name rule, and
+// under the workspaces root THAT HOST reports FOR THAT REPOSITORY
+// (`worktreeBasePath` on the `repo list --environment` record the verb already
+// fetches). An absent root is UNKNOWN, never `.worktrees` (F-028).
+//
+// A REMOTE CANDIDATE THIS SIDE CANNOT PLACE IS A CANNOT-ESTABLISH, never a
+// reuse and never a second create. Remote reuse buys no provisioning — the
+// host's setup hook runs on create only — and this side proves nothing about a
+// tree on another machine: `untilSeen` and the AX-bundle proof are both gated
+// on a local path. So a candidate under an unreported or foreign root, and
+// every case of two candidates, answers cannot-establish naming them, and the
+// minting stops at the refusal rather than at a guess. Both repairs are named,
+// and the second one is a route: `--worktree` takes an exact remote selector
+// when `--on` is present, while a local dispatch keeps its existence guard.
+//
+// Remote paths are the HOST's spelling, compared as strings on `/`: nothing
+// here resolves a symlink or stats a directory on another machine.
 
 import { existsSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
@@ -299,6 +324,17 @@ export function placementRoots({ root, main, run }) {
 }
 
 /**
+ * #84's name rule itself, on one line, so the remote placer applies THE SAME
+ * sentence rather than a second spelling of it that can drift from this one.
+ */
+const nameMatches = (leaf, subject, exact) => {
+  const wanted = String(subject).toLowerCase();
+  const name = String(leaf).toLowerCase();
+  if (wanted === '') return false;
+  return exact ? name === wanted : name === wanted || name.startsWith(`${wanted}-`) || name.startsWith(`${wanted}_`);
+};
+
+/**
  * Every worktree this subject may be lent, sorted — none, one, or an ambiguity
  * the caller refuses.
  *
@@ -321,7 +357,6 @@ export function placementRoots({ root, main, run }) {
  * child into a tree the runtime resolves no selector for.
  */
 function existingFor(trees, { roots, placed, never, subject, exact = false }) {
-  const wanted = String(subject).toLowerCase();
   const blocked = new Set(never);
   const lendable = new Set();
   for (const tree of trees) {
@@ -330,11 +365,156 @@ function existingFor(trees, { roots, placed, never, subject, exact = false }) {
     const path = physical(declared);
     if (blocked.has(path)) continue;
     if (!placed.has(path) && !roots.some(base => withinPath(path, base))) continue;
-    const name = basename(path).toLowerCase();
-    const matches = exact ? name === wanted : name === wanted || name.startsWith(`${wanted}-`) || name.startsWith(`${wanted}_`);
-    if (matches) lendable.add(path);
+    if (nameMatches(basename(path), subject, exact)) lendable.add(path);
   }
   return [...lendable].sort();
+}
+
+/** A path's leaf on the HOST's separator: nothing here stats a remote path. */
+const leafOf = path =>
+  String(path ?? '')
+    .replace(/\/+$/, '')
+    .split('/')
+    .pop() ?? '';
+/** Under a root, as strings — `/srv/orca/acme/.worktrees2` is not under `.worktrees`. */
+const underRoot = (path, root) => path === root || path.startsWith(`${root}/`);
+
+/**
+ * The workspaces root the HOST reports for this repository, from the very call
+ * `repoIdFor` already makes — asked here rather than passed in, because a
+ * dispatch that carries `--repo-id` never makes that call at all.
+ *
+ * Reported PER REPOSITORY and sometimes not at all: measured 2026-09-02 on
+ * `gapicore`, `/srv/orca/gapila` answers `worktreeBasePath ".worktrees"` while
+ * `/srv/orca/omp` answers nothing, and no CLI surface reports the runtime's own
+ * default. So an absent value is UNKNOWN — not `.worktrees`, not "no root"
+ * (F-028) — and a relative one is relative to the repository's own path there.
+ */
+function reportedRoot({ id, env, run }) {
+  const out = run(['repo', 'list', '--environment', env, '--json']);
+  const repos = out?.receipt?.result?.repos;
+  if (!Array.isArray(repos)) {
+    const detail = String(out?.receipt?.unparseable ?? out?.receipt?.error?.code ?? out?.stderr ?? '').replace(/\s+/g, ' ').trim();
+    return { known: false, detail: `'${env}' could not be asked where it places worktrees for it (${detail === '' ? 'no receipt' : detail})` };
+  }
+  const record = repos.find(repo => repo?.id === id);
+  if (record === undefined) return { known: false, detail: `'${env}' lists no repository ${id}, so the root it places worktrees under is unknown` };
+  const declared = String(record.worktreeBasePath ?? '');
+  if (declared === '') return { known: false, detail: `'${env}' reports no workspaces root for that repository, and an unreported root is unknown rather than \`.worktrees\`` };
+  const base = declared.startsWith('/') ? declared : `${String(record.path ?? '').replace(/\/+$/, '')}/${declared}`;
+  return { known: true, root: base.replace(/\/+$/, ''), detail: '' };
+}
+
+/**
+ * Place onto a declared host: reuse the tree that host already carries for this
+ * subject, or keep the argv that asks it for a new top-level one.
+ *
+ * `selector` is what the placement argv carries in place of `new-top-level` —
+ * the record's own `id:<repoId>::<path>`, the one selector form the runtime
+ * calls unambiguous (a bare `path:` loses the repo id and throws
+ * `selector_ambiguous`). Empty means today's argv, byte for byte.
+ */
+export function placeRemote({ repoId, env, request, issue, named, run }) {
+  const notes = [];
+  const subject = named ? request : issue;
+  const listing = `orca worktree list --repo ${repoId} --environment ${env} --json`;
+  const out = run(['worktree', 'list', '--repo', repoId, '--environment', env, '--json']);
+  const receipt = out?.receipt ?? {};
+  const rows = receipt.result?.worktrees;
+  if (out?.status !== 0 || receipt.ok !== true || !Array.isArray(rows)) {
+    const detail = String(receipt.unparseable ?? receipt.error?.code ?? out?.stderr ?? '').replace(/\s+/g, ' ').trim();
+    return {
+      notes,
+      cannot: `'${env}' cannot say which worktrees it carries for this repository (${detail === '' ? 'no receipt' : detail}), so whether ${subject} already has one there is unknown — and asking for a new top-level tree is what mints ${request}-2 on that host`,
+      repair: `${listing}   # then re-run this dispatch`,
+    };
+  }
+
+  const id = repoId.startsWith('id:') ? repoId.slice(3) : repoId;
+  const candidates = rows
+    .filter(row => {
+      const path = String(row?.path ?? '');
+      if (path === '' || row?.isMainWorktree === true) return false;
+      // The listing is already scoped by `--repo`, and the row says so too: a
+      // record answering for another repository is never lent, whatever a
+      // future federation reply carries.
+      const scope = String(row?.repoId ?? '');
+      if (scope !== '' && scope !== id) return false;
+      return nameMatches(leafOf(path), subject, named);
+    })
+    .map(row => String(row.path))
+    .sort();
+  if (candidates.length === 0) {
+    notes.push(`'${env}' carries no worktree ax may lend for ${subject}, so this dispatch asks it for a new top-level one`);
+    return { notes, selector: '' };
+  }
+
+  // The root is asked only once a name has matched: a host with nothing to lend
+  // keeps today's argv without a second read, and the root is a question about
+  // a candidate rather than a precondition of the dispatch.
+  const root = reportedRoot({ id, env, run });
+  const stray = root.known ? candidates.filter(path => !underRoot(path, root.root)) : candidates;
+  if (stray.length > 0) {
+    return {
+      notes,
+      cannot: `${subject} matches ${stray.join(', ')} on '${env}', ${root.known ? `which ${root.root} does not contain` : root.detail} — so whether ax may lend it cannot be established, and asking for a new top-level tree would mint ${request}-2 beside it`,
+      repair: remoteRoutes(env, repoId, stray[0]),
+    };
+  }
+  if (candidates.length > 1) {
+    return {
+      notes,
+      cannot: `${subject} has ${candidates.length} worktrees ax may lend on '${env}', so which one this dispatch means cannot be established: ${candidates.join(', ')}`,
+      repair: remoteRoutes(env, repoId, candidates[0]),
+    };
+  }
+  notes.push(`reusing the worktree '${env}' already carries for ${subject}, and asking it for no second one: ${candidates[0]}`);
+  // AND SAYING WHAT THAT REUSE DOES NOT PROVE. Locally the reuse is followed by
+  // `ax worktree setup` and a habitability proof; here neither is reachable —
+  // the host's setup hook runs on CREATE only, and this side stats no directory
+  // on another machine (#103 scopes remote provisioning and any habitability
+  // proof for it out, and leaves the host's hook the only provisioner). Under
+  // the root that host reports is the evidence this rule has; an operator is
+  // told the rest rather than left to infer it from a silent reuse.
+  notes.push(`nothing here proves that tree provisioned: '${env}' runs its setup hook on create only, and no probe from this side can read a directory there — if the child reports no agent context file, run \`ax worktree setup\` in ${candidates[0]} on '${env}'`);
+  return { notes, selector: `${repoId}::${candidates[0]}` };
+}
+
+/**
+ * The two routes a remote candidate supports, on one line — and the second one
+ * only became a route with this change: `--worktree` was guarded by
+ * `existsSync` on THIS machine, so a refusal advertising it named a flag that
+ * could not reach a tree on the host it was talking about.
+ */
+const remoteRoutes = (env, repoId, path) =>
+  `ax worktree setup   # in ${path} on '${env}', then re-run this dispatch — or ax worker dispatch --on ${env} --worktree ${repoId}::${path} … to point this dispatch straight at it`;
+
+/** The selector forms a REMOTE runtime resolves; anything else is this machine's spelling. */
+const REMOTE_FORMS = ['identity:', 'id:', 'name:', 'branch:', 'issue:', 'path:'];
+
+/**
+ * `--worktree` under `--on`, proven to be a selector the host can resolve.
+ *
+ * A dispatch onto a host cannot be given a directory: `current` and `active`
+ * are this machine's cwd, a bare path is this machine's spelling, and Orca
+ * refuses both remotely ("Remote current and new-child are invalid; discover an
+ * exact remote selector or use new-top-level"). `path:` is required absolute
+ * because the runtime resolves a relative one against its own cwd, and `id:`
+ * must carry the `::<path>` half that makes it the unambiguous form.
+ */
+export function remoteSelectorFor(value) {
+  const selector = String(value ?? '').trim();
+  if (selector === 'new-top-level') return { ok: true, selector };
+  const scheme = REMOTE_FORMS.find(form => selector.startsWith(form));
+  const rest = scheme === undefined ? '' : selector.slice(scheme.length);
+  const exact =
+    scheme !== undefined && rest !== '' && (scheme !== 'path:' || rest.startsWith('/')) && (scheme !== 'id:' || /^[^:]+::\/.+/.test(rest));
+  if (exact) return { ok: true, selector };
+  return {
+    ok: false,
+    reason: `--worktree ${selector} is not an exact remote selector, and a dispatch onto a host resolves nothing else: a bare path is this machine's spelling and 'current' is this machine's cwd`,
+    repair: 'ax worker dispatch --on <host> --worktree id:<repo-id>::<path>   # or name:<displayName>, branch:<branch>, issue:<number>, path:<absolute-server-path>',
+  };
 }
 
 /** Poll the selector a dispatch will use, on evidence, against a deadline. */

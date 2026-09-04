@@ -69,7 +69,7 @@ import { setup as setupVerb } from '../worktree/setup.mjs';
 import { capLines, capVerdict, liveCount, machineCapOf, repoCapOf } from './capacity.mjs';
 import { hostScopes, liveInventory, terminalInventory } from './pane.mjs';
 import { peerRun } from './peers.mjs';
-import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
+import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
 import { defaultStore, dispatchIndex } from './record.mjs';
 import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
@@ -546,7 +546,10 @@ export function dispatch(
   // from, so the brief cannot name a tree the dispatch did not use.
   let selector = '';
 
-  if (flags.worktree !== '') {
+  // `--worktree` means two different things on either side of `--on`, and until
+  // #103 it meant only the local one: a directory on THIS machine, which can
+  // never name a tree on the host the same argv is dispatching to.
+  if (flags.worktree !== '' && on === '') {
     if (!existsSync(flags.worktree)) return refuse(`--worktree ${flags.worktree} is not a directory on this host`);
     worktree = flags.worktree;
     selector = worktree;
@@ -571,7 +574,23 @@ export function dispatch(
       note(`${grounds.unproven} ground(s) on '${on}' are UNPROVEN rather than passed — a transport that cannot answer never blocks remote work, but it never proves it either`);
     }
 
-    place.push('--on', on, '--worktree', 'new-top-level', '--repo', repoId, '--name', request, '--agent', flags.agent);
+    // The tree the host already carries for this subject, or today's argv byte
+    // for byte. An explicit `--worktree` is the operator having discovered that
+    // selector themselves — it is the second repair every remote refusal names,
+    // so it asks the host nothing and is taken as given.
+    let remote = 'new-top-level';
+    if (flags.worktree !== '') {
+      const exact = remoteSelectorFor(flags.worktree);
+      if (!exact.ok) return refuse(exact.reason, exact.repair);
+      remote = exact.selector;
+    } else {
+      const placed = placeRemote({ repoId, env: on, request, issue: flags.issue, named, run });
+      for (const line of placed.notes) note(line);
+      if (placed.cannot) return cannot(placed.cannot, placed.repair);
+      if (placed.selector !== '') remote = placed.selector;
+    }
+
+    place.push('--on', on, '--worktree', remote, '--repo', repoId, '--name', request, '--agent', flags.agent);
     // `--setup skip` is exactly what left a child with no URLs, so it is only
     // ever composed for a throwaway probe.
     if (probe) place.push('--setup', 'skip');

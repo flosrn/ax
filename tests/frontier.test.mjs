@@ -14,7 +14,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -22,6 +22,8 @@ import { after, before, test } from 'node:test';
 import { COMMANDS } from '../src/commands.mjs';
 import { frontier, ghVersionOf } from '../src/frontier.mjs';
 import { requestIdFor } from '../src/worker/dispatch.mjs';
+import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
+import { settle } from '../src/worker/settle.mjs';
 
 const SLUG = 'gapilabs/gapila';
 const READY = 'ready-for-agent';
@@ -97,6 +99,7 @@ const issueNode = ({
  */
 const ghFor = ({
   version = '2.97.0',
+  slug = SLUG,
   issues = [],
   graph = {},
   permissions = { flo: 'write' },
@@ -108,7 +111,7 @@ const ghFor = ({
   const gh = args => {
     calls.push(args);
     if (args[0] === '--version') return answer(`gh version ${version} (2026-01-15)\nhttps://github.com/cli/cli/releases`);
-    if (args[0] === 'repo' && args[1] === 'view') return answer(`${SLUG}\n`);
+    if (args[0] === 'repo' && args[1] === 'view') return answer(`${slug}\n`);
     if (args[0] === 'issue' && args[1] === 'list') return listFails ? failure('connect: network is unreachable') : answer(issues);
     if (args[0] === 'api' && args[1] === 'graphql') {
       if (graphOut !== undefined) return graphOut;
@@ -132,6 +135,41 @@ const runFrontier = (fixture, argv = []) => {
   const result = capture(() => frontier(argv, { gh, env, cwd: root }));
   return { ...result, calls };
 };
+
+// One dispatch of a dead attempt, and the Orca that answers `ax worker settle`'s
+// three reads about it: the pane it recorded is in no terminal list, so every
+// dispatch of the task is a corpse and the attempt is provably ended (#146).
+const TASK = 'task_05aec27bcdcf';
+const DEAD_ROW = { taskId: TASK, dispatchId: 'ctx_a8c1c8b9d585', workerState: 'failed', terminalState: 'retained', agentTerminalHandle: 'term_7f0854ba' };
+
+const orcaSaying = rows => args => {
+  const receipt = result => ({ status: 0, stdout: '', stderr: '', receipt: { ok: true, result } });
+  const line = args.join(' ');
+  if (args[0] === 'status') return receipt({ runtime: { reachable: true } });
+  if (line.includes('worker-list')) return receipt({ workers: rows });
+  if (line.includes('terminal list')) return receipt({ terminals: [], hostScope: { hostIds: ['local'], omittedHostIds: [] }, totalCount: 0 });
+  throw new Error(`settle issued a call this fixture has no answer for: ${line}`);
+};
+
+/**
+ * A record written the way a dispatch writes one — claim, init, phases — and
+ * naming NO repository: the shape of every record written before
+ * `--tracker-repo` existed. Constructed through record.mjs rather than as
+ * literal JSON because `ax worker settle` reads its phases, not just its flags.
+ */
+function repoLessDeadAttempt(request) {
+  const { path } = claimRecord(store, request);
+  initRecord(path, { request, orca: 'orca' });
+  const phases = [
+    ['task-create', { ok: true, result: { task: { id: TASK }, mutation: { requestId: 'r', replayed: false } } }],
+    ['worker-start', { ok: true, result: { taskId: TASK, dispatchId: DEAD_ROW.dispatchId, state: 'failed', stage: 'dispatch_input', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: DEAD_ROW.agentTerminalHandle }] } }],
+  ];
+  for (const [name, receipt] of phases) {
+    phaseBegin(path, { name, identity: `id-${name}`, argv: ['orca', 'orchestration', name, '--json'] });
+    phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify(receipt) });
+  }
+  return path;
+}
 
 // ── Registry ────────────────────────────────────────────────────────────────
 
@@ -278,6 +316,43 @@ test('a record from ANOTHER repository never excludes this repository\'s ticket'
   assert.match(out, /#61 T61 — no blockers declared/, 'a foreign-repo record must not exclude this candidate');
   assert.match(out, /#62 T62 — already-dispatched/);
   assert.match(out, /#63 T63 — already-dispatched/, 'a record with no repo key keeps the conservative exclusion');
+});
+
+test('#146: a repo-less record is already-dispatched everywhere until settle --repo backfills it', () => {
+  // The end-to-end shape of the finding (#133): before the backfill the record
+  // excludes its ticket in EVERY repository on the host and settle refuses it in
+  // every one, so the ticket can never leave the frontier. The backfill is what
+  // scopes it — read here, skipped elsewhere — and it is `ax worker settle
+  // --repo` that writes it, so the flip is proven through the real verb rather
+  // than through a record hand-written into the state it produces.
+  const request = requestIdFor('64', '');
+  const path = repoLessDeadAttempt(request);
+  const candidates = { issues: [issueRow(64)], graph: { i64: issueNode() } };
+
+  assert.match(runFrontier(candidates).out, /#64 T64 — already-dispatched/, 'a record naming no repository excludes its ticket here');
+  assert.match(
+    runFrontier({ ...candidates, slug: 'other/elsewhere' }).out,
+    /#64 T64 — already-dispatched/,
+    'and in every other repository on this host, which is the finding',
+  );
+
+  const settled = capture(() =>
+    settle([request, '--repo', SLUG], {
+      runner: orcaSaying([DEAD_ROW]),
+      exec: (bin, args) => (bin === 'gh' ? answer(`${SLUG}\n`) : failure(`this settle ran ${bin} ${args.join(' ')}`)),
+      env: { ORCA_DISPATCH_STORE: store },
+      cwd: root,
+    }),
+  );
+  assert.equal(settled.code, 0, settled.out);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).repo, SLUG, 'the record now names the repository whose frontier it belongs to');
+
+  assert.match(runFrontier(candidates).out, /#64 T64 — attempt-ended-unmerged/, 'the attempt is visible as ended instead of hiding as dispatched');
+  assert.match(
+    runFrontier({ ...candidates, slug: 'other/elsewhere' }).out,
+    /#64 T64 — no blockers declared/,
+    'and another repository no longer excludes it at all',
+  );
 });
 
 test('provenance reads the batched labels, never the earlier list snapshot', () => {
