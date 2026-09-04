@@ -75,12 +75,24 @@ _Avoid_: launch, start (plumbing), spawn.
 A child owning one implementation slice — one ticket, one worktree, one branch, one pull
 request. It never merges.
 
+**Advisor**:
+An OMP reviewer attached to a Session. In its notes, `[name]` identifies which named
+Advisor spoke; `nit`, `concern` and `blocker` are severities.
+
 **Triage worker**:
 A child analyzing one inbound issue. It writes exactly one draft and mutates nothing.
 
 **Wave**:
 One fan-out of children of one kind, implementation or triage. It closes on proof-by-kind:
 every PR merged or abandoned, or every verdict published.
+
+**Frontier**:
+The set of tickets whose blockers are all closed — the boundary between landed and waiting,
+in the graph's own sense. `ax frontier` reads it from the tracker and the dispatch store as
+three lists: `takeable` (the frontier minus what a record already claims or a rule refuses),
+`excluded` (one named reason per ticket), `cannot establish` (a read that failed — never an
+empty frontier). A wave advances it; it never schedules it.
+_Avoid_: ready set, ready list, queue, backlog.
 
 **Pass**:
 One child's analysis of one issue. A triage wave is made of passes.
