@@ -510,10 +510,22 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // prefixes and nothing wider: an echo of this session's own report
             // still dies here, which is the noise measured above.
             const selfHandle = (process.env.ORCA_TERMINAL_HANDLE ?? '').trim();
+            // AND IT IS NEVER ANSWERABLE, which is the second half of the
+            // exemption and not a detail of it. The watcher exits the moment it
+            // sends, and the handle this alert carries is OUR OWN — so the pane
+            // fallback below would resolve it to this session's own Run, record
+            // that as a route, and have `peerContent` invite `peer_reply`. The
+            // reply would come straight back here and die on the fence above,
+            // with the tool reporting success: the exact "invited, then refused"
+            // shape measured three times on 2026-08-25 that made a recorded route
+            // the definition of answerable in the first place. Raised as P2 on
+            // #159 by a review lens, before it could be measured again.
+            let selfOriginAlert = false;
             if (selfHandle && String(msg.from_handle ?? '') === selfHandle) {
               if (WATCHER_ALERT.test(String(msg.subject ?? '').trim())) {
+                selfOriginAlert = true;
                 deps.note(
-                  `stall watcher alert under our own handle — injecting (${msgId || 'no id'})`,
+                  `stall watcher alert under our own handle — injecting, no reply route (${msgId || 'no id'})`,
                 );
               } else {
                 deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
@@ -551,7 +563,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // is named from our own record, but the payload it carries came over
             // the relay, and a reply ADDRESS is exactly the field a hostile
             // payload would want us to keep. An absent kind is the pane path.
-            if (msgId && who.attributed && who.kind !== 'dispatch') {
+            if (!selfOriginAlert && msgId && who.attributed && who.kind !== 'dispatch') {
               // The sender's own statement first: it is the more specific answer,
               // and honouring it means the fallback below can only fill a silence.
               if (RUN_ADDRESS.test(replyTo)) {

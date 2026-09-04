@@ -1078,16 +1078,27 @@ test('a watcher alert under this session own handle is heard; an echo of its own
   const previous = process.env.ORCA_TERMINAL_HANDLE;
   process.env.ORCA_TERMINAL_HANDLE = 'term_self';
   try {
-    const alert = await deliverPane({
-      id: 'm1',
-      type: 'status',
-      subject: "stall-watch: dispatched worker '149-work' is GONE without reporting",
-      body: 'Dispatch ctx_1 for request 149-work has NO PANE LEFT.',
-      from_handle: 'term_self',
-    });
+    const alert = await deliverPane(
+      {
+        id: 'm1',
+        type: 'status',
+        subject: "stall-watch: dispatched worker '149-work' is GONE without reporting",
+        body: 'Dispatch ctx_1 for request 149-work has NO PANE LEFT.',
+        from_handle: 'term_self',
+      },
+      // A NORMALLY REGISTERED session, which is what makes the second half of
+      // this assertion mean anything: our own handle publishes a Run, so the
+      // pane fallback WOULD resolve one and record it. The watcher has exited by
+      // then and the reply would land back here and die on the fence, with
+      // `peer_reply` reporting success — so the route must never be taken.
+      { paneRoute: () => CHILD_RUN },
+    );
     expect(alert.sent).toHaveLength(1);
     expect(alert.sentOptions[0]).toEqual({ triggerTurn: true });
     expect(alert.notes.join('\n')).toContain('stall watcher alert under our own handle');
+    expect(alert.routes).toEqual([]);
+    expect(alert.answerable).toEqual([false]);
+    expect(String(alert.sent[0]?.content ?? '')).toContain('[NO REPLY ROUTE]');
 
     const card = await deliverPane({
       id: 'm2',
