@@ -1114,6 +1114,11 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.equal(r.code, 0);
   assert.match(r.out, /\[omp role=worker model=@default\] \/entry GAP-353/);
   assert.match(r.out, /would run: ax worker start/);
+  // A ticketed dispatch with no declared contract gets the TRACKED mechanics —
+  // the other half of the choice `renderBrief` makes once dispatch stops
+  // filling the contract slot itself.
+  assert.match(r.out, /Keep the ticket current yourself/);
+  assert.doesNotMatch(r.out, /There is NO ticket for this work/);
   assert.deepEqual(r.started, [], 'a dry run dispatches nothing');
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
 });
@@ -1532,6 +1537,14 @@ test('a named dispatch reads no ticket, and its brief never points at one', () =
   );
   assert.doesNotMatch(r.out, /Read the ticket/);
   assert.match(r.out, /^# loading-states$/m);
+  // The MECHANICS block has to agree with the heading. `renderBrief` chooses
+  // MECHANICS_UNTRACKED when the ticket is null AND no contract text arrives —
+  // and dispatch used to hand it ax's own tracked MECHANICS as "the contract"
+  // whenever a project declared none, so the untracked branch was unreachable
+  // from this verb: the same brief said "NO ticket" at the top and "Keep the
+  // ticket current yourself" further down (measured 2026-09-04 on #136's branch).
+  assert.match(r.out, /There is NO ticket for this work/);
+  assert.doesNotMatch(r.out, /Keep the ticket current/);
   // The identity is the name, verbatim — not `loading-states-work`.
   assert.match(r.out, /--request loading-states /);
   assert.match(r.out, new RegExp(`predicted at ${join(root, '.worktrees', 'loading-states')}`));

@@ -76,7 +76,7 @@ import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
-import { MECHANICS, renderBrief } from './brief.mjs';
+import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
@@ -890,10 +890,18 @@ function capRoom({ run, env, config, repo }) {
   return { verdict, lines };
 }
 
-/** The contract a project declares, or ax's own mechanics when it declares none. */
+/**
+ * The contract a project declares, or NOTHING when it declares none — never
+ * ax's own MECHANICS. `renderBrief` picks between the tracked and the untracked
+ * mechanics by whether the dispatch has a ticket, and it can only do that when
+ * the contract slot arrives empty. Substituting MECHANICS here was how a
+ * `--name` dispatch read "This dispatch carries NO ticket" in its heading and
+ * "Keep the ticket current yourself" in its mechanics from one brief (measured
+ * 2026-09-04 on #136's branch, `--name probe-untracked --dry-run`).
+ */
 function readContract(dispatchConfig, root) {
   const declared = dispatchConfig.contract ?? '';
-  if (declared === '') return { text: MECHANICS, path: '' };
+  if (declared === '') return { text: '', path: '' };
   const path = isAbsolute(declared) ? declared : join(root ?? '', declared);
   try {
     return { text: readFileSync(path, 'utf8'), path };
