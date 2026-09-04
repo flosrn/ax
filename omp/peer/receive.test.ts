@@ -943,3 +943,62 @@ test('a forged-looking handle is not resolved, and a host with no fallback still
   expect(h.answerable).toEqual([false]);
   expect(h.sent).toHaveLength(1);
 });
+
+/**
+ * THE REPORT LANDS AFTER THE SUMMARY, IN THE SAME MESSAGE.
+ *
+ * Order is the contract, not decoration: the Summary is what a reader acts on
+ * first and the Report is the evidence behind it, so a block that arrived above
+ * the three sentences would bury the message. One message, because a second
+ * `sendMessage` is a second wake for one completion.
+ *
+ * What the block SAYS is `completion.test.ts`'s subject — the four dispositions,
+ * the containment proof and the cap all live with the rule. Here the receiver
+ * only has to place it, and never withhold a completion for it.
+ */
+test("a worker's completion carries its Report after the body", async () => {
+  const h = await deliverPane(
+    { id: 'm1', type: 'worker_done', body: 'opened PR #99', from_handle: 'dispatch:ctx_1' },
+    {
+      peerContent: () => 'SUMMARY-BODY',
+      completionReport: (msg) => (String(msg.type) === 'worker_done' ? '\n\n--- REPORT\n## CRITERIA' : ''),
+    },
+  );
+
+  const content = String(h.sent[0]?.content ?? '');
+  expect(content).toContain('SUMMARY-BODY');
+  expect(content.indexOf('--- REPORT')).toBeGreaterThan(content.indexOf('SUMMARY-BODY'));
+  expect(h.sent).toHaveLength(1);
+});
+
+test('a status message gets no Report block, and a host without the dep still delivers', async () => {
+  const asked: string[] = [];
+  const h = await deliverPane(
+    { id: 'm1', type: 'status', body: 'a question', from_handle: 'term_child' },
+    {
+      peerContent: () => 'SUMMARY-BODY',
+      completionReport: (msg) => {
+        asked.push(String(msg.type));
+        return '';
+      },
+    },
+  );
+
+  // Asked, and it answered `''` — the discrimination is the module's, so the
+  // receiver must not grow a second rule about which types carry a Report.
+  expect(asked).toEqual(['status']);
+  // The banner above the body is `unanswerableBanner`'s contract, not this
+  // test's: what is pinned here is that nothing was appended after the body.
+  const content = String(h.sent[0]?.content ?? '');
+  expect(content.endsWith('SUMMARY-BODY')).toBe(true);
+  expect(content).not.toContain('REPORT');
+
+  // The dep is optional: the completion still reaches the model without it.
+  const bare = await deliverPane({
+    id: 'm2',
+    type: 'worker_done',
+    body: 'done',
+    from_handle: 'dispatch:ctx_1',
+  });
+  expect(bare.sent).toHaveLength(1);
+});
