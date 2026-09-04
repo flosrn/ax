@@ -91,7 +91,7 @@ function provisioned(root, name) {
  * from (#84) — and every argv is recorded so "nothing was dispatched" is
  * asserted rather than assumed.
  */
-function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, hostTerminals = {}, created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' }, workspaces = [] } = {}) {
+function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/parent/wt', terminals, hostTerminals = {}, hostTrees = [], repos = [], created, emptyBody = false, labels = [], state = { name: 'In Progress', type: 'started' }, workspaces = [] } = {}) {
   const calls = [];
   let reads = 0;
   const runner = createRunner({
@@ -105,9 +105,17 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/paren
         return receipt({ issue: { identifier: ISSUE, title: 'Loading states', url: 'https://linear.test/GAP-353', state, description: emptyBody ? '   ' : 'a decision, written down', labels: { nodes: labels.map(name => ({ name })) } } });
       }
       if (line.startsWith('worktree create')) return created ?? receipt({ worktree: { path: '/nonexistent' } });
+      if (line.startsWith('repo list')) return receipt({ repos });
       // The runtime enumerates the trees IT placed for this repo, and flags the
       // primary checkout. An empty list is a host that has placed none.
-      if (line.startsWith('worktree list')) return receipt({ worktrees: workspaces.map(path => ({ path, isMainWorktree: false })) });
+      //
+      // A DECLARED HOST ANSWERS FOR ITSELF: `--environment` is the remote
+      // placement read (#103), served by that host's own runtime, and it is
+      // never this machine's list.
+      if (line.startsWith('worktree list')) {
+        if (args.includes('--environment')) return receipt({ worktrees: hostTrees });
+        return receipt({ worktrees: workspaces.map(path => ({ path, isMainWorktree: false })) });
+      }
       if (line.startsWith('worktree show')) {
         return seen ? receipt({ worktree: { path: 'x', parentWorktreeId: parent } }) : { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'selector_not_found' } }), stderr: '' };
       }
@@ -1034,6 +1042,86 @@ test('a placement Orca cannot SEE stops the pipeline before any dispatch', () =>
   assert.match(r.out, /does not resolve path:/);
   assert.match(r.out, /selector_not_found/);
   assert.deepEqual(r.started, [], 'nothing is dispatched into a tree the dispatch cannot address');
+});
+
+// ── placement onto a declared host (#103) ────────────────────────────────────
+// A retry after a refused setup used to ask the host for a second top-level
+// tree, and Orca suffixes a taken name: one ticket, two trees, two branches on
+// a machine nothing here lists. The reuse question is the local one transposed
+// — the host's own listing, under the root the host itself reports.
+
+const FAR = { project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', hosts: { far: { ssh: 'far-host' } } } };
+const onFar = () => {
+  const root = repo();
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify(FAR));
+  return root;
+};
+
+test('a --on dispatch reuses the tree the host already carries, instead of new-top-level', () => {
+  const tree = '/srv/orca/probe/.worktrees/gap-353-loading-states';
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], {
+    root: onFar(),
+    orca: {
+      repos: [{ id: 'abc', path: '/srv/orca/probe', worktreeBasePath: '.worktrees' }],
+      hostTrees: [{ path: tree, isMainWorktree: false, repoId: 'abc' }],
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.equal(r.started.length, 1);
+  assert.match(r.started[0], new RegExp(`--worktree id:abc::${tree}`), 'the record’s own selector, composed by nothing');
+  assert.doesNotMatch(r.started[0], /new-top-level/, 'and no second tree is asked for');
+  assert.match(r.out, /reusing/);
+});
+
+test('no tree on the host keeps today’s remote argv, byte for byte', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], { root: onFar() });
+
+  assert.equal(r.code, 0);
+  assert.match(r.started[0], /--on far --worktree new-top-level --repo id:abc --name gap-353-loading-states --agent omp/);
+});
+
+test('a candidate the host places outside its reported root dispatches NOTHING', () => {
+  const tree = '/srv/orca/probe/hand-made/gap-353-loading-states';
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], {
+    root: onFar(),
+    orca: {
+      repos: [{ id: 'abc', path: '/srv/orca/probe', worktreeBasePath: '.worktrees' }],
+      hostTrees: [{ path: tree, isMainWorktree: false, repoId: 'abc' }],
+    },
+  });
+
+  assert.equal(r.code, 3, 'cannot-establish: about the host, never about the ticket');
+  assert.ok(r.out.includes(tree), 'the candidate is named');
+  assert.match(r.out, /--worktree id:abc::/, 'both repairs, and this is the one that has to work');
+  assert.deepEqual(r.started, [], 'no dispatch, and no second tree minted on the host');
+});
+
+test('--worktree with --on takes an exact remote selector, and reaches the dispatch', () => {
+  const selector = 'id:abc::/srv/orca/probe/.worktrees/kept';
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--worktree', selector, '--wait', '0'], { root: onFar() });
+
+  assert.equal(r.code, 0, 'the route the refusal advertises is a route');
+  assert.doesNotMatch(r.out, /is not a directory on this host/);
+  assert.ok(r.started[0].includes(`--worktree ${selector}`), r.started[0]);
+  assert.ok(r.calls.every(line => !line.startsWith('worktree list --repo id:abc --environment')), 'an explicit selector asks the host nothing');
+});
+
+test('--worktree with --on refuses a local path spelling, naming the forms a host resolves', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--worktree', '/srv/orca/probe/.worktrees/kept', '--wait', '0'], { root: onFar() });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /exact remote selector/);
+  assert.match(r.out, /id:<repo-id>::<path>/);
+  assert.deepEqual(r.started, []);
+});
+
+test('a LOCAL --worktree keeps its existence guard', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--worktree', '/nonexistent/tree', '--wait', '0']);
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /is not a directory on this host/);
+  assert.deepEqual(r.started, []);
 });
 
 // ── lineage ──────────────────────────────────────────────────────────────────
