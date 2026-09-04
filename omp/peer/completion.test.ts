@@ -198,9 +198,30 @@ test('an oversized Report keeps CRITERIA whole and ends on a truncation line nam
 
   expect(block).toContain('- Parity: MET, one path from two rules.');
   expect(block).toContain('- Cap: MET, this line survived.');
-  expect(block).toContain(`read it in full at ${wt.derived}`);
+  expect(block).toContain('`## CRITERIA` is whole above; read the rest at');
+  expect(block).toContain(wt.derived);
   expect(block).not.toContain('TAIL-MARKER-4a90');
   expect(block.length).toBeLessThan(REPORT_CAP_BYTES + 2_000);
+});
+
+test('a CRITERIA section larger than the cap is refused by name, never shown in part', () => {
+  // THE CASE A HEAD CAP CANNOT HONOUR, and the ticket's criterion is what
+  // decides it: `## CRITERIA` stays whole. A section larger than the cap itself
+  // cannot be kept whole AND bounded, and raising the cap for one Report would
+  // make the cap not a cap — an unbounded section is an unbounded injection into
+  // the orchestrator's context. So nothing partial is shown: a truncated
+  // criteria list reads as complete, and the reader decides on it.
+  const wt = withReport(
+    `## CRITERIA\n${'- a criterion line, repeated past the cap\n'.repeat(500)}\n## LEARNINGS\n- durable: x\n`,
+  );
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  expect(block).toContain('FINDING: the Report\'s `## CRITERIA` section alone is');
+  expect(block).toContain('no complete criteria list can be injected');
+  expect(block).toContain(`read it at ${wt.derived}`);
+  // Not one criterion line reaches the model, and no `---` body fence opens.
+  expect(block).not.toContain('- a criterion line');
 });
 
 test("a dispatch capability in the Report is redacted, not relayed", () => {

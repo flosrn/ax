@@ -50,8 +50,11 @@ export const REPORT_DIR = join('.scratch', 'report');
  *
  * A HEAD cap, not a tail one, and that is the whole design: the playbook puts
  * `## CRITERIA` first, so the section the orchestrator decides on is the section
- * that survives. The tail names the file, which is the real record — a reader
- * who needs the rest opens it.
+ * that survives, whole, while the sections after it are truncated. The tail
+ * names the file, which is the real record — a reader who needs the rest opens
+ * it. A `## CRITERIA` larger than this cap is refused by name instead
+ * (`bounded`): nothing partial is shown, because a cut criteria list reads as
+ * complete.
  */
 export const REPORT_CAP_BYTES = 16 * 1024;
 
@@ -119,6 +122,18 @@ function bag(payload) {
 }
 
 /**
+ * `{ body }` | `{ reason }` — the injected text, bounded, or the named inability
+ * that says why no complete one exists.
+ *
+ * THE CAP IS SPENT ON `## CRITERIA` FIRST. The section is what a merge gate
+ * decides on, the playbook puts it first, so a head cut keeps it whole and
+ * truncates the sections after it. What a head cut cannot do is keep a section
+ * that is larger than the cap ITSELF, and raising the cap for one is not
+ * available: an unbounded section is an unbounded injection into the
+ * orchestrator's context. So that case is refused by name instead — a partial
+ * criteria list presented as a Report is the one outcome worse than no Report,
+ * because it reads as complete and the reader decides on it.
+ *
  * Redact FIRST, then cap. The other order leaks: truncating a `dcap_…` token
  * mid-way still prints its prefix (`src/worker/transcript.mjs` pays for that
  * ordering already). `block` redacts again, which is idempotent — this call is
@@ -127,13 +142,36 @@ function bag(payload) {
 function bounded(text, cap, path) {
   const clean = redactSecrets(text);
   const total = Buffer.byteLength(clean, 'utf8');
-  if (total <= cap) return clean.trimEnd();
+  if (total <= cap) return { body: clean.trimEnd() };
+
+  const criteria = criteriaBytes(clean);
+  if (criteria !== null && criteria > cap) {
+    return {
+      reason: `the Report's \`## CRITERIA\` section alone is ${criteria} bytes, past the ${cap}-byte cap, so no complete criteria list can be injected. Nothing partial stands in for it — read it at ${path}`,
+    };
+  }
+
   // Cut back to the last newline inside the cap: a line boundary is also a
   // codepoint boundary, so the head cannot end mid-character.
   const head = Buffer.from(clean, 'utf8').subarray(0, cap).toString('utf8');
   const cut = head.lastIndexOf('\n');
   const kept = cut > 0 ? head.slice(0, cut) : head;
-  return `${kept}\n--- Report truncated at ${cap} bytes of ${total} — read it in full at ${path}`;
+  return {
+    body: `${kept}\n--- Report truncated at ${cap} bytes of ${total} — \`## CRITERIA\` is whole above; read the rest at ${path}`,
+  };
+}
+
+/**
+ * How many bytes of `text` the `## CRITERIA` section occupies, counted from the
+ * start of the file, or `null` for a Report that has no such heading — an
+ * absence, never a zero (F-028).
+ */
+function criteriaBytes(text) {
+  const heading = /^## CRITERIA\b.*$/m.exec(text);
+  if (heading === null) return null;
+  const from = heading.index + heading[0].length;
+  const next = /^## /m.exec(text.slice(from));
+  return Buffer.byteLength(text.slice(0, next === null ? text.length : from + next.index), 'utf8');
 }
 
 /**
@@ -252,7 +290,12 @@ export function completionReport(msg, deps = {}) {
       return block(derived.path, lines);
     }
 
-    return block(derived.path, lines, bounded(text, cap, derived.path));
+    const shown = bounded(text, cap, derived.path);
+    if (shown.body === undefined) {
+      lines.push(`FINDING: ${shown.reason}.`);
+      return block(derived.path, lines);
+    }
+    return block(derived.path, lines, shown.body);
   } catch (err) {
     return block(null, [`FINDING: the Report could not be established: ${err}`]);
   }
