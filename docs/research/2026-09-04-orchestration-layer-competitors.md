@@ -84,9 +84,15 @@ whole run (issue #936); the orchestrating model must hold the real graph in its 
 6. **Delivery skips are logged, never counted.** `PEER MESSAGE LOST` is a note
    (`receive.ts:571`); gascity persists a per-reason skip ledger another process can read
    (`cmd/gc/nudge_dispatcher.go:180-257`, `internal/nudgequeue/state.go`).
-7. **Worktree base is proved only at the gate.** No `merge-base` in
-   `src/worker/{dispatch,placement,verify,child}.mjs`. implement-spec issue #942: one of three
-   implementers went green on a base 77 commits behind.
+7. **Worktree base is proved only at the gate, and the runtime's own guard does not run for ax.**
+   No `merge-base` in `src/worker/{dispatch,placement,verify,child}.mjs`. Orca has a stale-base
+   guard — `probeWorktreeDrift` runs `git rev-list --left-right --count HEAD...<base>` after a
+   fetch (`~/Code/flosrn/orca/src/main/git/repo.ts:62-63`), refuses above
+   `DISPATCH_STALE_THRESHOLD = 20` unless the spec says `allow-stale-base: true`, and prints a
+   BASE DRIFT section into the preamble — but only on its coordinator tick
+   (`coordinator-task-dispatch.ts:75-85`). The `worker-start` method ax calls builds the preamble
+   without `baseDrift` (`rpc/methods/orchestration-workers.ts:274-280`). implement-spec issue
+   #942: one of three implementers went green on a base 77 commits behind.
 
 ## Measured: the 2026-09-03 wave, `## CRITERIA`
 
@@ -216,8 +222,11 @@ Also seen: `96-work` sent `worker_done` six times against a preamble rule of exa
   overlap pass, a merger subagent for conflict-free merges (issue #1010: bought nothing).
 - Zero hardcoded roles as an SDK constraint (gascity's `city-schema.json` is 3 394 lines): ax is
   an opinion, and that is its edge.
-- Merge-base at dispatch, for now: placement carries no SHA, one PR per ticket on the default
-  branch makes #942 rare, and the gate already self-repairs staleness once.
+- A merge-base *ground* at dispatch, for now: placement carries no SHA, one PR per ticket on the
+  default branch makes #942 rare, and the gate already self-repairs staleness once. What is
+  cheap (S) when wanted: the same `rev-list --left-right --count` Orca's probe runs, after
+  placement, against a declared threshold — or a `baseDrift` parameter on the fork's
+  `workerStart` so the preamble's own BASE DRIFT section fires for ax dispatches too.
 
 ## Probes that decide the rest
 
