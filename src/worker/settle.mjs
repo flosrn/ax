@@ -37,6 +37,21 @@
 // once. There is no `--all` and no `--dispatch`: a dispatch is one attempt of a
 // request, and settlement is a fact about the request's LAST attempt.
 //
+// AND THAT UNKNOWN HAD NO EXIT UNTIL `--repo` (#146, finding #133). `repo` is
+// additive, so every record written before 0.20 carries none: the frontier kept
+// its ticket `already-dispatched` in EVERY repository on the host — the absence
+// is conservative there too — while this verb refused it in every one, and the
+// record could never leave the frontier. Measured on this machine 2026-09-02:
+// 205 of 206 unsettled records. `--repo <owner/name>` is the way out, and it is
+// an ASSERTION SAID OUT LOUD rather than an inference: accepted only where the
+// record carries no `repo`, the value equals the slug `gh` answers for this
+// checkout, and the liveness proof below passes unchanged. It then BACKFILLS
+// that name in the same write as the flag (./record.mjs `attemptSettle`), so
+// the next frontier read classifies the ticket here and skips the record
+// everywhere else. It never re-attributes a record that already names one —
+// that record's owner is not in doubt, and a flag that could overwrite it would
+// be an inference wearing an assertion's clothes.
+//
 // It writes one flag and issues no Orca mutation, so it needs no write-ahead
 // phase of its own: there is nothing in flight to recover.
 //
@@ -44,7 +59,9 @@
 // decides which one: a fact about the subject that forbids the write is a
 // refusal; a read this run could not make is an inability.
 //   0  settled, or already settled — the idempotence attemptSettle already has
-//   1  refused: a live agent, a foreign `repo`, a missing `repo`, an open phase
+//   1  refused: a live agent, a foreign `repo`, a `repo` no --repo asserted, an
+//      assertion the checkout contradicts, a record already attributed, an open
+//      phase
 //   2  usage error
 //   3  cannot establish: no Orca CLI, a silent runtime, an unreadable store or
 //      terminal list, no repository slug, an unknown pane, no row at all
@@ -60,7 +77,7 @@ import { namedList } from './gate.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
 import { acquireLock, attemptSettle, defaultStore, lastAttemptState, recordRepo, requestIdOk, taskIdScan } from './record.mjs';
 
-const USAGE = 'ax worker settle <task|request>';
+const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
 const OPEN = 'orca open   # bring up the Orca runtime, then re-run this settle';
 
@@ -170,11 +187,17 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
   };
 
   let subject = '';
+  // The repository this run ASSERTS the record belongs to, or null when nothing
+  // was asserted. Null and `''` are not the same answer here — the second would
+  // read as "asserted nothing", which is exactly the inference this flag exists
+  // to refuse.
+  let asserted = null;
   // No help branch: `runCli` answers the flag from the registry, anywhere in
   // this noun's argv, before the verb is reached (../cli.mjs, #89). This verb
   // arrived from main carrying one, written against the boundary #89 replaced —
   // the drift AGENTS.md's "Adding a surface" section now names by rule.
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     // Both absent modes are refused BY NAME rather than as unknown flags: each
     // is a gesture an operator can reasonably expect, and the reason it does not
     // exist is the design.
@@ -183,6 +206,20 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     }
     if (arg === '--all') {
       return usageError('there is no --all: settling flips a frontier classification, and that flip is made one request at a time, from the checkout whose frontier it changes');
+    }
+    if (arg === '--repo' || arg.startsWith('--repo=')) {
+      if (asserted !== null) return usageError(`one --repo only, got "${asserted}" and a second assertion — two names for one record name none of them`);
+      // The split form's value slot is the NEXT argument whatever it looks like,
+      // the arity convention the registry states for its own flags
+      // (../commands.mjs `valueFlags`): a `--repo --all` asserts `--all`, which
+      // this checkout's slug then contradicts, rather than half-parsing.
+      const value = arg === '--repo' ? argv[index + 1] : arg.slice('--repo='.length);
+      if (arg === '--repo') index += 1;
+      if (value === undefined || String(value).trim() === '') {
+        return usageError('--repo needs the repository this checkout is (owner/name): an empty assertion asserts nothing, and settling on it is the inference this flag replaces');
+      }
+      asserted = String(value).trim();
+      continue;
     }
     if (arg.startsWith('-')) return usageError(`unknown argument "${arg}"`);
     if (subject !== '') return usageError(`one subject only, got "${subject}" and "${arg}"`);
@@ -264,14 +301,12 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
       return 0;
     }
 
+    // THE CHECKOUT IS READ FIRST, and it has to be: every refusal below names
+    // the slug this run can speak for, and the repair for a record that names
+    // none IS that slug (`--repo <it>`). A `gh` that cannot answer is therefore
+    // an inability even for a record whose scope is not in question — the same
+    // direction the rest of this verb takes, one read earlier than before #146.
     const recorded = recordRepo(path);
-    if (recorded === '') {
-      return refuse(
-        `${request} names no repository, and an absent \`repo\` is UNKNOWN, never "this one" (F-028) — settling it from here would flip its frontier classification in every repository on this host at once`,
-        `grep -H '"repo"' ${path}   # a record written before --tracker-repo carries none, and nothing here may guess one`,
-      );
-    }
-
     const viewed = repoView(args => exec('gh', args, cwd));
     if (viewed.slug === '') {
       return cannot(
@@ -279,12 +314,39 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
         'gh auth login   # then re-run from a checkout with a GitHub remote',
       );
     }
-    if (recorded.toLowerCase() !== viewed.slug.trim().toLowerCase()) {
+    const here = viewed.slug.trim();
+    const same = (left, right) => left.toLowerCase() === right.toLowerCase();
+
+    if (asserted !== null && recorded !== '') {
+      return refuse(
+        `${request} already names ${recorded}, and --repo BACKFILLS a record that names none — it never re-attributes one`,
+        same(recorded, here)
+          ? `ax worker settle ${request}   # this record is already scoped to ${recorded}: settle it without the flag`
+          : `cd <your ${recorded} checkout> && ax worker settle ${request}`,
+      );
+    }
+    if (asserted !== null && !same(asserted, here)) {
+      return refuse(
+        `--repo says ${asserted} and gh says this checkout is ${here} — the assertion is accepted only where the two agree, because what corroborates it is this checkout`,
+        `cd <your ${asserted} checkout> && ax worker settle ${request} --repo ${asserted}`,
+      );
+    }
+    if (recorded === '' && asserted === null) {
+      return refuse(
+        `${request} names no repository, and an absent \`repo\` is UNKNOWN, never "this one" (F-028) — settling it from here would flip its frontier classification in every repository on this host at once`,
+        `ax worker settle ${request} --repo ${here}   # say it out loud: accepted from this checkout only, and it writes ${here} onto the record`,
+      );
+    }
+    if (recorded !== '' && !same(recorded, here)) {
       return refuse(
         `${request} belongs to ${recorded}, and this checkout is ${viewed.slug} — the flip changes ${recorded}'s frontier, so it is made from there`,
         `cd <your ${recorded} checkout> && ax worker settle ${request}`,
       );
     }
+    // What the write will carry: the slug GH answered, never the operator's
+    // spelling of it — the two agree case-insensitively, and the canonical one
+    // is what the frontier compares against next.
+    const backfill = asserted === null ? '' : here;
 
     // The one refusal the issue did not name and the triage census proved free
     // (open in 0 of 206 unsettled records): a phase with no exit and no receipt is
@@ -368,7 +430,10 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     }
 
     try {
-      attemptSettle(path);
+      // One call, one write: `attemptSettle` puts the backfilled `repo` and the
+      // flag in the same atomic save, so no crash can leave a record scoped and
+      // unsettled (or settled and still host-wide).
+      attemptSettle(path, { repo: backfill });
     } catch (error) {
       return cannot(
         `${path} could not be written: ${String(error.message ?? error)}`,
@@ -377,6 +442,7 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     }
 
     ok(`settled ${request} — every pane of ${task}'s ${rows.length} dispatch(es) is a corpse on a host this list read`);
+    if (backfill !== '') note(`repo backfilled to ${backfill} — the frontier reads this record in ${backfill} from now on, and skips it in every other repository`);
     note(`the frontier can classify it attempt-ended-unmerged now. No pane was released, closed or stopped: this verb writes one record flag.`);
     return 0;
   }

@@ -1026,10 +1026,26 @@ export function lastAttemptState(path) {
  * forever and the frontier's `attempt-ended-unmerged` state was unreachable
  * (validated review finding, 2026-09-01). Idempotent: settling a settled
  * attempt changes nothing.
+ *
+ * `repo` BACKFILLS the repository name on a record that carries none (#146,
+ * finding #133) — every record written before `--tracker-repo` existed. It
+ * rides this one function rather than a writer of its own because the two
+ * writes must be ONE: a `repo` landing without the flag would scope a record
+ * that is still unsettled, and a flag landing without the `repo` would settle a
+ * record the frontier still reads in every repository on the host. The caller
+ * (./settle.mjs) is what establishes that the name is true — this is the
+ * invariant guard behind it, and re-attributing a record that already names a
+ * repository throws rather than overwrites.
  */
-export function attemptSettle(path) {
+export function attemptSettle(path, { repo = '' } = {}) {
   const rec = load(path);
   const attempts = must(rec, 'attempts', 'record root');
+  const backfill = String(repo).trim();
+  if (backfill !== '') {
+    const carried = typeof rec.repo === 'string' ? rec.repo.trim() : '';
+    if (carried !== '') throw new Error(`record already names ${carried}: a backfill writes a repository, it never re-attributes one`);
+    rec.repo = backfill;
+  }
   attempts[attempts.length - 1].settled = true;
   save(rec, path);
 }
