@@ -36,6 +36,17 @@
 // dominant line leads to no action is a report that stops being read. So every
 // category below names itself, carries its own count, and names its repair.
 //
+// AND A KEEP IS A CATEGORY (#147). That sentence was true of the counted
+// buckets and false of the rows an operator actually acts on: every KEEP —
+// every row this verb declined to close — printed a verdict and stopped.
+// `KEEP · uncommitted changes on <branch>` was measured twice (#79, #135) on
+// the pane a finished child leaves behind, and both times the next move was a
+// guess. So the proof answers with the repair beside the reason (`missing`
+// takes no default for it), the two verdicts decided from pane movement carry
+// their own, and a reason added without one fails the pin in
+// tests/worker-release.test.mjs rather than shipping a finding nobody can act
+// on (../log.mjs). The dirty row needs TWO of them, and `proveClean` says why.
+//
 // Two of those causes were themselves measured wrong, and both are fixed here
 // against this machine (2026-08-22, Orca 1.4.185, 218 workers, 5 live panes):
 //   * the agent handle lives at `agentTerminalHandle` (217 of 218 rows) and only
@@ -115,6 +126,7 @@ import { join } from 'node:path';
 
 import { defaultExec } from '../exec.mjs';
 import { repoView } from '../gh.mjs';
+import { planProject, readManifest } from '../plan.mjs';
 import { createRunner, parseReceipt, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
@@ -182,9 +194,38 @@ const SETTLED = new Set(['succeeded', 'failed']);
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
+/**
+ * ONE ARGUMENT, QUOTED FOR A POSIX SHELL — and every repair in this file that
+ * interpolates a path goes through it.
+ *
+ * Found in review on #157. A repair is a command an operator PASTES, and a
+ * worktree path is not a token: ax places children under a workspace root it
+ * does not choose, so `/Users/me/My Project/ws-147` printed bare is three
+ * arguments, and a `$` or a backtick in a directory name is read by the shell
+ * before `git` ever sees it. A row that says "the exact call this proof makes"
+ * and then prints a different one is the same finding this verb exists to
+ * remove, one layer down.
+ *
+ * Quoted ONLY when it has to be: an unquoted path is what an operator reads
+ * every day, and `'…'` on all five words of `git -C … status --porcelain` is
+ * noise that trains the reader to skim. The safe set is the shell-portable one
+ * (no `~`, which must expand, and no `!`, which csh-style history would eat).
+ * Single quotes are the only shape needing no escape table — a literal quote
+ * is closed, escaped and reopened.
+ */
+const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+const shq = value => {
+  const text = String(value);
+  return text !== '' && SHELL_SAFE.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
+};
+
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
-const landed = detail => ({ landed: true, detail });
-const missing = detail => ({ landed: false, detail });
+// A proof answer carries the REPAIR with the verdict, never a verdict alone:
+// `missing` takes no default for it, so a reason added without one prints a
+// KEEP with no `→` and fails the pin in tests/worker-release.test.mjs.
+const landed = detail => ({ landed: true, detail, repair: '' });
+const missing = (detail, repair) => ({ landed: false, detail, repair });
 
 /**
  * What a `release_unknown` receipt SAID, and the repair that is honest about it.
@@ -320,21 +361,140 @@ function unaccounted(index, seen) {
 
 // ── proof ────────────────────────────────────────────────────────────────────
 
-/** A comment on that issue, created AFTER the dispatch. Nothing else. */
-function proveIssue(gh, { repo, number, issuedAt }) {
-  if (!repo) return missing('no repo to query');
-  if (issuedAt === null) return missing('the record carries no readable dispatch date');
-  const out = gh(['issue', 'view', String(number), '--repo', repo, '--json', 'comments']);
-  if (out.error) return missing(`gh could not run: ${String(out.error.message ?? out.error)}`);
-  if (out.status !== 0) return missing(`gh refused — ${firstLine(out.stderr) || `exit ${out.status}`}`);
+/**
+ * THE REPAIRS A KEEP CARRIES (#147).
+ *
+ * A KEEP is the only verdict an operator can act on, and every one of them used
+ * to print a verdict and stop — against this file's own header ("every category
+ * below names itself, carries its own count, and names its repair") and against
+ * `../log.mjs`, where a `bad` without a `fix` is a finding nobody can act on.
+ * Measured twice on the dirty row (#79, #135): a finished child's pane named
+ * `uncommitted changes on <branch>`, and the operator's next move was a guess.
+ *
+ * Three shapes cover every `missing()` below, because there are only three
+ * kinds of answer an operator can act on:
+ *   * a command REFUSED — the exact argv, so the refusal can be read whole
+ *   * an artifact is ABSENT — read the pane, then the one route that closes a
+ *     pane without an artifact (`--no-proof`), which is a claim only a human
+ *     may make and no ax verb may make for them
+ *   * the artifact EXISTS unmerged — the gate that says what still blocks it
+ * The dirty tree has its own two, in `proveClean`. None of them is a look
+ * alone: a `worker-show` changes nothing, which is what #100 paid for on the
+ * `release_unknown` row.
+ */
+// `why` is a PARAMETER and never an extra element of `args`: every word of
+// `args` is shell-quoted, so a sentence appended to that array would come back
+// quoted as if it were an argument.
+const rerun = (args, why = 'read its refusal whole, then re-run this verb') =>
+  `${args.map(shq).join(' ')}   # the exact call this proof makes — ${why}`;
+
+const readThenSay = (dispatchId, why) =>
+  `orca orchestration worker-read --dispatch ${dispatchId} --json   # ${why}: read the pane, then close it on your own word — ax worker release --close --dispatch ${dispatchId} --no-proof`;
+
+const GH_AUTH = 'gh auth status   # every landing proof is a gh query, and this one had no repository to make it against';
+
+/**
+ * The paths `git status --porcelain` named, and whether each is UNTRACKED.
+ *
+ * Porcelain v1 and nothing else: two status columns, a space, then the path.
+ * `??` is untracked. A rename carries `orig -> dest`, of which only `dest`
+ * exists in this tree. A path git quoted (`core.quotePath`) keeps its quotes —
+ * unquoting it would put an escape reader in a proof, and this list is READ by
+ * an operator, beside the command that printed it.
+ */
+function dirtyRows(stdout) {
+  return String(stdout ?? '')
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map(line => {
+      const rest = line.slice(3);
+      const arrow = rest.indexOf(' -> ');
+      return { untracked: line.slice(0, 2) === '??', path: arrow === -1 ? rest : rest.slice(arrow + 4) };
+    });
+}
+
+/**
+ * Does `plan.ignore` name this path? Every line on that list is ONE segment —
+ * `.env.local`, `.agent/` — carrying no leading slash on purpose, so it matches
+ * at any depth (../plan.mjs). The comparison is segment by segment for that
+ * same reason: a consumer's `apps/web/.env.local` is the same finding as this
+ * checkout's root one.
+ */
+const provisions = (path, ignore) => {
+  const segments = path.split('/').filter(Boolean);
+  return ignore.some(line => segments.includes(line.replace(/\/+$/, '')));
+};
+
+/**
+ * A DIRTY TREE STAYS KEEP, AND SAYS WHICH KIND OF DIRTY IT IS (#147).
+ *
+ * The verdict does not move: #83 ruled there is no allowlist inside the landing
+ * proof, because a proof that skips one path is how a hand-edited file carrying
+ * real work stops blocking a close. What changes is the sentence, and there are
+ * exactly two, because the operator's next move is different:
+ *
+ *   * EVERY dirty line is an untracked path `plan.ignore` names. The tool's own
+ *     runtime state read as work — measured on #79 and again on #135 — and the
+ *     repair is the ignore `ax init` writes on the checkout. That the path is
+ *     in `git status --porcelain` at all IS the proof this checkout does not
+ *     ignore it yet, so nothing here reads a `.gitignore` to find out.
+ *   * ANYTHING ELSE — a modified tracked file, an untracked path the plan does
+ *     not name. That is work the merge gate never saw, sitting in a tree whose
+ *     PR is merged, and it is committed or stashed by whoever owns it. `ax
+ *     init` is not named there: a repair that changes nothing is the defect
+ *     #118 removed from the placement row.
+ *
+ * Returns null on a clean tree, so the caller reads "no finding" rather than a
+ * verdict.
+ */
+function proveClean(stdout, { branch, worktree, checkout, ignore }) {
+  const rows = dirtyRows(stdout);
+  if (rows.length === 0) return null;
+  const paths = rows.map(row => row.path).join(', ');
+  if (rows.every(row => row.untracked && provisions(row.path, ignore))) {
+    return missing(
+      `uncommitted changes on ${branch} — all of it untracked state ax provisions and this checkout does not ignore: ${paths}`,
+      `cd ${shq(checkout)} && ax init   # writes the managed .gitignore block that covers ${paths} (plan.ignore, src/plan.mjs). The verdict stays KEEP until this tree is clean — the block reaches this worktree with its branch, or those paths are removed there; no path is ever exempted inside the proof (#83)`,
+    );
+  }
+  return missing(
+    `uncommitted changes on ${branch} — work the merge gate never saw`,
+    `git -C ${shq(worktree)} status --porcelain   # read it, then commit or stash it before this pane closes: a merged PR with local dirt is work no gate and no reviewer ever saw`,
+  );
+}
+
+/**
+ * A comment on that issue, created AFTER the dispatch. Nothing else.
+ *
+ * Every refusal names the query that produced it, and every absence names the
+ * pane: a triage that cannot be proven is either an unanswered `gh` or a pass
+ * that never published, and those are two different next moves.
+ */
+function proveIssue(gh, { repo, number, issuedAt, dispatchId, recordPath }) {
+  if (!repo) return missing('no repo to query', GH_AUTH);
+  const query = ['gh', 'issue', 'view', String(number), '--repo', repo, '--json', 'comments'];
+  if (issuedAt === null) {
+    return missing(
+      'the record carries no readable dispatch date',
+      readThenSay(dispatchId, `${recordPath} carries no readable dispatch date, so no comment can be proven newer than it`),
+    );
+  }
+  const out = gh(query.slice(1));
+  if (out.error) return missing(`gh could not run: ${String(out.error.message ?? out.error)}`, rerun(query));
+  if (out.status !== 0) return missing(`gh refused — ${firstLine(out.stderr) || `exit ${out.status}`}`, rerun(query));
   const body = parseReceipt(out.stdout);
-  if (!Array.isArray(body.comments)) return missing(`gh answered no comments array for #${number}`);
+  if (!Array.isArray(body.comments)) return missing(`gh answered no comments array for #${number}`, rerun(query));
   const newest = body.comments.reduce((max, comment) => {
     const at = Date.parse(comment?.createdAt ?? '');
     return Number.isFinite(at) && at > max ? at : max;
   }, -1);
-  if (newest < 0) return missing(`no comment on #${number}`);
-  return newest > issuedAt ? landed(`comment on #${number} after dispatch`) : missing(`newest comment on #${number} predates dispatch`);
+  if (newest < 0) return missing(`no comment on #${number}`, readThenSay(dispatchId, `#${number} carries no comment, so this pass published nothing`));
+  return newest > issuedAt
+    ? landed(`comment on #${number} after dispatch`)
+    : missing(
+        `newest comment on #${number} predates dispatch`,
+        readThenSay(dispatchId, `every comment on #${number} is older than this dispatch, so this pass published nothing`),
+      );
 }
 
 /**
@@ -343,19 +503,28 @@ function proveIssue(gh, { repo, number, issuedAt }) {
  * `feat/wizard-1788` and reported it as proof. A near-miss must find nothing,
  * and a tie at the winning rank is ambiguity rather than a guess.
  */
-function mergedPrFor(gh, { repo, slug }) {
-  const out = gh(['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '200', '--json', 'number,headRefName']);
-  if (out.error) return missing(`gh could not run: ${String(out.error.message ?? out.error)}`);
-  if (out.status !== 0) return missing(`gh refused — ${firstLine(out.stderr) || `exit ${out.status}`}`);
+function mergedPrFor(gh, { repo, slug, dispatchId }) {
+  const query = ['gh', 'pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '200', '--json', 'number,headRefName'];
+  const out = gh(query.slice(1));
+  if (out.error) return missing(`gh could not run: ${String(out.error.message ?? out.error)}`, rerun(query));
+  if (out.status !== 0) return missing(`gh refused — ${firstLine(out.stderr) || `exit ${out.status}`}`, rerun(query));
   const list = parseReceipt(out.stdout);
-  if (!Array.isArray(list)) return missing('gh answered an unreadable merged-PR list');
+  if (!Array.isArray(list)) return missing('gh answered an unreadable merged-PR list', rerun(query));
 
   for (const predicate of [head => head === slug, head => head.endsWith(`/${slug}`)]) {
     const hits = list.filter(pr => predicate(String(pr?.headRefName ?? '')));
     if (hits.length === 1) return landed(`PR #${hits[0].number} merged (${hits[0].headRefName}, worktree gone)`);
-    if (hits.length > 1) return missing(`'${slug}' matches ${hits.slice(0, 4).map(pr => `#${pr.number}`).join(',')}`);
+    if (hits.length > 1) {
+      return missing(
+        `'${slug}' matches ${hits.slice(0, 4).map(pr => `#${pr.number}`).join(',')}`,
+        readThenSay(dispatchId, `${hits.length} merged PRs carry the slug '${slug}' and its worktree is gone, so nothing here can say which one this pane opened`),
+      );
+    }
   }
-  return missing(`no merged PR for '${slug}', worktree gone`);
+  return missing(
+    `no merged PR for '${slug}', worktree gone`,
+    readThenSay(dispatchId, `no merged PR carries the slug '${slug}' and its worktree is gone, so there is no tree left to inspect either`),
+  );
 }
 
 /**
@@ -372,66 +541,92 @@ function mergedPrFor(gh, { repo, slug }) {
  * news, and two audits concluded "nothing to save" that way before a third found
  * 116 unpushed commits.
  */
-function proveLanded(gh, git, { repo, worktree, base }) {
-  if (!worktree) return missing('no worktree recorded');
-  if (!repo) return missing('no repo to query');
+function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore }) {
+  if (!worktree) return missing('no worktree recorded', readThenSay(dispatchId, 'this host recorded no worktree for the dispatch, so there is no branch to ask about'));
+  if (!repo) return missing('no repo to query', GH_AUTH);
   const slug = worktree.split('/').filter(Boolean).pop() ?? '';
-  if (slug === '') return missing('the recorded worktree names no slug');
+  if (slug === '') return missing('the recorded worktree names no slug', readThenSay(dispatchId, `the recorded worktree ${worktree} names no slug to match a PR head against`));
 
-  if (!existsSync(worktree)) return mergedPrFor(gh, { repo, slug });
+  if (!existsSync(worktree)) return mergedPrFor(gh, { repo, slug, dispatchId });
 
+  const branchQuery = ['git', '-C', worktree, 'rev-parse', '--abbrev-ref', 'HEAD'];
   const branchOut = git(worktree, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = firstLine(branchOut.stdout);
-  if (branchOut.error) return missing(`git could not run: ${String(branchOut.error.message ?? branchOut.error)}`);
+  if (branchOut.error) return missing(`git could not run: ${String(branchOut.error.message ?? branchOut.error)}`, rerun(branchQuery));
   if (branchOut.status !== 0 || branch === '' || branch.includes(' ')) {
-    return missing(`git refused — ${firstLine(branchOut.stderr) || branch || `exit ${branchOut.status}`}`);
+    return missing(`git refused — ${firstLine(branchOut.stderr) || branch || `exit ${branchOut.status}`}`, rerun(branchQuery));
   }
 
   const dirtyOut = git(worktree, ['status', '--porcelain']);
-  if (dirtyOut.status !== 0) return missing(`git refused — ${firstLine(dirtyOut.stderr) || `exit ${dirtyOut.status}`}`);
-  if (firstLine(dirtyOut.stdout) !== '') return missing(`uncommitted changes on ${branch}`);
+  if (dirtyOut.status !== 0) {
+    return missing(`git refused — ${firstLine(dirtyOut.stderr) || `exit ${dirtyOut.status}`}`, rerun(['git', '-C', worktree, 'status', '--porcelain']));
+  }
+  const dirt = proveClean(dirtyOut.stdout, { branch, worktree, checkout, ignore });
+  if (dirt !== null) return dirt;
 
   // The PR that proves THIS branch, matched by name. Trusting the first row was
   // a bug in waiting: `--head` is a filter the caller cannot verify, and a first
   // row for another branch — or one carrying no head ref at all — would land.
-  const prOut = gh(['pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json', 'number,state,headRefName']);
-  if (prOut.error) return missing(`gh could not run: ${String(prOut.error.message ?? prOut.error)}`);
+  const prQuery = ['gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json', 'number,state,headRefName'];
+  const prOut = gh(prQuery.slice(1));
+  if (prOut.error) return missing(`gh could not run: ${String(prOut.error.message ?? prOut.error)}`, rerun(prQuery));
   // A failed query is IGNORANCE, and it may not fall through to the commit count
   // below: "I could not ask about PRs" would be reported as "there is no PR".
-  if (prOut.status !== 0) return missing(`gh refused — ${firstLine(prOut.stderr) || `exit ${prOut.status}`}`);
+  if (prOut.status !== 0) return missing(`gh refused — ${firstLine(prOut.stderr) || `exit ${prOut.status}`}`, rerun(prQuery));
   const list = parseReceipt(prOut.stdout);
-  if (!Array.isArray(list)) return missing('gh answered an unreadable PR list');
+  if (!Array.isArray(list)) return missing('gh answered an unreadable PR list', rerun(prQuery));
   const mine = list.filter(pr => String(pr?.headRefName ?? '') === branch);
-  if (mine.length > 1) return missing(`${mine.length} PRs claim head ${branch}`);
+  if (mine.length > 1) {
+    return missing(
+      `${mine.length} PRs claim head ${branch}`,
+      rerun(prQuery, 'close or retarget the duplicates: one head, one PR, or nothing here can name the one that proves this pane'),
+    );
+  }
   if (mine.length === 1) {
     const pr = mine[0];
     if (pr.state === 'MERGED') return landed(`PR #${pr.number} merged`);
-    if (pr.state === 'OPEN') return missing(`PR #${pr.number} still open`);
-    if (pr.state === 'CLOSED') return missing(`PR #${pr.number} closed unmerged`);
-    return missing(`PR #${pr.number} is in state ${JSON.stringify(pr.state)}`);
+    // AN OPEN PR IS NOT PROOF (F-031), so the repair is the merge decision and
+    // not this verb: `ax pr gate` names every ground that still refuses it.
+    if (pr.state === 'OPEN') {
+      return missing(`PR #${pr.number} still open`, `cd ${shq(worktree)} && ax pr gate --pr ${pr.number}   # this pane closes when that PR is MERGED and never before; the gate names what still blocks it`);
+    }
+    if (pr.state === 'CLOSED') {
+      return missing(`PR #${pr.number} closed unmerged`, readThenSay(dispatchId, `PR #${pr.number} was closed without merging, so nothing this pane did ever landed`));
+    }
+    return missing(`PR #${pr.number} is in state ${JSON.stringify(pr.state)}`, rerun(['gh', 'pr', 'view', String(pr.number), '--repo', repo, '--json', 'state,mergedAt,headRefName']));
   }
 
+  const aheadQuery = ['git', '-C', worktree, 'rev-list', '--count', `${base}..${branch}`];
   const aheadOut = git(worktree, ['rev-list', '--count', `${base}..${branch}`]);
   const ahead = firstLine(aheadOut.stdout);
   if (aheadOut.status !== 0 || !/^\d+$/.test(ahead)) {
-    return missing(`git refused — ${firstLine(aheadOut.stderr) || `exit ${aheadOut.status}`}`);
+    return missing(`git refused — ${firstLine(aheadOut.stderr) || `exit ${aheadOut.status}`}`, rerun(aheadQuery));
   }
-  return missing(ahead === '0' ? 'branch carries no commit' : `${ahead} commit(s), no PR`);
+  return ahead === '0'
+    ? missing('branch carries no commit', readThenSay(dispatchId, `${branch} carries no commit over ${base}, so this session produced nothing to land`))
+    : missing(`${ahead} commit(s), no PR`, readThenSay(dispatchId, `${branch} carries ${ahead} commit(s) that never became a PR — re-engage that pane to open one, or accept the work is unshipped`));
 }
 
 /** Which proof a session owes, decided by the request that dispatched it. */
-function prove(gh, git, { request, issuedAt, worktree, repo, base }) {
-  if (request === null) return missing('unknown provenance — this host recorded no request for that dispatch');
+function prove(gh, git, { request, issuedAt, worktree, repo, base, dispatchId, checkout, ignore, recordPath }) {
+  if (request === null) {
+    return missing(
+      'unknown provenance — this host recorded no request for that dispatch',
+      readThenSay(dispatchId, 'this host recorded no request for the dispatch, so nothing here knows which proof it owes'),
+    );
+  }
   // The set shrank from three to two, and that is a removal and not an
   // omission: the `refine-` request kind went with the readiness lane `ax
   // ready` no longer has. A stale `refine-…` record on some host falls through
   // to `proveLanded`, which asks for a merged PR and answers MISSING — the
   // conservative direction, and the one a retired kind deserves.
   const kind = /^(triage|brief)-/.exec(request);
-  if (kind === null) return proveLanded(gh, git, { repo, worktree, base });
+  if (kind === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
   const number = request.split('-').pop() ?? '';
-  if (!/^[1-9][0-9]*$/.test(number)) return missing('the request names no issue');
-  return proveIssue(gh, { repo, number, issuedAt });
+  if (!/^[1-9][0-9]*$/.test(number)) {
+    return missing('the request names no issue', readThenSay(dispatchId, `the request "${request}" names no issue number, so no comment can be asked for`));
+  }
+  return proveIssue(gh, { repo, number, issuedAt, dispatchId, recordPath });
 }
 
 // ── the mutation ─────────────────────────────────────────────────────────────
@@ -510,7 +705,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       return {
         settled: false,
         line: `${dispatchId}  the existing release record is unreadable: ${String(error.message ?? error)}`,
-        repair: `cat ${claim.path}   # repair or recover that record; do NOT mint a second release identity`,
+        repair: `cat ${shq(claim.path)}   # repair or recover that record; do NOT mint a second release identity`,
       };
     }
     if (count === 0) return owned;
@@ -537,7 +732,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       return {
         settled: false,
         line: `${dispatchId}  the recorded release cannot be reconstructed: ${String(error.message ?? error)}`,
-        repair: `cat ${claim.path}   # a request that cannot be replayed is never re-minted`,
+        repair: `cat ${shq(claim.path)}   # a request that cannot be replayed is never re-minted`,
       };
     }
     const unbound = releaseBinding(claim.path, dispatchId, argv, index, bin);
@@ -545,7 +740,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       return {
         settled: false,
         line: `${dispatchId}  the release record at ${claim.path} does not describe this release: ${unbound}`,
-        repair: `cat ${claim.path}   # settle it by hand; a record that does not bind is never replayed`,
+        repair: `cat ${shq(claim.path)}   # settle it by hand; a record that does not bind is never replayed`,
       };
     }
     outcome = attempt(claim.path, index, argv);
@@ -714,6 +909,16 @@ export function release(
     return cannot(`gh cannot name this repository, so no landing can be proven: ${viewed.detail}`, 'gh auth login   # then re-run; or --close --dispatch <id> --no-proof for one pane you have looked at');
   }
 
+  // WHAT AX PROVISIONS IN A WORKTREE, read from the project plan and never
+  // re-listed here: `plan.ignore` is the same field `ax init` writes into the
+  // managed `.gitignore` block and `ax doctor` grades it against, so the dirty
+  // row below and the repair it names cannot disagree about which paths are the
+  // tool's own runtime state (../plan.mjs, #83).
+  const plan = planProject({ manifest: readManifest(home || cwd) });
+  // The checkout `ax init` would run in. `--dispatch` may be typed from outside
+  // any repository, and a repair naming an empty path is not a repair.
+  const checkout = home === '' ? `<your ${repo || 'own'} checkout>` : home;
+
   const workers = workerInventory(run);
   if (!workers.ok) return cannot(workers.reason, 'orca orchestration worker-list --json   # the inventory is the only list of releasable dispatches');
 
@@ -725,7 +930,7 @@ export function release(
   // A store that cannot be enumerated is not an absence of provenance. Left
   // unread, this is exactly "I could not look" reported as "nothing is there".
   if (!index.missing && index.reason) {
-    return cannot(`the dispatch store at ${store} cannot be read: ${index.reason}`, `ls -ld ${store}   # provenance decides which proof applies to a pane`);
+    return cannot(`the dispatch store at ${store} cannot be read: ${index.reason}`, `ls -ld ${shq(store)}   # provenance decides which proof applies to a pane`);
   }
 
   const seen = new Set(workers.rows.map(row => row.dispatchId));
@@ -846,7 +1051,7 @@ export function release(
         placed === 'foreign'
           ? worktree === ''
             ? `cd <your ${belongsTo} checkout> && ax worker release --close --dispatch ${row.dispatchId}`
-            : `cd ${worktree} && ax worker release --close --dispatch ${row.dispatchId}`
+            : `cd ${shq(worktree)} && ax worker release --close --dispatch ${row.dispatchId}`
           // A REPAIR THAT CHANGES THE OUTCOME, not a second look at the absence
           // (validated review finding on #118). Reading the record again still
           // computes `unknown`, so this row would refuse forever: what closes it
@@ -1037,7 +1242,9 @@ export function release(
     if (index.ambiguous.has(row.dispatchId)) {
       keep(
         `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · two records claim this dispatch — provenance is ambiguous, so nothing is proven`,
-        `grep -l ${row.dispatchId} ${store}/*.json   # settle which request owns it`,
+        // The glob stays OUTSIDE the quotes: quoting `*.json` too would hand
+        // grep a literal filename that does not exist.
+        `grep -l ${row.dispatchId} ${shq(store)}/*.json   # settle which request owns it`,
       );
       continue;
     }
@@ -1073,7 +1280,17 @@ export function release(
   for (const candidate of candidates) {
     candidate.proof = noProof
       ? landed('bypassed by --no-proof — an operator looked at this pane')
-      : prove(gh, git, { request: candidate.request, issuedAt: candidate.issuedAt, worktree: candidate.worktree, repo, base });
+      : prove(gh, git, {
+          request: candidate.request,
+          issuedAt: candidate.issuedAt,
+          worktree: candidate.worktree,
+          repo,
+          base,
+          dispatchId: candidate.dispatchId,
+          checkout,
+          ignore: plan.ignore,
+          recordPath: candidate.request === null ? store : join(store, `${candidate.request}.json`),
+        });
   }
 
   const before = new Map(candidates.map(candidate => [candidate.dispatchId, readPane(run, candidate.handle, { limit: 1 })]));
@@ -1094,20 +1311,34 @@ export function release(
 
     let verdict;
     let why;
+    // EVERY KEEP CARRIES ITS REPAIR (#147). The proof answers with one; the two
+    // verdicts decided here from pane movement carry their own, because neither
+    // is an artifact question and neither is a dead end:
+    //   * a pane nobody can read is a pane to read — and `--no-proof` is NOT
+    //     the route out, because it bypasses the artifact and never the
+    //     movement rule, so it would print the same row again.
+    //   * a BUSY row LANDED and is still emitting, which is a wait and not a
+    //     finding: the pane goes quiet and this verb closes it, or the operator
+    //     closes it themselves.
+    let repair;
     if (!readable) {
       verdict = 'KEEP';
       why = 'the pane cannot be established — a pane nobody can read is never judged closed';
+      repair = `orca terminal read --terminal ${candidate.handle} --json   # why the pane cannot be read; --no-proof will not close it either (it bypasses the artifact, never the movement rule), so close it yourself with orca terminal close --terminal ${candidate.handle} once you have`;
     } else if (!candidate.proof.landed) {
       verdict = 'KEEP';
       why = candidate.proof.detail;
+      repair = candidate.proof.repair;
     } else if (moving) {
       // Landed AND still emitting: the work shipped but the session is doing
       // something. --no-proof does not bypass this; it only bypasses the artifact.
       verdict = 'BUSY';
       why = `${candidate.proof.detail}, but the pane is still moving`;
+      repair = `orca orchestration worker-read --dispatch ${candidate.dispatchId} --json   # the work landed and this pane is still printing: re-run this verb once it is quiet, or close it yourself with orca terminal close --terminal ${candidate.handle}`;
     } else {
       verdict = 'CLOSE';
       why = candidate.proof.detail;
+      repair = '';
     }
 
     const pane = !readable ? 'INCONNU' : moving ? 'WORKING' : 'QUIET';
@@ -1118,7 +1349,7 @@ export function release(
       toClose.push(candidate);
       lines.push({ level: 'ok', text, repair: '' });
     } else {
-      keep(text);
+      keep(text, repair);
     }
   }
 
@@ -1192,7 +1423,7 @@ export function release(
           attemptSettle(join(store, `${entry.request}.json`));
         } catch (error) {
           note(`the release settled but its dispatch record did not: ${String(error.message ?? error).slice(0, 160)}`);
-          fix(`cat ${join(store, `${entry.request}.json`)}   # settle the last attempt by hand`);
+          fix(`cat ${shq(join(store, `${entry.request}.json`))}   # settle the last attempt by hand`);
         }
       }
     } else {
