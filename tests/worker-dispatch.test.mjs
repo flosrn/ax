@@ -937,6 +937,33 @@ test('the declared worktree tool places it, and its last stdout line is the path
   assert.match(r.started[0], new RegExp(`--worktree path:${tree}`));
 });
 
+test('a worktree tool that prints a RELATIVE path is resolved, not passed on as one', () => {
+  // The schema asks the tool to print "the path" and does not demand an absolute
+  // one, and `existsSync` answers true for a repository-relative path whenever
+  // the dispatch runs from the repository — so a relative answer used to travel
+  // all the way through: `--worktree path:.worktrees/…` for a runtime that
+  // resolves selectors against ITS OWN cwd, and (review of PR #141, P2) a
+  // Report path that cannot be established while placement succeeded. It is
+  // resolved where it is accepted, once, so every consumer downstream holds one
+  // absolute path.
+  const root = repo();
+  const tree = join(root, '.worktrees', 'placed-by-tool');
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', worktreeTool: 'place' } }));
+  const exec = (bin, args, at) => {
+    if (bin !== 'place') return { status: 0, stdout: '', stderr: '' };
+    assert.equal(at, root, 'the tool runs in the dispatch cwd, which is what its relative path is relative to');
+    mkdirSync(join(tree, '.agent'), { recursive: true });
+    writeFileSync(join(tree, CONTEXT_PATH), '- Web URL: `http://x`\n');
+    return { status: 0, stdout: 'bootstrapping…\n.worktrees/placed-by-tool\n', stderr: '' };
+  };
+
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root, exec });
+  assert.equal(r.code, 0);
+  assert.match(r.started[0], new RegExp(`--worktree path:${tree}`), 'the selector Orca is given is absolute');
+  const expected = reportPathFor({ worktree: tree, request: REQUEST }).path;
+  assert.ok(r.out.includes(expected), `the child's Report path is established: ${expected}`);
+});
+
 test('a placement tool that fails refuses, and dispatches nothing', () => {
   const root = repo();
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', worktreeTool: 'place' } }));

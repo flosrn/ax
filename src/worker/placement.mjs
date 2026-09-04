@@ -29,7 +29,7 @@
 // cannot-establish naming all of them rather than a pick by position.
 
 import { existsSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 
 import { readWorktrees } from '../git.mjs';
 import { physical, withinPath } from '../worktree/locate.mjs';
@@ -142,9 +142,18 @@ export function placeLocal({ request, issue, slug, named, paths, dispatchConfig,
     if (out.status !== 0) {
       return { notes, refused: `${tool} failed for ${subject}; nothing was dispatched`, repair: firstLine(out.stderr) || `${tool} ${subject}` };
     }
-    worktree = lastLine(out.stdout);
+    // RESOLVED WHERE IT IS ACCEPTED, once. The schema asks the tool to print
+    // "the path" and never demands an absolute one, and `existsSync` answers
+    // true for `.worktrees/<name>` whenever the dispatch runs from the
+    // repository — so a relative answer used to travel intact to every consumer
+    // that cannot resolve it: `--worktree path:.worktrees/…` for a runtime that
+    // resolves selectors against its own cwd, and a Report path that cannot be
+    // established while the placement succeeded (review of PR #141, P2). The
+    // tool ran in `cwd`, so that is what its relative path is relative to.
+    const printed = lastLine(out.stdout);
+    worktree = printed === '' || isAbsolute(printed) ? printed : resolve(cwd, printed);
     if (worktree === '' || !existsSync(worktree)) {
-      return { notes, cannot: `${tool} printed ${JSON.stringify(worktree)}, which is not a directory` };
+      return { notes, cannot: `${tool} printed ${JSON.stringify(printed)}, which is not a directory` };
     }
     created = true;
   } else {
