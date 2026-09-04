@@ -1285,6 +1285,236 @@ test('a worktree carrying any uncommitted change is KEPT, and no path is allowli
   assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
 });
 
+test('a KEEP whose only dirt is what ax provisions names those paths and `ax init`', () => {
+  // The row #147 was filed for. The verdict does not move — #83 ruled there is
+  // no allowlist inside the landing proof — but the SENTENCE now says which
+  // paths made the tree dirty and which verb stops them from making it dirty
+  // again: `plan.ignore` names them, and their presence in `git status
+  // --porcelain` is the proof this checkout does not ignore them yet.
+  const dir = store();
+  record(dir, 'ws-provisioned', 'ctx_prov');
+  const here = join(SCOPE, 'ws-provisioned');
+  mkdirSync(here, { recursive: true });
+
+  const r = run(['--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_prov')],
+      terminals: [terminal('term_ctx_prov', { worktreePath: here })],
+      cursors: { term_ctx_prov: [4, 4] },
+    },
+    execOptions: {
+      answers: {
+        'git rev-parse': { status: 0, stdout: 'feat/135-provisioned\n', stderr: '' },
+        'git status': { status: 0, stdout: '?? .env.local\n?? .agent/\n', stderr: '' },
+      },
+    },
+  });
+
+  assert.match(r.out, /ctx_prov.*KEEP.*uncommitted changes on feat\/135-provisioned/);
+  assert.match(r.out, /\.env\.local/, 'the row lists the paths it is talking about');
+  assert.match(r.out, /\.agent\//);
+  assert.match(r.out, new RegExp(`→ cd ${SCOPE} && ax init`), 'the repair is `ax init` on this checkout');
+  assert.match(r.out, /0 closeable/, 'the verdict does not move: a dirty tree stays KEEP');
+  assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
+});
+
+test('a KEEP carrying any other dirt names the status call and the commit-or-stash it implies', () => {
+  // A modified tracked file and an untracked path the plan does not name: this
+  // is work the merge gate never saw, so the repair is the operator's own read
+  // of the tree — never `ax init`, which would name a repair that changes
+  // nothing here.
+  const dir = store();
+  record(dir, 'ws-real-work', 'ctx_work');
+  const here = join(SCOPE, 'ws-real-work');
+  mkdirSync(here, { recursive: true });
+
+  const r = run(['--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_work')],
+      terminals: [terminal('term_ctx_work', { worktreePath: here })],
+      cursors: { term_ctx_work: [4, 4] },
+    },
+    execOptions: {
+      answers: {
+        'git rev-parse': { status: 0, stdout: 'feat/real-work\n', stderr: '' },
+        'git status': { status: 0, stdout: ' M src/worker/release.mjs\n?? notes.md\n', stderr: '' },
+      },
+    },
+  });
+
+  assert.match(r.out, /ctx_work.*KEEP.*uncommitted changes on feat\/real-work/);
+  assert.match(r.out, new RegExp(`→ git -C ${here} status --porcelain`));
+  assert.match(r.out, /commit|stash/, 'the row says what a merged PR with local dirt means');
+  assert.doesNotMatch(r.out, /ax init/, 'nothing ax provisions is dirty here');
+  assert.match(r.out, /0 closeable/);
+});
+
+/**
+ * Every KEEP row a report printed, paired with the line under it. `fix()`
+ * writes `      → <command>` directly beneath the row it repairs, so the
+ * pairing is positional.
+ *
+ * A row is matched by its SHAPE (`· KEEP ·`, written by `note`), never by the
+ * word anywhere on the line: a repair is free to say what the verdict is — "the
+ * verdict stays KEEP until this tree is clean" — and matching that made this
+ * pin demand a repair for a repair.
+ */
+const keepRows = out => {
+  const lines = out.split('\n');
+  return lines.flatMap((line, i) => (/· KEEP ·/.test(line) ? [{ row: line, next: lines[i + 1] ?? '' }] : []));
+};
+
+/** A worktree that still exists, under the scope every fixture shares. */
+const tree = slug => {
+  const here = join(SCOPE, slug);
+  mkdirSync(here, { recursive: true });
+  return here;
+};
+
+/**
+ * One implementation row whose worktree is still there, its branch named after
+ * the fixture. `answers` overrides the two calls every such proof makes first.
+ */
+const kept = (slug, answers, { exists = true } = {}) => () => {
+  const dir = store();
+  record(dir, `ws-${slug}`, `ctx_${slug}`);
+  const here = exists ? tree(`ws-${slug}`) : join(SCOPE, `ws-${slug}-gone`);
+  return run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker(`ctx_${slug}`)],
+      terminals: [terminal(`term_ctx_${slug}`, { worktreePath: here })],
+      cursors: { [`term_ctx_${slug}`]: [4, 4] },
+    },
+    execOptions: {
+      answers: {
+        'git rev-parse': { status: 0, stdout: `feat/${slug}\n`, stderr: '' },
+        'git status': { status: 0, stdout: '', stderr: '' },
+        ...answers,
+      },
+    },
+  });
+};
+
+/** A triage row, proven by a comment and nothing else. */
+const keptTriage = (slug, answers, recordOptions = {}) => () => {
+  const dir = store();
+  record(dir, `triage-${slug}`, `ctx_t${slug}`, recordOptions);
+  return run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker(`ctx_t${slug}`)],
+      terminals: [terminal(`term_ctx_t${slug}`)],
+      cursors: { [`term_ctx_t${slug}`]: [4, 4] },
+    },
+    execOptions: { answers },
+  });
+};
+
+const prList = rows => ({ status: 0, stdout: JSON.stringify(rows), stderr: '' });
+
+/**
+ * One fixture per KEEP reason this verb can print, so the pin below is over the
+ * REASONS and not over one report. A new `missing()` in the proof arrives with
+ * a fixture here and a repair beside it, or this table fails.
+ */
+const KEEP_FIXTURES = [
+  ['dirt ax provisions', kept('provisioned-2', { 'git status': { status: 0, stdout: '?? .env.local\n', stderr: '' } })],
+  ['dirt that is work', kept('own-work', { 'git status': { status: 0, stdout: ' M src/a.mjs\n', stderr: '' } })],
+  ['git refused the branch', kept('no-branch', { 'git rev-parse': { status: 128, stdout: '', stderr: 'fatal: not a git repository\n' } })],
+  ['git refused the status', kept('no-status', { 'git status': { status: 128, stdout: '', stderr: 'fatal: bad object\n' } })],
+  ['an open PR', kept('open-pr', { 'gh pr list': prList([{ number: 9, state: 'OPEN', headRefName: 'feat/open-pr' }]) })],
+  ['a PR closed unmerged', kept('closed-pr', { 'gh pr list': prList([{ number: 4, state: 'CLOSED', headRefName: 'feat/closed-pr' }]) })],
+  ['a PR in some other state', kept('odd-pr', { 'gh pr list': prList([{ number: 5, state: 'DRAFT', headRefName: 'feat/odd-pr' }]) })],
+  [
+    'two PRs claiming one head',
+    kept('twin-pr', {
+      'gh pr list': prList([
+        { number: 6, state: 'MERGED', headRefName: 'feat/twin-pr' },
+        { number: 7, state: 'OPEN', headRefName: 'feat/twin-pr' },
+      ]),
+    }),
+  ],
+  ['gh refusing the PR query', kept('flaky-gh', { 'gh pr list': { status: 1, stdout: '', stderr: 'API rate limit exceeded\n' } })],
+  ['an unreadable PR list', kept('junk-gh', { 'gh pr list': { status: 0, stdout: '{}', stderr: '' } })],
+  ['commits and no PR', kept('unshipped', { 'gh pr list': prList([]), 'git rev-list': { status: 0, stdout: '3\n', stderr: '' } })],
+  ['a branch carrying nothing', kept('untouched', { 'gh pr list': prList([]), 'git rev-list': { status: 0, stdout: '0\n', stderr: '' } })],
+  ['git refusing the commit count', kept('no-count', { 'gh pr list': prList([]), 'git rev-list': { status: 128, stdout: '', stderr: 'fatal: bad revision\n' } })],
+  ['a worktree already gone, nothing merged', kept('vanished', { 'gh pr list': prList([]) }, { exists: false })],
+  [
+    'a worktree already gone, an ambiguous slug',
+    kept(
+      'vanished-twice',
+      {
+        'gh pr list': prList([
+          { number: 11, headRefName: 'feat/ws-vanished-twice' },
+          { number: 12, headRefName: 'topic/ws-vanished-twice' },
+        ]),
+      },
+      { exists: false },
+    ),
+  ],
+  ['a triage with no comment', keptTriage('20', { 'gh issue view': { status: 0, stdout: JSON.stringify({ comments: [] }), stderr: '' } })],
+  [
+    'a triage whose newest comment predates it',
+    keptTriage('21', { 'gh issue view': { status: 0, stdout: JSON.stringify({ comments: [{ createdAt: '2026-08-19T10:00:00.000Z' }] }), stderr: '' } }),
+  ],
+  ['a triage this host cannot date', keptTriage('22', {}, { createdAt: 'not-a-date' })],
+  ['gh refusing the issue query', keptTriage('23', { 'gh issue view': { status: 1, stdout: '', stderr: 'gh: could not resolve to an Issue\n' } })],
+  [
+    'a pane nobody can read',
+    () => {
+      const dir = store();
+      record(dir, 'triage-24', 'ctx_blind');
+      return run(['--all'], {
+        dir,
+        orca: { workers: [worker('ctx_blind')], terminals: [terminal('term_ctx_blind')], cursors: { term_ctx_blind: ['seven', 'seven'] } },
+        execOptions: { answers: { 'gh issue view': { status: 0, stdout: JSON.stringify({ comments: [{ createdAt: '2026-08-21T09:00:00.000Z' }] }), stderr: '' } } },
+      });
+    },
+  ],
+  [
+    'a row this run cannot place',
+    () => {
+      const dir = store();
+      record(dir, 'legacy-slug', 'ctx_nowhere', { repo: '' });
+      return run(['--dispatch', 'ctx_nowhere'], {
+        dir,
+        orca: { workers: [worker('ctx_nowhere')], terminals: [terminal('term_ctx_nowhere')] },
+      });
+    },
+  ],
+  [
+    'a row belonging to another repository',
+    () => {
+      const dir = store();
+      record(dir, 'their-slug-2', 'ctx_elsewhere', { repo: 'goodluckagency/ofmchat' });
+      return run(['--dispatch', 'ctx_elsewhere'], {
+        dir,
+        orca: { workers: [worker('ctx_elsewhere')], terminals: [terminal('term_ctx_elsewhere')] },
+      });
+    },
+  ],
+];
+
+test('no KEEP row prints without the repair that acts on it', () => {
+  // The verb's own header: "every category below names itself, carries its own
+  // count, and names its repair". The KEEP rows are the only rows an operator
+  // can act on, and until #147 they printed a verdict and stopped — measured on
+  // the dirty row twice (#79, #135), which is the row a finished child hits.
+  // A finding without a repair is a finding nobody can act on (src/log.mjs).
+  for (const [reason, fixture] of KEEP_FIXTURES) {
+    const r = fixture();
+    const rows = keepRows(r.out);
+    assert.ok(rows.length > 0, `${reason}: the fixture printed no KEEP row at all\n${r.out}`);
+    for (const { row, next } of rows) {
+      assert.match(next, /^\s+→ \S/, `${reason}: this KEEP names no repair\n  ${row}\n  ${next}`);
+    }
+  }
+});
+
 test('a PR for another branch is not this branch\u2019s proof', () => {
   const dir = store();
   record(dir, 'ws-mine', 'ctx_head');
