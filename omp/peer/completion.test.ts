@@ -214,6 +214,22 @@ test("a dispatch capability in the Report is redacted, not relayed", () => {
   expect(block).not.toContain('dcap_4el9BbvjyOxxx');
 });
 
+test('a capability inside a contradicted reportPath is redacted too', () => {
+  // The finding QUOTES a path the worker chose, so that quote is child-authored
+  // text on the same footing as the Report's body. Redacting only the body is
+  // the leak `src/worker/transcript.mjs` puts one boundary on the emitter for.
+  const wt = withReport('## CRITERIA\n- the derived Report\n');
+
+  const block = completionReport(
+    completion({ reportPath: '/tmp/claimed-dcap_4el9BbvjyOxxx/report.md' }),
+    deps(wt.rec),
+  );
+
+  expect(block).toContain('FINDING: the completion named');
+  expect(block).toContain('dcap_<redacted>');
+  expect(block).not.toContain('dcap_4el9BbvjyOxxx');
+});
+
 test('a record that names no worktree is a named inability, and still no path key', () => {
   const block = completionReport(completion(), deps(record([])));
 

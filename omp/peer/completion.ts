@@ -121,7 +121,8 @@ function bag(payload) {
 /**
  * Redact FIRST, then cap. The other order leaks: truncating a `dcap_…` token
  * mid-way still prints its prefix (`src/worker/transcript.mjs` pays for that
- * ordering already).
+ * ordering already). `block` redacts again, which is idempotent — this call is
+ * here for the ORDER, not for the coverage.
  */
 function bounded(text, cap, path) {
   const clean = redactSecrets(text);
@@ -135,7 +136,18 @@ function bounded(text, cap, path) {
   return `${kept}\n--- Report truncated at ${cap} bytes of ${total} — read it in full at ${path}`;
 }
 
-/** The block appended after the Summary: one header, the named lines, then the text. */
+/**
+ * The block appended after the Summary: one header, the named lines, then the
+ * text.
+ *
+ * ONE REDACTION BOUNDARY, ON THE EMITTER — the rule
+ * `src/worker/transcript.mjs` states and the reason it states it: redacting
+ * field by field leaks through the one field nobody thought carried child text.
+ * Here that field is `payload.reportPath`, quoted verbatim into a finding, and
+ * every `${err}` beside it: a worker's own path claim and a filesystem error
+ * naming the line it failed on are both child-authored, and the preamble puts a
+ * `dcap_…` in reach of both.
+ */
 function block(path, lines, body = '') {
   const head =
     path === null
@@ -143,7 +155,7 @@ function block(path, lines, body = '') {
       : `--- REPORT (derived from the dispatch record) · ${path}`;
   const parts = [head, ...lines];
   if (body !== '') parts.push('---', body);
-  return `\n\n${parts.join('\n')}\n`;
+  return `\n\n${redactSecrets(parts.join('\n'))}\n`;
 }
 
 /**
