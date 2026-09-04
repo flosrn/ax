@@ -39,6 +39,14 @@ export const RETRY_MAX_MS = 60_000;
 // other. Two shapes for one sink is the defect, not the length.
 const RUN_ADDRESS = /^run:[A-Za-z0-9_-]{1,64}$/;
 
+// THE STALL WATCHER'S TWO SUBJECTS, which are a contract and not a convenience.
+// `src/worker/stall.mjs` writes them (`stall-watch: …` for a silent or gone
+// child, `card: …` for a remote checkpoint) and this side reads them, so the
+// strings are duplicated across a process boundary on purpose: the alert crosses
+// as an Orca message, and there is nothing to import. Change one end and the
+// receiver test that pins the wake fails at the other (#149).
+const WATCHER_ALERT = /^(?:stall-watch|card):/;
+
 export interface SenderInfo {
   name: string;
   model: string;
@@ -487,10 +495,42 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // three. Dropping is the whole fix available HERE — the delivery is
             // consumed by the time this code runs, so this ends the noise, not the
             // loss.
+            //
+            // ONE SENDER IS EXEMPT, and it is not an exception to the rule above
+            // so much as the case the rule cannot see. The stall watcher
+            // (`src/worker/stall.mjs`) is a DETACHED process holding this pane's
+            // environment (`src/worker/start.mjs` spawns it with `{ ...env }`)
+            // and it names no `--from`, so Orca resolves its sender off
+            // `ORCA_TERMINAL_HANDLE` and its alert arrives under our own handle —
+            // while its subject is about a CHILD, and nothing else will ever say
+            // that child stopped. Under the old `escalation` envelope the wake
+            // still landed as Orca's rejection, from the runtime rather than from
+            // this handle; `status` is accepted (#149), so the drop below would
+            // be the whole message. The key is the watcher's two subject
+            // prefixes and nothing wider: an echo of this session's own report
+            // still dies here, which is the noise measured above.
             const selfHandle = (process.env.ORCA_TERMINAL_HANDLE ?? '').trim();
+            // AND IT IS NEVER ANSWERABLE, which is the second half of the
+            // exemption and not a detail of it. The watcher exits the moment it
+            // sends, and the handle this alert carries is OUR OWN — so the pane
+            // fallback below would resolve it to this session's own Run, record
+            // that as a route, and have `peerContent` invite `peer_reply`. The
+            // reply would come straight back here and die on the fence above,
+            // with the tool reporting success: the exact "invited, then refused"
+            // shape measured three times on 2026-08-25 that made a recorded route
+            // the definition of answerable in the first place. Raised as P2 on
+            // #159 by a review lens, before it could be measured again.
+            let selfOriginAlert = false;
             if (selfHandle && String(msg.from_handle ?? '') === selfHandle) {
-              deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
-              continue;
+              if (WATCHER_ALERT.test(String(msg.subject ?? '').trim())) {
+                selfOriginAlert = true;
+                deps.note(
+                  `stall watcher alert under our own handle — injecting, no reply route (${msgId || 'no id'})`,
+                );
+              } else {
+                deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
+                continue;
+              }
             }
 
             // The route rides in the message and is trusted only because the
@@ -523,7 +563,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // is named from our own record, but the payload it carries came over
             // the relay, and a reply ADDRESS is exactly the field a hostile
             // payload would want us to keep. An absent kind is the pane path.
-            if (msgId && who.attributed && who.kind !== 'dispatch') {
+            if (!selfOriginAlert && msgId && who.attributed && who.kind !== 'dispatch') {
               // The sender's own statement first: it is the more specific answer,
               // and honouring it means the fallback below can only fill a silence.
               if (RUN_ADDRESS.test(replyTo)) {
@@ -597,6 +637,15 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // is `role: "custom"`, the latter is `role: "user"` and therefore
             // indistinguishable from the operator. `triggerTurn` wakes an idle
             // session; a streaming one takes it as a steer, same as before.
+            //
+            // EVERY directed type wakes, and one sender DEPENDS on that rather
+            // than merely benefiting from it: the stall watcher
+            // (`src/worker/stall.mjs`) sends `status`, because it runs from a
+            // pane holding no Dispatch and `escalation` from there is refused by
+            // construction (#109) — and its `stall-watch:` / `card:` alerts are
+            // the only account a killed pane ever gets. A type-aware delivery
+            // that demotes `status` must exempt those two subjects out loud;
+            // `./receive.test.ts` fails until it does.
             pi.sendMessage(
               {
                 customType: 'peer-message',
