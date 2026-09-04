@@ -95,6 +95,16 @@ test('the fixture #135 committed yields the same path here as in the worker modu
   expect(reportPath(rec).path).toBe(workerReportPath(rec).path);
 });
 
+// The case list below is the twin's maintenance contract, and it is kept by
+// hand: a new refusal branch on EITHER side of the Report-path rule joins this
+// list in the same commit that adds it — never a follow-up. Measured within
+// hours of the rule's birth (#143): #136 split the src side into
+// `reportPathFor({ worktree, request })` + `reportPath(rec)` and re-worded one
+// refusal, and #137's twin drifted the same day; this test caught it on the
+// merged tree. So the src side is now TWO functions, and a split or a rewording
+// over there moves two wordings here, not one. The twin exists at all because
+// importing `reportPath` into the receiver would evaluate the CLI emitter chain
+// at every session's startup; this list is the price of that ruling.
 test('both rules refuse the same records, and neither invents a path key', () => {
   const cases: Array<[string, unknown]> = [
     ['no worktree', record([])],
