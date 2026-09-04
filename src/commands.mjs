@@ -192,7 +192,8 @@ repository, the value equals the slug gh answers for this checkout, and the live
 proof passes. It writes that name onto the record in the same write as the settlement.
 
 A record that already names a repository is never re-attributed: settle it from that
-repository's own checkout, with no flag.
+repository's own checkout, with no flag. A record whose attempt is ALREADY settled and
+names none is scoped by the same flag, and that scoping is its whole write.
 
 Exit: 0 settled or already settled - 1 refused (live agent, foreign or unasserted repo,
       open phase) - 2 usage - 3 cannot establish (no CLI, silent runtime, unreadable

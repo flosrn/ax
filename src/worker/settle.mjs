@@ -52,19 +52,33 @@
 // that record's owner is not in doubt, and a flag that could overwrite it would
 // be an inference wearing an assertion's clothes.
 //
+// TWO EDGES OF THAT FLAG, both found by review of PR #155 and both about what
+// "carries no repo" means. A record whose last attempt is ALREADY settled and
+// which names none sits in the same trap one state later — it reads
+// `attempt-ended-unmerged` in every repository — so an assertion is honoured
+// there too, and the idempotence below is spent only when nothing was
+// asserted; what is not re-demanded is the liveness proof, because the death it
+// would establish is already written in that record. And a `repo` that is
+// PRESENT but is not a name (an object, a list, a number) is corrupted
+// metadata, not an absence: `recordRepo` collapses it to `''` for readers that
+// only ask which repository, and the writer reads through `recordRepoNaming`
+// instead so that it is an inability rather than something to overwrite.
+// `null` is not in that class — it is how a pre-0.20 record spells the absence.
+//
 // It writes one flag and issues no Orca mutation, so it needs no write-ahead
 // phase of its own: there is nothing in flight to recover.
 //
 // Exit codes (ADR 0003 — per verb, never a shared alphabet), and the DIRECTION
 // decides which one: a fact about the subject that forbids the write is a
 // refusal; a read this run could not make is an inability.
-//   0  settled, or already settled — the idempotence attemptSettle already has
+//   0  settled, already settled, or already settled and now scoped by --repo
 //   1  refused: a live agent, a foreign `repo`, a `repo` no --repo asserted, an
 //      assertion the checkout contradicts, a record already attributed, an open
 //      phase
 //   2  usage error
 //   3  cannot establish: no Orca CLI, a silent runtime, an unreadable store or
-//      terminal list, no repository slug, an unknown pane, no row at all
+//      terminal list, no repository slug, a `repo` that is not a name, an
+//      unknown pane, no row at all
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -75,7 +89,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { namedList } from './gate.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
-import { acquireLock, attemptSettle, defaultStore, lastAttemptState, recordRepo, requestIdOk, taskIdScan } from './record.mjs';
+import { acquireLock, attemptSettle, defaultStore, lastAttemptState, recordRepoNaming, requestIdOk, taskIdScan } from './record.mjs';
 
 const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
@@ -296,7 +310,15 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     // Already written, so there is nothing to prove and nothing to do — the
     // idempotence `attemptSettle` already has, spent before any read of the
     // machine rather than after it.
-    if (state.settled) {
+    //
+    // UNLESS AN ASSERTION WAS MADE. `--repo` on a settled record that names
+    // none is not a no-op: such a record is `attempt-ended-unmerged` in EVERY
+    // repository on the host, which is #133's trap one state later, and a verb
+    // reporting 0 while the assertion goes unwritten is success claimed for
+    // work not done (review of PR #155, P2). The assertion is corroborated
+    // below and the backfill written; what is NOT re-demanded is the liveness
+    // proof, because the death it would establish is already recorded here.
+    if (state.settled && asserted === null) {
       ok(`${request}'s last attempt is already settled — nothing to write`);
       return 0;
     }
@@ -306,7 +328,19 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     // none IS that slug (`--repo <it>`). A `gh` that cannot answer is therefore
     // an inability even for a record whose scope is not in question — the same
     // direction the rest of this verb takes, one read earlier than before #146.
-    const recorded = recordRepo(path);
+    const naming = recordRepoNaming(path);
+    // A `repo` that is PRESENT and is not a name is corrupted metadata, and the
+    // direction is the one this whole verb takes on a read it cannot make: the
+    // ownership cannot be established, so neither a refusal nor a backfill is
+    // warranted over it (review of PR #155, P1). `null` and blank are absences,
+    // not corruption — that is the shape this flag exists for.
+    if (naming.state === 'malformed') {
+      return cannot(
+        `${request} cannot be attributed: ${naming.detail} — a value this run cannot read is never an absence to fill, nor a name to compare`,
+        `ax worker ls --all   # then repair that field by hand: the record is the only thing that says whose frontier this flip changes`,
+      );
+    }
+    const recorded = naming.repo;
     const viewed = repoView(args => exec('gh', args, cwd));
     if (viewed.slug === '') {
       return cannot(
@@ -347,6 +381,23 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     // spelling of it — the two agree case-insensitively, and the canonical one
     // is what the frontier compares against next.
     const backfill = asserted === null ? '' : here;
+
+    // The settlement is already recorded, so the only thing left for the
+    // assertion to do is narrow WHICH frontier reads this record. Written
+    // through the same one-save writer, whose `settled: true` is idempotent.
+    if (state.settled) {
+      try {
+        attemptSettle(path, { repo: backfill });
+      } catch (error) {
+        return cannot(
+          `${path} could not be written: ${String(error.message ?? error)}`,
+          `ls -l ${path}   # the attempt stays settled and unscoped; nothing partial was written (./record.mjs writes atomically)`,
+        );
+      }
+      ok(`${request}'s last attempt is already settled — repo backfilled to ${backfill}, and that is the whole write`);
+      note(`the frontier reads this record in ${backfill} from now on, and skips it in every other repository. No proof was re-demanded: this record already records the death.`);
+      return 0;
+    }
 
     // The one refusal the issue did not name and the triage census proved free
     // (open in 0 of 206 unsettled records): a phase with no exit and no receipt is

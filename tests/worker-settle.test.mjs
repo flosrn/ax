@@ -563,4 +563,69 @@ test('settling an already-settled attempt is a success that changes nothing', ()
   assert.equal(r.code, 0, 'idempotence, the same one attemptSettle already has');
   assert.equal(r.after, r.before);
   assert.match(r.out, /already settled/);
+  assert.deepEqual(r.calls, [], 'and it is spent before any read of the machine, exactly as the header says');
+});
+
+test('--repo scopes an ALREADY-SETTLED record that names none: the assertion is never a silent no-op', () => {
+  // Review of PR #155 (P2). The idempotence above returns before the scope
+  // block, so without this the flag reported success and wrote nothing — and a
+  // settled record naming no repository is `attempt-ended-unmerged` in EVERY
+  // repository on the host, the same trap one state later. The death is already
+  // written, so no liveness proof is demanded a second time: this write only
+  // narrows which frontier reads the record.
+  const dir = store();
+  const path = deadAttempt(dir, '71-rls-refute', { repo: '' });
+  attemptSettle(path);
+
+  const r = settling(path, dir, {}, ['71-rls-refute', '--repo', REPO]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(JSON.parse(r.after).repo, REPO, 'the assertion reached the record');
+  assert.equal(settledFlag(path), true, 'and the settlement it already had is intact');
+  assert.match(r.out, /already settled/);
+  assert.deepEqual(r.calls, [], 'no proof was demanded for a death this record already records');
+});
+
+test('a `repo` that is present and is not a name is CANNOT ESTABLISH, never an absence to overwrite', () => {
+  // Review of PR #155 (P1). `recordRepo` collapses a non-string to `''`, which
+  // is the right reading for a caller that only asks "which repository" — but
+  // for the caller that WRITES, a present-but-unreadable value is corrupted
+  // metadata, not a record naming none. `null` is not in that class: it is how
+  // a pre-0.20 record spells the absence this flag exists for.
+  const dir = store();
+  for (const [request, repo] of [['71-object', { owner: 'flosrn' }], ['72-number', 7], ['73-list', ['flosrn/ax']]]) {
+    const path = join(dir, `${request}.json`);
+    deadAttempt(dir, request, { repo: '' });
+    const rec = JSON.parse(readFileSync(path, 'utf8'));
+    rec.repo = repo;
+    writeFileSync(path, JSON.stringify(rec, null, 1));
+    const before = readFileSync(path, 'utf8');
+
+    for (const argv of [[request], [request, '--repo', REPO]]) {
+      const r = settling(path, dir, { workers: [dispatch('ctx_dead', 'term_7f0854ba')] }, argv);
+      assert.equal(r.code, 3, `${request} ${argv.join(' ')} answered ${r.code}: corrupted metadata is an inability`);
+      assert.match(r.out, /repo/, `${request}: the unreadable field is named`);
+      assert.equal(readFileSync(path, 'utf8'), before, `${request}: nothing was written over it`);
+    }
+  }
+});
+
+test('an explicit `repo: null` is the absence --repo exists for, and a blank string is too', () => {
+  const dir = store();
+  for (const [request, repo] of [['71-null', null], ['72-blank', '   ']]) {
+    const path = join(dir, `${request}.json`);
+    deadAttempt(dir, request, { repo: '' });
+    if (repo !== null) {
+      const rec = JSON.parse(readFileSync(path, 'utf8'));
+      rec.repo = repo;
+      writeFileSync(path, JSON.stringify(rec, null, 1));
+    } else {
+      const rec = JSON.parse(readFileSync(path, 'utf8'));
+      rec.repo = null;
+      writeFileSync(path, JSON.stringify(rec, null, 1));
+    }
+
+    const r = settling(path, dir, { workers: [dispatch('ctx_dead', 'term_7f0854ba')] }, [request, '--repo', REPO]);
+    assert.equal(r.code, 0, `${request}: ${r.out}`);
+    assert.equal(JSON.parse(r.after).repo, REPO, `${request}: the name replaced the absence`);
+  }
 });
