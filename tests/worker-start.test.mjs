@@ -1358,11 +1358,23 @@ test('a --replace arriving mid-mint waits the claim lock out and never becomes a
 
   // The window, read off the record itself rather than guessed at with a sleep:
   // `task-create` closed, `worker-start` written ahead but still in flight.
+  //
+  // AN EXISTING RECORD PATH IS NOT A WRITTEN ONE. `claimRecord` creates it
+  // EMPTY — `wx` IS the claim (../src/worker/record.mjs) — and the first real
+  // content arrives later by atomic rename, so a reader that parses whatever is
+  // there races that first write: measured red on CI 2026-09-04, "Unexpected
+  // end of JSON input" at this line, and reproduced locally about one run in
+  // five. An unwritten record is "not yet", exactly like an absent one.
   const path = join(store, `${request}.json`);
   await waitFor(() => {
     if (!existsSync(path)) return false;
-    const phases = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases;
-    return phases.length === 2 && phases[0].exit === 0 && phases[1].exit === null;
+    let phases;
+    try {
+      phases = JSON.parse(readFileSync(path, 'utf8'))?.attempts?.[0]?.phases;
+    } catch {
+      return false;
+    }
+    return Array.isArray(phases) && phases.length === 2 && phases[0].exit === 0 && phases[1].exit === null;
   });
 
   const replace = await runCli(['worker', 'start', '--replace', '--request', request], env);
