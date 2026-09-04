@@ -11,6 +11,19 @@
 //   2  duplicate proved by --replace's gate
 //   3  cannot establish — never permission
 //   4  fresh mutation STRANDED — recover with --resume
+//
+// LOCK ORDER — CLAIM, THEN REPLACE (#148, out of #120). Every writer of one
+// record contends for `<record>.claim.lock`: the claim winner's mint, the
+// loser's replay, an explicit `--resume`, and a `--replace`. `--replace` takes
+// that lock FIRST and its own `<record>.lock` SECOND, and nothing acquires
+// them the other way round — a fresh mint never takes the replace lock, and
+// `ax worker settle` takes only the replace lock — so the order carries no
+// cycle. Until #148 a replace took the replace lock ALONE, so the two never
+// contended: a replace issued while a mint sat between its task creation and
+// its worker start read a runtime with no live agent (that mutation was still
+// in flight), returned the task to `ready` and started a worker, and the mint
+// then issued its own. One sanctioned mint plus one sanctioned recovery, and
+// F-001 rebuilt out of them.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -477,6 +490,10 @@ function replaceLocked(path, passthru, context) {
  * `ready`, and each start a worker — F-001 rebuilt out of two legitimate
  * recoveries. A live holder means this caller establishes nothing and mints
  * nothing.
+ *
+ * The record's CLAIM lock is already held by the caller (this file's header):
+ * this second lock is what a `ax worker settle` — which takes only this one —
+ * contends on, and the order between the two is fixed there.
  */
 function replace(path, passthru, context) {
   const recovered = recoveredContext(path, context);
@@ -610,12 +627,12 @@ export function start(
   };
 
   section(redactSecrets(`worker start ${parsed.request}`));
-  // `--replace` keeps its own differently-suffixed lock, by ruling (#95 pass A1:
-  // the claim pair only). `--resume` is the loser's replay typed by hand — the
-  // same load-modify-save writer — so it takes the claim lock below like the
-  // loser does; review of the first draft measured it bypassing the lock and
-  // rewriting a record mid-mint.
-  if (parsed.mode === 'replace') return replace(path, parsed.passthru, context);
+  // EVERY WRITER OF THIS RECORD, one lock. `--resume` is the loser's replay
+  // typed by hand — the same load-modify-save writer — and `--replace` is a
+  // third (#148): until it took this lock too, a replace and a fresh mint were
+  // the two legitimate writers that never contended, and the duplicate in this
+  // file's header is what that bought. Both wait here on the same budget and
+  // refuse with the same repair; `--replace` then takes its own lock second.
 
   // ONE LOCK, TWO CONTENDERS (#95). The claim winner used to mint — initRecord
   // and every phase write of the fresh dispatch — holding no lock at all, while
@@ -653,6 +670,7 @@ export function start(
   if (!ownership.held) return cannot(ownership.reason, `ax worker start --resume --request ${context.request}`);
 
   try {
+    if (parsed.mode === 'replace') return replace(path, parsed.passthru, context);
     if (parsed.mode === 'resume') return resume(path, context);
 
     let claim;

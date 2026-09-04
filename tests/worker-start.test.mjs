@@ -15,9 +15,39 @@ import { acquireLock } from '../src/worker/record.mjs';
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-worker-start-'));
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ax.mjs');
 
-function stubOrca(dir, { taskCreateDelay = '0.15' } = {}) {
+function stubOrca(dir, { taskCreateDelay = '0.15', workerStartDelay = '', gate = false } = {}) {
   const log = join(dir, 'orca-identities.log');
+  const calls = join(dir, 'orca-calls.log');
+  // The pane the mint creates, as a file: written when `worker-start` returns,
+  // so "is there a live agent" has a different answer before and after the
+  // mutation this stub is standing in for. A gate read against a running mint
+  // and the same read after it are the two sides of a replace's decision.
+  const live = join(dir, 'orca-live-pane');
   const bin = join(dir, 'orca-stub');
+  const gated = gate
+    ? `
+  "orchestration worker-list")
+    if [ -e ${JSON.stringify(live)} ]; then
+      echo '{"ok":true,"result":{"workers":[{"taskId":"task_race","dispatchId":"ctx_race","agentTerminalHandle":"term_race","workerState":"failed","terminalState":"retained"}]}}'
+    else
+      echo '{"ok":true,"result":{"workers":[]}}'
+    fi ;;
+  "orchestration task-list")
+    echo '{"ok":true,"result":{"tasks":[{"id":"task_race"}]}}' ;;
+  "orchestration task-update")
+    echo '{"ok":true,"result":{"task":{"id":"task_race","status":"ready"}}}' ;;
+  "status --json")
+    echo '{"ok":true,"result":{"runtime":{"reachable":true}}}' ;;`
+    : '';
+  const terminals = gate
+    ? `
+    if [ -e ${JSON.stringify(live)} ]; then
+      echo '{"ok":true,"result":{"terminals":[{"handle":"term_race"}],"hostScope":{"hostIds":["local"],"omittedHostIds":[]}}}'
+    else
+      echo '{"ok":true,"result":{"terminals":[]}}'
+    fi ;;`
+    : `
+    echo '{"ok":true,"result":{"terminals":[]}}' ;;`;
   writeFileSync(bin, `#!/usr/bin/env bash
 retry=""
 prev=""
@@ -25,24 +55,26 @@ for arg in "$@"; do
   [ "$prev" = --retry-request ] && retry="$arg"
   prev="$arg"
 done
+printf '%s\\n' "$1 $2" >> ${JSON.stringify(calls)}
 [ -n "$retry" ] && printf '%s\\n' "$retry" >> ${JSON.stringify(log)}
 case "$1 $2" in
   "orchestration task-create")
     sleep ${taskCreateDelay}
     echo '{"ok":true,"result":{"task":{"id":"task_race"},"mutation":{"replayed":false}}}' ;;
   "orchestration worker-start")
+    ${workerStartDelay ? `sleep ${workerStartDelay}` : ':'}
+    ${gate ? `: > ${JSON.stringify(live)}` : ':'}
     echo '{"ok":true,"result":{"taskId":"task_race","dispatchId":"ctx_race","state":"ready","mutation":{"replayed":false},"effects":[{"kind":"terminal","id":"term_race"}]}}' ;;
   "orchestration worker-show")
     echo '{"ok":true,"result":{"dispatch":{"status":"completed"},"worker":{"state":"succeeded"}}}' ;;
   "terminal read")
     echo '{"ok":true,"result":{"terminal":{"latestCursor":7}}}' ;;
-  "terminal list")
-    echo '{"ok":true,"result":{"terminals":[]}}' ;;
+  "terminal list")${terminals}${gated}
   *)
     echo '{"ok":false,"error":{"code":"unexpected","message":"unexpected stub call"}}'; exit 1 ;;
 esac
 `, { mode: 0o755 });
-  return { bin, log };
+  return { bin, log, calls };
 }
 
 function runCli(args, env) {
@@ -1253,13 +1285,21 @@ test('a second --replace inside the first cannot establish, and only one worker-
 
   // The sibling runs at the ONE moment a lockless replace is wrong: after the
   // gate answered "no live agent" and before the replacement exists.
+  //
+  // `AX_LOCK_WAIT_MS: '0'` is what makes this shape survivable in ONE process
+  // (#148): the holder it meets is this very pid, which `acquireLock` proves
+  // LIVE and therefore waits out, re-arming its window on every poll — and no
+  // tick of an in-process sleep can ever release a lock held further up its own
+  // stack. So the sibling plays the loser's first move with no wait at all, as
+  // the seam test above does, and the refusal it gets back is the one a spin
+  // would never reach. The wait itself is proven against real processes below.
   const run = fakeRunner();
   let nested = null;
   const r = invoke(['--replace', '--request', 'req-1'], {
     env: { HOME: home },
     run,
     gateFn: () => {
-      nested ??= invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, gateFn: () => 0 });
+      nested ??= invoke(['--replace', '--request', 'req-1'], { env: { HOME: home, AX_LOCK_WAIT_MS: '0' }, gateFn: () => 0 });
       return 0;
     },
   });
@@ -1277,6 +1317,102 @@ test('a second --replace inside the first cannot establish, and only one worker-
   // The lock is released with the gesture, so the next replace is free to run.
   const after = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, gateFn: () => 0 });
   assert.equal(after.code, 0, after.out);
+});
+
+// #148: TWO LEGITIMATE WRITERS, ONE WORKER. A fresh mint and a `--replace` are
+// both sanctioned, and before this they never contended: the mint held
+// `.claim.lock` while the replace took its own `.lock`. A replace arriving
+// while the mint sat between its task creation and its worker start therefore
+// read a runtime with no live agent — the mutation was still in flight —
+// returned the task to `ready` and started a worker, and the mint then issued
+// its own. F-001 rebuilt out of one sanctioned mint and one sanctioned
+// recovery.
+//
+// Real processes, because the property IS the wait: the replace must be
+// suspended on the mint's claim lock while the mint runs to completion. The
+// stub's `worker-start` sleeps and writes the pane marker on its way out, so
+// the gate's answer differs on the two sides of that release — no live agent
+// during the mint, one after it. Before the fix the replace ran during the
+// pause and issued a second `worker-start`; after it, it waits, reads the
+// record the mint wrote, and is stopped by the agent that record now has.
+test('a --replace arriving mid-mint waits the claim lock out and never becomes a second worker', async () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const spec = join(home, 'brief.md');
+  writeFileSync(spec, 'Do the one exact task.');
+  const request = 'req-midmint';
+  const stub = stubOrca(home, { taskCreateDelay: '0', workerStartDelay: '1.5', gate: true });
+  const env = {
+    ...process.env,
+    HOME: home,
+    ORCA_CLI_COMMAND: stub.bin,
+    ORCA_DISPATCH_STORE: store,
+    ORCA_DISPATCH_AUTOSUBMIT: '0',
+    ORCA_STALL_WATCH: '0',
+  };
+
+  const mint = runCli([
+    'worker', 'start', '--request', request, '--run', 'run_mint',
+    '--spec-file', spec, '--', '--worktree', 'current', '--agent', 'omp',
+  ], env);
+
+  // The window, read off the record itself rather than guessed at with a sleep:
+  // `task-create` closed, `worker-start` written ahead but still in flight.
+  const path = join(store, `${request}.json`);
+  await waitFor(() => {
+    if (!existsSync(path)) return false;
+    const phases = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases;
+    return phases.length === 2 && phases[0].exit === 0 && phases[1].exit === null;
+  });
+
+  const replace = await runCli(['worker', 'start', '--replace', '--request', request], env);
+  const minted = await mint;
+  assert.equal(minted.code, 0, minted.out);
+
+  assert.equal(replace.code, 1, `the replace meets the agent the mint created: ${replace.out}`);
+  assert.match(replace.out, /an agent is still alive for this task/);
+  assert.doesNotMatch(replace.out, /pre-existing lock/, 'a live mint is waited out, never reported as a refusal');
+
+  const issued = readFileSync(stub.calls, 'utf8').trim().split('\n');
+  assert.equal(
+    issued.filter(line => line === 'orchestration worker-start').length,
+    1,
+    `exactly one worker start reached the runtime: ${issued.join(', ')}`,
+  );
+  assert.equal(issued.filter(line => line === 'orchestration task-update').length, 0, 'and the task was never returned to ready under a live mint');
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(record.attempts.length, 1, 'no second attempt was opened');
+  assert.deepEqual(record.attempts[0].phases.map(phase => phase.name), ['task-create', 'worker-start']);
+});
+
+// The other half of the same order: a claim lock this caller cannot prove live
+// bounds the wait, and the refusal names the replay rather than minting a
+// second identity. Same budget, same reason and same repair as a fresh start's
+// — one lock, one contract, whatever verb is waiting on it.
+test('a --replace that waits the claim window out refuses with the --resume repair', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-window'), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const store = join(home, 'dispatch');
+  writeFileSync(
+    join(store, 'req-window.json.claim.lock'),
+    JSON.stringify({ pid: 1, host: 'another-host', token: 'x', at: '2026-08-01T00:00:00Z' }),
+  );
+  let clock = Date.parse('2026-09-03T00:00:00.000Z');
+  const polls = [];
+  const run = fakeRunner();
+  const r = invoke(['--replace', '--request', 'req-window'], {
+    env: { HOME: home, AX_LOCK_WAIT_MS: '1000' },
+    run,
+    gateFn: () => 0,
+    startDeps: { now: () => new Date(clock).toISOString(), sleep: ms => { polls.push(ms); clock += 400; } },
+  });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /pre-existing lock .* belongs to another-host pid 1/);
+  assert.match(r.out, /ax worker start --resume --request req-window/);
+  assert.equal(polls.length, 3, 'polled until the budget ran out, then refused');
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'and minted nothing behind the holder');
+  assert.equal(existsSync(join(store, 'req-window.json.lock')), false, 'the replace lock was never reached');
 });
 
 // ── A recovery speaks to the runtime it mutated ─────────────────────────────
