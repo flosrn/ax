@@ -27,6 +27,13 @@
 // Reading git's whole registry also makes duplicate basenames across two roots
 // reachable for the first time, which is why more than one candidate is a
 // cannot-establish naming all of them rather than a pick by position.
+//
+// A PATH AN EXTERNAL TOOL PRINTS IS NOT ABSOLUTE UNTIL SOMETHING RESOLVES IT,
+// and `existsSync` is not that something: it answers true for `.worktrees/<name>`
+// whenever the dispatch runs from the repository. So `dispatch.worktreeTool`'s
+// answer is resolved against the cwd it ran in, here, where it is accepted —
+// no consumer downstream has to know it might have been relative (review of
+// PR #141: a relative answer reached the Orca selector and the Report path).
 
 import { existsSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
