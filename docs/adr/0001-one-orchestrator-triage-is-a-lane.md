@@ -14,6 +14,17 @@ dispatches both lanes — implementation and triage — rules its children's que
 validated merge. The `readiness` role is deleted. The ratified vocabulary lives in `CONTEXT.md` at
 the repo root.
 
+**Corrected 2026-09-04.** The decision stands; the causal sentence above does not. The 2026-08-30
+refusals came from ax's own child-side peer resolution, which found several panes in the parent
+worktree and had no discriminator — repaired the same day this ADR was written (`478e443`): a child
+now resolves its parent through the dispatch record, which pairs its pane with the dispatching Run
+(`omp/peer/lineage.test.ts`). Orca itself never routed by worktree: a completion is addressed to
+the coordinator handle that ran `worker-start`, resolved handle → live pane → Run
+(`orchestration-recipient-routing.ts` in the fork). What remains true, and is the reason for one
+orchestrator: two DISPATCHING sessions split a wave's mail between two mailboxes and duplicate the
+ruling contract. A maintainer or an editor session in the same checkout does not interfere. Measured
+because the stale sentence misled a maintainer session into prescribing a dedicated worktree.
+
 ## Consequences
 
 - The CLI noun follows the activity: `ax ready` returns to `ax triage`. v0.15.0 renamed it the

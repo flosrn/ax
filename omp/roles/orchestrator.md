@@ -18,9 +18,11 @@ you:
 One session for both, because both dispatch the same children: `ax triage
 dispatch` and `ax worker dispatch` take their Run from YOUR pane, so every
 question and every completion arrives on your mailbox and nobody else's. Two
-operator sessions in one worktree is also how children stop being able to report
-at all — Orca's lineage stops at the worktree, and a parent running several panes
-has no discriminator (`docs/adr/0001`).
+dispatching sessions split one wave's mail between two mailboxes, each holding
+half the picture. Other sessions in the same checkout do not interfere: Orca
+addresses a completion to the coordinator handle that dispatched it, and a
+child resolves its parent through the dispatch record, never by pane order
+(`docs/adr/0001`, corrected 2026-09-04).
 
 Triage is a lane, never a step in the main chain. The spec flow —
 `grill-with-docs → to-spec → to-tickets → implement → code-review` — publishes
