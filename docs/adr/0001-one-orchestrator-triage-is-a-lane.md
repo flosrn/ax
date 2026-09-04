@@ -14,6 +14,19 @@ dispatches both lanes — implementation and triage — rules its children's que
 validated merge. The `readiness` role is deleted. The ratified vocabulary lives in `CONTEXT.md` at
 the repo root.
 
+**Clarified 2026-09-04.** The decision stands, and so does the lineage fact: Orca's lineage is
+worktree-scoped (`parentWorktreeId`, no pane), so a child looking at the parent worktree sees every
+session in it. That is why the 2026-08-30 reports could not be delivered — ax's `parentPeer()` found
+several panes and had no discriminator, not Orca refusing `worker_done`. Two paths, still:
+Orca delivers a completion to the coordinator handle that ran `worker-start`
+(`orchestration-recipient-routing.ts` in the fork); a child that has to name its parent now
+resolves through the dispatch record, which pairs its pane with the dispatching Run (`478e443`,
+`omp/peer/lineage.test.ts`). Multi-pane in one checkout is safe today because of that record, not
+because the lineage grew a pane. What still requires one orchestrator: two DISPATCHING sessions
+split a wave's mail and duplicate the ruling contract. A maintainer or an editor session in the
+same checkout does not interfere. Written because the unclarified sentence was read as "isolate
+the orchestrator in its own worktree."
+
 ## Consequences
 
 - The CLI noun follows the activity: `ax ready` returns to `ax triage`. v0.15.0 renamed it the
