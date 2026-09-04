@@ -8,6 +8,20 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.22.0](https://github.com/flosrn/ax/compare/v0.21.1...v0.22.0) (2026-09-04)
+
+
+### Features
+
+* **peer:** deliver the Report with a worker's completion ([#142](https://github.com/flosrn/ax/issues/142)) ([d5b6c90](https://github.com/flosrn/ax/commit/d5b6c909bf000f1f2dd8f9f21e27ea1622c476ff))
+* **worker:** derive the Report path from the dispatch record ([#138](https://github.com/flosrn/ax/issues/138)) ([c1fbafc](https://github.com/flosrn/ax/commit/c1fbafca2ceb1db87692fbcc1dd84f17ccd62288))
+* **worker:** the brief names the Report's path and what worker_done carries ([#141](https://github.com/flosrn/ax/issues/141)) ([087c3be](https://github.com/flosrn/ax/commit/087c3bee7bbe1ca82429cefcb5610209bd19bf0b))
+
+
+### Bug Fixes
+
+* **dispatch:** a --name dispatch gets the untracked mechanics, not "keep the ticket current" ([6b8b89a](https://github.com/flosrn/ax/commit/6b8b89a5aac55dc209a1cc1a499a36c6861d9d9a)), closes [#144](https://github.com/flosrn/ax/issues/144)
+
 ## [0.21.1](https://github.com/flosrn/ax/compare/v0.21.0...v0.21.1) (2026-09-03)
 
 
