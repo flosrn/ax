@@ -19,8 +19,8 @@ const dir = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(dir, 'fixtures', 'report-record.json');
 const EXPECTED = join(dir, 'fixtures', 'report-path.txt');
 
-const record = effects => ({
-  request: 'req-1',
+const record = (effects, request = 'req-1') => ({
+  request,
   attempts: [
     {
       n: 1,
@@ -58,4 +58,11 @@ test('a record that names two worktrees is a named inability, never a guess', ()
   assert.notEqual(got.path, '');
   assert.match(got.reason, /cannot be established/);
   assert.match(got.reason, /2 worktrees/);
+});
+
+test('a traversal request is a named inability, never a path outside .scratch/report', () => {
+  const got = reportPath(record([{ kind: 'worktree', id: 'repo::/wt' }], '../../outside'));
+  assert.equal('path' in got, false, 'join() must not be allowed to walk out of .scratch/report');
+  assert.notEqual(got.path, '');
+  assert.match(got.reason, /grammar/);
 });

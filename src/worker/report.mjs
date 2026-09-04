@@ -10,10 +10,13 @@
 // The worktree is the one `ax worker transcript` already resolves: the unique
 // `{kind:'worktree'}` effect on the record (`worktreesOf` in ./transcript.mjs).
 // Zero or two worktrees is an inability to establish, named — never `""` and
-// never a guessed directory. The request is the record's own key.
+// never a guessed directory. The request is the record's own key, and only
+// if it matches `requestIdOk` — the same grammar every other worker verb uses,
+// so a `../../outside` cannot join() out of `.scratch/report`.
 
 import { isAbsolute, join } from 'node:path';
 
+import { requestIdOk } from './record.mjs';
 import { worktreesOf } from './transcript.mjs';
 
 /** Where every implementation Report lives, relative to the child's worktree. Gitignored, by design. */
@@ -36,11 +39,10 @@ export function reportPath(rec) {
           : `the record names ${trees.length} worktrees, so which Report path it means cannot be established`,
     };
   }
-  const request = rec.request;
-  if (typeof request !== 'string' || request === '') {
-    return { reason: 'the record names no request, so the Report path cannot be established' };
+  if (!requestIdOk(rec.request)) {
+    return { reason: "the record's request violates the request-id grammar, so the Report path cannot be established" };
   }
-  const path = join(trees[0], REPORT_DIR, `${request}.md`);
+  const path = join(trees[0], REPORT_DIR, `${rec.request}.md`);
   if (!isAbsolute(path)) {
     return { reason: "the record's worktree is not absolute, so the Report path cannot be established" };
   }
