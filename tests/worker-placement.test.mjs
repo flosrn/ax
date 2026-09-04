@@ -369,6 +369,10 @@ test('one lendable tree on the host is reused: the argv carries that record’s 
   assert.equal(placed.selector, 'id:uuid-1::/srv/orca/acme/.worktrees/gap-35-auth');
   assert.equal(placed.cannot, undefined);
   assert.ok(placed.notes.some(line => line.includes('reusing')), 'the reuse is announced, not silent');
+  assert.ok(
+    placed.notes.some(line => line.includes('nothing here proves that tree provisioned') && line.includes('ax worktree setup')),
+    'and so is what it does not prove: the host provisions on create only, and this side reads no directory there',
+  );
 });
 
 test('an absolute workspaces root is honoured as reported, not joined onto the repository path', () => {

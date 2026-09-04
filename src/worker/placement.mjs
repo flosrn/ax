@@ -469,6 +469,14 @@ export function placeRemote({ repoId, env, request, issue, named, run }) {
     };
   }
   notes.push(`reusing the worktree '${env}' already carries for ${subject}, and asking it for no second one: ${candidates[0]}`);
+  // AND SAYING WHAT THAT REUSE DOES NOT PROVE. Locally the reuse is followed by
+  // `ax worktree setup` and a habitability proof; here neither is reachable —
+  // the host's setup hook runs on CREATE only, and this side stats no directory
+  // on another machine (#103 scopes remote provisioning and any habitability
+  // proof for it out, and leaves the host's hook the only provisioner). Under
+  // the root that host reports is the evidence this rule has; an operator is
+  // told the rest rather than left to infer it from a silent reuse.
+  notes.push(`nothing here proves that tree provisioned: '${env}' runs its setup hook on create only, and no probe from this side can read a directory there — if the child reports no agent context file, run \`ax worktree setup\` in ${candidates[0]} on '${env}'`);
   return { notes, selector: `${repoId}::${candidates[0]}` };
 }
 
