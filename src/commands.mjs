@@ -172,6 +172,32 @@ is UNKNOWN and closes nothing — read its pane, then --no-proof closes it.
 
 Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
       3 cannot establish (no CLI, silent runtime, unreadable inventory, no gh)`,
+
+      // What `ax worker settle --help` prints. Same rule as `release` above: the
+      // judgement is made BEFORE typing, and `--repo` is the whole of it — an
+      // assertion the operator says out loud, valid under three conditions and
+      // written into the record. A flag nobody can discover is a flag nobody
+      // has, and the module header is for whoever patches the verb
+      // (./worker/settle.mjs).
+      settle: `The gate DETECTS death; this verb WRITES it. If the gate cannot prove an attempt
+ended, nothing here settles — a live pane, an unknown pane or an open phase all refuse.
+
+  --repo <owner/name>   BACKFILL the repository on a record that names none
+
+Every record written before 0.20 carries no \`repo\`, and an absent one is UNKNOWN
+rather than "this repository" — so the frontier keeps its ticket already-dispatched
+everywhere and this verb refuses it everywhere. \`--repo\` is the way out, and it is an
+assertion you make, never an inference: accepted only when the record names NO
+repository, the value equals the slug gh answers for this checkout, and the liveness
+proof passes. It writes that name onto the record in the same write as the settlement.
+
+A record that already names a repository is never re-attributed: settle it from that
+repository's own checkout, with no flag. A record whose attempt is ALREADY settled and
+names none is scoped by the same flag, and that scoping is its whole write.
+
+Exit: 0 settled or already settled - 1 refused (live agent, foreign or unasserted repo,
+      open phase) - 2 usage - 3 cannot establish (no CLI, silent runtime, unreadable
+      store or terminal list, no gh slug, unknown pane, no worker-list row)`,
     },
   },
   {
