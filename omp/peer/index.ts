@@ -51,6 +51,9 @@ import {
   senderIdentity as identify,
 } from './attribution.ts';
 import { environmentOfDispatch, resolveChildRoute } from './route.ts';
+// The Report a worker's completion carries: derived from the dispatch record,
+// read under the worktree that record names, never from `payload.reportPath`.
+import { completionReport } from './completion.ts';
 
 // Addressing, lineage and the registry, split by concern under this package.
 // The naming rule that decides an address lives in `./address.ts` alone;
@@ -439,6 +442,9 @@ const receiver = createReceiver({
   // sender claimed. `store.ts`'s `runAddressOfHandle` carries the bound on that.
   paneRoute: (handle) => runAddressOfHandle(handle),
   peerContent,
+  // Its own defaults reach the dispatch store and the filesystem; nothing here
+  // re-derives the path, which is the point of the rule living in one module.
+  completionReport,
   wasInjected: (id) => injectedIds.has(id),
   rememberInjected,
   compactInjected,

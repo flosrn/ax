@@ -101,6 +101,15 @@ export interface ReceiveDeps {
    * simply has no route and says so, exactly as before.
    */
   paneRoute?: (handle: string) => string;
+  /**
+   * The Report a worker's completion carries, appended after the Summary — or
+   * `''` for a message that is not a dispatched worker's completion.
+   *
+   * Optional so a host that cannot derive one degrades to the Summary alone,
+   * and injected rather than imported because the derivation reads this
+   * machine's dispatch store and its filesystem (`./completion.ts`).
+   */
+  completionReport?: (msg: Record<string, unknown>) => string;
 }
 
 /** The host `ctx` handed to `session_start`, of which only timers are used. */
@@ -501,10 +510,13 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // This used to start `true` and be falsified only on the dispatch
             // path, so a pane message with no return address was announced as
             // repliable and then refused by `peer_reply`. That is most of the real
-            // traffic: Orca's supervised preamble teaches `orca orchestration send
-            // --type worker_done`, which carries no payload at all. Measured
-            // 2026-08-25 on ofmchat, three times in one day — each cost the
-            // orchestrator a turn and then a hand-built address.
+            // traffic: a worker following Orca's supervised preamble states no
+            // return address at all. Its `worker_done` is not payload-less — the
+            // preamble teaches `--task-id`, `--dispatch-id` and `--report-path`,
+            // which arrive as payload fields, and `payload.reportPath` is one
+            // this side never opens (`./completion.ts`) — but none of them is a
+            // route. Measured 2026-08-25 on ofmchat, three times in one day:
+            // each cost the orchestrator a turn and then a hand-built address.
             let answerable = false;
             const paneHandle = String(msg.from_handle ?? '').trim();
             // `kind !== 'dispatch'` and not merely `attributed`: a dispatch sender
@@ -573,6 +585,14 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               );
             }
 
+            // A WORKER'S COMPLETION CARRIES ITS REPORT. The Summary is three
+            // sentences by the preamble's rule, so the criteria and the evidence
+            // are in a file, derived from the dispatch record and read here —
+            // one custom message, Summary then Report, because a second message
+            // is a second wake and the orchestrator reads the first one
+            // (`./completion.ts`, `docs/adr/0002`).
+            const report = deps.completionReport?.(msg) ?? '';
+
             // `sendMessage` with a customType, NOT `sendUserMessage`: the former
             // is `role: "custom"`, the latter is `role: "user"` and therefore
             // indistinguishable from the operator. `triggerTurn` wakes an idle
@@ -583,7 +603,8 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 content:
                   (verdict.lost > 0 ? gapBanner(who.name, verdict) : '') +
                   (answerable ? '' : unanswerableBanner(who.name)) +
-                  deps.peerContent(msg, who, answerable),
+                  deps.peerContent(msg, who, answerable) +
+                  report,
                 display: true,
                 details: {
                   peer: who.name,
