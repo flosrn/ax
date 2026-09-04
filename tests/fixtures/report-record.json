@@ -1,0 +1,42 @@
+{
+  "request": "135-work",
+  "host": "test.example",
+  "orca": "orca",
+  "createdAt": "2026-09-04T05:11:58.546Z",
+  "attempts": [
+    {
+      "n": 1,
+      "settled": false,
+      "phases": [
+        {
+          "name": "worker-start",
+          "identity": "id-ws-1",
+          "argv": ["orca", "orchestration", "worker-start"],
+          "receipt": {
+            "ok": true,
+            "result": {
+              "taskId": "task_151c502e2c95",
+              "dispatchId": "ctx_69710a418c47",
+              "stage": "dispatched",
+              "state": "ready",
+              "effects": [
+                {
+                  "kind": "worktree",
+                  "action": "reused",
+                  "id": "f1163d6f-d13b-4d22-8d9c-70c55f445b71::/Users/flo/orca/workspaces/135-work"
+                },
+                {
+                  "kind": "terminal",
+                  "role": "agent",
+                  "action": "created",
+                  "id": "term_b6394fe4-61c8-4e9c-8e04-fd26b200e4c4"
+                }
+              ]
+            }
+          },
+          "exit": 0
+        }
+      ]
+    }
+  ]
+}
