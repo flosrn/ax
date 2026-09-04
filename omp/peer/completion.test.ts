@@ -224,6 +224,54 @@ test('a CRITERIA section larger than the cap is refused by name, never shown in 
   expect(block).not.toContain('- a criterion line');
 });
 
+/**
+ * WHAT THE READER DOES NEXT, which is the half a diagnosis leaves out.
+ *
+ * `AGENTS.md`: every finding names its repair — "a `bad` without a `fix` is a
+ * finding neither an agent nor a human can act on". These three came out of the
+ * review on PR #142, and each one is a case where the block told the truth and
+ * still left the orchestrator to invent the next move, or told a truth that was
+ * not the one that happened.
+ */
+test('a missing Report names its repair, and names the channel it goes through', () => {
+  const wt = worktree();
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  expect(block).toContain('FINDING: no Report at this path');
+  expect(block).toContain('Repair:');
+  expect(block).toContain('peer_reply');
+  // The repair must not invite the one message Orca has already settled.
+  expect(block).toContain('never a second `worker_done`');
+});
+
+test('an oversized Report with no CRITERIA heading gets a neutral trailer, not a completeness claim', () => {
+  // The heading is missing or misspelled, so nothing above the trailer is a
+  // criteria list. Claiming the section is whole would be a false completeness
+  // claim at the very gate that reads it — worse than the malformed Report.
+  const wt = withReport(`# Report\n${'a line with no heading above it\n'.repeat(700)}`);
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  expect(block).toContain('no `## CRITERIA` heading was found');
+  expect(block).not.toContain('`## CRITERIA` is whole above');
+});
+
+test('a resolution failure that is not an absence is not blamed on the worker', () => {
+  // A symlink loop at the derived path: the file "exists" and cannot resolve.
+  // ENOENT is the only error that means the worker never wrote one, and
+  // pointing recovery at the worker for an ELOOP sends it to fix a file it has
+  // no fault in.
+  const wt = worktree();
+  mkdirSync(dirname(wt.derived), { recursive: true });
+  symlinkSync(wt.derived, wt.derived);
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  expect(block).toContain('ELOOP');
+  expect(block).not.toContain('the worker completed without writing one there');
+});
+
 test("a dispatch capability in the Report is redacted, not relayed", () => {
   // Child-authored text carries the token BY CONSTRUCTION (`src/redact.mjs`),
   // and the Report is child-authored text reaching another session's context.

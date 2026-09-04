@@ -59,6 +59,20 @@ export const REPORT_DIR = join('.scratch', 'report');
 export const REPORT_CAP_BYTES = 16 * 1024;
 
 /**
+ * WHAT TO DO ABOUT A REPORT THAT IS NOT THERE.
+ *
+ * `AGENTS.md`: every finding names its repair, because a `bad` without a `fix`
+ * is a finding neither an agent nor a human can act on. The hazard here is
+ * specific — `worker_done` has already settled the Dispatch, so the obvious
+ * reflex (ask for the completion again) is the one thing that cannot happen:
+ * Orca allows exactly one, and `96-work` sent six. The channel is the one this
+ * completion arrived on, the file is the DERIVED path and never one the worker
+ * picks, and a rewritten Report travels by the board card (`docs/adr/0002`).
+ */
+const REPAIR =
+  'Repair: answer this completion on the channel it arrived on (`peer_reply` when the delivery above recorded a route) and have the worker write THIS path, then report by its board card — never a second `worker_done`, which Orca has already settled.';
+
+/**
  * The worktree paths a record's effects name — the twin of `worktreesOf` in
  * `src/worker/transcript.mjs`. Orca reports them as
  * `{kind:'worktree', id:'<repoId>::<PATH>'}`; a missing `effects` container is
@@ -156,9 +170,15 @@ function bounded(text, cap, path) {
   const head = Buffer.from(clean, 'utf8').subarray(0, cap).toString('utf8');
   const cut = head.lastIndexOf('\n');
   const kept = cut > 0 ? head.slice(0, cut) : head;
-  return {
-    body: `${kept}\n--- Report truncated at ${cap} bytes of ${total} — \`## CRITERIA\` is whole above; read the rest at ${path}`,
-  };
+  // A Report with no `## CRITERIA` heading at all gets the NEUTRAL trailer. The
+  // section-is-whole claim is the one a decision gate acts on, so asserting it
+  // over a file where the heading was missing or misspelled would be a false
+  // completeness claim — worse than the malformed Report it describes.
+  const trailer =
+    criteria === null
+      ? `no \`## CRITERIA\` heading was found, so nothing above is a complete criteria list; read it in full at ${path}`
+      : `\`## CRITERIA\` is whole above; read the rest at ${path}`;
+  return { body: `${kept}\n--- Report truncated at ${cap} bytes of ${total} — ${trailer}` };
 }
 
 /**
@@ -257,7 +277,10 @@ export function completionReport(msg, deps = {}) {
       worktreeReal = realpathSync(derived.worktree);
     } catch (err) {
       lines.push(
-        `FINDING: the recorded worktree ${derived.worktree} does not resolve on this host (${err}), so the Report cannot be read.`,
+        `FINDING: the recorded worktree ${derived.worktree} does not resolve on this host (${err?.code ?? err}), so the Report cannot be read.`,
+      );
+      lines.push(
+        'Repair: check that worktree still exists — a released one takes its Report with it, and the record is then the only account of the slice.',
       );
       return block(derived.path, lines);
     }
@@ -265,8 +288,20 @@ export function completionReport(msg, deps = {}) {
     let fileReal;
     try {
       fileReal = realpathSync(resolve(derived.path));
-    } catch {
-      lines.push('FINDING: no Report at this path — the worker completed without writing one there.');
+    } catch (err) {
+      // ENOENT IS THE ONLY ABSENCE. `EACCES`, `ELOOP`, an unreadable parent —
+      // each of those is a path that exists and will not resolve, and calling it
+      // "the worker never wrote one" aims recovery at a worker with no fault in
+      // it while hiding the fault there is.
+      if (err?.code === 'ENOENT') {
+        lines.push('FINDING: no Report at this path — the worker completed without writing one there.');
+        lines.push(REPAIR);
+      } else {
+        lines.push(
+          `FINDING: the Report at this path did not resolve (${err?.code ?? err}); an absence would be ENOENT, so this is a path fault and not a missing Report.`,
+        );
+        lines.push(`Repair: inspect ${derived.path} on this host — the fault is in the path, not in the completion.`);
+      }
       return block(derived.path, lines);
     }
 
@@ -275,6 +310,9 @@ export function completionReport(msg, deps = {}) {
       lines.push(
         `FINDING: the derived path resolves outside the recorded worktree — ${fileReal} is not under ${worktreeReal}. It was NOT read.`,
       );
+      lines.push(
+        'Repair: inspect that link before trusting anything from this slice; the Report must be a file under the worktree the record names, and a path leading out of it was not written by the rule.',
+      );
       return block(derived.path, lines);
     }
 
@@ -282,11 +320,13 @@ export function completionReport(msg, deps = {}) {
     try {
       text = readFileSync(fileReal, 'utf8');
     } catch (err) {
-      lines.push(`FINDING: the Report at this path could not be read: ${err}`);
+      lines.push(`FINDING: the Report at this path could not be read: ${err?.code ?? err}.`);
+      lines.push(`Repair: read ${derived.path} on this host; the file resolved, so the fault is in reading it.`);
       return block(derived.path, lines);
     }
     if (text.trim() === '') {
       lines.push('FINDING: the Report at this path is empty.');
+      lines.push(REPAIR);
       return block(derived.path, lines);
     }
 
