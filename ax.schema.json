@@ -182,7 +182,7 @@
         },
         "worktreeTool": {
           "type": "string",
-          "description": "The repo's own worktree creator, when it has one. It must BLOCK until the tree is usable and print the path on its last stdout line. Absent means Orca places the worktree and `ax worktree setup` provisions it."
+          "description": "The repo's own worktree creator, when it has one. It must BLOCK until the tree is usable and print the path on its last stdout line — absolute, or relative to the directory the dispatch ran in, which ax resolves. Absent means Orca places the worktree and `ax worktree setup` provisions it."
         },
         "databaseLabels": {
           "type": "array",

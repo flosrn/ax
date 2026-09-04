@@ -71,6 +71,7 @@ import { hostScopes, liveInventory, terminalInventory } from './pane.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, untilSeen } from './placement.mjs';
 import { defaultStore, dispatchIndex } from './record.mjs';
+import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
@@ -538,10 +539,17 @@ export function dispatch(
   // ── 4. placement ───────────────────────────────────────────────────────────
   const place = [];
   let worktree = '';
+  // The tree this dispatch will place the child in, AS THIS HOST CAN NAME IT —
+  // which is not always `worktree`: a dry run predicts a path it does not
+  // create, and a child on another host has one this host cannot name at all.
+  // It is the selector Orca is given, and it is what the Report path is derived
+  // from, so the brief cannot name a tree the dispatch did not use.
+  let selector = '';
 
   if (flags.worktree !== '') {
     if (!existsSync(flags.worktree)) return refuse(`--worktree ${flags.worktree} is not a directory on this host`);
     worktree = flags.worktree;
+    selector = worktree;
     place.push('--worktree', `path:${worktree}`, '--agent', flags.agent);
   } else if (on !== '') {
     const declared = hostFor(config, on);
@@ -576,7 +584,7 @@ export function dispatch(
     if (placed.refused) return refuse(placed.refused, placed.repair);
     if (placed.cannot) return cannot(placed.cannot, placed.repair);
     worktree = placed.worktree;
-    const selector = worktree || placed.predicted || '';
+    selector = worktree || placed.predicted || '';
     if (selector !== '') place.push('--worktree', `path:${selector}`, '--agent', flags.agent);
   }
 
@@ -659,6 +667,14 @@ export function dispatch(
   }
 
   // ── 6. the brief, as a FILE ────────────────────────────────────────────────
+  // The Report's location is DERIVED, never named by the worker (`docs/adr/0002`),
+  // and the rule lives once in ./report.mjs — the same function the receiver
+  // crosses when the completion arrives. It is derived from the two values this
+  // dispatch is about to record: the tree it places the child in and the request
+  // id. A child on another host answers a named inability rather than a path,
+  // because nothing here can name that tree, and a guess would send the Report
+  // where the receiver does not look.
+  const report = reportPathFor({ worktree: selector, request });
   const brief = renderBrief({
     model: flags.model,
     instruction,
@@ -669,7 +685,9 @@ export function dispatch(
     host: on,
     contract: contract.text,
     operator,
+    report,
   });
+  note(report.path ? `the child's Report goes to ${report.path}, and the brief says so` : `no Report path for this dispatch: ${report.reason}`);
 
   // The options `ax worker start` owns and RECORDS, as against the placement
   // argv forwarded to Orca after `--`. `--because` and `--tracker-repo` belong

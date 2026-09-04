@@ -416,14 +416,20 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).toMatch(/distill the `wave:` bullets/);
   // The wave file demoted to cache; records, tracker and gate are authority.
   expect(role).toMatch(/wave-memory file is a CACHE/);
-  // The Spec axis (2026-09-03): the report's `## CRITERIA` is what the merge
-  // decision reads, and a missing criterion travels back with every ground
-  // the gate refused, as ONE repair round — AGENTS.md: every merge ground
-  // runs, nothing stops after the first refusal. Review of the first draft
-  // (Codex, P2): "before any gate run" short-circuited exactly that.
-  expect(role).toMatch(/## CRITERIA/);
+  // The Spec axis (2026-09-03): the merge decision reads the worker's Report —
+  // the FILE that arrives with the completion (`docs/adr/0002`), not a section
+  // of the completion's body, which is where none of eight workers put it. A
+  // missing criterion travels back with every ground the gate refused, as ONE
+  // repair round — AGENTS.md: every merge ground runs, nothing stops after the
+  // first refusal. Review of the first draft (Codex, P2): "before any gate run"
+  // short-circuited exactly that.
+  expect(role).toMatch(/the Report/);
+  expect(role).toMatch(/`--report-path`/);
   expect(role).toMatch(/NOT MET/);
   expect(role).toMatch(/one repair round/);
+  // The Summary is not the Report, and a role that reads the body for criteria
+  // is the competition the ADR removed.
+  expect(role).not.toMatch(/its `## CRITERIA` section/);
 });
 
 // The worker's half of the learnings channel (KTD7) and the refusal duty the
@@ -436,6 +442,13 @@ test('the bundled worker contract carries the LEARNINGS grammar and the refusal 
   const playbook = String(out?.message?.content ?? '');
 
   expect(role).toMatch(/gate-refusal message on your pull request is your work/);
+  // The playbook NAMES the artifact — one file, its shape, written on a failed
+  // outcome too — and no longer says "open every report with", which described
+  // a message nobody could read (0 of 8 sections reached a mailbox, 2026-09-03).
+  expect(playbook).not.toMatch(/[Oo]pen every report with/);
+  expect(playbook).toMatch(/\bReport\b/);
+  expect(playbook).toMatch(/--outcome failed/);
+  expect(playbook).toMatch(/Summary/);
   expect(playbook).toContain('## LEARNINGS');
   for (const scope of ['`durable:`', '`wave:`', '`ticket:`']) expect(playbook).toContain(scope);
   // Durable learnings prefer additive files: the bound on concurrent-slice
@@ -448,6 +461,9 @@ test('the bundled worker contract carries the LEARNINGS grammar and the refusal 
   expect(playbook).toContain('## CRITERIA');
   expect(playbook).toMatch(/NOT MET/);
   expect(playbook).toMatch(/never a line to invent/);
+  // Where it goes is the DISPATCH's answer, never one the playbook re-derives:
+  // two copies of that rule disagree the day one moves.
+  expect(playbook).not.toMatch(/\.scratch/);
 });
 
 // ── unknown names refuse, visibly ────────────────────────────────────────────
