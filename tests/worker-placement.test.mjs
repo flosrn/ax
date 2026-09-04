@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import test, { after } from 'node:test';
 
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
-import { databaseArgs, placeLocal } from '../src/worker/placement.mjs';
+import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor } from '../src/worker/placement.mjs';
 
 const roots = [];
 after(() => {
@@ -336,4 +336,139 @@ test('databaseArgs answers --database exactly when a declared label is carried',
   assert.deepEqual(databaseArgs(config, { labels: ['migration'] }).argv, ['--database']);
   assert.deepEqual(databaseArgs(config, null).argv, []);
   assert.deepEqual(databaseArgs({}, { labels: ['db'] }).argv, []);
+});
+
+// ── placeRemote: the same sentence, transposed onto a declared host ──────────
+//
+// Nothing below is a directory on this machine, and that is the point: a remote
+// path is a string this side can only compare, so the root it must sit under is
+// the one the HOST's runtime reports for this repository — never `.worktrees`
+// assumed from here, and never a workspaces root hardcoded for one host.
+
+/** A declared host's runtime, answering the two reads placement makes of it. */
+function far(worktrees, { repos = [{ id: 'uuid-1', path: '/srv/orca/acme', worktreeBasePath: '.worktrees' }], calls = [] } = {}) {
+  const receipt = result => ({ status: 0, stderr: '', receipt: { ok: true, result } });
+  const run = args => {
+    const line = args.join(' ');
+    calls.push(line);
+    if (line.startsWith('worktree list')) return receipt({ worktrees });
+    if (line.startsWith('repo list')) return receipt({ repos });
+    return assert.fail(`placement must not reach Orca for ${line}`);
+  };
+  return { run, calls };
+}
+
+/** One row of the host's own worktree listing, in the shape the runtime returns. */
+const carried = (path, over = {}) => ({ path, isMainWorktree: false, repoId: 'uuid-1', ...over });
+const onFar = (over = {}) => ({ repoId: 'id:uuid-1', env: 'far', request: 'gap-35-work', issue: 'gap-35', named: false, ...over });
+
+test('one lendable tree on the host is reused: the argv carries that record’s own id:<repoId>::<path>', () => {
+  const machine = far([carried('/srv/orca/acme/.worktrees/gap-35-auth')]);
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, 'id:uuid-1::/srv/orca/acme/.worktrees/gap-35-auth');
+  assert.equal(placed.cannot, undefined);
+  assert.ok(placed.notes.some(line => line.includes('reusing')), 'the reuse is announced, not silent');
+});
+
+test('an absolute workspaces root is honoured as reported, not joined onto the repository path', () => {
+  const machine = far([carried('/data/worktrees/gap-35-auth')], {
+    repos: [{ id: 'uuid-1', path: '/srv/orca/acme', worktreeBasePath: '/data/worktrees' }],
+  });
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, 'id:uuid-1::/data/worktrees/gap-35-auth');
+});
+
+test('no candidate on the host keeps today’s placement, and never asks about the root', () => {
+  const calls = [];
+  const machine = far([carried('/srv/orca/acme/.worktrees/gap-357-payments')], { calls });
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, '', 'gap-357 is a different ticket, so nothing is lent');
+  assert.equal(placed.cannot, undefined);
+  assert.ok(calls.every(line => !line.startsWith('repo list')), 'no candidate, so no question about the root');
+});
+
+test('the host’s primary is never lent, even when --name is the repository’s own basename', () => {
+  const machine = far([carried('/srv/orca/acme', { isMainWorktree: true })]);
+  const placed = placeRemote({ ...onFar({ named: true, request: 'acme', issue: '' }), run: machine.run });
+
+  assert.equal(placed.selector, '', 'a child in the host’s main checkout is the one reuse nobody wants');
+  assert.equal(placed.cannot, undefined);
+});
+
+test('a tree of another repository on the same host is never lent, however exactly it matches', () => {
+  const machine = far([carried('/srv/orca/other/.worktrees/gap-35-auth', { repoId: 'uuid-2' })]);
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, '');
+});
+
+test('a --name dispatch onto a host matches whole names only: `auth` never takes `auth-refactor`', () => {
+  const machine = far([carried('/srv/orca/acme/.worktrees/auth-refactor')]);
+  const placed = placeRemote({ ...onFar({ named: true, request: 'auth', issue: '' }), run: machine.run });
+
+  assert.equal(placed.selector, '');
+});
+
+test('a candidate outside the reported root is a cannot-establish naming it, and names both repairs', () => {
+  const machine = far([carried('/srv/orca/acme/hand-made/gap-35-auth')]);
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, undefined, 'no reuse');
+  assert.ok(placed.cannot.includes('/srv/orca/acme/hand-made/gap-35-auth'), 'the candidate is named');
+  assert.match(placed.repair, /ax worktree setup/, 'route one: provision it where it stands');
+  assert.match(placed.repair, /--worktree id:uuid-1::\/srv\/orca\/acme\/hand-made\/gap-35-auth/, 'route two: point this dispatch at it');
+  assert.ok(machine.calls.every(line => !line.startsWith('worktree create')), 'and nothing is created');
+});
+
+test('a root the host does not report is UNKNOWN, never `.worktrees` (F-028)', () => {
+  const machine = far([carried('/srv/orca/acme/.worktrees/gap-35-auth')], {
+    repos: [{ id: 'uuid-1', path: '/srv/orca/acme' }],
+  });
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, undefined);
+  assert.ok(placed.cannot.includes('/srv/orca/acme/.worktrees/gap-35-auth'), 'the candidate is named');
+  assert.match(placed.repair, /ax worktree setup/);
+  assert.match(placed.repair, /--worktree id:uuid-1::/);
+});
+
+test('two candidates on the host are a cannot-establish naming both, not a pick by position', () => {
+  const machine = far([
+    carried('/srv/orca/acme/.worktrees/gap-35-auth'),
+    carried('/srv/orca/acme/.worktrees/gap-35-work'),
+  ]);
+  const placed = placeRemote({ ...onFar(), run: machine.run });
+
+  assert.equal(placed.selector, undefined);
+  assert.ok(placed.cannot.includes('gap-35-auth') && placed.cannot.includes('gap-35-work'), 'both are named');
+  assert.match(placed.repair, /--worktree id:uuid-1::/);
+  assert.ok(machine.calls.every(line => !line.startsWith('worktree create')), 'nothing created, nothing removed');
+});
+
+test('a host that cannot list its worktrees refuses, rather than asking for a new tree', () => {
+  const calls = [];
+  const run = args => (calls.push(args.join(' ')), { status: 1, stderr: '', receipt: { ok: false, error: { code: 'ssh_unreachable' } } });
+  const placed = placeRemote({ ...onFar(), run });
+
+  assert.equal(placed.selector, undefined);
+  assert.match(placed.cannot, /ssh_unreachable/);
+  assert.match(placed.repair, /orca worktree list --repo id:uuid-1 --environment far --json/);
+  assert.ok(calls.every(line => !line.startsWith('worktree create')), 'an unknown answer is not an empty one (F-028)');
+});
+
+// The second repair route the refusals above advertise: it has to be a route.
+test('an exact remote selector is accepted, and a local path spelling is refused with the forms', () => {
+  assert.deepEqual(remoteSelectorFor('id:uuid-1::/srv/orca/acme/.worktrees/t'), { ok: true, selector: 'id:uuid-1::/srv/orca/acme/.worktrees/t' });
+  assert.deepEqual(remoteSelectorFor('path:/srv/orca/acme/.worktrees/t'), { ok: true, selector: 'path:/srv/orca/acme/.worktrees/t' });
+  assert.deepEqual(remoteSelectorFor('new-top-level'), { ok: true, selector: 'new-top-level' });
+
+  for (const local of ['/srv/orca/acme/.worktrees/t', 'current', 'active', 'new-child', 'path:relative/t']) {
+    const refusal = remoteSelectorFor(local);
+    assert.equal(refusal.ok, false, local);
+    assert.match(refusal.reason, /exact remote selector/);
+    assert.match(refusal.repair, /id:<repo-id>::<path>/);
+  }
 });
