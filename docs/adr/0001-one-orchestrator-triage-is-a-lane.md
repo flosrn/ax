@@ -14,16 +14,18 @@ dispatches both lanes — implementation and triage — rules its children's que
 validated merge. The `readiness` role is deleted. The ratified vocabulary lives in `CONTEXT.md` at
 the repo root.
 
-**Corrected 2026-09-04.** The decision stands; the causal sentence above does not. The 2026-08-30
-refusals came from ax's own child-side peer resolution, which found several panes in the parent
-worktree and had no discriminator — repaired the same day this ADR was written (`478e443`): a child
-now resolves its parent through the dispatch record, which pairs its pane with the dispatching Run
-(`omp/peer/lineage.test.ts`). Orca itself never routed by worktree: a completion is addressed to
-the coordinator handle that ran `worker-start`, resolved handle → live pane → Run
-(`orchestration-recipient-routing.ts` in the fork). What remains true, and is the reason for one
-orchestrator: two DISPATCHING sessions split a wave's mail between two mailboxes and duplicate the
-ruling contract. A maintainer or an editor session in the same checkout does not interfere. Measured
-because the stale sentence misled a maintainer session into prescribing a dedicated worktree.
+**Clarified 2026-09-04.** The decision stands, and so does the lineage fact: Orca's lineage is
+worktree-scoped (`parentWorktreeId`, no pane), so a child looking at the parent worktree sees every
+session in it. That is why the 2026-08-30 reports could not be delivered — ax's `parentPeer()` found
+several panes and had no discriminator, not Orca refusing `worker_done`. Two paths, still:
+Orca delivers a completion to the coordinator handle that ran `worker-start`
+(`orchestration-recipient-routing.ts` in the fork); a child that has to name its parent now
+resolves through the dispatch record, which pairs its pane with the dispatching Run (`478e443`,
+`omp/peer/lineage.test.ts`). Multi-pane in one checkout is safe today because of that record, not
+because the lineage grew a pane. What still requires one orchestrator: two DISPATCHING sessions
+split a wave's mail and duplicate the ruling contract. A maintainer or an editor session in the
+same checkout does not interfere. Written because the unclarified sentence was read as "isolate
+the orchestrator in its own worktree."
 
 ## Consequences
 
