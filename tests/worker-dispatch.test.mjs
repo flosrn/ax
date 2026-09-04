@@ -25,6 +25,7 @@ import { createRunner } from '../src/orca-bin.mjs';
 // either string moved.
 import { READY_LABEL } from '../src/triage/spec.mjs';
 import { dispatch, requestIdFor, retiredKnobs, trackerRepoOf } from '../src/worker/dispatch.mjs';
+import { reportPathFor } from '../src/worker/report.mjs';
 import { READY_LABEL as TICKET_READY_LABEL } from '../src/worker/ticket.mjs';
 import { readProof, verify } from '../src/worker/verify.mjs';
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
@@ -936,6 +937,33 @@ test('the declared worktree tool places it, and its last stdout line is the path
   assert.match(r.started[0], new RegExp(`--worktree path:${tree}`));
 });
 
+test('a worktree tool that prints a RELATIVE path is resolved, not passed on as one', () => {
+  // The schema asks the tool to print "the path" and does not demand an absolute
+  // one, and `existsSync` answers true for a repository-relative path whenever
+  // the dispatch runs from the repository — so a relative answer used to travel
+  // all the way through: `--worktree path:.worktrees/…` for a runtime that
+  // resolves selectors against ITS OWN cwd, and (review of PR #141, P2) a
+  // Report path that cannot be established while placement succeeded. It is
+  // resolved where it is accepted, once, so every consumer downstream holds one
+  // absolute path.
+  const root = repo();
+  const tree = join(root, '.worktrees', 'placed-by-tool');
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', worktreeTool: 'place' } }));
+  const exec = (bin, args, at) => {
+    if (bin !== 'place') return { status: 0, stdout: '', stderr: '' };
+    assert.equal(at, root, 'the tool runs in the dispatch cwd, which is what its relative path is relative to');
+    mkdirSync(join(tree, '.agent'), { recursive: true });
+    writeFileSync(join(tree, CONTEXT_PATH), '- Web URL: `http://x`\n');
+    return { status: 0, stdout: 'bootstrapping…\n.worktrees/placed-by-tool\n', stderr: '' };
+  };
+
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root, exec });
+  assert.equal(r.code, 0);
+  assert.match(r.started[0], new RegExp(`--worktree path:${tree}`), 'the selector Orca is given is absolute');
+  const expected = reportPathFor({ worktree: tree, request: REQUEST }).path;
+  assert.ok(r.out.includes(expected), `the child's Report path is established: ${expected}`);
+});
+
 test('a placement tool that fails refuses, and dispatches nothing', () => {
   const root = repo();
   writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', worktreeTool: 'place' } }));
@@ -1088,6 +1116,24 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.match(r.out, /would run: ax worker start/);
   assert.deepEqual(r.started, [], 'a dry run dispatches nothing');
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
+});
+
+test('the brief a dispatch composes names the Report path the record rule answers', () => {
+  // `docs/adr/0002`: the child is told where its Report goes in the last text it
+  // reads, and the location is derived — never a path the worker names. This is
+  // the whole join: the worktree this dispatch is about to place a child in, and
+  // the request id it is about to record, crossing the one rule in
+  // src/worker/report.mjs. A dry run answers it before anything is created,
+  // which is what makes the path readable BEFORE a child depends on it.
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root });
+
+  assert.equal(r.code, 0);
+  const expected = reportPathFor({ worktree: join(root, '.worktrees', `${ISSUE}-${SLUG}`), request: REQUEST }).path;
+  assert.ok(expected, 'the fixture placement resolves a path');
+  assert.ok(r.out.includes(expected), `the brief must carry ${expected}`);
+  assert.match(r.out, /this brief wins/, 'and the precedence rule that lets it override the preamble');
 });
 
 /**

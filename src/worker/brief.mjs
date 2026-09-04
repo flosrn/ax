@@ -17,14 +17,25 @@
 //      the CALLER's: which read shows a thread is a property of the tracker, not
 //      of ax (see ./ticket.mjs).
 //   4. which session dispatched it and where the child runs.
-//   5. the contract. The project's, when it declares one; MECHANICS when it does
+//   5. the PRECEDENCE rule, once. Two contracts govern a worker's completion —
+//      the runtime's injected preamble and this brief — and until
+//      `docs/adr/0002` they competed silently: measured on the 2026-09-03 wave,
+//      eight of eight workers obeyed the preamble and none delivered its
+//      criteria where the dispatching session reads them. One sentence saying
+//      which text wins replaces every point-by-point override.
+//   6. the REPORT: where it goes (derived, ./report.mjs), what shape it has,
+//      what the completion carries, where a question goes, and what a refusal
+//      arriving after that completion is. ax owns this because ax derives the
+//      path and ax's receiver opens it — a project that declares its own
+//      contract replaces the propositions below, never this.
+//   7. the contract. The project's, when it declares one; MECHANICS when it does
 //      not.
-//   6. the remote addendum, when the child runs on another host.
-//   7. the operator's own notes, verbatim and last, under a heading naming the
+//   8. the remote addendum, when the child runs on another host.
+//   9. the operator's own notes, verbatim and last, under a heading naming the
 //      file it came from — an operator's words are never paraphrased by ax and
 //      never allowed to displace the contract above them.
 //
-// ax OWNS 5 AND 6 ONLY AS MECHANICS. Anything that is one fleet's doctrine —
+// ax OWNS 5 THROUGH 8 ONLY AS MECHANICS. Anything that is one fleet's doctrine —
 // which entry command, which review skill, which tracker convention — arrives
 // through `contract`. MECHANICS therefore names no skill, no repository and no
 // ticket. It names no ROLE either: `orchestrator` is one role that dispatches an
@@ -134,6 +145,70 @@ export const MECHANICS_UNTRACKED = BULLETS.map((bullet, index) =>
 ).join('\n');
 
 /**
+ * The one sentence that makes every line below it enforceable.
+ *
+ * The runtime's preamble is the first user message of every dispatched pane and
+ * it rules the same completion this brief rules. Measured on the 2026-09-03
+ * wave (`docs/adr/0002`): eight workers, two contracts, and eight preambles
+ * obeyed — the ax side was prose in a playbook the child read earlier and
+ * nothing said which text won. It is stated ONCE, at the head of the mechanics,
+ * because a rule restated per point is a rule a reader has to reconcile per
+ * point.
+ */
+const PRECEDENCE = 'The preamble above speaks for the runtime; where this brief says otherwise, this brief wins.';
+
+/**
+ * The Report: the work artifact, as against the Summary the completion carries.
+ *
+ * `report` is `{ path }` | `{ reason }` — the answer of ./report.mjs, never a
+ * recipe this renderer applies. Nothing here knows how the path is built, so
+ * there is exactly one rule and the brief cannot drift from what the receiver
+ * opens.
+ *
+ * An inability is rendered as one: a child on another host has no path this host
+ * can name (`--worktree new-top-level`), and inventing one would send the Report
+ * where nothing looks while reading like an answer (F-028).
+ */
+function reportContract(report) {
+  const { path = '', reason = '' } = report ?? {};
+  const shape = [
+    '  `## CRITERIA` is its FIRST section: one line per acceptance criterion your ticket names,',
+    '  quoted closely enough to be found again, each followed by the evidence you observed for it —',
+    '  the command you ran and the value you read back, or the artifact and what it says. A criterion',
+    '  you could not prove reads `NOT MET: <what you observed instead>`. `## LEARNINGS` is its LAST',
+    '  section. Write it on `--outcome failed` too: a slice that stopped short is the one whose',
+    '  criteria are read hardest.',
+  ];
+  const head =
+    path === ''
+      ? [
+          '- **Your REPORT is a file, and this dispatch cannot name where it goes:**',
+          `      ${reason || 'nothing derived one, so the Report path cannot be established'}.`,
+          '  Say that on your completion instead of choosing a path — a location nothing derived is a',
+          '  location nothing reads. Its shape is unchanged:',
+        ]
+      : [
+          '- **Your REPORT is a file, and this dispatch already decided where it goes:**',
+          `      ${path}`,
+          '  Write it there and nowhere else — never a path you pick, never pane text.',
+        ];
+  return [
+    ...head,
+    ...shape,
+    '- **Your completion carries both: the Summary in `--body`, the Report in `--report-path`.** The',
+    '  Summary is the three sentences the runtime asks for; it points at the Report and never stands',
+    '  in for it.',
+    '- A question goes to the session that dispatched you through your PEER TOOLS, where it arrives',
+    '  attributed and is drained with the rest of that session\u2019s inbox —',
+    '  never through `orca orchestration ask`, which nothing on its side is waiting on.',
+    '- A refusal that arrives AFTER your completion — a merge gate\u2019s, a reviewer\u2019s — is supervised',
+    '  work on the same slice: repair it, rewrite the Report in place at the same path, and report by',
+    '  your board card. Never a second `worker_done`: the runtime settled the first, and the ones',
+    '  after it land nowhere.',
+  ].join('\n');
+}
+
+/**
  * True of every cross-host child, always — so it is generated here rather than
  * retyped into each brief, where it was omitted exactly once and cost a report.
  *
@@ -190,6 +265,10 @@ function markerLine(model, instruction) {
  *
  * `host` is '' for a local child. `contract` is '' when the project declares
  * none, and MECHANICS takes its place. `operator` is `{ name, text }` or null.
+ * `report` is what ./report.mjs answered for this dispatch — `{ path }` or
+ * `{ reason }` — and a caller that passes neither gets the inability, because a
+ * brief that silently drops the artifact is how the artifact went missing in the
+ * first place.
  *
  * A project's contract and an operator's notes are placed VERBATIM — not
  * trimmed, not re-wrapped, not re-indented. They were written by someone who
@@ -209,7 +288,7 @@ function markerLine(model, instruction) {
  * own receipt (`ticket <url> (<state>)` in ./verify.mjs), where a human reads it.
  * Linear answers no handle, so there the url is the only address there is.
  */
-export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '' } = {}) {
+export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '', report = {} } = {}) {
   // `ticket: null` is not "a ticket I could not read" — it is a dispatch that has
   // none (`--name`). The two must not render the same: the tracked shape says
   // "read the ticket, it is canonical", and pointing that at nothing is how a
@@ -226,6 +305,13 @@ export function renderBrief({ model, instruction, ticket = {}, readCommand, run,
     ...head,
     '',
     `PILOT CONTRACT — dispatching Run ${run ?? ''}, execution host ${host || 'here'}`,
+    // The precedence rule and the Report are ax's own, and they stay when a
+    // project replaces the propositions: ax derives that path and ax's receiver
+    // opens it, so a fleet contract that displaced this block would leave a
+    // child writing a Report nothing reads.
+    PRECEDENCE,
+    '',
+    reportContract(report),
     contract === '' || contract === undefined || contract === null ? (tracked ? MECHANICS : MECHANICS_UNTRACKED) : String(contract),
   ];
 
