@@ -523,25 +523,40 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // It IS capacity when it reads VIVANT (#152). Resolved here, before the
     // tally, because the tally is about the terminal and not about the proof.
     const leaked = row.unsettled ?? null;
-    const leakedVerdict = leaked === null ? null : hosts.verdictFor(leaked.handle, '', leaked.host).verdict;
+    const leakedRead = leaked === null ? null : hosts.verdictFor(leaked.handle, '', leaked.host);
+    const leakedVerdict = leakedRead === null ? null : leakedRead.verdict;
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 
-    // THE TWO COUNTS (#88), over the pane that is UP — the row's own when a
-    // receipt established one, the leaked one when it did not. The record's own
-    // `repo` places it, never the path its worktree sits at: the store is
-    // host-global, and a linked worktree of another checkout is still that
-    // checkout's pane. An absent key is UNKNOWN, so it joins the machine total
-    // alone and is disclosed as its own count (F-028).
+    // THE PANE THIS ROW ANSWERS FOR, selected ONCE and then read by both counts.
+    // The row's own when a receipt established one, the leaked one when it did
+    // not — and never both: `describeRecord` carries `unsettled` only while the
+    // row's own handle is null, so the two are mutually exclusive by
+    // construction.
+    //
+    // Selecting once is what closes the hole the first draft of this left: the
+    // unmeasured branch keyed on `row.handle`, so a leaked pane on a host that
+    // could NOT be asked (#70's `unasked-leak`) fell out of both counts and read
+    // as room. An unaskable pane is an inability, never a free slot (F-028), and
+    // `capVerdict` is what turns that number into a cannot-establish.
+    const candidate =
+      row.handle !== null
+        ? { handle: row.handle, host: row.host, pane, asked }
+        : leaked !== null
+          ? { handle: leaked.handle, host: leaked.host, pane: leakedVerdict.pane, asked: leakedRead.asked }
+          : null;
+
+    // THE TWO COUNTS (#88). The record's own `repo` places the pane, never the
+    // path its worktree sits at: the store is host-global, and a linked worktree
+    // of another checkout is still that checkout's pane. An absent key is
+    // UNKNOWN, so it joins the machine total alone and is disclosed as its own
+    // count (F-028).
     const ours = row.repo !== '' && slug !== '' && row.repo.toLowerCase() === slug.toLowerCase();
-    // The pane this row counts as: its own when a receipt established one, the
-    // leaked one when it did not. Exactly one of them, never both.
-    const counted = pane === 'VIVANT' ? row.handle : leakedLive ? leaked.handle : null;
-    if (counted !== null) {
-      alive.add(counted);
-      if (row.repo === '') nameless.add(counted);
-      else if (ours) mine.add(counted);
-    } else if (pane === 'INCONNU' && row.handle !== null && row.host !== undefined && row.host !== '' && !asked) {
+    if (candidate !== null && candidate.pane === 'VIVANT') {
+      alive.add(candidate.handle);
+      if (row.repo === '') nameless.add(candidate.handle);
+      else if (ours) mine.add(candidate.handle);
+    } else if (candidate !== null && candidate.pane === 'INCONNU' && candidate.host !== undefined && candidate.host !== '' && !candidate.asked) {
       // A RECORDED PANE ON A HOST THAT COULD NOT BE ASKED — neither count
       // carries it, and this is EXACTLY the set both dispatch verbs turn into
       // cannot-establish (`liveInventory.unresolved`, ./capacity.mjs). The
@@ -552,8 +567,8 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // happen is #88's own species, a number whose label the reader cannot
       // verify. Those two keep the disclosures they already had: the row's own
       // line, and the omitted-scope line below.
-      unmeasured.machine.add(row.handle);
-      if (ours) unmeasured.mine.add(row.handle);
+      unmeasured.machine.add(candidate.handle);
+      if (ours) unmeasured.mine.add(candidate.handle);
     }
 
     // THE F-048 line: a pane the runtime still owns, while Orca's accounting
@@ -662,7 +677,14 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     unknown: nameless.size,
     unmeasured: { machine: unmeasured.machine.size, mine: unmeasured.mine.size },
   });
-  if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
+  // COUNTED AS CAPACITY, NOT AS A PROVEN OWNER (#152). These panes are in the
+  // totals above — a terminal that is up occupies a slot whatever recorded it —
+  // and what stays unproven is WHOSE they are, which is why the rows route to an
+  // inspection and never to a release. Saying "never counted" here, as this line
+  // did, contradicted the number printed two lines up.
+  if (suspects > 0) {
+    note(`${suspects} of them were recorded by a worker-start that never settled: counted as capacity, and their owner is established by hand — no release is offered on one`);
+  }
   // A shortened list says so, one line per class withheld, each with the flag
   // that lengthens it: an omission a reader cannot see is the same defect as a
   // count it cannot establish (F-028). The dead-attempt line is also the only

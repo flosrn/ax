@@ -497,8 +497,15 @@ test('#70: an unsettled record whose pane may still be alive is never collapsed'
   assert.match(out, /worker-show --dispatch ctx_a/, 'the suspect is still routed to an inspection');
   assert.doesNotMatch(out, /unsettled record\(s\) whose pane is MORT/, 'no dead attempt here, so no count line');
   // #152: `alive-leak`'s terminal is up, so it is one slot in use; `unasked-leak`
-  // is on a host nothing could ask, which is an inability and never room.
+  // named a host nothing here could ask, so its pane is an INABILITY and never
+  // room. Keying that branch on the row's own handle dropped it from both counts
+  // — an unaskable pane reading as free capacity is the F-028 shape this line
+  // exists to refuse, and `capVerdict` turns the number into a cannot-establish.
   assert.match(out, /1 live pane\(s\) in acme\/widgets/, 'the pane that is UP is the pane that counts');
+  assert.match(out, /1 pane\(s\) are on a host that could not be asked/, 'and the pane nobody could ask about is disclosed, never counted as room');
+  // The counted one is capacity AND unproven: both halves said in one line.
+  assert.match(out, /1 of them were recorded by a worker-start that never settled: counted as capacity/);
+  assert.doesNotMatch(out, /never counted/, 'no line may contradict the total printed above it');
 });
 
 test('#152: a repaired child behind an unsettled start is capacity, and one terminal counts once', () => {
@@ -553,7 +560,7 @@ test('#152: a repaired child behind an unsettled start is capacity, and one term
   ]);
   const shared = capture(() => ls([], { runner: fakeRunner({ terminals: [pane('term_59a30226')], workers: [] }), env: { ORCA_DISPATCH_STORE: dir } }));
   assert.match(shared.out, /1 live pane\(s\) in acme\/widgets/, 'two records naming one live terminal are one slot');
-  assert.match(shared.out, /2 live terminal\(s\) recorded by a worker-start that never settled/, 'both suspicions are still disclosed');
+  assert.match(shared.out, /2 of them were recorded by a worker-start that never settled/, 'both suspicions are still disclosed');
 });
 
 // ── the declared hosts (#76): a host that can be reached can be asked ────────
