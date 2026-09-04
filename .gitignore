@@ -6,4 +6,5 @@ node_modules/
 .worktrees/
 .agent/
 .scratch/
+.env.local
 # END:ax
