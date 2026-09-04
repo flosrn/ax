@@ -249,7 +249,7 @@ test('a stranded receipt never supersedes the ready dispatch it followed (record
   assert.match(out, /1 live pane\(s\)/);
 });
 
-test('a live terminal left by an unsettled worker-start is shown and inspected, never counted, never released', () => {
+test('a live terminal left by an unsettled worker-start is capacity, still inspected, still never released', () => {
   const dir = store();
   // Measured on ws-1874, 2026-08-22: worker-start timed out at agent_readiness
   // having already recorded a reused agent terminal. The effect is not proof
@@ -272,7 +272,9 @@ test('a live terminal left by an unsettled worker-start is shown and inspected, 
   assert.match(line, /^ {2}✗ /);
   assert.match(out, /worker-show --dispatch ctx_leak/, 'inspect, never release on an unproven association');
   assert.doesNotMatch(out, /worker-release/);
-  assert.match(out, /0 live pane\(s\)/, 'unproven is never counted as capacity in use either');
+  // #152, measured 2026-09-04: an unproven ASSOCIATION is still no release, but
+  // a terminal the runtime reports as up is a slot in use whatever proved it.
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/, 'the terminal is up, so the slot is taken');
 });
 
 test('an unsettled pane that is GONE is still named, with the two routes that do not need it', () => {
@@ -494,7 +496,64 @@ test('#70: an unsettled record whose pane may still be alive is never collapsed'
   assert.match(out, /term_alive, ALIVE right now/);
   assert.match(out, /worker-show --dispatch ctx_a/, 'the suspect is still routed to an inspection');
   assert.doesNotMatch(out, /unsettled record\(s\) whose pane is MORT/, 'no dead attempt here, so no count line');
-  assert.match(out, /0 live pane\(s\)/, 'unproven is still never counted as capacity in use');
+  // #152: `alive-leak`'s terminal is up, so it is one slot in use; `unasked-leak`
+  // is on a host nothing could ask, which is an inability and never room.
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/, 'the pane that is UP is the pane that counts');
+});
+
+test('#152: a repaired child behind an unsettled start is capacity, and one terminal counts once', () => {
+  const dir = store();
+  // MEASURED 2026-09-04 on the spec #145 wave, three times. `worker dispatch`
+  // settled `failed` at `dispatch_input` (upstream Orca's paste path, #151),
+  // `ax worker repair` pressed the one Enter, and the child WORKED — `ax worker
+  // tail` read status=running behind every one of those panes. During the three
+  // dispatches the preamble counted 0 -> 1 -> 2, because both dispatch verbs
+  // count through `liveCount` over `dispatchIndex`, which carries the pane of
+  // ANY worker-start phase. `ax worker ls` answered `0 live pane(s)` on the same
+  // store, because it counted by hand from the release-grade handle instead.
+  //
+  // Two numbers for one question, and this verb's own comment claimed its number
+  // came "from the one contract both dispatch verbs refuse with". The direction
+  // was decided before, in the module the fence reads (../worker/pane.mjs:
+  // "their panes may be alive and consuming capacity, so leaving them out makes
+  // the count UNDERSTATED, and a fence built on it can admit a pane past a cap
+  // that is already full"). So the reporter follows the fence.
+  //
+  // What does NOT move: the row's verdict stays INCONNU (the association is
+  // unproven), the repair stays an inspection, and no release is ever offered.
+  writeRecord(dir, '148-work', [
+    { name: 'task-create', receipt: taskCreated('task_63b1ef49a017') },
+    {
+      name: 'worker-start',
+      exit: 1,
+      receipt: { ok: true, result: { taskId: 'task_63b1ef49a017', dispatchId: 'ctx_e2b5e37542c2', state: 'failed', stage: 'dispatch_input', lastError: 'agent_prompt_stalled', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_59a30226' }] } },
+    },
+  ]);
+  const run = fakeRunner({ terminals: [pane('term_59a30226')], workers: [] });
+
+  const { code, out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
+  assert.equal(code, 0);
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/, 'the terminal is up, so the slot is taken');
+  assert.match(out, /1 live pane\(s\) on this machine/);
+  const line = lineWith('148-work');
+  assert.match(line, /pane INCONNU/, 'counting it capacity is not proving the association');
+  assert.match(out, /worker-show --dispatch ctx_e2b5e37542c2/, 'still an inspection, never a release');
+  assert.doesNotMatch(out, /worker-release/);
+
+  // ONE TERMINAL, ONE SLOT. A repair reuses the agent terminal, so a second
+  // request can name the pane a first one already recorded — and a count keyed
+  // by record would report two panes for one and refuse a dispatch the machine
+  // had room for. `liveCount` keys its sets by handle; so does this verb.
+  writeRecord(dir, '150-work', [
+    {
+      name: 'worker-start',
+      exit: 1,
+      receipt: { ok: true, result: { taskId: 'task_a3cf18b61480', dispatchId: 'ctx_425f136b3856', state: 'failed', stage: 'dispatch_input', lastError: 'agent_prompt_stalled', effects: [{ kind: 'terminal', role: 'agent', action: 'reused_agent_terminal', id: 'term_59a30226' }] } },
+    },
+  ]);
+  const shared = capture(() => ls([], { runner: fakeRunner({ terminals: [pane('term_59a30226')], workers: [] }), env: { ORCA_DISPATCH_STORE: dir } }));
+  assert.match(shared.out, /1 live pane\(s\) in acme\/widgets/, 'two records naming one live terminal are one slot');
+  assert.match(shared.out, /2 live terminal\(s\) recorded by a worker-start that never settled/, 'both suspicions are still disclosed');
 });
 
 // ── the declared hosts (#76): a host that can be reached can be asked ────────

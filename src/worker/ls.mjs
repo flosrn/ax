@@ -438,12 +438,42 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // count a live pane joins — never whether the row is shown, and never a
   // verdict. A checkout `gh` cannot name loses the per-repository number and
   // keeps everything else (#88).
-  let alive = 0;
-  let mine = 0;
-  let nameless = 0;
+  // CAPACITY IS A LIVE TERMINAL, NOT A PROVEN ASSOCIATION (#152, measured
+  // 2026-09-04 on the spec #145 wave). Three dispatches settled `failed` at
+  // `dispatch_input` (#151), `ax worker repair` submitted the brief, and the
+  // children WORKED — `ax worker tail` read status=running behind every one of
+  // those panes. This verb answered `0 live pane(s) in flosrn/ax` on the same
+  // store, three rows down from its own `ALIVE right now`, because it tallied
+  // only rows whose RELEASE-grade handle was established: `describeRecord`
+  // leaves that null until a receipt settled, on purpose (a release on an
+  // unproven association is a mutation on a guess).
+  //
+  // Two questions, one measurement. "May this pane be closed" needs the
+  // association proven; "is this pane consuming a slot" needs only a covering
+  // inventory saying it is up. The second is what a cap gates, and the direction
+  // is already ruled where the fence reads it (./pane.mjs `liveInventory`): an
+  // unresolved pane may be alive and consuming capacity, so omitting it
+  // UNDERSTATES the count and a fence built on it admits a pane past a cap that
+  // is already full. Over-count refuses a dispatch an operator can re-run;
+  // under-count puts a fourth child on a machine that declared three.
+  //
+  // So a leaked pane that reads VIVANT joins both counts, placed by its own
+  // record's `repo` like every other pane. The ROW does not move: still INCONNU,
+  // still routed to `worker-show`, never to a release.
+  // KEYED BY HANDLE, never by record — the number answers "how many panes",
+  // and two records can name ONE terminal: a `reused_agent_terminal` is the
+  // ordinary shape of a repair, and a `--replace` that moved a child leaves the
+  // old request naming the pane the new one runs in. Counting rows there would
+  // report two panes for one and refuse a dispatch the machine had room for.
+  // `liveCount` (./capacity.mjs) has always keyed its sets this way; this verb
+  // counted rows, and the widening below is exactly what would have made that
+  // divergence visible.
+  const alive = new Set();
+  const mine = new Set();
+  const nameless = new Set();
+  const unmeasured = { machine: new Set(), mine: new Set() };
   let suspects = 0;
   let unplaced = 0;
-  const unmeasured = { machine: 0, mine: 0 };
   const drift = [];
   const matched = new Set();
   const hosts = hostReader(hostScopes(run, declarations), terminals);
@@ -455,29 +485,6 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // carries; a remote handle it does not carry is put to that host itself.
     const { verdict, asked } = hosts.verdictFor(row.handle, row.why, row.host);
     const { pane, detail } = verdict;
-    const ours = row.repo !== '' && slug !== '' && row.repo.toLowerCase() === slug.toLowerCase();
-    if (pane === 'VIVANT') {
-      alive += 1;
-      // The record's own `repo` places the pane, never the path its worktree
-      // sits at: the store is host-global, and a linked worktree of another
-      // checkout is still that checkout's pane. An absent key is UNKNOWN, so it
-      // joins the machine total alone and is disclosed as its own count (F-028).
-      if (row.repo === '') nameless += 1;
-      else if (ours) mine += 1;
-    } else if (pane === 'INCONNU' && row.handle !== null && row.host !== undefined && row.host !== '' && !asked) {
-      // A RECORDED PANE ON A HOST THAT COULD NOT BE ASKED — neither count
-      // carries it, and this is EXACTLY the set both dispatch verbs turn into
-      // cannot-establish (`liveInventory.unresolved`, ./capacity.mjs). The
-      // predicate is that narrow on purpose: a row INCONNU because a host
-      // ANSWERED without covering its own scope, or because no phase named a
-      // placement at all, is equally unknown — but no ask failed for it, and a
-      // count printed under "could not be asked" for a cause that did not
-      // happen is #88's own species, a number whose label the reader cannot
-      // verify. Those two keep the disclosures they already had: the row's own
-      // line, and the omitted-scope line below.
-      unmeasured.machine += 1;
-      if (ours) unmeasured.mine += 1;
-    }
     // A row left unknowable by the LOCAL list's own omission — a record whose
     // placement no phase could name, so no host could be asked for it. That is
     // the only case the blanket disclosure below still explains.
@@ -503,20 +510,51 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       }
     }
 
-    // A pane recorded by a receipt that never settled. It is NOT counted —
-    // nothing proves that terminal belongs to this dispatch — and it is NOT
-    // released, because a release on an unproven association is a mutation on a
-    // guess. It is NAMED whatever its state, which is the part this verb used to
-    // get wrong: a handle was printed only while it was still alive, so the
-    // records most in need of a route (a dispatch that failed at
+    // A pane recorded by a receipt that never settled. Its ASSOCIATION with this
+    // dispatch is unproven, so it is never released — a release on a guess is a
+    // mutation on a guess — and it is NAMED whatever its state, which is the part
+    // this verb used to get wrong: a handle was printed only while it was still
+    // alive, so the records most in need of a route (a dispatch that failed at
     // `dispatch_input`, its pane long closed) rendered as `pane INCONNU · no
     // usable receipt yet` and named nothing an operator could type. Measured
     // 2026-08-25 on 55-work and 56-work, whose recorded panes were in the
     // receipt all along.
+    //
+    // It IS capacity when it reads VIVANT (#152). Resolved here, before the
+    // tally, because the tally is about the terminal and not about the proof.
     const leaked = row.unsettled ?? null;
     const leakedVerdict = leaked === null ? null : hosts.verdictFor(leaked.handle, '', leaked.host).verdict;
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
+
+    // THE TWO COUNTS (#88), over the pane that is UP — the row's own when a
+    // receipt established one, the leaked one when it did not. The record's own
+    // `repo` places it, never the path its worktree sits at: the store is
+    // host-global, and a linked worktree of another checkout is still that
+    // checkout's pane. An absent key is UNKNOWN, so it joins the machine total
+    // alone and is disclosed as its own count (F-028).
+    const ours = row.repo !== '' && slug !== '' && row.repo.toLowerCase() === slug.toLowerCase();
+    // The pane this row counts as: its own when a receipt established one, the
+    // leaked one when it did not. Exactly one of them, never both.
+    const counted = pane === 'VIVANT' ? row.handle : leakedLive ? leaked.handle : null;
+    if (counted !== null) {
+      alive.add(counted);
+      if (row.repo === '') nameless.add(counted);
+      else if (ours) mine.add(counted);
+    } else if (pane === 'INCONNU' && row.handle !== null && row.host !== undefined && row.host !== '' && !asked) {
+      // A RECORDED PANE ON A HOST THAT COULD NOT BE ASKED — neither count
+      // carries it, and this is EXACTLY the set both dispatch verbs turn into
+      // cannot-establish (`liveInventory.unresolved`, ./capacity.mjs). The
+      // predicate is that narrow on purpose: a row INCONNU because a host
+      // ANSWERED without covering its own scope, or because no phase named a
+      // placement at all, is equally unknown — but no ask failed for it, and a
+      // count printed under "could not be asked" for a cause that did not
+      // happen is #88's own species, a number whose label the reader cannot
+      // verify. Those two keep the disclosures they already had: the row's own
+      // line, and the omitted-scope line below.
+      unmeasured.machine.add(row.handle);
+      if (ours) unmeasured.mine.add(row.handle);
+    }
 
     // THE F-048 line: a pane the runtime still owns, while Orca's accounting
     // either does not know it (a `--inject` repair) or calls its terminal
@@ -612,11 +650,18 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     }
   }
 
-  // THE TWO COUNTS (#88), from the one contract both dispatch verbs refuse with,
-  // so a reader who counts here reads the number that will actually refuse — the
-  // same summary the empty-store paths above print, with the numbers this store
-  // established.
-  capSummary({ machine: alive, mine, unknown: nameless, unmeasured });
+  // THE TWO COUNTS (#88), through the same contract both dispatch verbs print —
+  // `capLines` from ./capacity.mjs, so the sentence a reader counts by is the one
+  // the fence refuses with. The NUMBERS are this verb's own, from the rows above:
+  // a live pane is a live pane whichever phase recorded it (#152), which is a
+  // wider reading than `dispatchIndex` gives the fence for a legacy repair phase.
+  // That residue is filed, not papered over.
+  capSummary({
+    machine: alive.size,
+    mine: mine.size,
+    unknown: nameless.size,
+    unmeasured: { machine: unmeasured.machine.size, mine: unmeasured.mine.size },
+  });
   if (suspects > 0) note(`${suspects} live terminal(s) recorded by a worker-start that never settled — established by hand, never by this verb`);
   // A shortened list says so, one line per class withheld, each with the flag
   // that lengthens it: an omission a reader cannot see is the same defect as a
