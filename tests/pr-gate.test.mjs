@@ -308,19 +308,74 @@ function buildRepo(root, shape, prGate) {
     commit(root, 'src/a.txt', 'a\n', 'work');
     commit(root, `${RESIDUAL}/f-001.md`, 'a finding\n', 'file a residual last');
   }
+  // A REAL origin beside this checkout, with the refs a shape wants published.
+  // Without one the git-backed grounds are on their local-only path, where the
+  // head the PR announces must be this branch's own tip (#177) — so every shape
+  // that models a head GitHub moved without this checkout following publishes
+  // instead of pretending a remote is absent.
+  let origin = '';
+  const publish = (...refspecs) => {
+    if (origin === '') {
+      origin = `${root}-origin`;
+      git(sandbox, 'init', '-q', '--bare', origin);
+      git(root, 'remote', 'add', 'origin', origin);
+    }
+    git(root, 'push', '-q', 'origin', ...refspecs);
+  };
+
   // #90's two shapes: a branch whose post-open commit is a CLEAN merge of the
   // base — the footprint `gh pr update-branch` leaves, and the same thing a
   // worker's own `git merge origin/main` leaves — either already on the head
   // (`base-merge`) or on the ref the self-repair moves the head to while
-  // `feature` itself stays behind (`stale-merged`, the reported run).
-  if (shape === 'base-merge' || shape === 'stale-merged') {
+  // `feature` itself stays behind (`stale-merged`, the reported run, where
+  // `origin/feature` is what carries the moved head).
+  if (shape === 'base-merge' || shape === 'stale-merged' || shape === 'sibling-moved' || shape === 'head-behind-tip' || shape === 'remote-merged') {
     commit(root, 'src/a.txt', 'a\n', 'feature work');
+    if (shape === 'remote-merged') publish('main', 'feature');
     git(root, 'checkout', '-q', 'main');
     commit(root, 'src/b.txt', 'b\n', 'the base moved');
     if (shape === 'stale-merged') git(root, 'checkout', '-q', '-b', 'updated', 'feature');
     else git(root, 'checkout', '-q', 'feature');
     git(root, 'merge', '-q', '--no-ff', '-m', "Merge branch 'main' into feature", 'main');
     git(root, 'checkout', '-q', 'feature');
+    // The head GitHub answers for `feature` is the merge; this checkout's own
+    // `feature` stays behind it, exactly as it does after `gh pr update-branch`.
+    if (shape === 'stale-merged') publish('main', 'updated:feature');
+    if (shape === 'remote-merged') publish('main', 'feature');
+  }
+  // #177's shapes. Three of them EXTEND the base-merge history above on purpose
+  // — `sibling-moved` and `head-behind-tip` share that block, so their branch
+  // carries the advanced base and the ancestry question has a real answer; what
+  // each adds is the movement that used to be read as the head's own evidence.
+  //
+  //   sibling-moved     base merged, so the announced head (the tip) is current,
+  //                     and an unrelated local branch has moved past it:
+  //                     movement elsewhere must not change a coherent verdict.
+  //   head-behind-tip   base merged, then the branch kept working, so the
+  //                     announced commit carries the base and is not the tip.
+  //   remote-merged     the same history with a REAL origin: the base advanced
+  //                     there and the branch merged it, so the pre-merge head
+  //                     the PR announces does not carry it while the published
+  //                     tips do.
+  //   stale-twice       its own history, published, with BOTH of the branch's
+  //                     commits behind the advanced base: the head can move once
+  //                     and still refuse, which is the second-refusal route
+  //                     (KTD6).
+  if (shape === 'sibling-moved') {
+    git(root, 'checkout', '-q', '-b', 'wip');
+    commit(root, 'src/wip.txt', 'wip\n', 'an unrelated branch moves past the head');
+    git(root, 'checkout', '-q', 'feature');
+  }
+  if (shape === 'head-behind-tip') {
+    commit(root, 'src/c.txt', 'c\n', 'work past the announced head');
+  }
+  if (shape === 'stale-twice') {
+    commit(root, 'src/a.txt', 'a\n', 'feature work');
+    commit(root, 'src/c.txt', 'c\n', 'more feature work');
+    git(root, 'checkout', '-q', 'main');
+    commit(root, 'src/b.txt', 'b\n', 'the base moved');
+    git(root, 'checkout', '-q', 'feature');
+    publish('main', 'feature');
   }
   return root;
 }
@@ -947,7 +1002,7 @@ test('#176: the page bound stops rather than looping, and never becomes a pass',
 test('#176: an incomplete check read still leaves the other grounds reporting', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: null, shape: 'stale' });
   assert.equal(code, 1, out);
-  assert.match(out, /REFUSE — staleness: main is not an ancestor of feature/);
+  assert.match(out, /REFUSE — staleness: [0-9a-f]{12} \(main\) is not an ancestor of the validated head [0-9a-f]{12}/);
   assert.match(out, /CANNOT ESTABLISH — checks: page 1 of 'gh api .*check-runs' failed/);
 });
 
@@ -1131,7 +1186,7 @@ test('#175: an incomplete read still names an actionable repair, and the other g
   // The thread finding names its repair...
   assert.match(out, /gh api graphql .*reviewThreads/);
   // ...and does not suppress the staleness ground beside it.
-  assert.match(out, /REFUSE — staleness: main is not an ancestor of feature/);
+  assert.match(out, /REFUSE — staleness: [0-9a-f]{12} \(main\) is not an ancestor of the validated head [0-9a-f]{12}/);
   assert.match(out, /CANNOT ESTABLISH — threads: page 1 answered with no readable 'nodes' list/);
 });
 
@@ -1152,14 +1207,17 @@ test('threads read before CI is decided are no observation at all', () => {
 test('F-033.2: a base that advanced refuses, while mergeStateStatus still reads CLEAN', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'stale' });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — staleness: main is not an ancestor of feature — the branch is behind its base \(mergeStateStatus reads CLEAN, which is not the question\)/);
+  assert.match(
+    out,
+    /REFUSE — staleness: [0-9a-f]{12} \(main\) is not an ancestor of the validated head [0-9a-f]{12} — the head this verdict would authorize is behind its base \(mergeStateStatus reads CLEAN, which is not the question\)/,
+  );
   assert.match(out, /mergeStateStatus CLEAN {2}\(context only — never a ground here, F-033\.2\)/);
 });
 
 test('a branch carrying its base is current', () => {
   const { code, out } = run(['--pr', '1845'], CLEAN);
   assert.equal(code, 0);
-  assert.match(out, /staleness: feature carries main — the branch is current/);
+  assert.match(out, /staleness: the validated head [0-9a-f]{12} carries [0-9a-f]{12} \(main\) — the head this verdict authorizes is current/);
 });
 
 test('outside a git checkout, ancestry is unread rather than assumed', () => {
@@ -1191,17 +1249,82 @@ test('refs that cannot be refreshed are cannot-establish: a stale local ref must
   assert.match(out, /landed-by-content: not decided — the refs could not be refreshed/);
 });
 
-test('a branch absent from this checkout is cannot-establish, never a pass', () => {
+test('a head branch absent from this local-only checkout cannot establish that head is its tip', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ headRefName: 'no-such-branch' }) });
   assert.equal(code, 3);
-  assert.match(out, /staleness: 'main' or 'no-such-branch' is absent from this checkout/);
+  assert.match(out, /CANNOT ESTABLISH — staleness: .*local 'no-such-branch' branch is absent/);
+});
+
+// ── #177: every git-backed ground is computed on the validated head and the
+// observed base commit, never on a branch tip that can move past either.
+
+test('#177: a newer local tip must not supply currency for the head the PR announces', () => {
+  // The measured local-only case: the PR announces the pre-merge head, the base
+  // advanced, and this checkout's own `feature` tip carries that base. Resolving
+  // the head by NAME read the tip and called the announced commit current.
+  const root = repoFor('base-merge', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature^1');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'base-merge', receipt: prView({ headRefOid: announced }) });
+  assert.equal(code, 1, out);
+  assert.match(out, new RegExp(`REFUSE — staleness: [0-9a-f]{12} \\(main\\) is not an ancestor of the validated head ${announced.slice(0, 12)}`));
+  assert.match(out, new RegExp(`CANNOT ESTABLISH — staleness: .*local 'feature' tip is ${shaOf(root, 'feature').slice(0, 12)}`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'the announced old head was merged on a newer tip’s evidence');
+});
+
+test('#177: without a remote, a head that is not this branch tip cannot establish currency — and ancestry is still read', () => {
+  const root = repoFor('head-behind-tip', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature~1');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'head-behind-tip', receipt: prView({ headRefOid: announced }) });
+  assert.equal(code, 3, out);
+  assert.match(out, new RegExp(`CANNOT ESTABLISH — staleness: .*not the validated head ${announced.slice(0, 12)}`));
+  // The ancestry between the observed base and THAT head is still evaluated.
+  assert.match(out, new RegExp(`staleness: the validated head ${announced.slice(0, 12)} carries [0-9a-f]{12} \\(main\\)`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#177: a validated head this checkout does not hold is an unestablished read, never stale evidence', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, receipt: prView({ headRefOid: 'a'.repeat(40) }) });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — staleness: the validated head aaaaaaaaaaaa is absent from this checkout/);
+  assert.match(out, /→ git fetch origin main feature/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#177: an unrelated local branch moving past the head leaves a coherent verdict alone', () => {
+  const { code, out, calls, headSha } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'sibling-moved' });
+  assert.equal(code, 0, out);
+  assert.match(out, new RegExp(`staleness: the validated head ${headSha.slice(0, 12)} carries [0-9a-f]{12} \\(main\\)`));
+  assert.ok(
+    calls.some(call => call === `pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${headSha}`),
+    'the mutation is bound to the head the grounds were computed on',
+  );
+});
+
+test('#177: with a remote, the refreshed base is resolved to a commit and the announced head is judged against it', () => {
+  const root = repoFor('remote-merged', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature^1');
+  const base = shaOf(root, 'origin/main');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'remote-merged', receipt: prView({ headRefOid: announced }) });
+  assert.equal(code, 1, out);
+  assert.match(out, new RegExp(`git evidence: base ${base.slice(0, 12)} \\(origin/main\\) and the validated head ${announced.slice(0, 12)}`));
+  assert.match(out, new RegExp(`REFUSE — staleness: ${base.slice(0, 12)} \\(origin/main\\) is not an ancestor of the validated head ${announced.slice(0, 12)}`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#177: with a remote, a head that carries the observed base passes and binds the merge to it', () => {
+  const root = repoFor('remote-merged', DEFAULT_GATE);
+  const base = shaOf(root, 'origin/main');
+  const { code, out, calls, headSha } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'remote-merged' });
+  assert.equal(code, 0, out);
+  assert.match(out, new RegExp(`staleness: the validated head ${headSha.slice(0, 12)} carries ${base.slice(0, 12)} \\(origin/main\\)`));
+  assert.ok(calls.some(call => call.endsWith(`--match-head-commit ${headSha}`)), 'the merge names the head the grounds stood on');
 });
 
 // ── Ground 4: landed by content (advisory, never a refusal) ────────────────
 
 test('F-033.1: a squashed branch is landed by content though ancestry says no', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'landed' });
-  assert.match(out, /landed-by-content: YES — content equal to main.*ancestry says no/);
+  assert.match(out, /landed-by-content: YES — content equal to [0-9a-f]{12} \(main\).*ancestry says no/);
   // The only refusal is staleness. This ground never contributes one.
   assert.equal(code, 1);
   assert.doesNotMatch(out, /REFUSE — landed-by-content/);
@@ -1212,13 +1335,15 @@ test('F-033.1: a squashed branch is landed by content though ancestry says no', 
 
 test('a branch with its own work reports the files that still differ', () => {
   const { out } = run(['--pr', '1845'], CLEAN);
-  assert.match(out, /landed-by-content: NO — 1 file\(s\) still differ from main \(ancestry says no\)/);
+  assert.match(out, /landed-by-content: NO — 1 file\(s\) still differ from [0-9a-f]{12} \(main\) \(ancestry says no\)/);
 });
 
 test('a diff that cannot be taken is reported, and still never refuses', () => {
   const { code, out } = run(['--pr', '1845'], {
     ...CLEAN,
-    git: (args, at) => (args[0] === 'diff' && args[1] === '--name-only' && args[2] === 'main' ? refusedByGh('fatal: bad revision') : realGit(args, at)),
+    // The pair is a base COMMIT and the validated head now, so the call is
+    // named by its shape — two revisions and no pathspec — not by a branch name.
+    git: (args, at) => (args[0] === 'diff' && args[1] === '--name-only' && !args.includes('--') ? refusedByGh('fatal: bad revision') : realGit(args, at)),
   });
   assert.equal(code, 0);
   assert.match(out, /landed-by-content: not decided — 'git diff' failed/);
@@ -1230,13 +1355,13 @@ test('F-009: a residual file this branch wrote, then superseded, refuses', () =>
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'residual-stale', prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } });
   assert.equal(code, 1);
   assert.match(out, /REFUSE — residual findings: this branch wrote docs\/residual at [0-9a-f]{12} and 1 of its own commit\(s\) landed after it/);
-  assert.match(out, /→ git log main\.\.feature/);
+  assert.match(out, /→ git log [0-9a-f]{40}\.\.[0-9a-f]{40}/);
 });
 
 test('a residual file written by the newest commit does not refuse', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'residual-current', prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } });
   assert.equal(code, 0);
-  assert.match(out, /residual findings: written by this branch at [0-9a-f]{12}, the newest commit on feature/);
+  assert.match(out, /residual findings: written by this branch at [0-9a-f]{12}, the newest commit on the validated head [0-9a-f]{12}/);
 });
 
 test('F-039: a residual file the branch inherited from the base is not this branch\'s record', () => {
@@ -1263,7 +1388,7 @@ test('a residual directory that differs with no commit behind it is cannot-estab
     git: (args, at) => (args[0] === 'log' ? answered('\n') : realGit(args, at)),
   });
   assert.equal(code, 3);
-  assert.match(out, /residual findings: docs\/residual differs from main but no commit on this branch touched it/);
+  assert.match(out, /residual findings: docs\/residual differs from [0-9a-f]{12} \(main\) but no commit on this branch touched it/);
 });
 
 test('a rev-list that cannot count is cannot-establish, never zero later commits', () => {
@@ -1318,35 +1443,40 @@ test('#90: a clean base merge as the only post-open commit passes with no --ack-
   assert.match(out, /grounds — \d+ reported, 0 unread, 0 refused/);
 });
 
-test('#90: the staleness self-repair no longer refuses the commit it just created', () => {
+test('#90: the staleness self-repair no longer refuses the commit it just created, and the re-run judges the moved head', () => {
   // The reported run, reproduced: the caller's command carries no --ack-body
   // because the PR had no post-open commit when they typed it, `gh pr
   // update-branch` then mints the merge, and the ONE re-run this verb has must
-  // not spend itself refusing that commit. The fixture repository cannot move
-  // with the head, so the re-run still refuses on staleness — which is the
-  // correct second event, and the only one left.
+  // not spend itself refusing that commit. The fixture publishes that merge as
+  // `origin/feature` while its own `feature` stays behind — what a checkout
+  // holds after GitHub moves the head — so the re-run measures the MOVED head
+  // and its mutation is bound to it (#177), never to the commit that refused.
   const root = repoFor('stale-merged', DEFAULT_GATE);
   const moved = shaOf(root, 'updated');
   const { code, out, calls } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
     shape: 'stale-merged',
-    // receipt · the head after the update · the retried run's own receipt
-    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
+    // receipt · the head after the update · the retried run's own receipt · the
+    // post-merge read-back, which only a run that reaches the mutation makes
+    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved }), prView({ headRefOid: moved, state: 'MERGED' })],
     // The caller's run sees no post-open commit; the re-run reads the merge the
     // update-branch call left behind.
     commits: reads => (reads === 0 ? prCommits(0) : [...prCommits(0), realCommitRow(root, 'updated')]),
   });
-  assert.equal(code, 1);
+  assert.equal(code, 0, out);
   assert.match(out, /self-repair: staleness is the only refusing ground/);
   assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
   assert.match(out, new RegExp(`commits since open: 1 base merge — exempt: ${moved.slice(0, 12)}`));
   assert.doesNotMatch(out, /REFUSE — commits since open/);
   assert.doesNotMatch(out, /--ack-body/, 'the merge went back to a worker for a body edit describing the gate\'s own commit');
-  // Criterion 7: the commits ground is reported, not refused, and the run's
-  // one remaining refusal is untouched.
-  assert.match(out, /grounds — \d+ reported, 0 unread, 1 refused/);
-  assert.match(out, /REFUSE — staleness/);
-  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
+  // The re-run stands on the moved head alone: fresh grounds, and the mutation
+  // names that commit rather than the one the first run validated.
+  assert.match(out, new RegExp(`staleness: the validated head ${moved.slice(0, 12)} carries [0-9a-f]{12} \\(origin/main\\)`));
+  assert.match(out, /grounds — \d+ reported, 0 unread, 0 refused/);
+  assert.ok(
+    calls.some(call => call === `pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${moved}`),
+    'the repaired run merged a head other than the one it validated',
+  );
 });
 
 test('#90: a caller-authored commit beside the exempt base merge still demands the acknowledgement', () => {
@@ -2059,7 +2189,7 @@ test('every ground is reported, none short-circuited by another', () => {
     /REFUSE — ticket binding: this merge is for #1786/,
     /REFUSE — closing keyword: 'Ferme #1786'/,
     /checks: 4 check-run\(s\) reported/,
-    /staleness: feature carries main/,
+    /staleness: the validated head [0-9a-f]{12} carries [0-9a-f]{12} \(main\)/,
     /landed-by-content: NO/,
   ]) {
     assert.match(out, ground);
@@ -2143,19 +2273,22 @@ test('replay against a PR merged at a DIVERGENT SHA is a named report, never a s
 
 test('replay against an open PR whose head moved opens a NEW attempt on the freshly validated head', () => {
   const storeDir = mkdtempSync(join(sandbox, 'store-'));
-  assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir }).code, 0);
+  assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'remote-merged', store: storeDir }).code, 0);
   const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
-  // A REAL commit this checkout holds: the declaration guard reads the
-  // validated SHA's own `ax.config.json`, so a fabricated oid is unreadable.
-  const moved = shaOf(repoFor('current', DEFAULT_GATE), 'main');
+  // A REAL commit this checkout holds AND its origin publishes: the declaration
+  // guard reads the validated SHA's own `ax.config.json`, and the git-backed
+  // grounds refuse to read a head this checkout cannot resolve (#177), so a
+  // fabricated oid proves nothing about the record.
+  const moved = shaOf(repoFor('remote-merged', DEFAULT_GATE), 'main');
   const merges = [];
   const replayed = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
+    shape: 'remote-merged',
     store: storeDir,
     receipt: prView({ headRefOid: moved }),
     onMerge: args => merges.push([...args]),
   });
-  assert.equal(replayed.code, 0);
+  assert.equal(replayed.code, 0, replayed.out);
   assert.match(replayed.out, /replay — the head moved past the recorded/);
   assert.deepEqual(merges, [['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', moved]]);
   const record = JSON.parse(readFileSync(recordPath, 'utf8'));
@@ -2191,19 +2324,23 @@ test('KTD6 rider: a head that cannot be re-read is cannot-establish, never a spe
 });
 
 test('KTD6: staleness as the only refusing ground updates the branch and re-runs once; the second refusal routes', () => {
-  // The head MOVED, so the one retry buys a real re-measurement. The fixture
-  // repository cannot move with it, so the retried run refuses on staleness
-  // again — which is exactly the second-refusal path: one update, then routing.
-  const moved = shaOf(repoFor('stale', DEFAULT_GATE), 'main');
+  // The head MOVED, so the one retry buys a real re-measurement — and the
+  // commit it moved TO is still behind the base, which is the second-refusal
+  // path: one update, then routing. Both commits are published, so the retried
+  // run is judging the head GitHub answered and not a local tip (#177).
+  const root = repoFor('stale-twice', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature~1');
+  const moved = shaOf(root, 'feature');
   const { code, out, calls } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
-    shape: 'stale',
+    shape: 'stale-twice',
     // receipt · the head after the update · the retried run's own receipt
-    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
+    prStates: [prView({ headRefOid: announced }), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
   });
-  assert.equal(code, 1);
+  assert.equal(code, 1, out);
   assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
   assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
+  assert.match(out, new RegExp(`REFUSE — staleness: [0-9a-f]{12} \\(origin/main\\) is not an ancestor of the validated head ${moved.slice(0, 12)}`));
   assert.match(out, /self-repair already ran once — a second staleness refusal routes to the owning worker/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
 });

@@ -277,6 +277,26 @@ the session file:
     // `triage` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
     subcommands: [['gate --pr <n> [--issue <n>]', 'every ground, executed on the head SHA — 0/1/2/3']],
+    // A judgement the caller makes BEFORE typing: what a pass is evidence OF.
+    // The verdict names one head and one base commit, and an operator who reads
+    // that as "the pull request was snapshotted" trusts it past what it
+    // measures (#177).
+    helpBody: {
+      gate: `Every ground runs against ONE head SHA and ONE base commit, both printed in the receipt.
+Git evidence — staleness, landed-by-content, the residual file, the prGate guard, the shape of
+each post-open commit — is computed on those two commits, so a local branch that has moved past
+the head this PR announces supplies no evidence for it, and this checkout must hold that head.
+
+What a pass is NOT:
+
+  not a snapshot   the head, base, body, title, labels and review threads are separate reads at
+                   separate moments; an edit between two of them is outside this binding, and
+                   --match-head-commit closes the push race on the merge, not the read race
+  not closure      the linked ticket is re-read AFTER the merge lands: an unclosed ticket is
+                   detected and escalated (exit 3), never prevented
+  not a review     neutral and absent check-runs are read, review THREADS are read for
+                   resolution — nobody's approval is inferred from either`,
+    },
   },
   {
     name: 'frontier',
