@@ -734,6 +734,8 @@ export function dispatch(
     '--run', runId,
     ...(flags.because === '' ? [] : ['--because', flags.because]),
     ...(trackerRepo === '' ? [] : ['--tracker-repo', trackerRepo]),
+    '--kind',
+    'implementation',
   ];
 
   if (dry) {

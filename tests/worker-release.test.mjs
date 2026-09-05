@@ -142,7 +142,7 @@ const store = () => mkdtempSync(join(tmpdir(), 'ax-release-'));
  * the slug `fakeExec` answers with. `repo: ''` writes no key at all — the
  * pre-0.17.0 shape, which is unknown and never ours.
  */
-function record(dir, request, dispatchId, { createdAt = '2026-08-20T10:00:00.000Z', beganAt = null, handle = `term_${dispatchId}`, state = 'ready', repo = 'owner/repo' } = {}) {
+function record(dir, request, dispatchId, { createdAt = '2026-08-20T10:00:00.000Z', beganAt = null, handle = `term_${dispatchId}`, state = 'ready', repo = 'owner/repo', kind } = {}) {
   writeFileSync(
     join(dir, `${request}.json`),
     JSON.stringify({
@@ -151,6 +151,7 @@ function record(dir, request, dispatchId, { createdAt = '2026-08-20T10:00:00.000
       orca: 'stub-orca',
       createdAt,
       ...(repo === '' ? {} : { repo }),
+      ...(kind ? { kind } : {}),
       attempts: [
         {
           n: 1,
@@ -728,7 +729,7 @@ test('a hyphenated repository is read from the recorded identity, never guessed 
 
 test('a job request that does not name the recorded repository is refused by name, never re-read as an implementation', () => {
   const dir = store();
-  record(dir, 'triage-7', 'ctx_legacy', { createdAt: '2026-08-20T10:00:00.000Z' });
+  record(dir, 'triage-7', 'ctx_legacy', { createdAt: '2026-08-20T10:00:00.000Z', kind: 'triage' });
   const r = run(['--all'], {
     dir,
     orca: { workers: [worker('ctx_legacy')], terminals: [terminal('term_ctx_legacy')] },
@@ -749,7 +750,7 @@ test('a job request that does not name the recorded repository is refused by nam
 
 test('a legal implementation named custom-migration is not a custom pass', () => {
   const dir = store();
-  record(dir, 'custom-migration', 'ctx_cm');
+  record(dir, 'custom-migration', 'ctx_cm', { kind: 'implementation' });
   const r = run(['--all'], {
     dir,
     orca: {
@@ -761,6 +762,40 @@ test('a legal implementation named custom-migration is not a custom pass', () =>
     },
   });
   assert.match(r.out, /CLOSE.*PR #91 merged \(custom-migration, worktree gone\)/);
+  assert.doesNotMatch(r.out, /pane QUIET · KEEP/);
+});
+
+test('a recorded implementation named custom-one-two-2025 closes on its own PR', () => {
+  const dir = store();
+  record(dir, 'custom-one-two-2025', 'ctx_shape', { kind: 'implementation' });
+  const r = run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_shape')],
+      terminals: [terminal('term_ctx_shape', { worktreePath: `${SCOPE}/custom-one-two-2025` })],
+    },
+    execOptions: {
+      answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 55, state: 'MERGED', headRefName: 'custom-one-two-2025' }]), stderr: '' } },
+    },
+  });
+  assert.match(r.out, /CLOSE.*PR #55 merged \(custom-one-two-2025, worktree gone\)/);
+});
+
+test('a recorded implementation whose name matches the triage mint still closes on its PR', () => {
+  const dir = store();
+  const request = jobRequest(7);
+  record(dir, request, 'ctx_lookalike', { kind: 'implementation' });
+  const r = run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_lookalike')],
+      terminals: [terminal('term_ctx_lookalike', { worktreePath: `${SCOPE}/${request}` })],
+    },
+    execOptions: {
+      answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 44, state: 'MERGED', headRefName: request }]), stderr: '' } },
+    },
+  });
+  assert.match(r.out, /CLOSE.*PR #44 merged/);
   assert.doesNotMatch(r.out, /pane QUIET · KEEP/);
 });
 

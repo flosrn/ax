@@ -277,10 +277,11 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
  * header): every reader here works from named keys, no recovery path branches
  * on them, and a record written by an older ax carries neither.
  */
-export function initRecord(path, { request, orca, because = '', repo = '', host = hostname(), now = () => new Date().toISOString() }) {
+export function initRecord(path, { request, orca, because = '', repo = '', kind = '', host = hostname(), now = () => new Date().toISOString() }) {
   const rec = { request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] };
   if (String(because).trim() !== '') rec.because = because;
   if (String(repo).trim() !== '') rec.repo = repo;
+  if (String(kind).trim() !== '') rec.kind = String(kind).trim();
   save(rec, path);
 }
 
@@ -882,6 +883,7 @@ export function dispatchIndex(store) {
           issuedAt: Number.isFinite(began) ? began : Number.isFinite(created) ? created : null,
           file,
           repo: recorded,
+          kind: typeof rec.kind === 'string' ? rec.kind.trim() : '',
           handle: agentTerminal(result),
           env: argvValue(ph.argv, '--on') ?? '',
           ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',

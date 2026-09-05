@@ -94,17 +94,13 @@ export const requestFor = ({ job, repo, issue, pass = 1 }) =>
  *
  *   `{ job: null, problem: '' }` — the request names no triage job. An
  *   implementation request, whose proof is its own branch's merged PR.
- *   `custom-migration` is this shape: `--name custom-migration` is a legal
- *   implementation id (`REQUEST_ID`). A minted custom pass is
- *   `custom-<owner>-<repo>-<issue>` — four or more hyphen-separated parts,
- *   ending in an issue number, because `owner/repo` always contributes a
- *   slash. That is the mint's shape, not a reconstructed owner.
  *
- *   `{ job, problem: '<why>' }` — it names a job and is not a legal request of
- *   this repository. Refused BY NAME: re-reading it as an implementation is how
- *   an unrelated merged PR becomes a triage pass's proof.
+ *   `{ job, problem: '<why>' }` — it names a job word and is not a legal mint
+ *   of this repository. `prove` consults the recorded `kind` before treating
+ *   that as a refusal: a `--name custom-migration` records `kind:
+ *   implementation` and never comes here as a job.
  *
- *   `{ job, issue, pass, problem: '' }` — a legal identity.
+ *   `{ job, issue, pass, problem: '' }` — a legal mint of this repository.
  */
 export function parseRequest(request, repo) {
   const text = String(request ?? '');
@@ -112,34 +108,15 @@ export function parseRequest(request, repo) {
   // declared: a private list here would be a fourth place a job word lives.
   const job = Object.keys(ROLE_BY_JOB).find(name => text.toLowerCase().startsWith(`${name}-`)) ?? null;
   if (job === null) return { job: null, issue: '', pass: 0, problem: '' };
-
   const named = String(repo ?? '').trim();
+  if (named === '') return { job, issue: '', pass: 0, problem: 'this host recorded no repository for it, so there is no identity to read it against' };
   const prefix = `${job}-${named.replace(/\//g, '-')}-`.toLowerCase();
-  if (named !== '' && text.toLowerCase().startsWith(prefix)) {
-    const tail = text.slice(prefix.length);
-    // `-p1` is not legal on the way in either (see above): one pass, one path.
-    const shape = /^([1-9][0-9]*)(?:-p([2-9]|[1-9][0-9]+))?$/.exec(tail);
-    if (shape === null) return { job, issue: '', pass: 0, problem: `"${tail}" is not an issue number with an optional -p<pass>` };
-    return { job, issue: shape[1], pass: shape[2] === undefined ? 1 : Number(shape[2]), problem: '' };
-  }
-
-  // Starts with a job word but is not this repository's minted identity.
-  const rest = text.slice(job.length + 1);
-  const parts = text.split('-');
-  const last = parts[parts.length - 1] ?? '';
-  const prev = parts[parts.length - 2] ?? '';
-  const issueLast = /^[1-9][0-9]*$/.test(last);
-  const issueThenPass = /^p([2-9]|[1-9][0-9]+)$/.test(last) && /^[1-9][0-9]*$/.test(prev);
-  // `triage-7` (legacy, two parts) or `job-owner-repo-issue` (four or more,
-  // issue-shaped tail). `custom-migration` and `custom-one-two-three` are
-  // neither: they are implementation names that share a job word as prefix.
-  const looksLikeIdentity = (parts.length === 2 && issueLast) || (parts.length >= 4 && (issueLast || issueThenPass));
-  if (!looksLikeIdentity) return { job: null, issue: '', pass: 0, problem: '' };
-
-  if (named === '') {
-    return { job, issue: '', pass: 0, problem: 'this host recorded no repository for it, so there is no identity to read it against' };
-  }
-  return { job, issue: '', pass: 0, problem: `it does not name ${named}` };
+  if (!text.toLowerCase().startsWith(prefix)) return { job, issue: '', pass: 0, problem: `it does not name ${named}` };
+  const tail = text.slice(prefix.length);
+  // `-p1` is not legal on the way in either (see above): one pass, one path.
+  const shape = /^([1-9][0-9]*)(?:-p([2-9]|[1-9][0-9]+))?$/.exec(tail);
+  if (shape === null) return { job, issue: '', pass: 0, problem: `"${tail}" is not an issue number with an optional -p<pass>` };
+  return { job, issue: shape[1], pass: shape[2] === undefined ? 1 : Number(shape[2]), problem: '' };
 }
 
 /** The one path three parties derive independently. */

@@ -676,41 +676,49 @@ function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, igno
  */
 const CUSTOM_UNPROVABLE = 'a custom pass publishes nothing that could prove it';
 
-/** Which proof a session owes, decided by the request that dispatched it. */
-function prove(gh, git, { request, issuedAt, worktree, repo, base, dispatchId, checkout, ignore, recordPath }) {
+/** Which proof a session owes, decided by the kind its dispatch recorded. */
+function prove(gh, git, { request, kind, issuedAt, worktree, repo, base, dispatchId, checkout, ignore, recordPath }) {
   if (request === null) {
     return missing(
       'unknown provenance — this host recorded no request for that dispatch',
       readThenSay(dispatchId, 'this host recorded no request for the dispatch, so nothing here knows which proof it owes'),
     );
   }
-  // ONE GRAMMAR, READ WHERE IT IS MINTED (`../triage/draft.mjs`). The hand-rolled
-  // reader here matched `/^(triage|brief)-/` and took the issue number off the
-  // END of the request, so `…-7-p2` read as issue "p2" and every suffixed pass
-  // was refused as naming no issue; `custom-…` matched no kind at all and fell
-  // through to `proveLanded`, which asked the parent checkout for a merged PR.
-  //
-  // A retired kind is still handled the conservative way: `refine-…` is no job
-  // this package knows, so it takes the implementation branch, is asked for a
-  // merged PR, and answers MISSING.
-  const named = parseRequest(request, repo);
-  if (named.job === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
-  // A JOB REQUEST THAT IS NOT THIS REPOSITORY'S IS REFUSED BY NAME. Reading it
-  // as an implementation instead is how an unrelated merged pull request becomes
-  // a triage pass's proof, and the identity is exactly what is in doubt.
-  if (named.problem !== '') {
-    return missing(
-      `the request "${request}" is no legal ${named.job} identity — ${named.problem}`,
-      rerun(['cat', recordPath], `a ${named.job} request reads <job>-<owner>-<repo>-<issue>[-p<pass>] for ${repo || 'the repository it was dispatched from'}; establish which pass this pane belongs to before anything closes it`),
-    );
-  }
-  if (named.job === 'custom') {
+  // KIND IS RECORDED AT MINT, not reconstructed from hyphens. `--name custom-one-two-2025`
+  // and a custom pass of issue 2025 on owner `one` repo `two` are the same
+  // bytes; only the verb that created the record knows which it was.
+  const recorded = ['implementation', 'triage', 'brief', 'custom'].includes(kind) ? kind : '';
+  if (recorded === 'implementation') return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
+  if (recorded === 'custom') {
     return missing(
       CUSTOM_UNPROVABLE,
       readThenSay(dispatchId, `${CUSTOM_UNPROVABLE}, and no pull request of this checkout stands in for reading it`),
     );
   }
-  return provePublication(gh, { repo, job: named.job, issue: named.issue, pass: named.pass, issuedAt, dispatchId, recordPath });
+  if (recorded === 'triage' || recorded === 'brief') {
+    const named = parseRequest(request, repo);
+    if (named.job !== recorded || named.problem !== '') {
+      return missing(
+        `the request "${request}" is no legal ${recorded} identity — ${named.problem || 'it names a different job'}`,
+        rerun(['cat', recordPath], `a ${recorded} request reads <job>-<owner>-<repo>-<issue>[-p<pass>] for ${repo || 'the repository it was dispatched from'}; establish which pass this pane belongs to before anything closes it`),
+      );
+    }
+    return provePublication(gh, { repo, job: named.job, issue: named.issue, pass: named.pass, issuedAt, dispatchId, recordPath });
+  }
+  // Records written before `--kind`: a mint of this repository is still a job.
+  // Anything else is implementation — including a job-prefixed `--name`.
+  // A kind-bearing mismatch is refused above rather than guessed.
+  const named = parseRequest(request, repo);
+  if (named.job && named.problem === '') {
+    if (named.job === 'custom') {
+      return missing(
+        CUSTOM_UNPROVABLE,
+        readThenSay(dispatchId, `${CUSTOM_UNPROVABLE}, and no pull request of this checkout stands in for reading it`),
+      );
+    }
+    return provePublication(gh, { repo, job: named.job, issue: named.issue, pass: named.pass, issuedAt, dispatchId, recordPath });
+  }
+  return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
 }
 
 // ── the mutation ─────────────────────────────────────────────────────────────
@@ -1365,6 +1373,7 @@ export function release(
       worktree,
       request: entry?.request ?? null,
       issuedAt: entry?.issuedAt ?? null,
+      kind: entry?.kind ?? '',
     });
   }
 
@@ -1383,6 +1392,7 @@ export function release(
       ? landed('bypassed by --no-proof — an operator looked at this pane')
       : prove(gh, git, {
           request: candidate.request,
+          kind: candidate.kind ?? '',
           issuedAt: candidate.issuedAt,
           worktree: candidate.worktree,
           repo,

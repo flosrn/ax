@@ -1407,6 +1407,34 @@ test('--tracker-repo is recorded, never forwarded: the repository a record belon
   assert.equal('repo' in ordinary, false);
 });
 
+test('--kind is recorded, never forwarded: which proof this pane owes', () => {
+  const home = scratch();
+  const args = freshArgs(home, 'req-kind');
+  args.splice(args.indexOf('--'), 0, '--kind', 'implementation');
+  const r = invoke(args, { env: { HOME: home } });
+
+  assert.equal(r.code, 0, r.out);
+  const rec = JSON.parse(readFileSync(recordAt(r.env, 'req-kind'), 'utf8'));
+  assert.equal(rec.kind, 'implementation');
+  assert.ok(
+    r.calls.every(call => !call.includes('--kind')),
+    'ax owns this flag; Orca must never see it',
+  );
+
+  const plain = invoke(freshArgs(home, 'req-nokind'), { env: { HOME: home } });
+  assert.equal(plain.code, 0, plain.out);
+  const ordinary = JSON.parse(readFileSync(recordAt(plain.env, 'req-nokind'), 'utf8'));
+  assert.equal('kind' in ordinary, false);
+
+  const bad = invoke((() => {
+    const a = freshArgs(home, 'req-badkind');
+    a.splice(a.indexOf('--'), 0, '--kind', 'wizard');
+    return a;
+  })(), { env: { HOME: home } });
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /invalid --kind "wizard"/);
+});
+
 // ── One replace at a time, and the gate is Run-scoped ───────────────────────
 
 test('replace gates the RECORDED Run, never an unscoped task id', () => {
