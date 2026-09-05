@@ -295,11 +295,16 @@ export function hostScopes(run, declarations) {
  * defect #88 is about, in a new place — so the listing and the fence read the
  * same liveness, through the same asking mechanism above.
  *
+ * `panes` is the RECORDED PANES of the store, keyed by handle
+ * (`livePanes`, ./slots.mjs) — never the dispatch index. A pane consuming a slot
+ * is a pane whichever phase recorded it, and reading the index here left the
+ * bash-era repair shape unasked as well as uncounted (#161).
+ *
  * LIVENESS IS A UNION, and only liveness: a handle the local list carries is
  * proven alive by it (#91, and no later ask can take that back), a handle a host
- * reports is alive too, and everything else stays absent — which `liveCount`
- * reads as "not capacity" and `paneVerdict` reads as MORT or INCONNU depending
- * on whether the answer covered it. Nothing here upgrades an absence.
+ * reports is alive too, and everything else stays absent — which the count reads
+ * as "not capacity" and `paneVerdict` reads as MORT or INCONNU depending on
+ * whether the answer covered it. Nothing here upgrades an absence.
  *
  * AN ABSENCE NO HOST ANSWERED FOR IS NOT AN ABSENCE (F-028), and that is what
  * `unresolved` carries: a record whose handle the local list does not hold,
@@ -311,23 +316,36 @@ export function hostScopes(run, declarations) {
  * inability, scoped by the repository each row names, so one project's
  * unreachable host cannot park another (#88).
  *
+ * EVERY HOST THAT COULD DECIDE IT IS ASKED, and the first that carries the
+ * handle ends the enquiry: two records placing one pane on two hosts is a
+ * disagreement neither answer settles alone, so an absence there is only
+ * unresolved once every named host has failed to produce it.
+ *
  * ASKED ONLY WHERE IT CAN CHANGE THE COUNT: a record with no pane, a local
  * dispatch, and a handle the first list already carries all spend nothing.
  */
-export function liveInventory({ local, index, scopes }) {
+export function liveInventory({ local, panes, scopes }) {
   const byHandle = new Map(local.byHandle);
   const unresolved = [];
-  for (const row of index.byDispatch.values()) {
-    if (row.handle === null || byHandle.has(row.handle)) continue;
-    const host = String(row.env ?? '');
-    if (host === '') continue;
-    const scope = scopes.scopeFor(host);
-    if (scope.ok !== true) {
-      unresolved.push({ handle: row.handle, repo: String(row.repo ?? ''), host, reason: scope.reason });
-      continue;
+  for (const row of panes.byHandle.values()) {
+    if (byHandle.has(row.handle)) continue;
+    let carried = false;
+    let unaskable = null;
+    for (const host of row.hosts) {
+      const scope = scopes.scopeFor(host);
+      if (scope.ok !== true) {
+        if (unaskable === null) unaskable = { host, reason: scope.reason };
+        continue;
+      }
+      const terminal = scope.byHandle.get(row.handle);
+      if (terminal !== undefined) {
+        byHandle.set(row.handle, terminal);
+        carried = true;
+        break;
+      }
     }
-    const terminal = scope.byHandle.get(row.handle);
-    if (terminal !== undefined) byHandle.set(row.handle, terminal);
+    if (carried || unaskable === null) continue;
+    unresolved.push({ handle: row.handle, repo: String(row.repo ?? ''), host: unaskable.host, reason: unaskable.reason });
   }
   return { ok: true, byHandle, unresolved, omitted: local.omitted, omittedHosts: local.omittedHosts, hosts: local.hosts };
 }

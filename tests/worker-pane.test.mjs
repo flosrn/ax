@@ -131,6 +131,15 @@ function listing({ local = [], hosts = {}, omittedHostIds = [] } = {}) {
 
 const declared = () => ({ ok: true, config: { dispatch: { hosts: { gapicore: { ssh: 'orca@vps' } } } } });
 
+/**
+ * The recorded panes of a store, as `livePanes` reads them (../src/worker/slots.mjs):
+ * keyed by handle, each row naming the repository its record names and the
+ * hosts it may be asked about. A record that recorded NO pane has no row here at
+ * all, which is why the "spends nothing" propositions below name no such entry —
+ * that absence is the reader's, and it is pinned in worker-slots.test.mjs.
+ */
+const panes = (...rows) => ({ byHandle: new Map(rows.map(row => [row.handle, { repo: '', hosts: [], ...row }])) });
+
 test('#88: a pane the local scope omits and its declared host confirms IS in the count', () => {
   // `ax worker ls` has judged a remote pane by asking its host since #76, while
   // both dispatch gates counted the local list alone — so a repository with
@@ -142,14 +151,12 @@ test('#88: a pane the local scope omits and its declared host confirms IS in the
     omittedHostIds: ['runtime:7930a317'],
   });
   const local = terminalInventory(run);
-  const index = {
-    byDispatch: new Map([
-      ['d1', { handle: 'term_here', env: '' }],
-      ['d2', { handle: 'term_far', env: 'gapicore' }],
-    ]),
-  };
 
-  const inventory = liveInventory({ local, index, scopes: hostScopes(run, declared) });
+  const inventory = liveInventory({
+    local,
+    panes: panes({ handle: 'term_here' }, { handle: 'term_far', hosts: ['gapicore'] }),
+    scopes: hostScopes(run, declared),
+  });
   assert.deepEqual([...inventory.byHandle.keys()].sort(), ['term_far', 'term_here']);
   assert.equal(inventory.omitted, true, 'the local scope’s own omission is carried, not laundered');
   assert.equal(calls.filter(line => line.includes('--environment')).length, 1, 'one ask per host, and only where the first list cannot answer');
@@ -158,18 +165,17 @@ test('#88: a pane the local scope omits and its declared host confirms IS in the
 test('#88: the union never upgrades an absence, and spends nothing where it cannot change the count', () => {
   const { run, calls } = listing({ local: [{ handle: 'term_here' }], hosts: { gapicore: [] } });
   const local = terminalInventory(run);
-  const index = {
-    byDispatch: new Map([
-      // Already proven alive locally: no ask, and no host may take it back (#91).
-      ['d1', { handle: 'term_here', env: 'gapicore' }],
-      // No pane recorded at all: nothing a host could answer about.
-      ['d2', { handle: null, env: 'gapicore' }],
-      // The host answered, and does not know this handle: it stays absent.
-      ['d3', { handle: 'term_gone', env: 'gapicore' }],
-    ]),
-  };
 
-  const inventory = liveInventory({ local, index, scopes: hostScopes(run, declared) });
+  const inventory = liveInventory({
+    local,
+    panes: panes(
+      // Already proven alive locally: no ask, and no host may take it back (#91).
+      { handle: 'term_here', hosts: ['gapicore'] },
+      // The host answered, and does not know this handle: it stays absent.
+      { handle: 'term_gone', hosts: ['gapicore'] },
+    ),
+    scopes: hostScopes(run, declared),
+  });
   assert.deepEqual([...inventory.byHandle.keys()], ['term_here']);
   assert.equal(calls.filter(line => line.includes('--environment')).length, 1, 'asked once, for the one row it could decide');
 });
@@ -177,10 +183,9 @@ test('#88: the union never upgrades an absence, and spends nothing where it cann
 test('#88: a host that cannot be asked leaves its pane OUT of the count, and NAMES it as unresolved', () => {
   const { run } = listing({ local: [], hosts: {} });
   const local = terminalInventory(run);
-  const index = { byDispatch: new Map([['d1', { handle: 'term_far', repo: 'flosrn/ax', env: 'gapicore' }]]) };
   const scopes = hostScopes(run, declared);
 
-  const inventory = liveInventory({ local, index, scopes });
+  const inventory = liveInventory({ local, panes: panes({ handle: 'term_far', repo: 'flosrn/ax', hosts: ['gapicore'] }), scopes });
   assert.equal(inventory.byHandle.size, 0, 'an absence of information is not a live pane');
   // …and it is not silence either: the row is carried out with the repository it
   // names, so a cap counted against it can refuse as an INABILITY rather than
@@ -200,17 +205,17 @@ test('#88: a host that cannot be asked leaves its pane OUT of the count, and NAM
 test('#88: a row the local list or its host DID decide is never unresolved', () => {
   const { run } = listing({ local: [{ handle: 'term_here' }], hosts: { gapicore: [{ handle: 'term_far' }] } });
   const local = terminalInventory(run);
-  const index = {
-    byDispatch: new Map([
-      ['d1', { handle: 'term_here', repo: 'flosrn/ax', env: '' }],
-      ['d2', { handle: 'term_far', repo: 'flosrn/ax', env: 'gapicore' }],
-      // The host answered and does not know it: decided, and decided DEAD.
-      ['d3', { handle: 'term_gone', repo: 'flosrn/ax', env: 'gapicore' }],
-      ['d4', { handle: null, repo: 'flosrn/ax', env: 'gapicore' }],
-    ]),
-  };
 
-  const inventory = liveInventory({ local, index, scopes: hostScopes(run, declared) });
+  const inventory = liveInventory({
+    local,
+    panes: panes(
+      { handle: 'term_here', repo: 'flosrn/ax' },
+      { handle: 'term_far', repo: 'flosrn/ax', hosts: ['gapicore'] },
+      // The host answered and does not know it: decided, and decided DEAD.
+      { handle: 'term_gone', repo: 'flosrn/ax', hosts: ['gapicore'] },
+    ),
+    scopes: hostScopes(run, declared),
+  });
   assert.deepEqual([...inventory.byHandle.keys()].sort(), ['term_far', 'term_here']);
   assert.deepEqual(inventory.unresolved, [], 'a decided row is not an unmeasurable one');
 });
@@ -218,10 +223,34 @@ test('#88: a row the local list or its host DID decide is never unresolved', () 
 test('#88: an undeclared host is never asked — the declaration is the only transport', () => {
   const { run, calls } = listing({ local: [], hosts: { gapicore: [{ handle: 'term_far' }] } });
   const local = terminalInventory(run);
-  const index = { byDispatch: new Map([['d1', { handle: 'term_far', env: 'someone-elses-host' }]]) };
   const scopes = hostScopes(run, declared);
 
-  assert.equal(liveInventory({ local, index, scopes }).byHandle.size, 0);
+  assert.equal(liveInventory({ local, panes: panes({ handle: 'term_far', hosts: ['someone-elses-host'] }), scopes }).byHandle.size, 0);
   assert.deepEqual(calls.filter(line => line.includes('--environment')), [], 'hostFor refuses a name no project declared');
   assert.equal(scopes.unaskable().length, 1, 'and the undercount is disclosed rather than silent');
+});
+
+test('#161: a pane two records place on two hosts is unresolved only when NEITHER could answer', () => {
+  // Two records naming one pane is the ordinary shape of a repair, and they can
+  // disagree about where it lives. An absence on one host settles nothing while
+  // another named host may still carry it, so every host that could decide the
+  // pane is asked — and the row is an inability only once all of them failed.
+  const answered = listing({ local: [], hosts: { gapicore: [{ handle: 'term_far' }] } });
+  const found = liveInventory({
+    local: terminalInventory(answered.run),
+    panes: panes({ handle: 'term_far', repo: 'flosrn/ax', hosts: ['someone-elses-host', 'gapicore'] }),
+    scopes: hostScopes(answered.run, declared),
+  });
+  assert.deepEqual([...found.byHandle.keys()], ['term_far'], 'the host that answered decided it');
+  assert.deepEqual(found.unresolved, [], 'and a decided pane is not an inability');
+
+  const silent = listing({ local: [], hosts: {} });
+  const scopes = hostScopes(silent.run, declared);
+  const unknown = liveInventory({
+    local: terminalInventory(silent.run),
+    panes: panes({ handle: 'term_far', repo: 'flosrn/ax', hosts: ['someone-elses-host', 'gapicore'] }),
+    scopes,
+  });
+  assert.equal(unknown.byHandle.size, 0);
+  assert.deepEqual(unknown.unresolved.map(row => row.handle), ['term_far'], 'named once, however many hosts failed');
 });

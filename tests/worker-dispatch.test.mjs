@@ -25,6 +25,11 @@ import { createRunner } from '../src/orca-bin.mjs';
 // either string moved.
 import { READY_LABEL } from '../src/triage/spec.mjs';
 import { dispatch, requestIdFor, retiredKnobs, trackerRepoOf } from '../src/worker/dispatch.mjs';
+// The listing verb, imported because #161's proposition crosses both: the
+// number `ax worker ls` prints and the number this fence refuses on are ONE
+// reader's answer, and a suite that could only see one of them is how they
+// diverged.
+import { ls } from '../src/worker/ls.mjs';
 import { reportPathFor } from '../src/worker/report.mjs';
 import { READY_LABEL as TICKET_READY_LABEL } from '../src/worker/ticket.mjs';
 import { readProof, verify } from '../src/worker/verify.mjs';
@@ -794,6 +799,121 @@ test('#88: an unreadable dispatch record cannot establish a cap, and dispatches 
   assert.equal(r.code, 3, 'an absence of information is not an absence of a child (F-028)');
   assert.match(r.out, /cannot be read/);
   assert.deepEqual(r.started, []);
+});
+
+// ── ONE READER, THREE VERBS (#161, ruled shape 2 by the maintainer 2026-09-04) ─
+// The dispatch index answers "which dispatch owns this record", and by its own
+// authority rule only a `worker-start` phase may name one. Capacity is a
+// different question — is this pane consuming a slot — and a pane recorded by
+// the bash-era `--inject` repair lives in a `worker-start-inject` phase, so it
+// carries no handle in that index: `ax worker ls` showed it VIVANT (a77e40b)
+// while both fences counted zero, and a dispatch was admitted past a full cap.
+//
+// `ls` is imported here on purpose: the proposition is that ONE number answers
+// both verbs, and it cannot be pinned inside either suite alone.
+
+/**
+ * The F-048 record shape, as the bash era left it on this machine's store: a
+ * `worker-start` that failed with no effects at all, repaired by an injected
+ * dispatch whose own phase carries the agent pane.
+ */
+function injectRepaired(store, request, { handle, repo: named = 'acme/widgets' } = {}) {
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, `${request}.json`),
+    JSON.stringify({
+      request,
+      orca: 'stub-orca',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      ...(named === '' ? {} : { repo: named }),
+      attempts: [
+        {
+          n: 1,
+          settled: false,
+          phases: [
+            {
+              name: 'task-create',
+              identity: `id-${request}-task`,
+              argv: ['stub-orca', 'orchestration', 'task-create'],
+              exit: 0,
+              receipt: { ok: true, result: { task: { id: 'task_live' }, mutation: { requestId: 'r', replayed: false } } },
+            },
+            {
+              name: 'worker-start',
+              identity: `id-${request}`,
+              argv: ['stub-orca', 'orchestration', 'worker-start'],
+              exit: 1,
+              receipt: { ok: false, error: { code: 'agent_readiness', message: 'timeout' } },
+            },
+            {
+              name: 'worker-start-inject',
+              identity: `id-${request}-inject`,
+              argv: ['stub-orca', 'orchestration', 'worker-start-inject'],
+              beganAt: '2026-09-04T10:05:00.000Z',
+              exit: 0,
+              receipt: {
+                ok: true,
+                result: {
+                  dispatchId: 'ctx_live',
+                  state: 'ready',
+                  effects: [{ kind: 'terminal', role: 'agent', action: 'reused_agent_terminal', id: handle }],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+}
+
+/** The listing, run against a store this file also puts a dispatch through. */
+const listing = (store, root, orca) => {
+  const { runner } = fakeOrca(orca);
+  return capture(() =>
+    ls([], {
+      runner,
+      exec: (bin, args) => (bin === 'gh' && args[0] === 'repo' ? { status: 0, stdout: 'acme/widgets\n', stderr: '' } : { status: 0, stdout: '', stderr: '' }),
+      env: { ORCA_DISPATCH_STORE: store },
+      cwd: root,
+    }),
+  );
+};
+
+test('#161: a pane recorded by a repair phase is one slot in ls AND in the fence', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  injectRepaired(store, 'gap-353-u3', { handle: 'term_live' });
+  const root = repo({ dispatch: { cap: 1 } });
+  const orca = { terminals: [{ handle: 'term_live' }, { handle: 'term_me', worktreePath: '/parent/wt' }] };
+
+  const listed = listing(store, root, orca);
+  assert.equal(listed.code, 0);
+  assert.match(listed.out, /1 live pane\(s\) in acme\/widgets/, 'the pane is up, whichever phase recorded it');
+
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { home, root, orca });
+  assert.equal(r.code, 1, 'one number for one question: the cap the listing filled is the cap that refuses');
+  assert.match(r.out, /1 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 1/);
+  assert.deepEqual(r.started, []);
+});
+
+test('#161: two records naming one pane are one slot, in both verbs', () => {
+  // A repair REUSES the agent terminal, so the injected phase and the record of
+  // the request it repaired can name one handle. Counting rows there would
+  // report two panes for one and refuse a dispatch the machine had room for.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  injectRepaired(store, 'gap-353-u3', { handle: 'term_live' });
+  livePane(store, 'gap-353-u4', { handle: 'term_live', dispatchId: 'ctx_reuse' });
+  const root = repo({ dispatch: { cap: 2 } });
+  const orca = { terminals: [{ handle: 'term_live' }, { handle: 'term_me', worktreePath: '/parent/wt' }] };
+
+  const listed = listing(store, root, orca);
+  assert.match(listed.out, /1 live pane\(s\) in acme\/widgets/, 'one terminal, one slot');
+
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { home, root, orca });
+  assert.equal(r.code, 0, 'the fence counts the same one, so the room is real');
+  assert.match(r.out, /1 live pane\(s\) in acme\/widgets/);
 });
 
 // ── placement ────────────────────────────────────────────────────────────────

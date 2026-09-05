@@ -66,11 +66,12 @@ import { redactSecrets } from '../redact.mjs';
 import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { checkoutSkew } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
-import { capLines, capVerdict, liveCount, machineCapOf, repoCapOf } from './capacity.mjs';
-import { hostScopes, liveInventory, terminalInventory } from './pane.mjs';
+import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
+import { hostScopes, terminalInventory } from './pane.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
-import { defaultStore, dispatchIndex } from './record.mjs';
+import { defaultStore } from './record.mjs';
+import { livePanes } from './slots.mjs';
 import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
@@ -839,9 +840,9 @@ function setLineage({ run, worktree, on, dry, env }) {
 
 /**
  * Whether this machine and this repository have room for ONE more pane — the
- * two counts, the two caps, and the verdict, read from the same store `ax worker
- * ls` prints and gated by the same contract `ax triage dispatch` uses
- * (./capacity.mjs).
+ * two counts, the two caps, and the verdict, counted through the one reader
+ * `ax worker ls` prints and `ax triage dispatch` refuses on (./slots.mjs) and
+ * gated by the same contract (./capacity.mjs).
  *
  * FAIL-CLOSED, for `ls`'s reason: the caller is about to decide whether it has
  * room for another child, so an unreadable terminal list or an unreadable record
@@ -862,23 +863,9 @@ function capRoom({ run, env, config, repo }) {
     return { cannot: local.reason, repair: 'orca open   # the cap is counted, never assumed — it does not fail open', lines: [] };
   }
   const store = defaultStore(env);
-  const index = dispatchIndex(store);
-  if (!index.missing && index.reason !== '') {
-    return {
-      cannot: `the dispatch store ${store} cannot be read, so live panes cannot be counted: ${index.reason.slice(0, 160)}`,
-      repair: `ls -ld ${store}`,
-      lines: [],
-    };
-  }
-  if (index.unreadable.length > 0) {
-    const first = index.unreadable[0];
-    return {
-      cannot: `${index.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live panes cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
-      repair: `ax worker ls --store ${store}   # see every record, then repair or remove the unreadable one`,
-      lines: [],
-    };
-  }
 
+  // The retired knob is refused BEFORE any host is asked: a shell artefact
+  // reading as the cap in force is not a reason to spend an ssh round trip.
   const ceiling = machineCapOf(config, env);
   if (!ceiling.ok) {
     return {
@@ -892,20 +879,38 @@ function capRoom({ run, env, config, repo }) {
     };
   }
 
-  // The same liveness `ax worker ls` prints: this runtime's list, plus every
-  // pane a host named by a record says it still owns (./pane.mjs). Counting the
-  // local list alone would fence a repository whose remote children are working,
-  // for exactly as long as the local scope omits their host.
+  // The same liveness `ax worker ls` prints, from the same reader: every
+  // recorded agent pane this runtime's list or a named host reports as up
+  // (./slots.mjs). Counting the local list alone would fence a repository whose
+  // remote children are working, for exactly as long as the local scope omits
+  // their host; counting the dispatch index would miss a pane a repair phase
+  // recorded, which is the number `ls` was already printing (#161).
   const scopes = hostScopes(run, () => ({ ok: true, config }));
-  const inventory = liveInventory({ local, index, scopes });
-  const live = liveCount({ index, inventory, repo });
+  const slots = livePanes({ store, local, scopes, repo });
+  if (slots.reason !== '' && !slots.missing) {
+    return {
+      cannot: `the dispatch store ${store} cannot be read, so live panes cannot be counted: ${slots.reason.slice(0, 160)}`,
+      repair: `ls -ld ${store}`,
+      lines: [],
+    };
+  }
+  if (slots.unreadable.length > 0) {
+    const first = slots.unreadable[0];
+    return {
+      cannot: `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live panes cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+      repair: `ax worker ls --store ${store}   # see every record, then repair or remove the unreadable one`,
+      lines: [],
+    };
+  }
+
+  const live = slots.live;
   const repoCap = repoCapOf(config);
   const verdict = capVerdict({ live, adding: 1, repo, repoCap, machineCap: ceiling.cap });
   const lines = [...capLines({ live, repo, repoCap, machineCap: ceiling.cap }), ...verdict.notes];
   for (const [host, scope] of scopes.unaskable()) {
     lines.push(`host '${host}' could not be asked, so its panes are NOT in either count: ${scope.reason}`);
   }
-  if (inventory.omitted) lines.push('hosts are omitted from this terminal list: a pane on one of them is UNKNOWN here, not counted');
+  if (slots.inventory.omitted) lines.push('hosts are omitted from this terminal list: a pane on one of them is UNKNOWN here, not counted');
   return { verdict, lines };
 }
 

@@ -86,6 +86,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
 import { hostScopes, paneVerdict, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore } from './record.mjs';
+import { livePanes } from './slots.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
 
@@ -432,54 +433,49 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   }
   const workers = workerIndex(run);
 
-  // EVERY record is joined, whatever the view. The two capacity counts, the
-  // F-048 drift and the worker-list comparison are facts about the whole store,
-  // and a flag that narrowed them would make the two views disagree about the
-  // machine — while the count is this verb's entire job.
+  // EVERY record is joined, whatever the view. The capacity counts, the F-048
+  // drift and the worker-list comparison are facts about the whole store, and a
+  // flag that narrowed them would make the two views disagree about the machine
+  // — while the count is this verb's entire job.
   //
   // `slug` is which repository THIS checkout is, and it decides only which
   // count a live pane joins — never whether the row is shown, and never a
   // verdict. A checkout `gh` cannot name loses the per-repository number and
   // keeps everything else (#88).
-  // CAPACITY IS A LIVE TERMINAL, NOT A PROVEN ASSOCIATION (#152, measured
-  // 2026-09-04 on the spec #145 wave). Three dispatches settled `failed` at
-  // `dispatch_input` (#151), `ax worker repair` submitted the brief, and the
-  // children WORKED — `ax worker tail` read status=running behind every one of
-  // those panes. This verb answered `0 live pane(s) in flosrn/ax` on the same
-  // store, three rows down from its own `ALIVE right now`, because it tallied
-  // only rows whose RELEASE-grade handle was established: `describeRecord`
-  // leaves that null until a receipt settled, on purpose (a release on an
-  // unproven association is a mutation on a guess).
   //
-  // Two questions, one measurement. "May this pane be closed" needs the
-  // association proven; "is this pane consuming a slot" needs only a covering
-  // inventory saying it is up. The second is what a cap gates, and the direction
-  // is already ruled where the fence reads it (./pane.mjs `liveInventory`): an
-  // unresolved pane may be alive and consuming capacity, so omitting it
-  // UNDERSTATES the count and a fence built on it admits a pane past a cap that
-  // is already full. Over-count refuses a dispatch an operator can re-run;
-  // under-count puts a fourth child on a machine that declared three.
+  // THE COUNT IS NOT TALLIED HERE (#161, ruled shape 2 on 2026-09-04). It comes
+  // from `livePanes` (./slots.mjs), the one reader both dispatch verbs count
+  // through, so the number this verb PRINTS as "the count that gates" is the
+  // number the fence read. Two tallies for one question is what this verb and
+  // the fence had: capacity is a live terminal, not a proven association
+  // (#152), and each of them widened to that on its own — this verb from its
+  // rows, the fence from a dispatch index that carries a handle only for a
+  // `worker-start` phase. A pane recorded by a legacy repair phase was VIVANT
+  // here and absent from the fence's count (#161).
   //
-  // So a leaked pane that reads VIVANT joins both counts, placed by its own
-  // record's `repo` like every other pane. The ROW does not move: still INCONNU,
-  // still routed to `worker-show`, never to a release.
-  // KEYED BY HANDLE, never by record — the number answers "how many panes",
-  // and two records can name ONE terminal: a `reused_agent_terminal` is the
-  // ordinary shape of a repair, and a `--replace` that moved a child leaves the
-  // old request naming the pane the new one runs in. Counting rows there would
-  // report two panes for one and refuse a dispatch the machine had room for.
-  // `liveCount` (./capacity.mjs) has always keyed its sets this way; this verb
-  // counted rows, and the widening below is exactly what would have made that
-  // divergence visible.
-  const alive = new Set();
-  const mine = new Set();
-  const nameless = new Set();
-  const unmeasured = { machine: new Set(), mine: new Set() };
+  // What stays this verb's own is the DISPOSITION of each row: a leaked pane
+  // counted as capacity is still INCONNU, still routed to `worker-show`, and
+  // never offered a release — the association is unproven, and a release on a
+  // guess is a mutation on a guess.
+  //
+  // The reader shares this verb's own host reader, so a pane it has to ask
+  // about costs the same one round trip the rows already pay for.
   let suspects = 0;
   let unplaced = 0;
   const drift = [];
   const matched = new Set();
-  const hosts = hostReader(hostScopes(run, declarations), terminals);
+  const scopes = hostScopes(run, declarations);
+  const hosts = hostReader(scopes, terminals);
+  const slots = livePanes({ store: dir, local: terminals, scopes, repo: slug });
+  if (slots.live === null) {
+    // The store was enumerated for the rows above and could not be enumerated
+    // for the count: it went away under this invocation. Fail-closed, like every
+    // other unreadable container here — the caller is about to decide whether it
+    // has room for another child.
+    bad(`the dispatch store ${dir} became unreadable while it was being counted: ${slots.reason}`);
+    fix(`ls -ld ${dir}   # the store must be readable before any worker can be counted`);
+    return 3;
+  }
 
   const views = files.map(file => {
     const row = describeRecord(dir, file);
@@ -523,56 +519,15 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // 2026-08-25 on 55-work and 56-work, whose recorded panes were in the
     // receipt all along.
     //
-    // It IS capacity when it reads VIVANT (#152). Resolved here, before the
-    // tally, because the tally is about the terminal and not about the proof.
+    // It IS capacity when it reads VIVANT (#152) — counted by the reader above,
+    // whose answer is about the terminal and not about the proof. What this
+    // suspicion decides here is the ROW: named, inspected, never released.
     const leaked = row.unsettled ?? null;
     const leakedRead = leaked === null ? null : hosts.verdictFor(leaked.handle, '', leaked.host);
     const leakedVerdict = leakedRead === null ? null : leakedRead.verdict;
     const leakedLive = leakedVerdict !== null && leakedVerdict.pane === 'VIVANT';
     if (leakedLive) suspects += 1;
 
-    // THE PANE THIS ROW ANSWERS FOR, selected ONCE and then read by both counts.
-    // The row's own when a receipt established one, the leaked one when it did
-    // not — and never both: `describeRecord` carries `unsettled` only while the
-    // row's own handle is null, so the two are mutually exclusive by
-    // construction.
-    //
-    // Selecting once is what closes the hole the first draft of this left: the
-    // unmeasured branch keyed on `row.handle`, so a leaked pane on a host that
-    // could NOT be asked (#70's `unasked-leak`) fell out of both counts and read
-    // as room. An unaskable pane is an inability, never a free slot (F-028), and
-    // `capVerdict` is what turns that number into a cannot-establish.
-    const candidate =
-      row.handle !== null
-        ? { handle: row.handle, host: row.host, pane, asked }
-        : leaked !== null
-          ? { handle: leaked.handle, host: leaked.host, pane: leakedVerdict.pane, asked: leakedRead.asked }
-          : null;
-
-    // THE TWO COUNTS (#88). The record's own `repo` places the pane, never the
-    // path its worktree sits at: the store is host-global, and a linked worktree
-    // of another checkout is still that checkout's pane. An absent key is
-    // UNKNOWN, so it joins the machine total alone and is disclosed as its own
-    // count (F-028).
-    const ours = row.repo !== '' && slug !== '' && row.repo.toLowerCase() === slug.toLowerCase();
-    if (candidate !== null && candidate.pane === 'VIVANT') {
-      alive.add(candidate.handle);
-      if (row.repo === '') nameless.add(candidate.handle);
-      else if (ours) mine.add(candidate.handle);
-    } else if (candidate !== null && candidate.pane === 'INCONNU' && candidate.host !== undefined && candidate.host !== '' && !candidate.asked) {
-      // A RECORDED PANE ON A HOST THAT COULD NOT BE ASKED — neither count
-      // carries it, and this is EXACTLY the set both dispatch verbs turn into
-      // cannot-establish (`liveInventory.unresolved`, ./capacity.mjs). The
-      // predicate is that narrow on purpose: a row INCONNU because a host
-      // ANSWERED without covering its own scope, or because no phase named a
-      // placement at all, is equally unknown — but no ask failed for it, and a
-      // count printed under "could not be asked" for a cause that did not
-      // happen is #88's own species, a number whose label the reader cannot
-      // verify. Those two keep the disclosures they already had: the row's own
-      // line, and the omitted-scope line below.
-      unmeasured.machine.add(candidate.handle);
-      if (ours) unmeasured.mine.add(candidate.handle);
-    }
 
     // THE F-048 line: a pane the runtime still owns, while Orca's accounting
     // either does not know it (a `--inject` repair) or calls its terminal
@@ -668,18 +623,23 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     }
   }
 
-  // THE TWO COUNTS (#88), through the same contract both dispatch verbs print —
-  // `capLines` from ./capacity.mjs, so the sentence a reader counts by is the one
-  // the fence refuses with. The NUMBERS are this verb's own, from the rows above:
-  // a live pane is a live pane whichever phase recorded it (#152), which is a
-  // wider reading than `dispatchIndex` gives the fence for a legacy repair phase.
-  // That residue is filed, not papered over.
-  capSummary({
-    machine: alive.size,
-    mine: mine.size,
-    unknown: nameless.size,
-    unmeasured: { machine: unmeasured.machine.size, mine: unmeasured.mine.size },
-  });
+  // THE COUNTS, from the reader both dispatch verbs count through (./slots.mjs),
+  // printed through the contract both of them print (`capLines`,
+  // ./capacity.mjs). The sentence a reader counts by and the fence a dispatch
+  // meets are now one measurement rather than two tallies that agreed by
+  // maintenance (#161).
+  capSummary(slots.live);
+  // A RECORD THE COUNT COULD NOT READ IS DISCLOSED, because this verb is
+  // lenient per record and the fences are not: a row can render here — with the
+  // pane its last usable receipt named — while the reader that counts refuses
+  // it, and a number silently missing a row it printed is the divergence #161
+  // is about. The dispatch verbs turn this same list into cannot-establish.
+  if (slots.unreadable.length > 0) {
+    const first = slots.unreadable[0];
+    note(
+      `${slots.unreadable.length} record(s) are in NEITHER count — the reader that counts panes cannot read them, and both dispatch verbs refuse on that (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+    );
+  }
   // COUNTED AS CAPACITY, NOT AS A PROVEN OWNER (#152). These panes are in the
   // totals above — a terminal that is up occupies a slot whatever recorded it —
   // and what stays unproven is WHOSE they are, which is why the rows route to an

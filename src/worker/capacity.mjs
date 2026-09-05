@@ -40,12 +40,19 @@
 // operator arms it. So an unnamed pane is never silently dropped either — every
 // caller prints how many there were.
 //
-// PURE, AND DELIBERATELY IMPORT-FREE. Both counts arrive as data (a dispatch
-// index and a terminal inventory), both caps arrive as a validated config, and
-// the verdict is a value. That is what lets one contract answer for `ax worker
-// dispatch`, `ax triage dispatch` and `ax worker ls` without any of them
-// reaching into another's module — and what lets the whole thing be graded
-// offline, with no store, no runtime and no `gh`.
+// PURE, AND DELIBERATELY IMPORT-FREE. The counts arrive as a value from the one
+// reader that takes them (`livePanes`, ./slots.mjs), both caps arrive as a
+// validated config, and the verdict is a value. That is what lets one contract
+// answer for `ax worker dispatch`, `ax triage dispatch` and `ax worker ls`
+// without any of them reaching into another's module — and what lets the whole
+// thing be graded offline, with no store, no runtime and no `gh`.
+//
+// THE COUNTING ITSELF IS NOT HERE, and that is #161's half of the same rule.
+// `liveCount` lived in this file over a DISPATCH INDEX, so the number a cap
+// gated answered "which dispatch owns this record" instead of "is this pane
+// consuming a slot", and a pane recorded by a legacy repair phase had no slot in
+// it while `ax worker ls` printed it VIVANT. Capacity now has its own reader,
+// keyed on the recorded pane; what stays here is the caps and the refusal.
 
 /** The per-repository cap a project that declares none still gets. */
 export const REPO_CAP_DEFAULT = 3;
@@ -101,64 +108,6 @@ export function machineCapOf(config = {}, env = {}) {
   return { ok: true, cap: asCap(config?.dispatch?.machineCap) };
 }
 
-/**
- * The two counts, from the record↔pane association `ls` reads liveness from: a
- * dispatch record whose recorded handle is still alive. Never `worker-list`
- * (F-048: that counter answered zero while children were working), and never the
- * raw pane count — an editor's pane is not dispatch capacity.
- *
- *   `machine`     every live recorded pane on this host
- *   `mine`        those whose record names `repo`, compared case-insensitively
- *                 because that is the comparison `./start.mjs` already makes
- *                 when it refuses a foreign record for the same request id
- *   `unknown`     those whose record names no repository at all — carried in
- *                 `machine`, absent from `mine`, and disclosed by every caller
- *   `unmeasured`  the panes whose LIVENESS could not be established at all,
- *                 scoped the same way. NOT a count of dead panes: a container
- *                 that could not be read, which is why `capVerdict` treats it
- *                 as an inability rather than as room (F-028)
- *
- * `inventory.unresolved` is where the third number comes from — the rows
- * `liveInventory` could not decide because the host their record names could not
- * be asked (../worker/pane.mjs). An inventory carrying no such list is a caller
- * that asked no host, so every row was decided by the list it passed.
- *
- * A caller that cannot name its own repository gets `mine: 0`, which is an
- * absence to act on and never a zero to spend: `capVerdict` says so.
- */
-export function liveCount({ index, inventory, repo = '' }) {
-  const ours = String(repo ?? '').trim().toLowerCase();
-  const named = row => String(row.repo ?? '').trim().toLowerCase();
-  const machine = new Set();
-  const mine = new Set();
-  const unknown = new Set();
-
-  for (const row of index.byDispatch.values()) {
-    if (row.handle === null) continue;
-    const terminal = inventory.byHandle.get(row.handle);
-    if (terminal === undefined || terminal.orphaned === true) continue;
-    machine.add(row.handle);
-
-    if (named(row) === '') unknown.add(row.handle);
-    else if (ours !== '' && named(row) === ours) mine.add(row.handle);
-  }
-
-  const undecided = Array.isArray(inventory.unresolved) ? inventory.unresolved : [];
-  const unmeasuredMachine = new Set();
-  const unmeasuredMine = new Set();
-  for (const row of undecided) {
-    if (row.handle === null || machine.has(row.handle)) continue;
-    unmeasuredMachine.add(row.handle);
-    if (ours !== '' && named(row) === ours) unmeasuredMine.add(row.handle);
-  }
-
-  return {
-    machine: machine.size,
-    mine: mine.size,
-    unknown: unknown.size,
-    unmeasured: { machine: unmeasuredMachine.size, mine: unmeasuredMine.size },
-  };
-}
 
 /** Which repository a count belongs to, said the same way in every message. */
 const inRepo = repo => (repo === '' ? 'this repository' : repo);
