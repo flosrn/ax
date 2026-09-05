@@ -36,10 +36,13 @@
 //      verb, so it moves. The Bash's "reserved 2" line is dead and does not
 //      survive the port.
 //   3  cannot establish — "no prGate declared", an unreadable merge record,
-//      a recorded merge whose ticket closure could not be observed, and a
+//      a recorded merge whose ticket closure could not be observed, a
 //      review-thread read with no observed final page: a 200 whose `nodes` or
 //      `hasNextPage` is malformed leaves resolution unread, and unread is not
-//      "no threads" (#175, F-028). The codes themselves are unchanged.
+//      "no threads" (#175, F-028) — and a check-run read that never reconciled
+//      with the total the endpoint announced: one page is a hundred rows, and
+//      the pages this run could not get are unread, never absent (#176). The
+//      codes themselves are unchanged.
 // A refusal outranks an inability to establish when both apply: neither merges,
 // and a named reason is the more actionable of the two.
 //
@@ -915,7 +918,7 @@ export function gate(
 
   section('what this run prevents and what it merely detects (R21)');
   note(
-    `prevents  the declared checks, the review threads — read to an OBSERVED final page, never to a successful response — staleness, the residual file and the closing keyword: each read against live state on ${sha}`,
+    `prevents  the declared checks — every page of the check-run list, reconciled against the total the endpoint announces for this SHA, never the first hundred rows (#176) — the review threads, read to an OBSERVED final page rather than to a successful response, staleness, the residual file and the closing keyword: each read against live state on ${sha}`,
   );
   note(
     "detects   the commits landed since the PR opened: a body's staleness is not mechanically decidable, so that ground lists and refuses, it does not verify — except a clean merge from the base, which is movement no body written before it could describe (#90)",

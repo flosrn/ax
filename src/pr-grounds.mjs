@@ -288,63 +288,217 @@ export function releaseShape({ author, labels, declared }) {
 }
 
 /**
+ * The most check-runs one page of this endpoint answers with, and the most
+ * pages this run will ask for.
+ *
+ * The page size is the API's own cap. The page bound is what makes the loop
+ * terminate on a total the endpoint keeps announcing and never delivers:
+ * 2500 runs on one commit is far past anything a repository declares, and
+ * crossing it registers an `unknown` — which fails this gate closed — never a
+ * truncated read reported as a complete one.
+ */
+const CHECK_RUNS_PAGE = 100;
+const MAX_CHECK_PAGES = 25;
+
+/**
+ * AN ANNOUNCED TOTAL, in the words a receipt has to print. `shapeOf` answers
+ * "number" for `-1` and for `1.5`, which sends nobody anywhere: a count that
+ * is a number but not a countable one is printed as the value it was.
+ */
+const countShape = value => (typeof value === 'number' ? String(value) : shapeOf(value));
+
+/**
  * Ground 1. The declared checks, decided and passing on that exact SHA.
  * Never a count comparison between two PRs (F-014).
  *
  * Returns `ciDecided` beside the entries: threadsGround consumes it, and the
  * dependency is in the signatures rather than in a shared mutable.
+ *
+ * ONE PAGE IS NOT THE LIST (#176). This endpoint caps a page at one hundred
+ * rows and announces the total of the whole list beside them, and the read was
+ * a single `?per_page=100`. On a commit with 101 runs the hundred-and-first was
+ * invisible in both directions that matter: a declared check living only there
+ * read as "has NO run", and — where an earlier page carried a same-named green
+ * row, which re-runs and matrix jobs produce routinely — a pending or failing
+ * later run was hidden behind that green one. So the read is PAGINATED, and
+ * "complete" is a positive reconciliation rather than the absence of a reason
+ * to keep going: a valid announced total, and that many DISTINCT runs observed.
+ *
+ * DISTINCT BY `id`, because the failure this bound exists for is a page that
+ * comes back twice. The stubs of a broken proxy — and `?page=` past the end on
+ * some GitHub Enterprise versions — answer page 1 again rather than an empty
+ * list, so counting rows would climb to the announced total over one page read
+ * repeatedly. A page that adds no new id is an unknown, exactly as a repeated
+ * cursor is on the thread read (#175).
+ *
+ * NOT `gh api --paginate`. It would hide the two things this loop decides on:
+ * each page's own `total_count`, which is what a mid-read total change looks
+ * like, and WHICH page failed. `--paginate` is the repair a human runs, not the
+ * read a gate reconciles.
+ *
+ * THIS IS NOT AN ATOMIC SNAPSHOT, and nothing here claims one. Runs can be
+ * created between the first page and the last; what the gate guarantees is that
+ * it read every page the endpoint offered for the validated head SHA and
+ * reconciled them against an announced total, never that GitHub stood still
+ * while it did. The declared-name policy is untouched: unrelated names gain no
+ * authority by appearing on a later page, and a declared name with no run in a
+ * COMPLETE read is the same refusal it always was.
  */
 export function ciGround({ run, slug, sha, declared, pr }) {
   const out = account();
+  const short = sha.slice(0, 12);
+  const call = `gh api repos/${slug}/commits/${sha}/check-runs`;
+  const names = `gh api --paginate repos/${slug}/commits/${sha}/check-runs --jq '.check_runs[].name'`;
+  // The repair every incomplete read prints: every page, with the two fields
+  // this loop reconciles.
+  const probe = `gh api --paginate repos/${slug}/commits/${sha}/check-runs --jq '{total_count, names: [.check_runs[].name]}'   # read the pages this gate could not, then re-run it`;
+
   let ciDecided = true;
-  const checkRuns = payload(run(['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`]));
-  if (!checkRuns.ok) {
+  /** The total the pages announce, or null while no page has answered one. */
+  let announced = null;
+  let established = false;
+  let pagesRead = 0;
+  /** The distinct runs observed, in observation order, and the ids behind them. */
+  const runs = [];
+  const seen = new Set();
+  /** Observed against announced, with "unknown" said as unknown, never as 0. */
+  const tally = () => `${runs.length} distinct run(s) observed of ${announced === null ? 'an announced total this run could not read' : `the ${announced} announced`}`;
+  const unread = (message, repair = probe) => {
     ciDecided = false;
-    out.unknown(
-      `checks: 'gh api repos/${slug}/commits/${sha}/check-runs' ${checkRuns.reason}; CI state unread`,
-      `gh api repos/${slug}/commits/${sha}/check-runs`,
-    );
-  } else {
-    let runs = null;
-    try {
-      runs = must(checkRuns.value, 'check_runs', 'the check-runs payload');
-      if (!Array.isArray(runs)) throw new Error('the check-runs payload: check_runs is not a list');
-    } catch (error) {
-      ciDecided = false;
-      out.unknown(`checks: ${error.message}; CI state unread`, `gh api repos/${slug}/commits/${sha}/check-runs`);
-      runs = null;
+    out.unknown(message, repair);
+  };
+
+  for (let page = 1; page <= MAX_CHECK_PAGES; page += 1) {
+    // The SHA is the one this run validated, on every page: the read never
+    // moves to a branch name or to a dashboard that follows the head.
+    const query = `repos/${slug}/commits/${sha}/check-runs?per_page=${CHECK_RUNS_PAGE}&page=${page}`;
+    const answered = payload(run(['api', query]));
+    if (!answered.ok) {
+      // The repair is THE PAGE THAT FAILED, quoted: an unquoted `&` would
+      // background the command a caller pasted, and the whole-list read is
+      // the wrong instrument for a call that did not answer.
+      unread(`checks: page ${page} of '${call}' ${answered.reason}; ${tally()} on ${short}; CI state unread`, `gh api '${query}'   # the page this read could not get; then re-run the gate`);
+      break;
     }
-    if (runs !== null) {
-      out.note(`checks: ${runs.length} check-run(s) reported on ${sha.slice(0, 12)}`);
-      for (const expected of declared.expected) {
-        const rows = runs.filter(row => row?.name === expected);
-        if (rows.length === 0) {
-          // A check that never ran is not a check that passed. This is the trap
-          // the gate exists for: when a guard job fails early, everything
-          // downstream never executes.
-          out.refuse(
-            `checks: expected ${declared.mode} check '${clean(expected)}' has NO run on ${sha.slice(0, 12)}`,
-            `gh api repos/${slug}/commits/${sha}/check-runs --jq '.check_runs[].name'   # is the name still spelled this way?`,
-          );
-          continue;
-        }
-        const pending = rows.find(row => row?.status !== 'completed');
-        if (pending) {
-          ciDecided = false;
-          out.unknown(`checks: '${clean(expected)}' is ${clean(pending.status)} on ${sha.slice(0, 12)} — not decided`, 'gh run watch   # then re-run this gate');
-          continue;
-        }
-        for (const row of rows) {
-          // `neutral` is neither a success nor a failure, and the old dashboard
-          // did not see it at all (F-031). Here it is a refusal like any other
-          // non-success.
-          if (row?.conclusion !== 'success') {
-            out.refuse(
-              `checks: '${clean(expected)}' concluded ${clean(row?.conclusion)} on ${sha.slice(0, 12)}`,
-              `gh pr checks ${pr} --repo ${slug}   # then fix the job, or re-run it`,
-            );
-          }
-        }
+    let rows;
+    let total;
+    try {
+      rows = must(answered.value, 'check_runs', 'the check-runs payload');
+      if (!Array.isArray(rows)) throw new Error('the check-runs payload: check_runs is not a list');
+      total = answered.value?.total_count;
+    } catch (error) {
+      unread(`checks: page ${page} — ${error.message}; ${tally()} on ${short}; CI state unread`, call);
+      break;
+    }
+    // A COUNTABLE total, or nothing to reconcile against. `Number.isInteger`
+    // is the whole rule: a string, a float and a negative are each a total
+    // this read cannot complete on, and defaulting any of them to the rows in
+    // hand is F-028 pointed at the merge.
+    if (!Number.isInteger(total) || total < 0) {
+      unread(
+        `checks: page ${page} announces no readable total on ${short} ('total_count' is ${countShape(total)}), so how many check-runs exist there is unknown, not zero`,
+      );
+      break;
+    }
+    if (announced === null) announced = total;
+    else if (total !== announced) {
+      unread(
+        `checks: page ${page} announces ${total} check-run(s) on ${short} where page 1 announced ${announced}, so the pages cannot be reconciled and the read is incomplete`,
+      );
+      break;
+    }
+    let fresh = 0;
+    let unidentified = false;
+    for (const row of rows) {
+      const id = row === null || typeof row !== 'object' ? undefined : row.id;
+      if (typeof id !== 'number' && typeof id !== 'string') {
+        unread(
+          `checks: page ${page} carries a run with no readable 'id' ('id' is ${shapeOf(id)}), so this read cannot tell a new page from a repeat of one it already observed`,
+        );
+        unidentified = true;
+        break;
+      }
+      const key = `${typeof id}:${id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      runs.push(row);
+      fresh += 1;
+    }
+    if (unidentified) break;
+    pagesRead = page;
+    out.note(`checks: page ${page} — ${rows.length} run(s) read, ${runs.length} distinct of ${announced} announced on ${short}`);
+    if (runs.length > announced) {
+      unread(`checks: the read observed ${runs.length} distinct run(s) on ${short} where ${announced} were announced, so the pages cannot be reconciled`);
+      break;
+    }
+    // The ONE thing that establishes the read: every announced run observed.
+    if (runs.length === announced) {
+      established = true;
+      break;
+    }
+    if (rows.length < CHECK_RUNS_PAGE) {
+      unread(
+        `checks: page ${page} answered ${rows.length} run(s) and the read stands at ${runs.length} of the ${announced} announced on ${short}, so the endpoint's pagination ended before its own total and the rest are unread`,
+      );
+      break;
+    }
+    if (fresh === 0) {
+      unread(
+        `checks: page ${page} repeats runs this read already observed and adds none, so advancing would re-read it while ${announced - runs.length} of the ${announced} announced run(s) stay unread on ${short}`,
+      );
+      break;
+    }
+    if (page === MAX_CHECK_PAGES) {
+      unread(`checks: pagination exceeded ${MAX_CHECK_PAGES} pages; stopped rather than looping, so the check-run read on ${short} is unestablished (${tally()})`);
+    }
+  }
+
+  // The receipt's own distinction between a read that RECONCILED and one that
+  // merely stopped. The `else` is the structural backstop for that obligation:
+  // whatever a later exit path forgets to name, an unreconciled read still
+  // fails the gate closed instead of passing on the rows it happened to get.
+  if (established) {
+    out.note(`checks: ${runs.length} check-run(s) reported on ${short} — the read is complete: every one of the ${announced} announced observed over ${pagesRead} page(s)`);
+  } else if (out.unknowns.length === 0) {
+    unread(`checks: the check-run read on ${short} ended after ${pagesRead} page(s) with no total it could reconcile, so CI state is unestablished`);
+  }
+
+  for (const expected of declared.expected) {
+    const rows = runs.filter(row => row?.name === expected);
+    if (rows.length === 0) {
+      // A check that never ran is not a check that passed. This is the trap
+      // the gate exists for: when a guard job fails early, everything
+      // downstream never executes.
+      //
+      // ONLY ON A COMPLETE READ (#176). On an incomplete one the run may sit
+      // on a page this gate never got, so absence is unproven — and the
+      // unknown above already holds the gate closed. Refusing here would send
+      // a worker to fix a check that is green on page 2.
+      if (established) {
+        out.refuse(
+          `checks: expected ${declared.mode} check '${clean(expected)}' has NO run on ${short}`,
+          `${names}   # is the name still spelled this way?`,
+        );
+      }
+      continue;
+    }
+    const pending = rows.find(row => row?.status !== 'completed');
+    if (pending) {
+      ciDecided = false;
+      out.unknown(`checks: '${clean(expected)}' is ${clean(pending.status)} on ${short} — not decided`, 'gh run watch   # then re-run this gate');
+      continue;
+    }
+    for (const row of rows) {
+      // `neutral` is neither a success nor a failure, and the old dashboard
+      // did not see it at all (F-031). Here it is a refusal like any other
+      // non-success. Every row of the name is judged, on whichever page it
+      // was observed: a later re-run concluding `failure` refuses even where
+      // an earlier page carried a green row of the same name.
+      if (row?.conclusion !== 'success') {
+        out.refuse(
+          `checks: '${clean(expected)}' concluded ${clean(row?.conclusion)} on ${short}`,
+          `gh pr checks ${pr} --repo ${slug}   # then fix the job, or re-run it`,
+        );
       }
     }
   }

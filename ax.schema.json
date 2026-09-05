@@ -230,7 +230,7 @@
           "type": "array",
           "items": { "type": "string" },
           "minItems": 1,
-          "description": "The check-run names that must each be green, for a repository with no aggregate job. Every name must have a COMPLETED run whose conclusion is success on the exact head SHA; a name with no run at all is a refusal, not an absence."
+          "description": "The check-run names that must each be green, for a repository with no aggregate job. Every name must have a COMPLETED run whose conclusion is success on the exact head SHA; a name with no run at all is a refusal, not an absence. The gate looks for them over EVERY page of that SHA's check-run list, reconciled against the total the endpoint announces, so a name is never missed for sitting past the first hundred rows and a later re-run concluding failure is not hidden by an earlier green row of the same name (#176). A complete read is not an atomic snapshot: runs created while it paginates belong to the next run of the gate."
         },
         "residualFindings": {
           "type": "string",
