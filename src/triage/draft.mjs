@@ -25,6 +25,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { gitBlobSha } from '../hash.mjs';
+import { ROLE_BY_JOB } from './spec.mjs';
 
 /** Where every triage draft lives, relative to the repository root. Gitignored, by design. */
 export const DRAFT_DIR = join('.scratch', 'triage');
@@ -69,6 +70,59 @@ export const draftDirFor = root => join(root, DRAFT_DIR);
  */
 export const requestFor = ({ job, repo, issue, pass = 1 }) =>
   `${job}-${String(repo).replace(/\//g, '-')}-${issue}${pass > 1 ? `-p${pass}` : ''}`;
+
+/**
+ * THE SAME GRAMMAR, READ BACK: which job, issue and pass a request names, judged
+ * against the repository identity that minted it.
+ *
+ * It lives beside `requestFor` because it is the same rule in the other
+ * direction, and because the alternative was measured: `../worker/release.mjs`
+ * took requests apart with `/^(triage|brief)-/` and `request.split('-').pop()`,
+ * which reads `p2` as the issue number of every suffixed pass — so pass 2 was
+ * refused as "the request names no issue" and its pane could never close, while
+ * `custom` matched no kind at all and fell through to the implementation rule,
+ * where it asked the PARENT CHECKOUT for a merged pull request and could find
+ * one belonging to somebody else's branch.
+ *
+ * THE REPOSITORY IS AN ARGUMENT, NEVER A GUESS. `owner/ax-tools` slugifies to
+ * `owner-ax-tools`, and no amount of hyphen counting says where the repository
+ * stops and the issue begins. The recorded identity says, so it is passed in and
+ * matched as a whole — trimmed and case-folded, the comparison
+ * `../worker/release.mjs` already places a row with.
+ *
+ * Three shapes, and the third is the one that keeps a mismatch honest:
+ *
+ *   `{ job: null, problem: '' }` — the request names no triage job. An
+ *   implementation request, whose proof is its own branch's merged PR: the
+ *   grammar above is complete, so a request with no job word never was one.
+ *
+ *   `{ job, problem: '<why>' }` — it names a job word and is not a legal mint
+ *   of this repository. `prove` consults the recorded `kind` before treating
+ *   that as a refusal: a `--name custom-migration` records `kind:
+ *   implementation` and never comes here as a job.
+ *
+ *   `{ job, issue, pass, problem: '' }` — a legal mint of this repository.
+ *
+ * Neither of the last two shapes TYPES a record on its own, and `prove` never
+ * reads them that way: a request carrying a job word and a record carrying no
+ * `kind` is an untypeable pane that closes on nothing (../worker/release.mjs).
+ */
+export function parseRequest(request, repo) {
+  const text = String(request ?? '');
+  // The job vocabulary is `spec.mjs`'s, where each job's role and playbook are
+  // declared: a private list here would be a fourth place a job word lives.
+  const job = Object.keys(ROLE_BY_JOB).find(name => text.toLowerCase().startsWith(`${name}-`)) ?? null;
+  if (job === null) return { job: null, issue: '', pass: 0, problem: '' };
+  const named = String(repo ?? '').trim();
+  if (named === '') return { job, issue: '', pass: 0, problem: 'this host recorded no repository for it, so there is no identity to read it against' };
+  const prefix = `${job}-${named.replace(/\//g, '-')}-`.toLowerCase();
+  if (!text.toLowerCase().startsWith(prefix)) return { job, issue: '', pass: 0, problem: `it does not name ${named}` };
+  const tail = text.slice(prefix.length);
+  // `-p1` is not legal on the way in either (see above): one pass, one path.
+  const shape = /^([1-9][0-9]*)(?:-p([2-9]|[1-9][0-9]+))?$/.exec(tail);
+  if (shape === null) return { job, issue: '', pass: 0, problem: `"${tail}" is not an issue number with an optional -p<pass>` };
+  return { job, issue: shape[1], pass: shape[2] === undefined ? 1 : Number(shape[2]), problem: '' };
+}
 
 /** The one path three parties derive independently. */
 export const draftPath = (root, identity) => join(draftDirFor(root), `${requestFor(identity)}.md`);

@@ -741,7 +741,7 @@ export function dispatch(
       // #83), so a pass dispatched without it hands `ax triage release` a pane
       // it can never free.
       code = startFn(
-        ['--request', request, '--run', runId, '--spec-file', path, '--tracker-repo', slug, ...(bin ? ['--orca', bin] : []), '--', '--worktree', 'current', '--agent', 'omp'],
+        ['--request', request, '--run', runId, '--spec-file', path, '--tracker-repo', slug, '--kind', job, ...(bin ? ['--orca', bin] : []), '--', '--worktree', 'current', '--agent', 'omp'],
         { env, runner: run },
       );
     }

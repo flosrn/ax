@@ -36,6 +36,7 @@ import { repoSlug } from '../gh.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
 import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
 import { draftDirFor, passesIn, readDraft, requestFor } from './draft.mjs';
+import { publicationMarker, withoutMarker } from './publication.mjs';
 import { carriedClasses, declaredCarried, declaredProvenance, sameLabel } from './provenance.mjs';
 import { REFINE_REMOVED, READY_LABEL } from './spec.mjs';
 
@@ -82,6 +83,20 @@ const DISCLAIMER_BY_JOB = {
  * comparison, not a heuristic about headings or comment counts.
  */
 const RENDERINGS = Object.values(DISCLAIMER_BY_JOB);
+
+/**
+ * WHAT THE DISCLAIMER CANNOT SAY, and the reason a publication now carries a
+ * second line of its own (#178).
+ *
+ * The marker above recognizes a JOB's publication, which is what the duplicate
+ * gate needs. It cannot recognize a PASS: `triage` pass 1 and `triage` pass 2
+ * carry the same wording, so nothing in a landed comment said which dispatch it
+ * discharges. `ax worker release` needed exactly that — it proved a triage pane
+ * with "a comment newer than the dispatch", and a reporter's reply satisfied it.
+ * So the attribution is stamped here, through the shared rule both verbs read
+ * (`./publication.mjs`), and it is invisible to the reader and to the bytes
+ * comparison below.
+ */
 
 /** Tracker text and local text compared on the one axis GitHub does not alter. */
 const normalize = text => String(text ?? '').replace(/\r\n/g, '\n').trim();
@@ -492,7 +507,10 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
       ...draft.remove.flatMap(label => ['--remove-label', label]),
     ];
     const bodyPath = `${draft.path.slice(0, -'.md'.length)}.body.md`;
-    const body = `${DISCLAIMER_BY_JOB[job]}\n\n${draft.body}\n`;
+    // The attribution rides ABOVE the disclaimer, because everything below it is
+    // the rendering `tracker.verbatim` compares: a marker in the middle of the
+    // body would make one draft's bytes depend on which pass published them.
+    const body = `${publicationMarker({ job, repo: slug, issue, pass })}\n${DISCLAIMER_BY_JOB[job]}\n\n${draft.body}\n`;
     if (!dry) {
       try {
         writeFileSync(bodyPath, body);
@@ -710,7 +728,12 @@ function trackerState(gh, { slug, issue, marker, body }) {
   return {
     ok: true,
     mine: answer.comments.filter(comment => String(comment?.body ?? '').includes(marker)).map(where),
-    verbatim: answer.comments.filter(comment => published.includes(normalize(comment?.body))).map(where),
+    // Marker-blind, in BOTH directions: the exact-bytes hazard is a leftover
+    // draft re-published, and a comment that carries this draft's rendering is
+    // that hazard whether it was stamped for pass 1, for pass 4, or published
+    // before attribution existed at all (#178). Stripping the attribution here
+    // is what keeps the duplicate gate the same gate it was.
+    verbatim: answer.comments.filter(comment => published.includes(normalize(withoutMarker(comment?.body)))).map(where),
     movedAt: Number.isFinite(movedAt) ? movedAt : null,
     carried: answer.labels.map(label => String(label?.name ?? '')).filter(name => name !== ''),
   };

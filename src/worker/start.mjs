@@ -120,6 +120,11 @@ function parse(argv) {
   // host-global, and the frontier, release and settle use this name to tell
   // one checkout's `42-…` record from another's.
   let trackerRepo = '';
+  // WHICH proof this pane owes (`--kind`, ax-owned like `--because`): written
+  // by the verb that minted the request, so `worker release` does not have to
+  // reconstruct a job from a hyphenated name. Omitted on records written
+  // before this field existed.
+  let kind = '';
   let passthru = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -141,6 +146,7 @@ function parse(argv) {
       ['--orca', value => { explicitOrca = value; }],
       ['--because', value => { because = value; }],
       ['--tracker-repo', value => { trackerRepo = value; }],
+      ['--kind', value => { kind = value; }],
     ];
     const split = fields.find(([name]) => arg === name);
     if (split) {
@@ -157,7 +163,7 @@ function parse(argv) {
     passthru.push(arg);
   }
 
-  return { mode, request, runId, specFile, explicitOrca, because, trackerRepo, passthru };
+  return { mode, request, runId, specFile, explicitOrca, because, trackerRepo, kind, passthru };
 }
 
 /** Refusals that must happen before binary resolution, claim or mutation. */
@@ -761,6 +767,9 @@ export function start(
   const parsed = parse(argv);
   if (parsed.error) return callerBug(parsed.error);
   if (!requestIdOk(parsed.request)) return callerBug(`invalid --request ${JSON.stringify(parsed.request)}`);
+  if (parsed.kind !== '' && !['implementation', 'triage', 'brief', 'custom'].includes(parsed.kind)) {
+    return callerBug(`invalid --kind ${JSON.stringify(parsed.kind)}`);
+  }
 
   const placement = placementRefusal(parsed.passthru);
   if (placement) return refuse(placement);
@@ -865,7 +874,7 @@ export function start(
     }
 
     if (claim.claimed) {
-      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, now });
       return fresh(claim.path, spec, parsed.passthru, context);
     }
 
@@ -926,7 +935,7 @@ export function start(
       if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
       // Install the new owner's identity before releasing the lock. A sibling
       // then sees a zero-phase record and cannot call it stale.
-      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, now });
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, now });
     } catch (error) {
       return cannot(`could not preserve stale foreign record: ${String(error)}`);
     }

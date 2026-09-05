@@ -29,6 +29,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/worker/brief.mjs`, `src/worker/child.mjs`, `src/worker/ticket.mjs`, `src/worker/hosts.mjs`, `src/worker/peers.mjs` | assignment, child setup — including the AX bundle a child must load before it is dispatched — tracker, placement and parent route |
 | `src/triage/dispatch.mjs`, `src/triage/ask.mjs`, `src/triage/answer.mjs`, `src/triage/publish.mjs` | one analysis session per issue, questions, corrected publication — and the provenance refusal that keeps triage an on-ramp for inbound work only |
 | `src/triage/provenance.mjs` | which classes a ticket's origin can be, and when a declared name matches a carried label — one vocabulary for the three verbs that judge it (`triage dispatch`, `triage publish`, `frontier`) |
+| `src/triage/publication.mjs` | the attribution a triage job and Pass stamp on their comment, and the rule that recognizes it — one vocabulary for the two verbs that publish and close on it (`triage publish`, `worker release`) |
 | `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the anti-rival pass gates (the caps left for `src/worker/capacity.mjs`, which both dispatch verbs read) |
 | `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
 | `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
