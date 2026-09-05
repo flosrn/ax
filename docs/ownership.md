@@ -33,7 +33,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/triage/spec.mjs`, `src/triage/capacity.mjs` | the one-line instruction a child receives; the anti-rival pass gates (the caps left for `src/worker/capacity.mjs`, which both dispatch verbs read) |
 | `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
 | `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
-| `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA — one function per ground, the verdict in gate() |
+| `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA and the base commit this run observed — one function per ground, the verdict in gate() |
 | `src/frontier.mjs` | the takeable ticket set, classified from tracker truth and the dispatch store — read-only, one named reason per exclusion |
 | `src/board.mjs` | the one monotonic writer of a worktree checkpoint |
 | `src/pin.mjs` | exact npm release migration, install proof and doctor; never git |

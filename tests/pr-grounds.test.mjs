@@ -57,11 +57,18 @@ function commitFile(target, git, rel, content, message) {
   git('commit', '-q', '-m', message);
 }
 
+/** One real commit id out of a fixture repository. */
+const shaOf = (root, ref) => execFileSync('git', ['rev-parse', ref], { cwd: root, encoding: 'utf8' }).trim();
+
 const options = (root, extra = {}) => ({
   git: realGit,
   root,
   baseBranch: 'main',
   headBranch: 'feature',
+  // The head the gate validated, which is what these grounds are computed
+  // against (#177). These fixtures publish nothing, so the local-only path also
+  // demands it BE the branch tip; a test announcing another head passes its own.
+  sha: shaOf(root, 'feature'),
   mergeState: '-',
   residualDir: '',
   ...extra,
@@ -88,8 +95,30 @@ test('staleness: a branch that carries its base is current, and local-only is sa
 
   const out = gitGrounds(options(root));
   assert.equal(out.refusals.length, 0);
-  assert.ok(out.notes.some(entry => /staleness: .* carries .* the branch is current/.test(entry.message)));
+  assert.ok(out.notes.some(entry => /staleness: the validated head [0-9a-f]{12} carries [0-9a-f]{12} \(main\)/.test(entry.message)));
   assert.ok(out.notes.some(entry => /no 'origin' remote/.test(entry.message)), 'no origin is a situation, never assumed');
+});
+
+test('staleness: a required commit this checkout cannot resolve is unread, with the fetch that repairs it (#177)', () => {
+  const { root, git } = repo();
+  git('checkout', '-q', 'feature');
+  commitFile(root, git, 'c.txt', 'c\n', 'c');
+
+  // The base side: a branch this checkout does not have. No comparison is
+  // attempted against whatever else is lying around.
+  const noBase = gitGrounds(options(root, { baseBranch: 'no-such-base', residualDir: 'docs/residual' }));
+  assert.deepEqual(noBase.refusals, []);
+  assert.equal(noBase.baseCommit, '');
+  assert.ok(noBase.unknowns.some(entry => /staleness: 'no-such-base' is absent from this checkout, so ancestry has no base commit/.test(entry.message)));
+  assert.ok(noBase.unknowns.some(entry => /residual findings: the base 'no-such-base' is absent/.test(entry.message)));
+  assert.ok(noBase.unknowns.every(entry => /git fetch origin no-such-base feature/.test(entry.repair)));
+
+  // The head side: a well-formed SHA nobody here holds.
+  const noHead = gitGrounds(options(root, { sha: 'a'.repeat(40) }));
+  assert.deepEqual(noHead.refusals, []);
+  assert.equal(noHead.headCommit, '');
+  assert.ok(noHead.unknowns.some(entry => /staleness: the validated head aaaaaaaaaaaa is absent from this checkout/.test(entry.message)));
+  assert.ok(noHead.notes.some(entry => /landed-by-content: not decided — the validated head is missing/.test(entry.message)));
 });
 
 test('residual findings: a branch that superseded its own findings file is refused (F-009)', () => {
@@ -580,6 +609,9 @@ const commitOptions = (root, extra = {}) => ({
   root,
   baseBranch: 'main',
   headBranch: 'feature',
+  // The base commit `gitGrounds` observed, which this ground takes rather than
+  // resolving the name again (#177).
+  baseCommit: shaOf(root, 'main'),
   refsRefreshed: true,
   slug: 'o/r',
   pr: '7',
@@ -605,7 +637,7 @@ test('commits since open: a clean merge of the base is base movement, exempt and
   assert.deepEqual(out.unknowns, []);
   assert.equal(out.notes.length, 1);
   assert.match(out.notes[0].message, new RegExp(`commits since open: 1 base merge — exempt: ${sha.slice(0, 12)}`));
-  assert.match(out.notes[0].message, /clean merge of main/);
+  assert.match(out.notes[0].message, /clean merge of the observed base [0-9a-f]{12}/);
 });
 
 test('commits since open: a caller-authored commit beside the exempt base merge still refuses, naming only it (#90)', () => {
@@ -627,7 +659,7 @@ test('commits since open: a merge of a branch the base does not reach is work (#
   const { root } = mergedRepo({ foreign: true });
   const out = commitsGround(commitOptions(root, { commits: commitsOk([realRow(root, 'feature')]) }));
   assert.equal(out.refusals.length, 1);
-  assert.match(out.refusals[0].message, /commits since open \[DETECTOR\]: .* main does not reach/);
+  assert.match(out.refusals[0].message, /commits since open \[DETECTOR\]: .* the observed base [0-9a-f]{12} does not reach/);
   assert.match(out.refusals[0].repair, /--ack-body/);
   assert.deepEqual(out.notes, []);
 });
@@ -679,7 +711,7 @@ test('commits since open: a shape this checkout cannot read is cannot-establish,
   const unrefreshed = commitsGround(commitOptions(root, { refsRefreshed: false, commits: commitsOk([realRow(root, 'feature')]) }));
   assert.deepEqual(unrefreshed.refusals, []);
   assert.equal(unrefreshed.unknowns.length, 1);
-  assert.match(unrefreshed.unknowns[0].message, /'main' cannot be read here/);
+  assert.match(unrefreshed.unknowns[0].message, /the refs could not be refreshed, so 'main' resolved to no observed commit/);
   assert.match(unrefreshed.unknowns[0].repair, /git fetch origin main/);
 
   // A git older than 2.38 has no `--write-tree` and answers 129. Fetching
@@ -941,7 +973,18 @@ function guarded() {
   return { root, git, base, sha };
 }
 
-const guardOptions = (root, extra = {}) => ({ git: realGit, root, baseBranch: 'main', refsRefreshed: true, pr: '7', slug: 'o/r', ...extra });
+// `baseCommit` is what `gitGrounds` observed for the base — this ground takes
+// it rather than resolving the name a second time (#177).
+const guardOptions = (root, extra = {}) => ({
+  git: realGit,
+  root,
+  baseBranch: 'main',
+  baseCommit: shaOf(root, 'main'),
+  refsRefreshed: true,
+  pr: '7',
+  slug: 'o/r',
+  ...extra,
+});
 
 test('declaration guard: the after side is the VALIDATED SHA, never a branch a stale origin ref shadows', () => {
   const { root, git, base, sha } = guarded();

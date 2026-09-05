@@ -69,7 +69,22 @@ const prView = (over = {}) => ({
   ...over,
 });
 
-const checkRun = (name, conclusion, status = 'completed') => ({ name, status, conclusion, head_sha: HEAD_SHA });
+/**
+ * One check-run row. The `id` is what makes two rows DISTINCT (#176): the
+ * paginated read counts observed runs by it, so a fixture whose rows shared one
+ * id would model a repeated page rather than a list. A counter keeps every row
+ * this file mints distinct without a test having to say so; `over` is for the
+ * rows that model a malformed id on purpose.
+ */
+let runId = 0;
+const checkRun = (name, conclusion, status = 'completed', over = {}) => ({
+  id: (runId += 1),
+  name,
+  status,
+  conclusion,
+  head_sha: HEAD_SHA,
+  ...over,
+});
 
 /**
  * F-031's check set: the aggregate verdict green, and three review bots reporting
@@ -83,6 +98,17 @@ const greenChecks = () => [
   checkRun('codex-review', 'neutral'),
   checkRun('cursor-bugbot', 'neutral'),
 ];
+
+/**
+ * ONE PAGE of the check-runs endpoint, which answers a total beside its rows
+ * (#176). `total_count` is the announced total of the whole list, not of this
+ * page: a fixture that models a complete single-page read lets it default to
+ * the rows it carries, and the paginated shapes state it explicitly.
+ */
+const checkPage = (rows, over = {}) => ({ total_count: rows.length, check_runs: rows, ...over });
+
+/** `n` distinct rows of an undeclared name — the filler a page boundary needs. */
+const filler = (n, from = 0) => Array.from({ length: n }, (_, i) => checkRun(`filler-${from + i + 1}`, 'success'));
 
 const thread = (id, isResolved, over = {}) => ({
   id,
@@ -282,19 +308,74 @@ function buildRepo(root, shape, prGate) {
     commit(root, 'src/a.txt', 'a\n', 'work');
     commit(root, `${RESIDUAL}/f-001.md`, 'a finding\n', 'file a residual last');
   }
+  // A REAL origin beside this checkout, with the refs a shape wants published.
+  // Without one the git-backed grounds are on their local-only path, where the
+  // head the PR announces must be this branch's own tip (#177) — so every shape
+  // that models a head GitHub moved without this checkout following publishes
+  // instead of pretending a remote is absent.
+  let origin = '';
+  const publish = (...refspecs) => {
+    if (origin === '') {
+      origin = `${root}-origin`;
+      git(sandbox, 'init', '-q', '--bare', origin);
+      git(root, 'remote', 'add', 'origin', origin);
+    }
+    git(root, 'push', '-q', 'origin', ...refspecs);
+  };
+
   // #90's two shapes: a branch whose post-open commit is a CLEAN merge of the
   // base — the footprint `gh pr update-branch` leaves, and the same thing a
   // worker's own `git merge origin/main` leaves — either already on the head
   // (`base-merge`) or on the ref the self-repair moves the head to while
-  // `feature` itself stays behind (`stale-merged`, the reported run).
-  if (shape === 'base-merge' || shape === 'stale-merged') {
+  // `feature` itself stays behind (`stale-merged`, the reported run, where
+  // `origin/feature` is what carries the moved head).
+  if (shape === 'base-merge' || shape === 'stale-merged' || shape === 'sibling-moved' || shape === 'head-behind-tip' || shape === 'remote-merged') {
     commit(root, 'src/a.txt', 'a\n', 'feature work');
+    if (shape === 'remote-merged') publish('main', 'feature');
     git(root, 'checkout', '-q', 'main');
     commit(root, 'src/b.txt', 'b\n', 'the base moved');
     if (shape === 'stale-merged') git(root, 'checkout', '-q', '-b', 'updated', 'feature');
     else git(root, 'checkout', '-q', 'feature');
     git(root, 'merge', '-q', '--no-ff', '-m', "Merge branch 'main' into feature", 'main');
     git(root, 'checkout', '-q', 'feature');
+    // The head GitHub answers for `feature` is the merge; this checkout's own
+    // `feature` stays behind it, exactly as it does after `gh pr update-branch`.
+    if (shape === 'stale-merged') publish('main', 'updated:feature');
+    if (shape === 'remote-merged') publish('main', 'feature');
+  }
+  // #177's shapes. Three of them EXTEND the base-merge history above on purpose
+  // — `sibling-moved` and `head-behind-tip` share that block, so their branch
+  // carries the advanced base and the ancestry question has a real answer; what
+  // each adds is the movement that used to be read as the head's own evidence.
+  //
+  //   sibling-moved     base merged, so the announced head (the tip) is current,
+  //                     and an unrelated local branch has moved past it:
+  //                     movement elsewhere must not change a coherent verdict.
+  //   head-behind-tip   base merged, then the branch kept working, so the
+  //                     announced commit carries the base and is not the tip.
+  //   remote-merged     the same history with a REAL origin: the base advanced
+  //                     there and the branch merged it, so the pre-merge head
+  //                     the PR announces does not carry it while the published
+  //                     tips do.
+  //   stale-twice       its own history, published, with BOTH of the branch's
+  //                     commits behind the advanced base: the head can move once
+  //                     and still refuse, which is the second-refusal route
+  //                     (KTD6).
+  if (shape === 'sibling-moved') {
+    git(root, 'checkout', '-q', '-b', 'wip');
+    commit(root, 'src/wip.txt', 'wip\n', 'an unrelated branch moves past the head');
+    git(root, 'checkout', '-q', 'feature');
+  }
+  if (shape === 'head-behind-tip') {
+    commit(root, 'src/c.txt', 'c\n', 'work past the announced head');
+  }
+  if (shape === 'stale-twice') {
+    commit(root, 'src/a.txt', 'a\n', 'feature work');
+    commit(root, 'src/c.txt', 'c\n', 'more feature work');
+    git(root, 'checkout', '-q', 'main');
+    commit(root, 'src/b.txt', 'b\n', 'the base moved');
+    git(root, 'checkout', '-q', 'feature');
+    publish('main', 'feature');
   }
   return root;
 }
@@ -444,7 +525,16 @@ const run = (
       // A string fixture is RAW stdout: a call that exited 0 and answered
       // something that is not JSON at all.
       if (typeof checks === 'string') return answered(checks);
-      return answered(JSON.stringify(checks === undefined ? { check_runs: greenChecks() } : checks));
+      // A LIST fixture is one entry per page, answered by the `page=` THIS
+      // call names rather than by call order: the read is keyed on the head
+      // SHA, and a staleness self-repair re-runs the whole gate from page 1.
+      // Exhaustion repeats the last page, exactly as the GraphQL stub above
+      // does — which is also the API shape a repeated page models, so a test
+      // that means to end the list spells out every page it intends.
+      const asked = Number(new URLSearchParams(String(target).split('?')[1] ?? '').get('page') ?? '1');
+      const source = checks === undefined ? [checkPage(greenChecks())] : Array.isArray(checks) ? checks : [checks];
+      const body = source[Math.min(Number.isInteger(asked) && asked >= 1 ? asked - 1 : 0, source.length - 1)];
+      return body === null || body === undefined ? refusedByGh('HTTP 502') : answered(JSON.stringify(body));
     }
     if (verb === 'api' && target.includes('/pulls/')) {
       const rows = typeof commits === 'function' ? commits(commitReads) : commits;
@@ -554,7 +644,7 @@ test('a checkout may declare its gate WITHOUT the provisioning contract', () => 
         if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
         if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView({ headRefOid: shaOf(root, 'feature') })));
         if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([])));
-        if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
+        if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify(checkPage(greenChecks())));
         if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
         if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(BODY_POLICY));
         return answered('');
@@ -620,29 +710,30 @@ test('--repo must be owner/repo, and --method accepts only squash and merge', ()
 // ── Ground 1: the declared checks on the exact SHA ──────────────────────────
 
 test('a declared check with no run on the head SHA refuses', () => {
-  const { code, out, headSha } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun('some other job', 'success')] } });
+  const { code, out, headSha } = run(['--pr', '1845'], { ...CLEAN, checks: checkPage([checkRun('some other job', 'success')]) });
   assert.equal(code, 1);
   assert.match(out, new RegExp(`REFUSE — checks: expected aggregate check 'Playwright \\(public games\\)' has NO run on ${headSha.slice(0, 12)}`));
-  assert.match(out, /→ gh api repos\/gapilabs\/gapila\/commits\/.*check-runs/);
+  // The repair reads EVERY page, like the gate does (#176).
+  assert.match(out, /→ gh api --paginate repos\/gapilabs\/gapila\/commits\/.*check-runs/);
 });
 
 test('F-014: fewer check-runs than another PR is not a missing guard', () => {
   // Two runs here where the fixture set has four. The count is never the
   // measurement: the set depends on the diff, on labels and on bots that decide
   // for themselves whether to run.
-  const { code, out, headSha } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun(AGGREGATE, 'success'), checkRun('claude-review', 'neutral')] } });
+  const { code, out, headSha } = run(['--pr', '1845'], { ...CLEAN, checks: checkPage([checkRun(AGGREGATE, 'success'), checkRun('claude-review', 'neutral')]) });
   assert.equal(code, 0);
   assert.match(out, new RegExp(`checks: 2 check-run\\(s\\) reported on ${headSha.slice(0, 12)}`));
 });
 
 test('F-031: a declared check concluding neutral refuses — neither success nor failure', () => {
-  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun(AGGREGATE, 'neutral')] } });
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: checkPage([checkRun(AGGREGATE, 'neutral')]) });
   assert.equal(code, 1);
   assert.match(out, /REFUSE — checks: 'Playwright \(public games\)' concluded neutral/);
 });
 
 test('a check still running is not decided, and that is an unknown, not a pass', () => {
-  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: { check_runs: [checkRun(AGGREGATE, null, 'in_progress')] } });
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: checkPage([checkRun(AGGREGATE, null, 'in_progress')]) });
   assert.equal(code, 3);
   assert.match(out, /CANNOT ESTABLISH — checks: 'Playwright \(public games\)' is in_progress/);
 });
@@ -650,7 +741,8 @@ test('a check still running is not decided, and that is an unknown, not a pass',
 test('a check-runs call that fails leaves CI unread rather than green', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: null });
   assert.equal(code, 3);
-  assert.match(out, /CANNOT ESTABLISH — checks: 'gh api .*check-runs' failed — HTTP 502; CI state unread/);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 1 of 'gh api .*check-runs' failed — HTTP 502/);
+  assert.match(out, /CI state unread/);
 });
 
 test('F-004: the unknown carries the diagnostic, it does not consume it', () => {
@@ -660,13 +752,258 @@ test('F-004: the unknown carries the diagnostic, it does not consume it', () => 
   assert.match(run(['--pr', '1845'], { ...CLEAN, checks: null }).out, /HTTP 502/);
   const notJson = run(['--pr', '1845'], { ...CLEAN, checks: 'gh: command not found\n' });
   assert.equal(notJson.code, 3);
-  assert.match(notJson.out, /checks: 'gh api .*check-runs' answered something that is not JSON/);
+  assert.match(notJson.out, /checks: page 1 of 'gh api .*check-runs' answered something that is not JSON/);
 });
 
 test('F-028: an absent check_runs container raises instead of becoming an empty one', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: {} });
   assert.equal(code, 3);
   assert.match(out, /'check_runs' is absent from the payload/);
+});
+
+// ── #176: the check-run read has to cover EVERY page ───────────────────────
+//
+// One page is 100 rows and this endpoint announces its own total beside them.
+// The old ground read `?per_page=100` once and measured whatever came back, so
+// a declared check sitting on page 2 of a 101-run commit was invisible: absent
+// from the read, and — where an earlier page carried a same-named green row —
+// hidden behind it. These are injected-payload proofs through the real
+// `gate()`, not live GitHub responses.
+
+/** A page of the 101-run commit: 100 rows, the total that says one is missing. */
+const overflowPage = (rows, over = {}) => checkPage(rows, { total_count: 101, ...over });
+
+test('#176: a commit announcing 101 runs is read past its first page of 100', () => {
+  const { code, out, calls, headSha } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), overflowPage(filler(1, 99))],
+  });
+  assert.equal(code, 0, out);
+  const reads = calls.filter(call => call.includes('/check-runs'));
+  assert.equal(reads.length, 2, reads.join(' | '));
+  assert.match(reads[1], /page=2/);
+  assert.match(out, new RegExp(`checks: page 1 — 100 run\\(s\\) read, 100 distinct of 101 announced on ${headSha.slice(0, 12)}`));
+  assert.match(out, new RegExp(`checks: 101 check-run\\(s\\) reported on ${headSha.slice(0, 12)} — the read is complete`));
+});
+
+// ── the FULL page that counts enough, which is not the end of a list ────────
+//
+// A total that is an exact multiple of the page size is the case a reconciled
+// COUNT cannot decide: page 1 announces 100 and supplies 100, so the tally
+// balances on a page whose own length proves nothing (a short page is the last
+// one; a full page is a list this run cannot prove complete). Establishing
+// there authorises on arithmetic rather than on an observation — and the page
+// never asked for is exactly where a stale or under-announced total shows
+// itself.
+
+/** A page of the commit that announces a round 100. */
+const roundPage = (rows, over = {}) => checkPage(rows, { total_count: 100, ...over });
+
+test('#176: a full page that reaches the announced total is still read to the endpoint’s own end', () => {
+  const { code, out, calls } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [roundPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), roundPage([])],
+  });
+  assert.equal(code, 0, out);
+  // TWO reads: the count balanced on page 1 and the gate asked anyway.
+  const reads = calls.filter(call => call.includes('/check-runs'));
+  assert.equal(reads.length, 2, reads.join(' | '));
+  assert.match(reads[1], /page=2/);
+  assert.match(out, /checks: 100 check-run\(s\) reported on .* — the read is complete/);
+});
+
+test('#176: a stale total that a full page happens to satisfy cannot pass on the count', () => {
+  // The endpoint announced 100 and holds 150. The old exit — and a reconciled
+  // count alone — would authorise on page 1; the terminal read finds the rows
+  // the total did not admit to.
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [roundPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), roundPage(filler(50, 100))],
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: the read observed 150 distinct run\(s\).*where 100 were announced/);
+  assert.doesNotMatch(out, /PASS —/);
+});
+
+test('#176: a repeated page after a balanced full page leaves the end of the list unread', () => {
+  // Only page 1 is supplied, so page 2 is page 1 again: the count balances and
+  // the endpoint never showed an end.
+  const { code, out, calls } = run(['--pr', '1845'], { ...CLEAN, checks: [roundPage([checkRun(AGGREGATE, 'success'), ...filler(99)])] });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 2 repeats runs this read already observed and adds none/);
+  assert.match(out, /100 distinct run\(s\) observed of the 100 announced/);
+  assert.doesNotMatch(out, /checks: 100 check-run\(s\) reported/);
+  // Two reads, then a stop: never a 25-page loop over one page.
+  assert.equal(calls.filter(call => call.includes('/check-runs')).length, 2);
+});
+
+test('#176: a green declared check on page one alone cannot establish completeness', () => {
+  // ONE page supplied where the endpoint announced 101 rows, so page 2 is page
+  // 1 again — the read never reconciles, and the green aggregate on page 1
+  // does not carry it.
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)])] });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 2 repeats runs this read already observed and adds none/);
+  assert.doesNotMatch(out, /PASS —/);
+  assert.doesNotMatch(out, /checks: 101 check-run\(s\) reported/);
+});
+
+test('#176: every page is read on the validated head SHA, and the pages ascend', () => {
+  const { calls, headSha } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), overflowPage(filler(1, 99))],
+  });
+  const reads = calls.filter(call => call.includes('/check-runs'));
+  assert.deepEqual(
+    reads,
+    [1, 2].map(page => `api repos/${SLUG}/commits/${headSha}/check-runs?per_page=100&page=${page}`),
+  );
+});
+
+test('#176: a declared check that exists only on a later page is evaluated there', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage(filler(100)), overflowPage([checkRun(AGGREGATE, 'success')])],
+  });
+  assert.equal(code, 0, out);
+  assert.doesNotMatch(out, /has NO run/);
+});
+
+test('#176: a later-page failure refuses even though an earlier page ran the same check green', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), overflowPage([checkRun(AGGREGATE, 'failure')])],
+  });
+  assert.equal(code, 1, out);
+  assert.match(out, /REFUSE — checks: 'Playwright \(public games\)' concluded failure/);
+});
+
+test('#176: a later-page pending run for a declared check leaves CI undecided, green page one and all', () => {
+  const { code, out, calls } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), overflowPage([checkRun(AGGREGATE, null, 'queued')])],
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: 'Playwright \(public games\)' is queued/);
+  // And the thread reader does not act on it (F-031).
+  assert.ok(!calls.some(call => call.startsWith('api graphql')), 'the thread read ran over undecided CI');
+});
+
+test('#176: an unrelated name failing on a later page gains no authority to block', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), overflowPage([checkRun('some other job', 'failure')])],
+  });
+  assert.equal(code, 0, out);
+  assert.doesNotMatch(out, /some other job/);
+});
+
+test('#176: a declared check absent from a COMPLETE multi-page read is still a refusal', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage(filler(100)), overflowPage(filler(1, 100))],
+  });
+  assert.equal(code, 1, out);
+  assert.match(out, /REFUSE — checks: expected aggregate check 'Playwright \(public games\)' has NO run/);
+});
+
+test('#176: a failed later page leaves CI unestablished and names what it observed', () => {
+  const { code, out, calls, headSha } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), null],
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 2 of 'gh api .*check-runs' failed — HTTP 502/);
+  assert.match(out, new RegExp(`100 distinct run\\(s\\) observed of the 101 announced on ${headSha.slice(0, 12)}`));
+  // The repair is the page that failed, quoted so a pasted `&` cannot
+  // background it.
+  assert.match(out, new RegExp(`→ gh api 'repos/${SLUG}/commits/${headSha}/check-runs\\?per_page=100&page=2'`));
+  // An incomplete read never authorises the absence refusal either: the
+  // declared check WAS observed, and nothing claims the read finished.
+  assert.doesNotMatch(out, /checks: 101 check-run\(s\) reported/);
+  assert.ok(!calls.some(call => call.startsWith('api graphql')), 'the thread read ran over an incomplete check read');
+});
+
+test('#176: --merge over an incomplete check read issues no merge at all', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), null],
+  });
+  assert.equal(code, 3, out);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), `a merge was issued over an incomplete read: ${calls.join(' | ')}`);
+  assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
+});
+
+test('#176: an unknown announced total is stated as unknown, never as zero', () => {
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: null });
+  assert.equal(code, 3, out);
+  assert.match(out, /0 distinct run\(s\) observed of an announced total this run could not read/);
+  assert.doesNotMatch(out, /observed of the 0 announced/);
+});
+
+for (const [what, total] of [
+  ['absent', undefined],
+  ['a string', '101'],
+  ['negative', -1],
+  ['fractional', 1.5],
+]) {
+  test(`#176: a total_count that is ${what} leaves the number of runs on the SHA unknown`, () => {
+    const rows = [checkRun(AGGREGATE, 'success')];
+    const page = total === undefined ? { check_runs: rows } : { check_runs: rows, total_count: total };
+    const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: page });
+    assert.equal(code, 3, out);
+    assert.match(out, /CANNOT ESTABLISH — checks: page 1 announces no readable total/);
+    assert.doesNotMatch(out, /PASS —/);
+  });
+}
+
+test('#176: two pages announcing different totals cannot be reconciled', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), checkPage(filler(1, 99), { total_count: 137 })],
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 2 announces 137 check-run\(s\).*where page 1 announced 101/);
+});
+
+test('#176: more distinct runs observed than announced is an inconsistent read, not a pass', () => {
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: checkPage([checkRun(AGGREGATE, 'success'), ...filler(3)], { total_count: 2 }) });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: the read observed 4 distinct run\(s\).*where 2 were announced/);
+});
+
+test('#176: pagination that ends before its own announced total leaves the rest unread', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [overflowPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), overflowPage([])],
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 2 answered 0 run\(s\) and the read stands at 100 of the 101 announced/);
+});
+
+test('#176: a run with no readable id cannot be told apart from a repeat', () => {
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: checkPage([checkRun(AGGREGATE, 'success', 'completed', { id: undefined })]) });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 1 carries a run with no readable 'id' \('id' is absent\)/);
+});
+
+test('#176: the page bound stops rather than looping, and never becomes a pass', () => {
+  // Every page genuinely advances — 100 fresh rows each — against a total no
+  // number of pages this run may read can reach.
+  const huge = Array.from({ length: 25 }, (_, i) => checkPage(filler(100, i * 100), { total_count: 100_000 }));
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, checks: huge });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: pagination exceeded 25 pages; stopped rather than looping/);
+  assert.match(out, /2500 distinct run\(s\) observed of the 100000 announced/);
+  assert.equal(calls.filter(call => call.includes('/check-runs')).length, 25);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a merge was issued at the page bound');
+});
+
+test('#176: an incomplete check read still leaves the other grounds reporting', () => {
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, checks: null, shape: 'stale' });
+  assert.equal(code, 1, out);
+  assert.match(out, /REFUSE — staleness: [0-9a-f]{12} \(main\) is not an ancestor of the validated head [0-9a-f]{12}/);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 1 of 'gh api .*check-runs' failed/);
 });
 
 // ── Ground 2: review threads, only after CI is decided ─────────────────────
@@ -849,14 +1186,14 @@ test('#175: an incomplete read still names an actionable repair, and the other g
   // The thread finding names its repair...
   assert.match(out, /gh api graphql .*reviewThreads/);
   // ...and does not suppress the staleness ground beside it.
-  assert.match(out, /REFUSE — staleness: main is not an ancestor of feature/);
+  assert.match(out, /REFUSE — staleness: [0-9a-f]{12} \(main\) is not an ancestor of the validated head [0-9a-f]{12}/);
   assert.match(out, /CANNOT ESTABLISH — threads: page 1 answered with no readable 'nodes' list/);
 });
 
 test('threads read before CI is decided are no observation at all', () => {
   const { code, out, calls, headSha } = run(['--pr', '1845'], {
     threads: [threadPage([thread('T1', true)])],
-    checks: { check_runs: [checkRun(AGGREGATE, null, 'queued')] },
+    checks: checkPage([checkRun(AGGREGATE, null, 'queued')]),
   });
   assert.equal(code, 3);
   assert.match(out, new RegExp(`threads: CI is not decided on ${headSha} — a thread read now is no observation at all`));
@@ -870,14 +1207,17 @@ test('threads read before CI is decided are no observation at all', () => {
 test('F-033.2: a base that advanced refuses, while mergeStateStatus still reads CLEAN', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'stale' });
   assert.equal(code, 1);
-  assert.match(out, /REFUSE — staleness: main is not an ancestor of feature — the branch is behind its base \(mergeStateStatus reads CLEAN, which is not the question\)/);
+  assert.match(
+    out,
+    /REFUSE — staleness: [0-9a-f]{12} \(main\) is not an ancestor of the validated head [0-9a-f]{12} — the head this verdict would authorize is behind its base \(mergeStateStatus reads CLEAN, which is not the question\)/,
+  );
   assert.match(out, /mergeStateStatus CLEAN {2}\(context only — never a ground here, F-033\.2\)/);
 });
 
 test('a branch carrying its base is current', () => {
   const { code, out } = run(['--pr', '1845'], CLEAN);
   assert.equal(code, 0);
-  assert.match(out, /staleness: feature carries main — the branch is current/);
+  assert.match(out, /staleness: the validated head [0-9a-f]{12} carries [0-9a-f]{12} \(main\) — the head this verdict authorizes is current/);
 });
 
 test('outside a git checkout, ancestry is unread rather than assumed', () => {
@@ -909,17 +1249,82 @@ test('refs that cannot be refreshed are cannot-establish: a stale local ref must
   assert.match(out, /landed-by-content: not decided — the refs could not be refreshed/);
 });
 
-test('a branch absent from this checkout is cannot-establish, never a pass', () => {
+test('a head branch absent from this local-only checkout cannot establish that head is its tip', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ headRefName: 'no-such-branch' }) });
   assert.equal(code, 3);
-  assert.match(out, /staleness: 'main' or 'no-such-branch' is absent from this checkout/);
+  assert.match(out, /CANNOT ESTABLISH — staleness: .*local 'no-such-branch' branch is absent/);
+});
+
+// ── #177: every git-backed ground is computed on the validated head and the
+// observed base commit, never on a branch tip that can move past either.
+
+test('#177: a newer local tip must not supply currency for the head the PR announces', () => {
+  // The measured local-only case: the PR announces the pre-merge head, the base
+  // advanced, and this checkout's own `feature` tip carries that base. Resolving
+  // the head by NAME read the tip and called the announced commit current.
+  const root = repoFor('base-merge', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature^1');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'base-merge', receipt: prView({ headRefOid: announced }) });
+  assert.equal(code, 1, out);
+  assert.match(out, new RegExp(`REFUSE — staleness: [0-9a-f]{12} \\(main\\) is not an ancestor of the validated head ${announced.slice(0, 12)}`));
+  assert.match(out, new RegExp(`CANNOT ESTABLISH — staleness: .*local 'feature' tip is ${shaOf(root, 'feature').slice(0, 12)}`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'the announced old head was merged on a newer tip’s evidence');
+});
+
+test('#177: without a remote, a head that is not this branch tip cannot establish currency — and ancestry is still read', () => {
+  const root = repoFor('head-behind-tip', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature~1');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'head-behind-tip', receipt: prView({ headRefOid: announced }) });
+  assert.equal(code, 3, out);
+  assert.match(out, new RegExp(`CANNOT ESTABLISH — staleness: .*not the validated head ${announced.slice(0, 12)}`));
+  // The ancestry between the observed base and THAT head is still evaluated.
+  assert.match(out, new RegExp(`staleness: the validated head ${announced.slice(0, 12)} carries [0-9a-f]{12} \\(main\\)`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#177: a validated head this checkout does not hold is an unestablished read, never stale evidence', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, receipt: prView({ headRefOid: 'a'.repeat(40) }) });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — staleness: the validated head aaaaaaaaaaaa is absent from this checkout/);
+  assert.match(out, /→ git fetch origin main feature/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#177: an unrelated local branch moving past the head leaves a coherent verdict alone', () => {
+  const { code, out, calls, headSha } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'sibling-moved' });
+  assert.equal(code, 0, out);
+  assert.match(out, new RegExp(`staleness: the validated head ${headSha.slice(0, 12)} carries [0-9a-f]{12} \\(main\\)`));
+  assert.ok(
+    calls.some(call => call === `pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${headSha}`),
+    'the mutation is bound to the head the grounds were computed on',
+  );
+});
+
+test('#177: with a remote, the refreshed base is resolved to a commit and the announced head is judged against it', () => {
+  const root = repoFor('remote-merged', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature^1');
+  const base = shaOf(root, 'origin/main');
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'remote-merged', receipt: prView({ headRefOid: announced }) });
+  assert.equal(code, 1, out);
+  assert.match(out, new RegExp(`git evidence: base ${base.slice(0, 12)} \\(origin/main\\) and the validated head ${announced.slice(0, 12)}`));
+  assert.match(out, new RegExp(`REFUSE — staleness: ${base.slice(0, 12)} \\(origin/main\\) is not an ancestor of the validated head ${announced.slice(0, 12)}`));
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+});
+
+test('#177: with a remote, a head that carries the observed base passes and binds the merge to it', () => {
+  const root = repoFor('remote-merged', DEFAULT_GATE);
+  const base = shaOf(root, 'origin/main');
+  const { code, out, calls, headSha } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'remote-merged' });
+  assert.equal(code, 0, out);
+  assert.match(out, new RegExp(`staleness: the validated head ${headSha.slice(0, 12)} carries ${base.slice(0, 12)} \\(origin/main\\)`));
+  assert.ok(calls.some(call => call.endsWith(`--match-head-commit ${headSha}`)), 'the merge names the head the grounds stood on');
 });
 
 // ── Ground 4: landed by content (advisory, never a refusal) ────────────────
 
 test('F-033.1: a squashed branch is landed by content though ancestry says no', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'landed' });
-  assert.match(out, /landed-by-content: YES — content equal to main.*ancestry says no/);
+  assert.match(out, /landed-by-content: YES — content equal to [0-9a-f]{12} \(main\).*ancestry says no/);
   // The only refusal is staleness. This ground never contributes one.
   assert.equal(code, 1);
   assert.doesNotMatch(out, /REFUSE — landed-by-content/);
@@ -930,13 +1335,15 @@ test('F-033.1: a squashed branch is landed by content though ancestry says no', 
 
 test('a branch with its own work reports the files that still differ', () => {
   const { out } = run(['--pr', '1845'], CLEAN);
-  assert.match(out, /landed-by-content: NO — 1 file\(s\) still differ from main \(ancestry says no\)/);
+  assert.match(out, /landed-by-content: NO — 1 file\(s\) still differ from [0-9a-f]{12} \(main\) \(ancestry says no\)/);
 });
 
 test('a diff that cannot be taken is reported, and still never refuses', () => {
   const { code, out } = run(['--pr', '1845'], {
     ...CLEAN,
-    git: (args, at) => (args[0] === 'diff' && args[1] === '--name-only' && args[2] === 'main' ? refusedByGh('fatal: bad revision') : realGit(args, at)),
+    // The pair is a base COMMIT and the validated head now, so the call is
+    // named by its shape — two revisions and no pathspec — not by a branch name.
+    git: (args, at) => (args[0] === 'diff' && args[1] === '--name-only' && !args.includes('--') ? refusedByGh('fatal: bad revision') : realGit(args, at)),
   });
   assert.equal(code, 0);
   assert.match(out, /landed-by-content: not decided — 'git diff' failed/);
@@ -948,13 +1355,13 @@ test('F-009: a residual file this branch wrote, then superseded, refuses', () =>
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'residual-stale', prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } });
   assert.equal(code, 1);
   assert.match(out, /REFUSE — residual findings: this branch wrote docs\/residual at [0-9a-f]{12} and 1 of its own commit\(s\) landed after it/);
-  assert.match(out, /→ git log main\.\.feature/);
+  assert.match(out, /→ git log [0-9a-f]{40}\.\.[0-9a-f]{40}/);
 });
 
 test('a residual file written by the newest commit does not refuse', () => {
   const { code, out } = run(['--pr', '1845'], { ...CLEAN, shape: 'residual-current', prGate: { aggregate: AGGREGATE, residualFindings: RESIDUAL } });
   assert.equal(code, 0);
-  assert.match(out, /residual findings: written by this branch at [0-9a-f]{12}, the newest commit on feature/);
+  assert.match(out, /residual findings: written by this branch at [0-9a-f]{12}, the newest commit on the validated head [0-9a-f]{12}/);
 });
 
 test('F-039: a residual file the branch inherited from the base is not this branch\'s record', () => {
@@ -981,7 +1388,7 @@ test('a residual directory that differs with no commit behind it is cannot-estab
     git: (args, at) => (args[0] === 'log' ? answered('\n') : realGit(args, at)),
   });
   assert.equal(code, 3);
-  assert.match(out, /residual findings: docs\/residual differs from main but no commit on this branch touched it/);
+  assert.match(out, /residual findings: docs\/residual differs from [0-9a-f]{12} \(main\) but no commit on this branch touched it/);
 });
 
 test('a rev-list that cannot count is cannot-establish, never zero later commits', () => {
@@ -1036,35 +1443,40 @@ test('#90: a clean base merge as the only post-open commit passes with no --ack-
   assert.match(out, /grounds — \d+ reported, 0 unread, 0 refused/);
 });
 
-test('#90: the staleness self-repair no longer refuses the commit it just created', () => {
+test('#90: the staleness self-repair no longer refuses the commit it just created, and the re-run judges the moved head', () => {
   // The reported run, reproduced: the caller's command carries no --ack-body
   // because the PR had no post-open commit when they typed it, `gh pr
   // update-branch` then mints the merge, and the ONE re-run this verb has must
-  // not spend itself refusing that commit. The fixture repository cannot move
-  // with the head, so the re-run still refuses on staleness — which is the
-  // correct second event, and the only one left.
+  // not spend itself refusing that commit. The fixture publishes that merge as
+  // `origin/feature` while its own `feature` stays behind — what a checkout
+  // holds after GitHub moves the head — so the re-run measures the MOVED head
+  // and its mutation is bound to it (#177), never to the commit that refused.
   const root = repoFor('stale-merged', DEFAULT_GATE);
   const moved = shaOf(root, 'updated');
   const { code, out, calls } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
     shape: 'stale-merged',
-    // receipt · the head after the update · the retried run's own receipt
-    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
+    // receipt · the head after the update · the retried run's own receipt · the
+    // post-merge read-back, which only a run that reaches the mutation makes
+    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved }), prView({ headRefOid: moved, state: 'MERGED' })],
     // The caller's run sees no post-open commit; the re-run reads the merge the
     // update-branch call left behind.
     commits: reads => (reads === 0 ? prCommits(0) : [...prCommits(0), realCommitRow(root, 'updated')]),
   });
-  assert.equal(code, 1);
+  assert.equal(code, 0, out);
   assert.match(out, /self-repair: staleness is the only refusing ground/);
   assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
   assert.match(out, new RegExp(`commits since open: 1 base merge — exempt: ${moved.slice(0, 12)}`));
   assert.doesNotMatch(out, /REFUSE — commits since open/);
   assert.doesNotMatch(out, /--ack-body/, 'the merge went back to a worker for a body edit describing the gate\'s own commit');
-  // Criterion 7: the commits ground is reported, not refused, and the run's
-  // one remaining refusal is untouched.
-  assert.match(out, /grounds — \d+ reported, 0 unread, 1 refused/);
-  assert.match(out, /REFUSE — staleness/);
-  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
+  // The re-run stands on the moved head alone: fresh grounds, and the mutation
+  // names that commit rather than the one the first run validated.
+  assert.match(out, new RegExp(`staleness: the validated head ${moved.slice(0, 12)} carries [0-9a-f]{12} \\(origin/main\\)`));
+  assert.match(out, /grounds — \d+ reported, 0 unread, 0 refused/);
+  assert.ok(
+    calls.some(call => call === `pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${moved}`),
+    'the repaired run merged a head other than the one it validated',
+  );
 });
 
 test('#90: a caller-authored commit beside the exempt base merge still demands the acknowledgement', () => {
@@ -1777,7 +2189,7 @@ test('every ground is reported, none short-circuited by another', () => {
     /REFUSE — ticket binding: this merge is for #1786/,
     /REFUSE — closing keyword: 'Ferme #1786'/,
     /checks: 4 check-run\(s\) reported/,
-    /staleness: feature carries main/,
+    /staleness: the validated head [0-9a-f]{12} carries [0-9a-f]{12} \(main\)/,
     /landed-by-content: NO/,
   ]) {
     assert.match(out, ground);
@@ -1861,19 +2273,22 @@ test('replay against a PR merged at a DIVERGENT SHA is a named report, never a s
 
 test('replay against an open PR whose head moved opens a NEW attempt on the freshly validated head', () => {
   const storeDir = mkdtempSync(join(sandbox, 'store-'));
-  assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, store: storeDir }).code, 0);
+  assert.equal(run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'remote-merged', store: storeDir }).code, 0);
   const recordPath = join(storeDir, 'merge', 'merge-gapilabs-gapila-1845.json');
-  // A REAL commit this checkout holds: the declaration guard reads the
-  // validated SHA's own `ax.config.json`, so a fabricated oid is unreadable.
-  const moved = shaOf(repoFor('current', DEFAULT_GATE), 'main');
+  // A REAL commit this checkout holds AND its origin publishes: the declaration
+  // guard reads the validated SHA's own `ax.config.json`, and the git-backed
+  // grounds refuse to read a head this checkout cannot resolve (#177), so a
+  // fabricated oid proves nothing about the record.
+  const moved = shaOf(repoFor('remote-merged', DEFAULT_GATE), 'main');
   const merges = [];
   const replayed = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
+    shape: 'remote-merged',
     store: storeDir,
     receipt: prView({ headRefOid: moved }),
     onMerge: args => merges.push([...args]),
   });
-  assert.equal(replayed.code, 0);
+  assert.equal(replayed.code, 0, replayed.out);
   assert.match(replayed.out, /replay — the head moved past the recorded/);
   assert.deepEqual(merges, [['pr', 'merge', '1845', '--repo', SLUG, '--squash', '--match-head-commit', moved]]);
   const record = JSON.parse(readFileSync(recordPath, 'utf8'));
@@ -1909,19 +2324,23 @@ test('KTD6 rider: a head that cannot be re-read is cannot-establish, never a spe
 });
 
 test('KTD6: staleness as the only refusing ground updates the branch and re-runs once; the second refusal routes', () => {
-  // The head MOVED, so the one retry buys a real re-measurement. The fixture
-  // repository cannot move with it, so the retried run refuses on staleness
-  // again — which is exactly the second-refusal path: one update, then routing.
-  const moved = shaOf(repoFor('stale', DEFAULT_GATE), 'main');
+  // The head MOVED, so the one retry buys a real re-measurement — and the
+  // commit it moved TO is still behind the base, which is the second-refusal
+  // path: one update, then routing. Both commits are published, so the retried
+  // run is judging the head GitHub answered and not a local tip (#177).
+  const root = repoFor('stale-twice', DEFAULT_GATE);
+  const announced = shaOf(root, 'feature~1');
+  const moved = shaOf(root, 'feature');
   const { code, out, calls } = run(['--pr', '1845', '--merge'], {
     ...CLEAN,
-    shape: 'stale',
+    shape: 'stale-twice',
     // receipt · the head after the update · the retried run's own receipt
-    prStates: [prView(), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
+    prStates: [prView({ headRefOid: announced }), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
   });
-  assert.equal(code, 1);
+  assert.equal(code, 1, out);
   assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
   assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
+  assert.match(out, new RegExp(`REFUSE — staleness: [0-9a-f]{12} \\(origin/main\\) is not an ancestor of the validated head ${moved.slice(0, 12)}`));
   assert.match(out, /self-repair already ran once — a second staleness refusal routes to the owning worker/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
 });
@@ -1958,7 +2377,7 @@ test('KTD5: a PR that edits the prGate declaration it is measured by refuses tow
     if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
     if (verb === 'pr' && target === 'view') return answered(JSON.stringify(prView({ headRefOid: shaOf(root, 'feature') })));
     if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
-    if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
+    if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify(checkPage(greenChecks())));
     if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
     if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(BODY_POLICY));
     return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
@@ -2138,7 +2557,7 @@ test('a merging run refuses a prGate the head does not carry: the gate never mea
     if (verb === 'repo' && target === 'view') return answered(`${SLUG}\n`);
     if (verb === 'pr' && target === 'view') return answered(JSON.stringify({ ...prView({ headRefOid: shaOf(root, 'feature') }), state: 'MERGED' }));
     if (verb === 'api' && target === 'graphql') return answered(JSON.stringify(threadPage([thread('T1', true)])));
-    if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify({ check_runs: greenChecks() }));
+    if (verb === 'api' && target.includes('/check-runs')) return answered(JSON.stringify(checkPage(greenChecks())));
     if (verb === 'api' && target.includes('/pulls/')) return answered(JSON.stringify(prCommits(0)));
     if (verb === 'api' && target === `repos/${SLUG}`) return answered(JSON.stringify(BODY_POLICY));
     if (verb === 'pr' && target === 'merge') return answered('merged\n');
