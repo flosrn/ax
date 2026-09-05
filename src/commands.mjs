@@ -311,9 +311,10 @@ What a pass is NOT:
     // Ungated like `pr`: pure `gh` reads plus a read-only look at the dispatch
     // store, so it answers wherever ax is installed — no Orca required to ask
     // what is takeable.
-    summary: 'the takeable ticket set — blockers, provenance and dispatch state, one receipt',
-    agentLine: '`ax frontier` — the takeable ticket set in one receipt: ready label, blocking edges, dispatch records, each exclusion named.',
+    summary: 'the takeable set — blockers, cycles, provenance and dispatch, one receipt',
+    agentLine: '`ax frontier` — the takeable ticket set in one receipt: ready label, blocking edges, dispatch records, each exclusion named. An empty takeable list does not establish Completion.',
     options: [['--dry-run', 'name the reads without issuing them — no gh call']],
+
   },
   {
     name: 'pin',
