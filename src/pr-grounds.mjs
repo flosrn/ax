@@ -364,13 +364,15 @@ export function ciGround({ run, slug, sha, declared, pr }) {
  * A SUCCESSFUL RESPONSE IS NOT AN ESTABLISHED READ (#175). Every container
  * this query needs was read by name — F-028's rule, applied down to
  * `reviewThreads` — and then the two fields that decide the verdict were read
- * with an `or`: `nodes` fell back to `[]` and `pageInfo` to `{}`. Three shapes
- * measured in the field return HTTP 200 with all containers present and one of
- * those fields malformed — `nodes` absent, `nodes: null`, `nodes` an object —
- * and each read as "zero threads on a final page", which is this gate's
- * PASSING answer. The same `or` on `pageInfo` made an absent or non-boolean
- * `hasNextPage` end the pagination: `!== true` cannot tell "there is no next
- * page" from "whether there is one was never answered".
+ * with an `or`: `nodes` fell back to `[]` and `pageInfo` to `{}`. Three injected
+ * shapes — `nodes` absent, `nodes: null`, `nodes` an object — return HTTP 200
+ * with all containers present, and the old ground read each as "zero threads
+ * on a final page", which is this gate's PASSING answer. That is proved by the
+ * red entry-point tests with those payloads, not by live GitHub responses of
+ * that form or by three real merges. The same `or` on `pageInfo` made an
+ * absent or non-boolean `hasNextPage` end the pagination: `!== true` cannot
+ * tell "there is no next page" from "whether there is one was never answered"
+ * (the string `'false'` ended the read, same as an absent field).
  *
  * So the end of the list is a POSITIVE observation, tracked in `established`,
  * and it is set by exactly one thing: a page whose `hasNextPage` is the boolean

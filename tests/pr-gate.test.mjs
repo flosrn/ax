@@ -733,9 +733,11 @@ test('F-028: a GraphQL payload missing its containers raises rather than reading
 //
 // Every shape below returned HTTP 200 through a payload whose containers are
 // all present, so `must` passes and the old ground read each one as an
-// observed empty list on a final page — a PASS, and on `--merge` a merge. The
-// receipt now says which field or page could not be established, and an
-// established read is the only one that can reach a pass.
+// observed empty list on a final page — a PASS, and on `--merge` it would
+// have issued a merge. That is an injected-payload proof, not three live
+// GitHub responses or three real merges. The receipt now says which field
+// or page could not be established, and an established read is the only
+// one that can reach a pass.
 
 for (const [what, nodes] of [
   ['absent', undefined],

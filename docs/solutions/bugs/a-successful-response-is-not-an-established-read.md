@@ -39,10 +39,13 @@ if (info.hasNextPage !== true) break;
 ```
 
 Both are `or`-into-a-default on a container, and the default they chose is the gate's PASSING answer:
-zero threads, final page, nothing unresolved, merge authorised. Three shapes measured in the field
-return HTTP 200 with every container present and `nodes` malformed (absent, null, an object), and each
-one merged. `hasNextPage` had the same asymmetry in the pagination direction: `!== true` reads
-"unanswered" as "there is no next page", so a page whose `pageInfo` was truncated ended the read.
+zero threads, final page, nothing unresolved, merge authorised. Three injected shapes — `nodes`
+absent, `nodes: null`, `nodes` an object — return HTTP 200 with every container present, and the old
+ground read each as that passing answer. That is proved by the red entry-point tests with those
+payloads, not by live GitHub responses of that form or by three real merges. `hasNextPage` had the
+same asymmetry in the pagination direction: `!== true` reads "unanswered" as "there is no next
+page", so a page whose `pageInfo` was truncated — or whose `hasNextPage` was the string `'false'` —
+ended the read.
 
 `endCursor` was read with `?? null`, which caught only one of its failure modes. A page claiming a
 successor and naming the cursor it was ALREADY read with is a valid string, so the loop advanced onto
@@ -70,8 +73,8 @@ unestablished read issues no `gh pr merge` at all. A helper-only test could not 
 
 `must` on the containers and `??` on the leaves is not a named-key read — it is F-028 held exactly as
 far as the nesting and dropped where the decision is made. When a field is missing, ask which verdict
-the default produces: here every absent field defaulted toward the mutation, so each malformed payload
-was a merge.
+the default produces: here every absent field defaulted toward the mutation, so each injected
+malformed payload was this gate's passing answer.
 
 The reusable shape is that a bounded read needs a positive terminator. "I did not see a next page" and
 "the API told me there is no next page" are different facts, and only the second one can end a read
