@@ -58,7 +58,7 @@ const MANDATE_REL = '.omp/WATCHDOG.yml';
 const MANDATE = `# Written by ax worker dispatch. Worktree-scoped: it advises this dispatched
 # child only, never the operator's own sessions. Not tracked; see .git/info/exclude.
 advisors:
-  - name: pilot
+  - name: ax
     tools: [read, grep, glob]
     instructions: |
       You watch ONE thing beyond your normal review: whether this session's todo list

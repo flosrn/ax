@@ -69,6 +69,10 @@ test('the mandate lands in the CHILD worktree and never at the repository root',
   assert.equal(result.written, true);
 
   const mandate = readFileSync(join(s.worktree, MANDATE_REL), 'utf8');
+  // The visible OMP tag attributes this worktree-scoped advisor to ax. A functional
+  // name would mislabel its ordinary review notes, which are not limited to todo state.
+  assert.match(mandate, /\n  - name: ax\n/);
+  assert.ok(!mandate.includes('name: pilot'));
   assert.ok(!existsSync(join(s.repo, MANDATE_REL)));
   // `blocker` is the load-bearing word: the one severity documented to steer a
   // turn after a terminal answer, which is exactly when a child with a stale

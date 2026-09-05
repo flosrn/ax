@@ -77,7 +77,8 @@ request. It never merges.
 
 **Advisor**:
 An OMP reviewer attached to a Session. In its notes, `[name]` identifies which named
-Advisor spoke; `nit`, `concern` and `blocker` are severities.
+Advisor spoke; `[ax]` identifies the worktree-scoped Advisor added by ax. `nit`,
+`concern` and `blocker` are severities.
 
 **Triage worker**:
 A child analyzing one inbound issue. It writes exactly one draft and mutates nothing.
