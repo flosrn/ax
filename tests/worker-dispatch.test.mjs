@@ -2044,3 +2044,67 @@ test('a ticket in no Spec is dispatched with no derived section at all', () => {
   assert.match(r.out, /has no parent Spec/);
   assert.equal(r.queries.filter(query => query.includes('closedByPullRequestsReferences')).length, 0, 'no member set, no landing read');
 });
+
+// -- #204: the local proof read belongs to the child's OWN worktree ----------
+//
+// The same loss of identity as the triage wait, at the second of its three
+// sites: this loop holds the worktree it dispatched into and handed the
+// resolver `basename(worktree)`, so a second checkout whose slug ends in that
+// basename made every read inside the boot wait refuse. Exact-cwd is stricter
+// than the tail match, and the remote read is untouched — a slug computed from
+// this machine names nothing on another host.
+
+/** Two session directories ending in the same basename, one of them the child's. */
+function localSessions() {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-proof-')));
+  const root = join(home, '.omp', 'agent', 'sessions');
+  const worktree = join(home, 'orca', 'workspaces', 'loading-states');
+  const receipt = [
+    JSON.stringify({ type: 'model_change', model: 'anthropic/claude-sonnet-5', role: 'default' }),
+    JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'worker', skills: ['implementation'], status: 'applied' } }),
+  ].join('\n');
+  for (const [slug, skills] of [['-orca-workspaces-loading-states', 'implementation'], ['-Code-old-loading-states', 'stranger']]) {
+    mkdirSync(join(root, slug), { recursive: true });
+    writeFileSync(join(root, slug, 'session.jsonl'), receipt.replace('implementation', skills));
+  }
+  return { env: { HOME: home }, root, worktree };
+}
+
+test('#204 the local read answers from the child OWN worktree, not a checkout sharing its basename', () => {
+  const { env, root, worktree } = localSessions();
+
+  assert.equal(
+    readProof({ needle: 'loading-states', env, sessionsRoot: root, host: null, exec: null, cwd: '/' }),
+    null,
+    'the basename names two checkouts here, and that refusal is untouched',
+  );
+  assert.deepEqual(
+    readProof({ needle: 'loading-states', worktree, env, sessionsRoot: root, host: null, exec: null, cwd: '/' })?.sessionRole.skills,
+    ['implementation'],
+    'the worktree the loop holds selects its own session',
+  );
+});
+
+test('#204 a dispatch with no worktree stays needle-only, exactly as before', () => {
+  const { env, root } = localSessions();
+  rmSync(join(root, '-Code-old-loading-states'), { recursive: true });
+
+  // `verify` falls back to the request id when the record names no worktree,
+  // and that caller holds no path at all: nothing is derived for it.
+  assert.deepEqual(
+    readProof({ needle: 'loading-states', worktree: '', env, sessionsRoot: root, host: null, exec: null, cwd: '/' })?.sessionRole.role,
+    'worker',
+    'one slug ending in the needle still answers through the tail match',
+  );
+});
+
+test('#204 the remote argv is byte-identical whatever local path the caller holds', () => {
+  const bare = remoteAx({ status: 0, stdout: `${PROOF_LINE}\n`, stderr: '' });
+  readProof({ needle: 'gap-353', env: {}, sessionsRoot: '', host: REMOTE_HOST, exec: bare, cwd: '/' });
+
+  const held = remoteAx({ status: 0, stdout: `${PROOF_LINE}\n`, stderr: '' });
+  readProof({ needle: 'gap-353', worktree: '/Users/flo/orca/workspaces/gap-353', env: { HOME: '/Users/flo' }, sessionsRoot: '', host: REMOTE_HOST, exec: held, cwd: '/' });
+
+  assert.deepEqual(held.calls, bare.calls, 'a slug computed from THIS machine names nothing on another host');
+  assert.doesNotMatch(held.calls[0], /workspaces/, 'and no local path leaks into the remote command');
+});
