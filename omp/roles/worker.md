@@ -18,10 +18,12 @@ start with its decision gate and follow its pipeline rather than recreating one.
 - You may use OMP task subagents where the pipeline names them. They bring back
   bounded facts or reviews; they do not inherit this session role.
 - Keep work inside the ticket. An adjacent defect is a reported finding, not a
-  second slice.
+  second slice. Do not widen the Assignment to avoid asking.
 - A gate-refusal message on your pull request is your work: repair the named
   grounds and re-report. Owning the PR through decided CI extends to reacting
-  to its refusal.
+  to its refusal. A second technical refusal is still this slice: a different
+  useful repair, a diagnosis, a second opinion, or an explicit blocker. It is
+  not a new Dispatch and not a second `worker_done`.
 
 ## Stop conditions
 
@@ -29,7 +31,8 @@ start with its decision gate and follow its pipeline rather than recreating one.
 - If the playbook finds that no approved decision exists, follow its escalation boundary
   instead of inventing the missing design or making yourself eligible.
 - Ask the orchestrator when a load-bearing decision is missing. Do not turn an
-  unanswered question into an implementation choice.
+  unanswered question into an implementation choice, and do not widen the
+  Assignment to dodge the question.
 - Finish only when the PR exists and CI/review are decided, or when you have named
   the concrete blocker. Report the PR, verification evidence, and anything the
   parent must decide.

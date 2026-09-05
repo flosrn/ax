@@ -407,10 +407,13 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   // Overlap arbitration widened to every live pane, not one wave's members.
   expect(role).toMatch(/EVERY live pane/);
   // Wake-drain, refusal routing, and the two bounds on unattended repair.
+  // #189: a second technical refusal stays with the agents; the operator is
+  // not the automatic next hop. Staleness still self-repairs once; a dead
+  // route still redispatches recorded.
   expect(role).toMatch(/drain the whole inbox/);
   expect(role).toMatch(/gate REFUSAL is the owning worker's work/);
   expect(role).toMatch(/second staleness refusal/);
-  expect(role).toMatch(/escalates to the operator/);
+  expect(role).toMatch(/does not automatically interrupt the operator/);
   expect(role).toMatch(/--because gate-refusal/);
   // Learnings distillation is the orchestrator's half of the wave channel.
   expect(role).toMatch(/distill the `wave:` bullets/);
@@ -432,6 +435,57 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).not.toMatch(/its `## CRITERIA` section/);
 });
 
+// #189: delegated verification and bounded technical repair. The role is an
+// instruction; this suite is the seam that loads it (`docs/adr/0003` clause 3–6).
+// Prompt-text pins are not a measured Wave — they prove the session would be
+// handed the doctrine, not that a Wave obeyed it.
+test('the bundled orchestrator role delegates verification and keeps technical repair with agents', async () => {
+  const installed = install('[omp model=@task]');
+  await installed.commands.get('role')?.handler('orchestrator', installed.ctx);
+  const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
+
+  // The consuming project's entry and contract stay in force. AX does not
+  // impose a shipping pipeline or infer deployment from its own npm release.
+  expect(role).toMatch(/dispatch\.entry/);
+  expect(role).toMatch(/dispatch\.contract/);
+  expect(role).toMatch(/shipping pipeline/);
+  expect(role).toMatch(/npm release/);
+
+  // Verification is opt-in per named gap, reusing evidence already produced.
+  expect(role).toMatch(/integrated result is unproven/);
+  expect(role).toMatch(/absent or contradictory/);
+  expect(role).toMatch(/names that gap/);
+  expect(role).toMatch(/does not repeat every worker/);
+
+  // Oracle is a second judgment that can change a decision, not a vote and
+  // not a second dispatching session.
+  expect(role).toMatch(/Oracle/);
+  expect(role).toMatch(/can change (?:a |the next )/);
+  expect(role).toMatch(/routine approval/);
+  expect(role).toMatch(/not a vote|never a vote/);
+  expect(role).toMatch(/second dispatching Orchestrator/);
+
+  // Second technical refusal: agents choose a useful continuation; the same
+  // attempt cannot repeat; a refusal cannot mint a fresh Dispatch identity.
+  expect(role).toMatch(/SECOND technical refusal/);
+  expect(role).not.toMatch(
+    /SECOND refusal of the same\s+PR after a repair round escalates to the operator/,
+  );
+  expect(role).toMatch(/diagnosis/);
+  expect(role).toMatch(/second opinion/);
+  expect(role).toMatch(/explicit blocker/);
+  expect(role).toMatch(/same attempt/);
+  expect(role).toMatch(/cannot mint a fresh Dispatch identity/);
+
+  // A missing product decision blocks only the work that needs it.
+  expect(role).toMatch(/Independent takeable/);
+  expect(role).toMatch(/[Ww]iden an Assignment/);
+
+  // Reports remain evidence to judge, routed with Gate findings in one round.
+  expect(role).toMatch(/evidence to judge/);
+  expect(role).toMatch(/one repair round/);
+});
+
 // The worker's half of the learnings channel (KTD7) and the refusal duty the
 // routing above depends on: a routed refusal with no worker contract to
 // receive it is a message into the void.
@@ -442,6 +496,11 @@ test('the bundled worker contract carries the LEARNINGS grammar and the refusal 
   const playbook = String(out?.message?.content ?? '');
 
   expect(role).toMatch(/gate-refusal message on your pull request is your work/);
+  // #189: a second technical refusal is still this slice — not a new Dispatch
+  // and not a second worker_done. Do not widen the Assignment to dodge asking.
+  expect(role).toMatch(/second technical refusal is still this slice/);
+  expect(role).toMatch(/not a second `worker_done`/);
+  expect(role).toMatch(/[Ww]iden the Assignment/);
   // The playbook NAMES the artifact — one file, its shape, written on a failed
   // outcome too — and no longer says "open every report with", which described
   // a message nobody could read (0 of 8 sections reached a mailbox, 2026-09-03).

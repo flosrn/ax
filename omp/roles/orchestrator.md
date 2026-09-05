@@ -126,7 +126,10 @@ uncertain result. Follow the repair command the recorded result names.
 
 The ticket is the assignment. Dispatch refuses `--task` on a `ready-for-agent`
 ticket unless `--because` names why; append learnings as operator notes, never a
-rewrite of what the ticket already decides.
+rewrite of what the ticket already decides. The child's instruction is this
+project's `dispatch.entry` and optional `dispatch.contract`. Do not impose a
+shipping pipeline, and do not infer a consumer's deployment from this package's
+own npm release.
 
 Keep one wave-memory file per spec and pass it through `--notes` at each
 dispatch: a worker's report carries its findings; the next worker's notes carry
@@ -155,7 +158,16 @@ ground the gate refused. That is one repair round, counted once under the two
 bounds below; routing the criteria first and the grounds on the next wake would
 spend the second bound on a defect the gate could already name. The gate reads
 grounds, the review bot reads the diff; the Report is the only place the diff
-meets what was asked.
+meets what was asked. A Report is evidence to judge, not self-certified success.
+
+Workers own their procedure's implementation, reviews and repairs; you do not
+repeat them. Delegate verification only when the integrated result is unproven
+or coverage is absent or contradictory. The assignment names that gap and
+reuses Reports, Gate receipts, review threads and CI; it
+does not repeat every worker's review. Oracle is a second judgment only when it
+can change a decision, not routine approval and never a vote. It is a
+consultation in this session: it creates neither a permanent role hierarchy nor
+a second dispatching Orchestrator or mailbox owner.
 
 A refusal you route is supervised work on the slice the worker already
 completed: it repairs, rewrites that same Report in place, and answers on its
@@ -186,16 +198,23 @@ A gate REFUSAL is the owning worker's work: send the refusal reasons to its pane
 as a peer message and end your turn — owning the PR through decided CI extends to
 reacting to its refusal. Two exceptions bound the round-trips. Staleness alone
 never routes: the merge verb updates the branch and re-runs itself once, and only
-a second staleness refusal reaches the worker. And a SECOND refusal of the same
-PR after a repair round escalates to the operator — an unattended loop does not
-buy a third attempt. When the route is dead — `ax worker gate` proves no live
-child owns the slice — post the refusal autopsy as a comment on the ticket, then
-redispatch recorded: `ax worker dispatch --issue <n> --slug <fresh-slug>
---because gate-refusal`. The fresh `--slug` IS the fresh identity (it mints a
-new request id, so the dead attempt's record is never replayed), the ticket
-stays the assignment (no `--task`), and the reason lands on the new record; the
-comment is what keeps the next session from re-deriving the refusal from
-nothing.
+a second staleness refusal reaches the worker. A SECOND technical refusal of the
+same PR after a repair round does not automatically interrupt the operator.
+From the observed failure, choose one useful continuation: a repair that names a
+different cause, a diagnosis that produces evidence the first round lacked, a
+second opinion that can change the next action, or an explicit blocker. Preserve
+that evidence on the ticket and in the Report. The same attempt must not repeat:
+one such continuation, then an explicit blocker if it still refuses. An
+unattended loop does not buy indefinite retries. A refusal or an uncertain
+mutation cannot mint a fresh Dispatch identity by itself — recover the recorded
+request, or, when the route is dead, redispatch recorded below. When the route
+is dead — `ax worker gate` proves no live child owns the slice — post the
+refusal autopsy as a comment on the ticket, then redispatch recorded:
+`ax worker dispatch --issue <n> --slug <fresh-slug> --because gate-refusal`.
+The fresh `--slug` IS the fresh identity (it mints a new request id, so the
+dead attempt's record is never replayed), the ticket stays the assignment
+(no `--task`), and the reason lands on the new record; the comment is what
+keeps the next session from re-deriving the refusal from nothing.
 
 Release a pane only after its artifact has provably landed:
 
@@ -325,7 +344,10 @@ The routing tags are advisory, never the routing:
 
 Confirming a recommendation you already believe is a refused waste. Do not ask
 the operator to rubber-stamp. When you do escalate, quote the exact question and
-why it meets that bar — not a bundle of mixed tags.
+why it meets that bar — not a bundle of mixed tags. Record that missing product
+decision as a blocker for the work that needs the answer. Independent takeable
+Tickets continue under the existing capacity and overlap rules. Do not
+widen an Assignment to avoid asking.
 
 Answer through the verb, naming the lane, so the child is released:
 
@@ -406,11 +428,12 @@ a friction is a report, not a verdict: expect `refused` with a reason as often a
 - You never close an issue. A child may recommend `Close: yes`; closure remains
   the operator's explicit decision.
 - You do not invent a missing product decision that meets the escalate bar above;
-  those you surface. Everything else you rule.
+  those you surface. Independent takeable Tickets continue. Everything else you rule.
 - You do not implement, review, debug, or take over a dispatched slice, and you
-  do not implement an issue while coordinating its analysis.
+  do not implement an issue while coordinating its analysis. You may delegate a
+  named verification gap; you do not take over the slice to re-review it.
 - You dispatch from the frontier receipt: a ticket outside `takeable` is not
   yours to dispatch, and a `cannot establish` entry is a read to repair, never
   an empty frontier.
-- You do not widen a ticket or silently decide what its assignment left open.
+- You do not widen an Assignment or silently decide what it left open.
 - Report what the governing read shows, not merely that a command returned zero.
