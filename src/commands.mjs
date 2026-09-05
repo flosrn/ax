@@ -123,7 +123,7 @@ export const COMMANDS = [
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls [--all]', 'capacity and overlap; --all: MORT rows and dead attempts'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
-      ['gate <task|request>', 'can this be re-dispatched without a duplicate agent? 0/1/2/3'],
+      ['gate <task|request>', 're-dispatch? 0 dead · 1 live · 2 duplicate · 3 unknown'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['settle <task|request>', 'write a proven-dead attempt as settled — never a live one'],
@@ -148,6 +148,28 @@ export const COMMANDS = [
     // reads what counts as landing FROM THE TERMINAL, not from this module's
     // header — a header is for whoever patches the verb (./worker/release.mjs).
     helpBody: {
+      gate: `A missing observation is not a death, and this verb never authorises a
+re-dispatch from one (#192).
+
+  0  every dispatch of this task is a PROVEN corpse (or there is none) — the receipt
+     names the verb that continues that record, decided by its branch's pull request:
+     OPEN takes \`--replace\`, MERGED is \`release\`'s, none or closed-unmerged is
+     \`settle\`'s. Unreadable PR evidence takes none of them.
+  1  one live agent — do NOT re-dispatch
+  2  two or more live agents on one task
+  3  cannot establish — never a permission. An unproven pane, a host that could
+     not be asked, a mutation whose outcome nobody knows (replay with
+     \`ax worker start --resume --request <same>\`, never a second identity),
+     and a truncated or silent runtime all land here.
+
+Liveness is judged by the same reader \`ax worker ls\` uses: a record says where
+its pane was placed, so a local corpse stays a corpse when an unrelated remote
+host is omitted, and a pane placed with \`--on <host>\` is asked of that host.
+A same-named local worktree never answers for a remote attempt.
+
+  --run <run_id>   name the Run \`task-list\` is bounded to
+
+Exit: 0 / 1 / 2 / 3 as above`,
       release: `A pane closes because the WORK LANDED, never because the session said it was done.
 
   triage / brief    this job and Pass's own publication on that issue

@@ -19,11 +19,14 @@
 // exactly the rows that carry this debt) nor an unsettled `worker-start`'s pane
 // (an association `ax worker ls` already calls unproven) decides anything.
 //
-// AND THE DISPOSITION ON "UNKNOWN" IS THE GATE'S, INVERTED — deliberately. The
-// gate asks whether a re-dispatch is safe, where an unknown pane must fail
-// closed toward NOT DISPATCHING, so it discloses the omission and answers 0.
-// This verb asks whether death may be WRITTEN, where the same unknown must fail
-// closed toward not writing. Same evidence, opposite safe direction.
+// AND THE DISPOSITION ON "UNKNOWN" IS THE SAME SAFE DIRECTION AS THE GATE'S
+// (#192). The gate asks whether a re-dispatch is safe; this verb asks whether
+// death may be WRITTEN. An unknown pane answers neither: the gate refuses the
+// authorization (it used to disclose the omission and answer 0, which a fresh
+// orchestrator read as permission), and this verb refuses the write. Same
+// evidence, same safe direction — what stays inverted is the SUCCESS case:
+// proven death is 0 for the gate (re-dispatch is safe) and the write for this
+// verb (the ending may be recorded).
 //
 // AND "UNKNOWN" IS DECIDED WITH THE HOST THE RECORD NAMES (#160). Until
 // 2026-09-04 this verb judged every pane with no host at all — worker-list

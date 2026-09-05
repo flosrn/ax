@@ -84,14 +84,14 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
 import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
-import { hostScopes, paneVerdict, terminalInventory } from './pane.mjs';
+import { declarationOf } from './hosts.mjs';
+import { hostReader, hostScopes, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore } from './record.mjs';
 import { livePanes } from './slots.mjs';
 
@@ -251,100 +251,14 @@ function workerIndex(run) {
   return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length };
 }
 
-/**
- * THE CHECKOUT'S OWN DECLARATION, read at most once and shared by both readers
- * of it: the hosts a record may be asked about, and the caps this repository
- * declares (#88). Two loads of one file would be two derivations of it
- * (AGENTS.md), and the divergence would be silent — a config invalid enough to
- * lose its hosts would still have answered a cap.
- *
- * LAZY, because a store with no remote record spends no read at all: this verb
- * counts records, never machines. The cap lines force it, so the laziness now
- * only spares the `--store` reader outside a checkout.
- */
-function declarationOf(cwd) {
-  let memo;
-  return () => {
-    if (memo !== undefined) return memo;
-    const paths = repoPaths(cwd);
-    if (paths.root === null) {
-      memo = { ok: false, reason: `${cwd} is not inside a repository, so nothing is declared here` };
-      return memo;
-    }
-    const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
-    if (!loaded.exists) memo = { ok: false, reason: `no ax.config.json under ${paths.root}, so nothing is declared here` };
-    else if (loaded.errors.length > 0) memo = { ok: false, reason: `ax.config.json is invalid, so its declarations cannot be read: ${loaded.errors[0]}` };
-    else memo = { ok: true, config: loaded.config };
-    return memo;
-  };
-}
-
-/**
- * THE HOSTS A RECORD NAMES, asked for their own inventory.
- *
- * A record dispatched with `--on <env>` names its host by the name the project
- * declared it under, and `dispatch.hosts.<env>` is what says how ax reaches it —
- * so that host's OWN terminal list is available, and it answers for its panes.
- * Before this, the enquiry stopped at the local list's `omittedHostIds`: every
- * remote pane read INCONNU with "hosts were omitted from the terminal-list
- * scope", which is honest and was avoidable, since the declaration was right
- * there. An orchestrator arbitrating overlap then had to treat a working remote
- * child as an unknown.
- *
- * Asked ONCE per host, and only where the answer can still change a row: a store
- * with no remote record reads no config and makes no extra call, a declared host
- * no record mentions has no row to classify (this verb counts records, never
- * machines), and a record that named no pane has nothing for a host to answer
- * about.
- *
- * LIVENESS IS A UNION, DEATH NEEDS A COVERING ANSWER — round 1 of review on
- * PR #91, and the asymmetry pane.mjs is built on. A handle an inventory CARRIES
- * is proven alive BY that inventory whatever scope it read (a terminal list can
- * carry a pane whose execution host is not local), while absence is the only
- * thing a covering scope is required to read. So the first, unscoped list
- * decides whenever it can, and the host is asked only where it cannot: a
- * transient failure on that ask can then never take back a pane this very
- * invocation observed, nor drop the count that authorises the next dispatch.
- *
- * A host that could not be asked is a NAMED refusal carrying the reason it
- * answered, never an empty inventory (F-028): its panes stay INCONNU, and only
- * the caller discloses why — once, not once per row.
- *
- * THE DECLARATION IS THE ONLY AUTHORITY over a host name, and deliberately so.
- * The dispatch store is host-global (record.mjs), so a record another project
- * wrote may name a host this checkout does not declare, and that row stays
- * INCONNU — a disclosed undercount, filed as its own ticket rather than fixed
- * here: hosts come from ax.config.json (AGENTS.md), and hostFor refuses an
- * undeclared name so no floor is ever inherited by a repo that did not declare
- * it. Widening that to a second, machine-global authority is a doctrine change
- * with an owner, not a review round's licence.
- *
- * THE ASKING ITSELF lives in `./pane.mjs` (`hostScopes`), because both dispatch
- * verbs now count against the same answers (#88): a fence that counted only the
- * local list while this listing counted a remote pane as capacity would promise
- * a number it does not enforce. What stays here is the DISPOSITION — which
- * verdict a row gets, and whether an absence may read as a corpse.
- */
-function hostReader(scopes, local) {
-  return {
-    /**
-     * The verdict for ONE recorded handle, and whether the answer behind it came
-     * from the host itself — which is what lets an absence be a corpse rather
-     * than an omission (see paneVerdict).
-     */
-    verdictFor(handle, why, host) {
-      // No handle: nothing a host could answer about. Presence in the first
-      // list: proven alive, and no scope can take that back.
-      if (handle === null || local.byHandle.has(handle) || host === undefined || host === '') {
-        return { verdict: paneVerdict(handle, why, local, { host }), asked: false };
-      }
-      const scope = scopes.scopeFor(host);
-      return { verdict: paneVerdict(handle, why, scope, { host, asked: scope.ok === true }), asked: scope.ok === true };
-    },
-    /** Every host that was asked and could not answer, with what it answered. */
-    unaskable: () => scopes.unaskable(),
-  };
-}
+// THE HOSTS A RECORD NAMES, and THIS CHECKOUT'S DECLARATION of them, live in
+// `./hosts.mjs` (`declarationOf`) and `./pane.mjs` (`hostReader`). They used
+// to live here because this verb was the only one that asked; `ax worker gate`
+// now judges a recorded pane the same way (#192), so a second copy is how one
+// of them would start reading an absence as a corpse where the other does not.
+// What stays this verb's own is the DISPOSITION of each row: a leaked pane
+// counted as capacity is still INCONNU, still routed to `worker-show`, and
+// never offered a release.
 
 export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExec, env = process.env, cwd = process.cwd() } = {}) {
   let storeArg = '';
@@ -573,7 +487,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // exists to prevent.
     const continuation =
       pane === 'MORT'
-        ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers })
+        ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers, run })
         : NO_CONTINUATION;
 
     return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation };

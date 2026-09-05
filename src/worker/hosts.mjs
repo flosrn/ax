@@ -17,6 +17,7 @@
 // never declared it, is the same bug in a new place — so a ground the project
 // did not declare is reported as NOT MEASURED, which is not the same as passed.
 
+import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { run as execRun } from '../exec.mjs';
 
 /** MiB, the unit every `memory.*` file and every floor in this file speaks. */
@@ -101,6 +102,38 @@ export function hostFor(config, env) {
       reason: `dispatch.hosts.${env} declares no ssh target, and every ground on a remote host is read over ssh. Add "ssh" to dispatch.hosts.${env} in ax.config.json.`,
     };
   return { ok: true, host };
+}
+
+/**
+ * THIS CHECKOUT'S OWN DECLARATION, read at most once and shared by every reader
+ * of it: the hosts a record may be asked about, and the caps this repository
+ * declares (#88).
+ *
+ * Two loads of one file would be two derivations of it (AGENTS.md), and the
+ * divergence would be silent — a config invalid enough to lose its hosts would
+ * still have answered a cap. LAZY, so a store with no remote record and no cap
+ * line spends no read at all.
+ *
+ * Shared by `ax worker ls` and `ax worker gate` (#192): the gate asks a
+ * record's host for its own panes exactly as the listing does, and a second
+ * config reader is how one of them would start refusing a host the other can
+ * reach.
+ */
+export function declarationOf(cwd) {
+  let memo;
+  return () => {
+    if (memo !== undefined) return memo;
+    const paths = repoPaths(cwd);
+    if (paths.root === null) {
+      memo = { ok: false, reason: `${cwd} is not inside a repository, so nothing is declared here` };
+      return memo;
+    }
+    const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+    if (!loaded.exists) memo = { ok: false, reason: `no ax.config.json under ${paths.root}, so nothing is declared here` };
+    else if (loaded.errors.length > 0) memo = { ok: false, reason: `ax.config.json is invalid, so its declarations cannot be read: ${loaded.errors[0]}` };
+    else memo = { ok: true, config: loaded.config };
+    return memo;
+  };
 }
 
 /**
