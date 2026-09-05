@@ -46,9 +46,18 @@ they break opposite ways:
 
 The read paginates on the validated head SHA (`&page=N`), and "complete" became a positive
 reconciliation rather than the absence of a reason to stop: a `total_count` that is a non-negative
-integer, and that many DISTINCT runs observed. Distinctness is by the row's `id`, read by name —
-the failure this exists for is a page that comes back twice, and counting rows would climb to the
-announced total over one page read repeatedly.
+integer, that many DISTINCT runs observed, AND a page the endpoint's own pagination ended on.
+Distinctness is by the row's `id`, read by name — the failure this exists for is a page that comes
+back twice, and counting rows would climb to the announced total over one page read repeatedly.
+
+The third condition is the one a reconciled count alone gets wrong, and it was caught in review
+before this shipped. A page short of the cap is the last one; a full page is a list this run cannot
+prove complete — the inference `prCommits` already stands on. So when the total is an exact multiple
+of the page size, the tally balances on page 1 and the read has observed nothing about the end. That
+unasked page is precisely where a stale or under-announced total shows itself: with an endpoint
+announcing 100 and holding 150, establishing on the count passed the first hundred and never saw the
+rest. A full page that reaches the total therefore continues, and the page after it either ends the
+list, exceeds the announced total, or repeats what was already observed.
 
 Every other way out of the loop registers an `unknown`, which fails the gate closed: a failed page
 (the repair names that page, quoted, so a pasted `&` cannot background it), a malformed container, a
@@ -71,8 +80,9 @@ failure, and the proof that `--merge` over an incomplete read issues no `gh pr m
 A page size is an answer boundary, and a read that authorises a mutation has to say which side of it
 the answer came from. The reusable shape is the same one the thread read paid for (#175): the end of
 a list is a POSITIVE observation. For a cursor list that observation is `hasNextPage === false`; for
-a counted list it is `distinct observed === announced total`, and the count of what you read is
-never it.
+a counted list it is `distinct observed === announced total` **on a page the pagination ended on** —
+and the count of what you read is never it. A balanced count is an arithmetic coincidence at every
+exact multiple of the page size, which is where the announced total is least worth trusting.
 
 The corollary is what a complete read does NOT claim. Reconciling every page against an announced
 total is not an atomic snapshot of GitHub metadata — runs can be created while the loop paginates —
