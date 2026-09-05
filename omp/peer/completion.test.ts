@@ -14,7 +14,17 @@
  */
 
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  ftruncateSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -81,6 +91,16 @@ function deps(rec: unknown, environment = '') {
     record: (id: string) => (id === DISPATCH ? { request: '137-work', json: rec } : null),
     environmentOf: () => environment,
   };
+}
+
+/**
+ * The same wiring with a deliberately small cap. `cap` is one of this module's
+ * named options, so a boundary shape — a token or a character the bound cuts in
+ * half — is exercised through the real receiver on a fixture small enough to
+ * count by hand, instead of a 16 KB one nobody can read.
+ */
+function capped(rec: unknown, cap: number, environment = '') {
+  return { ...deps(rec, environment), cap };
 }
 
 // ─── parity, which is the reason the twin is allowed to exist ────────────────
@@ -217,26 +237,195 @@ test('an oversized Report keeps CRITERIA whole and ends on a truncation line nam
   expect(block).toContain(wt.derived);
   expect(block).not.toContain('TAIL-MARKER-4a90');
   expect(block.length).toBeLessThan(REPORT_CAP_BYTES + 2_000);
+  // The truncation is now the INPUT's, and it says so: the sections after the
+  // criteria were never read, not read and dropped. And the diagnostic states no
+  // total, because a bounded read never established one — the file is 52 KB and
+  // the receiver only ever saw the first 16 KB of it.
+  expect(block).toContain(`input-truncated at the ${REPORT_CAP_BYTES}-byte input bound`);
+  expect(block).not.toContain(String(statSync(wt.derived).size));
 });
 
-test('a CRITERIA section larger than the cap is refused by name, never shown in part', () => {
+test('a CRITERIA section that runs past the input bound is refused by name, never shown in part', () => {
   // THE CASE A HEAD CAP CANNOT HONOUR, and the ticket's criterion is what
-  // decides it: `## CRITERIA` stays whole. A section larger than the cap itself
-  // cannot be kept whole AND bounded, and raising the cap for one Report would
-  // make the cap not a cap — an unbounded section is an unbounded injection into
-  // the orchestrator's context. So nothing partial is shown: a truncated
-  // criteria list reads as complete, and the reader decides on it.
+  // decides it: `## CRITERIA` stays whole or it is not shown. Its end is past
+  // the bound here — no `## ` heading follows it in the bytes that were read —
+  // so completeness cannot be ESTABLISHED, and "the section ends where the read
+  // stopped" is the false completeness claim this module exists to refuse. A
+  // truncated criteria list reads as complete, and the reader decides on it.
   const wt = withReport(
     `## CRITERIA\n${'- a criterion line, repeated past the cap\n'.repeat(500)}\n## LEARNINGS\n- durable: x\n`,
   );
 
   const block = completionReport(completion(), deps(wt.rec));
 
-  expect(block).toContain('FINDING: the Report\'s `## CRITERIA` section alone is');
+  expect(block).toContain("FINDING: the Report's `## CRITERIA` section runs past the");
+  expect(block).toContain('its end was never read');
   expect(block).toContain('no complete criteria list can be injected');
   expect(block).toContain(`Repair: read ${wt.derived}`);
   // Not one criterion line reaches the model, and no `---` body fence opens.
   expect(block).not.toContain('- a criterion line');
+});
+
+// ─── the INPUT bound, which is not the injection cap (#180) ─────────────────
+//
+// Two different bounds, and until #180 there was only one. `REPORT_CAP_BYTES`
+// bounds what is INJECTED, after redaction. It never bounded what was READ: the
+// receiver pulled the whole file into a string, ran the redaction pass over all
+// of it, measured the result and then cut. A Report is child-authored, its size
+// is the child's choice, and the session that pays for that read is the
+// orchestrator's. So the same number now bounds the input too — the file is
+// consumed at cap + 1 bytes, one byte past the cap so that "there is more" is an
+// observation rather than a guess.
+//
+// What the bound costs is knowledge, and these tests pin what the block may
+// therefore claim: not the file's size, not the end of a section it never read,
+// and never a line it only saw half of.
+
+/** Apparent size for the sparse fixture: a hole costs no disk and `truncate` is O(1). */
+const GIB = 1024 * 1024 * 1024;
+
+test('a Report whose bytes run far past the bound is read within it, and claims no size it never read', () => {
+  const wt = withReport('## CRITERIA\n- Bound: MET, read within the bound.\n\n## LEARNINGS\n- durable: x\n');
+  const fd = openSync(wt.derived, 'r+');
+  try {
+    ftruncateSync(fd, GIB);
+  } finally {
+    closeSync(fd);
+  }
+  expect(statSync(wt.derived).size).toBe(GIB);
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  // The head is injected, and the 1 GiB behind it was neither read nor described:
+  // the old receiver decoded and redacted all of it and printed the total it
+  // measured, which is the one fact a bounded read cannot establish.
+  expect(block).toContain('- Bound: MET, read within the bound.');
+  expect(block).toContain(`input-truncated at the ${REPORT_CAP_BYTES}-byte input bound`);
+  expect(block).not.toContain(String(GIB));
+  // Nothing from the hole reaches the injection either, so neither the read nor
+  // the block scales with the file: both stay within the bound.
+  expect(block).not.toContain('\u0000');
+  expect(block.length).toBeLessThan(1_000);
+});
+
+test('an oversized Report that redacts under the cap is still disclosed as input-truncated', () => {
+  // THE CASE THAT MADE THE OLD ORDER UNSAFE. Redaction SHRINKS a long token to
+  // fifteen bytes, so a file built out of tokens measured under the cap once the
+  // whole of it had been redacted — and was injected WHOLE, tail included, with
+  // no truncation line at all. Under an input bound the tail was never read, and
+  // the criterion is that this is said: an unread suffix is never presented as
+  // read, however short redaction makes what was kept.
+  const token = `- ran \`--dispatch-capability dcap_${'A'.repeat(80)}\`\n`;
+  const wt = withReport(
+    `## CRITERIA\n- Shrink: MET.\n\n## EVIDENCE\n${token.repeat(300)}## LEARNINGS\n- durable: TAIL-MARKER-51ab\n`,
+  );
+  // The premise, measured rather than asserted: the raw file is past the cap and
+  // its redaction is under it.
+  expect(statSync(wt.derived).size).toBeGreaterThan(REPORT_CAP_BYTES);
+  expect(Buffer.byteLength(readFileSync(wt.derived, 'utf8').replaceAll(/\bdcap_[A-Za-z0-9_-]+/g, 'dcap_<redacted>'), 'utf8')).toBeLessThan(
+    REPORT_CAP_BYTES,
+  );
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  expect(block).toContain('- Shrink: MET.');
+  expect(block).toContain(`input-truncated at the ${REPORT_CAP_BYTES}-byte input bound`);
+  expect(block).not.toContain('TAIL-MARKER-51ab');
+});
+
+test('a criteria section whose end IS inside the bound and still overflows the cap is refused by its own name', () => {
+  // The two refusals are not one refusal, and the difference is what was
+  // ESTABLISHED. Here the whole file fits the input bound — its `## LEARNINGS`
+  // was read — and the section still does not fit the injection cap, because
+  // redaction GROWS a short token (`dcap_a`, six bytes, becomes fifteen). A
+  // measurement that was made may be stated; the other refusal names no size.
+  const wt = withReport(`## CRITERIA\n${'- dcap_a dcap_b dcap_c\n'.repeat(7)}## LEARNINGS\n`);
+  expect(statSync(wt.derived).size).toBeLessThan(200);
+
+  const block = completionReport(completion(), capped(wt.rec, 200));
+
+  expect(block).toContain("FINDING: the Report's `## CRITERIA` section alone is 362 bytes, past the 200-byte cap");
+  expect(block).toContain('no complete criteria list can be injected');
+  expect(block).not.toContain('- dcap_');
+});
+
+test('the line the input bound cuts in half is dropped whole, with the secret inside it', () => {
+  // The hazard the bound INTRODUCES, and the reason the cut is made on the bytes
+  // before anything decodes them: the bound falls where it falls, and a naive
+  // reader emits whatever it caught — half a line, and with it the head of a
+  // `dcap_…` token whose tail is past the bound. So the last line is dropped
+  // whole. Nothing incomplete is emitted to fill the cap; the cap is not a quota.
+  const cap = 400;
+  const head = '## CRITERIA\n- Boundary: MET.\n\n## EVIDENCE\n';
+  const pad = '- padding line\n'.repeat(23);
+  const straddle = '- straddle-BEFORE dcap_LEAKMEPLEASE1234 AFTER-straddle\n';
+  const wt = withReport(`${head}${pad}${straddle}## LEARNINGS\n- durable: x\n`);
+  // The premise: that line starts inside the bound and ends past it.
+  const start = Buffer.byteLength(`${head}${pad}`, 'utf8');
+  expect(start).toBeLessThan(cap);
+  expect(start + Buffer.byteLength(straddle, 'utf8')).toBeGreaterThan(cap + 1);
+
+  const block = completionReport(completion(), capped(wt.rec, cap));
+
+  expect(block).toContain('- Boundary: MET.');
+  expect(block).toContain('- padding line');
+  expect(block).toContain(`input-truncated at the ${cap}-byte input bound`);
+  // Not the half-line, and not the token's head under any spelling — redacted,
+  // partial or whole. The bytes never entered the text that gets decoded.
+  expect(block).not.toContain('straddle');
+  expect(block).not.toContain('dcap_');
+});
+
+test('a character the input bound cuts in half is never decoded into the injection', () => {
+  // `Buffer.toString('utf8')` answers a broken tail with U+FFFD, so a reader that
+  // decodes its raw window emits a corrupt character. 0x0A cannot occur inside a
+  // UTF-8 sequence, which is why cutting at the last newline of the WINDOW is
+  // both the line rule and the codepoint rule.
+  const cap = 300;
+  const head = '## CRITERIA\n- Multibyte: MET.\n\n## EVIDENCE\n';
+  const pad = 'x'.repeat(cap - Buffer.byteLength(head, 'utf8'));
+  const wt = withReport(`${head}${pad}☃ and a tail past the bound\n## LEARNINGS\n`);
+
+  const block = completionReport(completion(), capped(wt.rec, cap));
+
+  expect(block).toContain('- Multibyte: MET.');
+  expect(block).not.toContain('\uFFFD');
+  expect(block).not.toContain('☃');
+  expect(block).toContain(`input-truncated at the ${cap}-byte input bound`);
+});
+
+test('a Report whose first line runs past the bound shows nothing from it, and is not called empty', () => {
+  // No line boundary inside the window: there is no safe prefix to show, and the
+  // two wrong answers are showing the fragment anyway or calling the file empty.
+  // It is neither empty nor readable within the bound, and the repair says which.
+  const wt = withReport(`${'x'.repeat(500)}\n## CRITERIA\n- unreachable\n`);
+
+  const block = completionReport(completion(), capped(wt.rec, 200));
+
+  expect(block).toContain('with no complete line inside it');
+  expect(block).toContain(`Repair: read ${wt.derived}`);
+  expect(block).not.toContain('xxxxxxxx');
+  expect(block).not.toContain('is empty');
+});
+
+test('the descriptor is released on the injected path and on the refused one', () => {
+  // "Released on success and failure" is not a claim an injected seam can make.
+  // Descriptor numbers are reused once closed, so a leak walks them upward: 300
+  // rounds over an injected Report and a refused one, then the number the next
+  // open is handed IS the measurement.
+  const ok = withReport('## CRITERIA\n- Fd: MET.\n\n## LEARNINGS\n');
+  const refused = withReport(`## CRITERIA\n${'- a criterion line\n'.repeat(1_200)}`);
+  const before = openSync(ok.derived, 'r');
+  closeSync(before);
+
+  for (let i = 0; i < 300; i += 1) {
+    completionReport(completion(), deps(ok.rec));
+    completionReport(completion(), deps(refused.rec));
+  }
+
+  const after = openSync(ok.derived, 'r');
+  closeSync(after);
+  expect(after).toBeLessThan(before + 50);
 });
 
 /**
