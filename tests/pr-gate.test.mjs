@@ -343,20 +343,24 @@ function buildRepo(root, shape, prGate) {
     if (shape === 'stale-merged') publish('main', 'updated:feature');
     if (shape === 'remote-merged') publish('main', 'feature');
   }
-  // #177's shapes, each one a head the PR announces that is NOT the branch tip
-  // this checkout answers for the head NAME.
+  // #177's shapes. Three of them EXTEND the base-merge history above on purpose
+  // — `sibling-moved` and `head-behind-tip` share that block, so their branch
+  // carries the advanced base and the ancestry question has a real answer; what
+  // each adds is the movement that used to be read as the head's own evidence.
   //
-  //   sibling-moved     the announced head IS the tip, and an unrelated local
-  //                     branch has moved past it: movement elsewhere must not
-  //                     change a coherent verdict.
-  //   head-behind-tip   the branch kept working past the announced head, so the
+  //   sibling-moved     base merged, so the announced head (the tip) is current,
+  //                     and an unrelated local branch has moved past it:
+  //                     movement elsewhere must not change a coherent verdict.
+  //   head-behind-tip   base merged, then the branch kept working, so the
   //                     announced commit carries the base and is not the tip.
-  //   remote-merged     a REAL origin: the base advanced there and the branch
-  //                     merged it, so the pre-merge head the PR announces does
-  //                     not carry it while both published tips do.
-  //   stale-twice       published, and BOTH of the branch's commits are behind
-  //                     the advanced base: the head can move once and still
-  //                     refuse, which is the second-refusal route (KTD6).
+  //   remote-merged     the same history with a REAL origin: the base advanced
+  //                     there and the branch merged it, so the pre-merge head
+  //                     the PR announces does not carry it while the published
+  //                     tips do.
+  //   stale-twice       its own history, published, with BOTH of the branch's
+  //                     commits behind the advanced base: the head can move once
+  //                     and still refuse, which is the second-refusal route
+  //                     (KTD6).
   if (shape === 'sibling-moved') {
     git(root, 'checkout', '-q', '-b', 'wip');
     commit(root, 'src/wip.txt', 'wip\n', 'an unrelated branch moves past the head');
