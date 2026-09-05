@@ -39,13 +39,33 @@
  * a completion that is still injected in full. A withheld completion would cost
  * the orchestrator the one message that says the slice ended.
  *
+ * TWO BOUNDS, AND THEY ARE NOT THE SAME BOUND (#180). `REPORT_CAP_BYTES` caps
+ * what is INJECTED, after redaction. It never capped what was READ: the receiver
+ * pulled the whole file into a string and redacted all of it before measuring,
+ * so a Report — a file whose size is the CHILD's choice — decided how much work
+ * and memory the ORCHESTRATOR's session spent on a message it did not ask for.
+ * Measured 2026-09-05 against the old reader: a 1 GiB Report cost three seconds
+ * and a gigabyte of resident string to produce a 16 KB block. The same number
+ * now bounds the input too — `cap + 1` bytes off a descriptor closed on both
+ * exits, one byte past the cap so that "there is more" is an observation and not
+ * a guess.
+ *
+ * WHAT A BOUND COSTS IS KNOWLEDGE, so this block no longer claims what the old
+ * reader could measure. The file's size is unknown. The end of a section whose
+ * heading was among the last bytes read is unknown, so a criteria list counts as
+ * complete only when its END was read as well — one whose end lies past the bound
+ * is refused by name, exactly like one too large to inject. And an unread suffix
+ * is DISCLOSED (`input-truncated`), never presented as read: including when
+ * redaction leaves less than the cap, which is how the old order injected an
+ * oversized file whole and called it complete.
+ *
  * TOTAL BY CONSTRUCTION. The receiver appends this block to the message it is
  * about to inject, inside a try whose catch withholds the ack and replays the
  * whole delivery. So every fault here is absorbed into a finding line: a
  * misparsed record must not turn into a re-delivered completion.
  */
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { closeSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import { redactSecrets } from '../../src/redact.mjs';
@@ -57,15 +77,23 @@ import { environmentOfDispatch, paneOfDispatch } from './route.ts';
 export const REPORT_DIR = join('.scratch', 'report');
 
 /**
- * The byte cap on injected Report text.
+ * The byte cap on Report text, spent in two places: it bounds the raw INPUT
+ * (`boundedRead` consumes `cap + 1` bytes and no more) and it bounds the
+ * redacted INJECTION (`bounded`). One number, because a second one would be a
+ * second thing to keep in step for no gain — reading more than can ever be
+ * injected buys nothing but the cost of reading it.
  *
  * A HEAD cap, not a tail one, and that is the whole design: the playbook puts
  * `## CRITERIA` first, so the section the orchestrator decides on is the section
  * that survives, whole, while the sections after it are truncated. The tail
  * names the file, which is the real record — a reader who needs the rest opens
- * it. A `## CRITERIA` larger than this cap is refused by name instead
- * (`bounded`): nothing partial is shown, because a cut criteria list reads as
- * complete.
+ * it. A `## CRITERIA` this cap cannot hold whole, or whose end the input bound
+ * never reached, is refused by name instead (`bounded`): nothing partial is
+ * shown, because a cut criteria list reads as complete.
+ *
+ * Raising it raises what an arbitrary child spends of its orchestrator's context
+ * and memory; lowering it refuses ordinary Reports whose criteria are merely
+ * long. Neither direction is a performance knob.
  */
 export const REPORT_CAP_BYTES = 16 * 1024;
 
@@ -163,63 +191,141 @@ function bag(payload) {
 }
 
 /**
+ * `{ text, truncated }` — at most `cap + 1` bytes of `path`, cut back to the last
+ * line boundary when the file ran past the bound, with the descriptor closed on
+ * both exits.
+ *
+ * THE BOUND IS ON THE READ. `readFileSync` decides nothing until the whole file
+ * is resident, and the file is a child's: that cost belongs to whoever wrote it,
+ * not to the session it reports to. `cap + 1` is the smallest window that still
+ * answers "is there more?" from the read itself — a `stat` would answer it from a
+ * different observation, and a file being appended to makes the two disagree.
+ *
+ * THE LAST NEWLINE IS THE CUT, AND IT IS MADE ON THE BYTES. The bound falls where
+ * the file put it: mid-line, mid-character, mid-token. 0x0A never occurs inside a
+ * UTF-8 sequence, so the last newline in the window is at once a codepoint
+ * boundary and a boundary no secret shape crosses. Decoding first would already
+ * have turned a split character into U+FFFD; cutting later would leave a `dcap_`
+ * head whose tail is past the bound. An empty `text` WITH `truncated` is a file
+ * whose first line outruns the window — no safe prefix exists, and the caller
+ * names that instead of showing the fragment.
+ */
+function boundedRead(path, cap) {
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(cap + 1);
+    let read = 0;
+    // A read(2) on a regular file may answer short — a signal is enough — so the
+    // window is filled in a loop, and never past its own length.
+    while (read < buf.length) {
+      const n = readSync(fd, buf, read, buf.length - read, read);
+      if (n === 0) break;
+      read += n;
+    }
+    const truncated = read > cap;
+    if (!truncated) return { text: buf.toString('utf8', 0, read), truncated };
+    const nl = buf.lastIndexOf(0x0a, read - 1);
+    return { text: nl <= 0 ? '' : buf.toString('utf8', 0, nl), truncated };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * `{ body }` | `{ reason }` — the injected text, bounded, or the named inability
- * that says why no complete one exists.
+ * that says why no complete one exists. `truncated` is the input bound's answer
+ * from `boundedRead`, and it is what separates "the rest was dropped" from "the
+ * rest was never read".
  *
  * THE CAP IS SPENT ON `## CRITERIA` FIRST. The section is what a merge gate
  * decides on, the playbook puts it first, so a head cut keeps it whole and
  * truncates the sections after it. What a head cut cannot do is keep a section
  * that is larger than the cap ITSELF, and raising the cap for one is not
  * available: an unbounded section is an unbounded injection into the
- * orchestrator's context. So that case is refused by name instead — a partial
- * criteria list presented as a Report is the one outcome worse than no Report,
- * because it reads as complete and the reader decides on it.
+ * orchestrator's context. Nor can it keep one whose END the input bound never
+ * reached, which is a section of unknown size rather than a known oversized one.
+ * Both are refused by name — a partial criteria list presented as a Report is the
+ * one outcome worse than no Report, because it reads as complete and the reader
+ * decides on it — and only the measured one states a size.
  *
  * Redact FIRST, then cap. The other order leaks: truncating a `dcap_…` token
  * mid-way still prints its prefix (`src/worker/transcript.mjs` pays for that
  * ordering already). `block` redacts again, which is idempotent — this call is
- * here for the ORDER, not for the coverage.
+ * here for the ORDER, not for the coverage. And redaction can GROW text
+ * (`dcap_x`, six bytes, becomes fifteen), which is why the cap is enforced below
+ * on the redacted bytes and never on the raw window alone.
  */
-function bounded(text, cap, path) {
+function bounded(text, cap, path, truncated) {
   const clean = redactSecrets(text);
-  const total = Buffer.byteLength(clean, 'utf8');
-  if (total <= cap) return { body: clean.trimEnd() };
-
-  const criteria = criteriaBytes(clean);
-  if (criteria !== null && criteria > cap) {
+  const criteria = criteriaSpan(clean, truncated);
+  if (criteria.open === true) {
     return {
-      reason: `the Report's \`## CRITERIA\` section alone is ${criteria} bytes, past the ${cap}-byte cap, so no complete criteria list can be injected and nothing partial stands in for it`,
+      reason: `the Report's \`## CRITERIA\` section runs past the ${cap}-byte input bound — its end was never read, so no complete criteria list can be injected and nothing partial stands in for it`,
+      repair: `Repair: read ${path} — the criteria are there in full, and this block would only have shown the part that fit the bound.`,
+    };
+  }
+  if (criteria.bytes !== undefined && criteria.bytes > cap) {
+    return {
+      reason: `the Report's \`## CRITERIA\` section alone is ${criteria.bytes} bytes, past the ${cap}-byte cap, so no complete criteria list can be injected and nothing partial stands in for it`,
       repair: `Repair: read ${path} — the criteria are there in full, and this block would only have shown part of them.`,
     };
   }
 
-  // Cut back to the last newline inside the cap: a line boundary is also a
-  // codepoint boundary, so the head cannot end mid-character.
-  const head = Buffer.from(clean, 'utf8').subarray(0, cap).toString('utf8');
-  const cut = head.lastIndexOf('\n');
-  const kept = cut > 0 ? head.slice(0, cut) : head;
+  const total = Buffer.byteLength(clean, 'utf8');
+  // A complete Report inside both bounds: exactly what it has always been.
+  if (total <= cap && !truncated) return { body: clean.trimEnd() };
+
   // A Report with no `## CRITERIA` heading at all gets the NEUTRAL trailer. The
   // section-is-whole claim is the one a decision gate acts on, so asserting it
   // over a file where the heading was missing or misspelled would be a false
-  // completeness claim — worse than the malformed Report it describes.
+  // completeness claim — worse than the malformed Report it describes. Under the
+  // input bound the absence is weaker still: the heading may be past the bound,
+  // so the trailer says where it was not found rather than that it does not exist.
   const trailer =
-    criteria === null
-      ? `no \`## CRITERIA\` heading was found, so nothing above is a complete criteria list; read it in full at ${path}`
+    criteria.absent === true
+      ? `no \`## CRITERIA\` heading was found${truncated ? ' in the bytes that were read' : ''}, so nothing above is a complete criteria list; read it in full at ${path}`
       : `\`## CRITERIA\` is whole above; read the rest at ${path}`;
-  return { body: `${kept}\n--- Report truncated at ${cap} bytes of ${total} — ${trailer}` };
+  // `total` is the size of what was READ. Stating it as the file's size would be
+  // the one fact a bounded read cannot have, so a truncated input names the bound
+  // it stopped at and no size at all.
+  const disclosure = truncated
+    ? `input-truncated at the ${cap}-byte input bound; what follows it was never read`
+    : `truncated at ${cap} bytes of ${total}`;
+  if (total <= cap) return { body: `${clean.trimEnd()}\n--- Report ${disclosure} — ${trailer}` };
+
+  // Cut back to the last newline inside the cap: a line boundary is also a
+  // codepoint boundary, so the head cannot end mid-character. No boundary inside
+  // the cap means no safe prefix, and nothing incomplete is emitted to fill it.
+  const head = Buffer.from(clean, 'utf8').subarray(0, cap).toString('utf8');
+  const cut = head.lastIndexOf('\n');
+  if (cut <= 0) {
+    return {
+      reason: `the Report's first ${cap} redacted bytes hold no line boundary, so no safe prefix of it can be injected`,
+      repair: `Repair: read ${path} — a cut inside that line could split a character or a token, and the cap is not a quota to fill.`,
+    };
+  }
+  return { body: `${head.slice(0, cut)}\n--- Report ${disclosure} — ${trailer}` };
 }
 
 /**
- * How many bytes of `text` the `## CRITERIA` section occupies, counted from the
- * start of the file, or `null` for a Report that has no such heading — an
- * absence, never a zero (F-028).
+ * `{ bytes }` | `{ open: true }` | `{ absent: true }` — how many bytes of `text`
+ * the `## CRITERIA` section occupies counted from the start, or which of the two
+ * things that count cannot be: no such heading here, or a section whose END was
+ * never read. Three named answers and no zero, because "no criteria heading" and
+ * "a criteria section of zero bytes" are the same number and different facts
+ * (F-028).
  */
-function criteriaBytes(text) {
+function criteriaSpan(text, truncated) {
   const heading = /^## CRITERIA\b.*$/m.exec(text);
-  if (heading === null) return null;
+  if (heading === null) return { absent: true };
   const from = heading.index + heading[0].length;
   const next = /^## /m.exec(text.slice(from));
-  return Buffer.byteLength(text.slice(0, next === null ? text.length : from + next.index), 'utf8');
+  if (next !== null) return { bytes: Buffer.byteLength(text.slice(0, from + next.index), 'utf8') };
+  // Nothing follows it. In a COMPLETE input that is the end of the file and the
+  // section is whole; in a truncated one its end is past the bound, and "the
+  // section ends where the bytes stopped" is exactly the false completeness claim
+  // a decision gate would act on.
+  return truncated ? { open: true } : { bytes: Buffer.byteLength(text, 'utf8') };
 }
 
 /**
@@ -390,21 +496,36 @@ export function completionReport(msg, deps = {}) {
       return block(derived.path, lines);
     }
 
-    let text;
+    // THE READ IS BOUNDED BEFORE ANYTHING DECODES OR REDACTS IT (#180): the file
+    // is a child's, its size is the child's choice, and this session pays for
+    // every byte of it.
+    let input;
     try {
-      text = readFileSync(fileReal, 'utf8');
+      input = boundedRead(fileReal, cap);
     } catch (err) {
       lines.push(`FINDING: the Report at this path could not be read: ${err?.code ?? err}.`);
       lines.push(`Repair: read ${derived.path} on this host; the file resolved, so the fault is in reading it.`);
       return block(derived.path, lines);
     }
-    if (text.trim() === '') {
-      lines.push('FINDING: the Report at this path is empty.');
-      lines.push(REPAIR);
+    if (input.text.trim() === '') {
+      // TWO WAYS TO HAVE NOTHING TO SHOW, and one of them is not an absence: a
+      // truncated window with no complete line inside it came off a file that has
+      // bytes, so calling it empty aims the repair at a worker who wrote one.
+      if (input.truncated) {
+        lines.push(
+          `FINDING: the Report ran past the ${cap}-byte input bound with no complete line inside it, so nothing from it can be shown safely — a cut mid-line could split a UTF-8 character or a secret.`,
+        );
+        lines.push(
+          `Repair: read ${derived.path} on this host — the file is not empty; its first line is longer than the bound this block reads.`,
+        );
+      } else {
+        lines.push('FINDING: the Report at this path is empty.');
+        lines.push(REPAIR);
+      }
       return block(derived.path, lines);
     }
 
-    const shown = bounded(text, cap, derived.path);
+    const shown = bounded(input.text, cap, derived.path, input.truncated);
     if (shown.body === undefined) {
       lines.push(`FINDING: ${shown.reason}.`);
       lines.push(shown.repair);
