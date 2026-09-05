@@ -225,6 +225,23 @@ test('a plain pin never runs ax init — managed files are not rewritten by a bu
   assert.ok(r.calls.every(line => !/bin\/ax init$/.test(line)), `init ran unasked: ${r.calls.join(' | ')}`);
 });
 
+test('--dry-run never runs init, and says what it would have written — including on an ALREADY correct pin', () => {
+  // The dry short-circuit lives inside the `changing` branch, because an
+  // unchanged pin still had something to say (the install proof and the
+  // grading, both reads). `--init` is a WRITE, so it may not ride that fall
+  // through: measured while landing #170 — `ax pin <same version> --dry-run
+  // --init` reached the exec and would have rewritten the project's managed
+  // files under a flag whose whole promise is that nothing moves.
+  const exec = fakeExec({ onInstall: at => installAs(at, '0.5.2') });
+  const root = repo({ pinned: '0.5.2' });
+  installAs(root, '0.5.2');
+  const r = run(['v0.5.2', '--dry-run', '--init'], { root, exec });
+
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.calls.every(line => !/bin\/ax init$/.test(line)), `init ran under --dry-run: ${r.calls.join(' | ')}`);
+  assert.match(r.out, /dry run — ax init NOT run/, 'and the flag says what it withheld');
+});
+
 test('a doctor that could not RUN is not reported as a checkout it refused', () => {
   // Two different states: "the checkout is incoherent" and "nothing graded it".
   // Collapsing them sends an operator to repair findings that were never

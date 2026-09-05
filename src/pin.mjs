@@ -18,6 +18,18 @@
 // dispatched children by design. So the boundary is: ax mutates package.json
 // and node_modules (which an install mutates anyway), and the git gesture stays
 // a human-or-orchestrator decision, with its message already written.
+//
+// A FLAG ON THIS VERB IS PARSED BY THE VERSION BEING LEFT, and that makes every
+// new option unadoptable for exactly one release. The copy reading the argv is
+// the one already installed, so a consumer that writes `ax pin "$V" --init`
+// today breaks its very next bump: the release it is leaving answers `unknown
+// argument "--init"` and refuses before it installs anything. Measured
+// 2026-09-05 (#170), from gapila under 0.23.0. A receiving workflow therefore
+// PROBES rather than assumes — `ax pin --help`, and pass the flag only when it
+// is advertised (gapila PR #2043, commit 2202197) — which needs no second edit
+// when the release carrying the flag lands. The same holds for any future
+// option here, so a release note that announces one is announcing it for the
+// bump AFTER the next.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -176,7 +188,15 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   // files is a mutation nobody asked for. It runs AFTER the install proof —
   // init must be the version being pinned — and before the grading it exists
   // to satisfy.
-  if (doInit) {
+  //
+  // AND IT IS A WRITE, so `--dry-run` withholds it out loud. The dry
+  // short-circuit above lives inside the `changing` branch — an unchanged pin
+  // still has reads worth doing, the install proof and the grading — so a flag
+  // that mutates cannot ride that fall through: `ax pin <same version>
+  // --dry-run --init` reached this exec and rewrote a project's managed files
+  // under the one flag that promises nothing moves.
+  if (doInit && dry) note('dry run — ax init NOT run, so the grading below reads the checkout as it stands');
+  if (doInit && !dry) {
     const written = exec(join(root, 'bin', 'ax'), ['init'], root);
     if (written.error || written.status !== 0) {
       const reason = String(written.error?.message ?? written.stderr ?? '').trim();
