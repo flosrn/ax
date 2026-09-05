@@ -200,6 +200,28 @@ function record(dir, request, { dispatchId = 'ctx_rec', handle = 'term_rec', on 
   return path;
 }
 
+/**
+ * A record whose ONLY phase is an ESTABLISHED REJECTION — the legacy shape
+ * measured on this host (#205). Its `task-create` was fenced by Orca under
+ * another session's Run: exit 1, `ok: false`, `consumer_fenced`, no result. It
+ * carries no task id because no task was ever created, not because the id was
+ * lost.
+ */
+function fenced(dir, request, { exit = 1, receiptText = JSON.stringify({
+  ok: false,
+  error: { code: 'consumer_fenced', message: 'This coordinator terminal is bound to run_68c96672f718, not run_c0cd903fc6e1.' },
+}) } = {}) {
+  const { path } = claimRecord(dir, request);
+  initRecord(path, { request, orca: 'orca' });
+  phaseBegin(path, {
+    name: 'task-create',
+    identity: `id-create-${request}`,
+    argv: ['orca', 'orchestration', 'task-create', '--run', 'run_c0cd903fc6e1', '--json'],
+  });
+  phaseEnd(path, 'last', { exit, receiptText });
+  return path;
+}
+
 /** Nothing on this machine answers a shell here: a test that needs one injects it. */
 const noExec = (bin, args) => ({ status: 1, stdout: '', stderr: `no ${bin} ${String(args?.[0] ?? '')} in this test\n` });
 
@@ -703,4 +725,46 @@ test('#192: a host that cannot say which worktrees it carries produces an inabil
   assert.match(r.out, /→ orca worktree list --repo id:repo-1 --environment gapicore --json/, 'the read that failed is the repair');
   assert.doesNotMatch(r.out, /--replace|ax worker settle|ax worker release/);
   assert.ok(!calls.some(line => line.startsWith('git ')), `nothing local answers for a remote tree: ${calls.join(' | ')}`);
+});
+
+// ── #205: a record that could not have created a task is not an inability ────
+// Measured on this host: two of 288 records carry no task id because their one
+// `task-create` was FENCED — exit 1, `ok: false`, `consumer_fenced`, no result,
+// no task. `taskIdScan` raised on them before the record's own recorded verdict
+// was ever consulted, and this verb turned that raise into a STORE-WIDE
+// CANNOT ESTABLISH: every recovery on the machine was refused over a record
+// that created nothing, behind a store-readability repair that could not act on
+// the named cause. The inability now covers what it was written for — a record
+// whose relation to this task cannot be ESTABLISHED — and nothing wider.
+
+test('#205: a record proved to hold no mutation is set aside, disclosed, and blocks nothing', () => {
+  const dir = store();
+  fenced(dir, 'phase2-fork-pipeline-20260825');
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /First launch/, 'the ordinary liveness verdict is reached');
+  assert.doesNotMatch(r.out, /CANNOT ESTABLISH/, 'the record is not the reason for an exit 3');
+  // Set aside is DISCLOSED, never hidden: the operator must be able to see
+  // which record was passed over and on what ground.
+  assert.match(r.out, /phase2-fork-pipeline-20260825\.json/, 'the record set aside is named');
+  assert.match(r.out, /established rejection/, 'and the ground it was set aside on is stated');
+});
+
+test('#205: a success carrying no legible task id still refuses, repaired against THAT record', () => {
+  const dir = store();
+  fenced(dir, 'started-1', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { state: 'ready' } }) });
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /First launch|Safe to re-dispatch/, 'a success may name a live agent');
+  assert.match(r.out, /started-1\.json/, 'the record whose relation cannot be established is named');
+  assert.match(r.out, /→ cat .*started-1\.json/, 'the repair reads THAT record');
+  assert.match(r.out, /→ ax worker ls --all/, 'and the existing read-only inventory beside it');
+  assert.match(r.out, /recovering .*receipt or identity/, 'the reconciliation condition is stated out loud');
+  assert.doesNotMatch(r.out, /ax worker dispatch/, 'a fresh identity is never the repair');
+  assert.doesNotMatch(r.out, /→ ls -ld/, 'the store is readable — its repair does not address this cause');
+  assert.doesNotMatch(r.out, /--resume/, 'a replay this record does not prove is never printed');
 });

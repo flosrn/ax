@@ -15,6 +15,7 @@ import {
   dispatchFields,
   dispatchIndex,
   dispatcherRunForPane,
+  heldNoMutation,
   initRecord,
   newIdentity,
   phaseArgv,
@@ -336,6 +337,42 @@ test('a stale claim is a record proved EMPTY: every phase a conclusive refusal, 
   // And the Run tests, unchanged: unprovable, or the caller's own to replay.
   assert.match(staleClaim(refused(['orca', 'x', '--json']), 'run_mine').reason, /names no Run/);
   assert.match(staleClaim(refused(['orca', 'x', '--run', 'run_mine']), 'run_mine').reason, /own Run run_mine/);
+});
+
+test('#205: "held no mutation" is the stale-claim proof WITHOUT its Run term — relatedness, not takeover', () => {
+  // The gate needs a different question from `staleClaim`'s: not "may I take
+  // this claim over?" but "could this record have created a task at all?". A
+  // record that could not is proven unrelated to EVERY task, whoever's Run it
+  // names — so the foreign-Run term, which exists for takeover safety, must not
+  // be part of the answer. Every other term is, unchanged.
+  const refusal = JSON.stringify({ ok: false, error: { code: 'consumer_fenced', message: 'bound to run_68c96672f718' } });
+  const refused = (argv, receiptText = refusal, rest = {}) => closed(receiptText, { exit: 1, argv, ...rest });
+
+  // The measured legacy shape: closed, conclusively refused, empty-handed.
+  assert.deepEqual(heldNoMutation(refused(['orca', 'x', '--run', 'run_theirs'])), { proven: true, reason: '' });
+  assert.equal(heldNoMutation(refused(['orca', 'x', '--run', 'run_mine'])).proven, true, "the caller's own Run is still no mutation");
+  assert.equal(heldNoMutation(refused(['orca', 'x', '--json'])).proven, true, 'a record naming no Run is still no mutation');
+
+  // And every doubt `staleClaim` refuses on is a doubt here too.
+  const bare = (() => {
+    const { path } = claimRecord(store(), 'req-1');
+    initRecord(path, { request: 'req-1', orca: 'orca' });
+    return path;
+  })();
+  assert.match(heldNoMutation(bare).reason, /no phase/);
+  assert.match(heldNoMutation(begun()).reason, /still open/);
+  assert.match(heldNoMutation(refused([], 'not json {')).reason, /unknown outcome/);
+  assert.match(heldNoMutation(refused([], refusal, { error: new Error('ETIMEDOUT') })).reason, /unknown outcome/);
+  assert.match(heldNoMutation(refused([], JSON.stringify({ ok: true, result: { state: 'ready' } }))).reason, /succeeded/);
+  assert.match(
+    heldNoMutation(refused([], JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: [{ kind: 'worktree', id: 'wt_1' }] } }))).reason,
+    /resources/,
+  );
+
+  // ALL attempts, flattened — a later attempt still open is not empty.
+  const mixed = refused(['orca', 'x', '--run', 'run_theirs']);
+  phaseBegin(mixed, { name: 'worker-start', identity: 'id-2', argv: ['orca', 'orchestration', 'worker-start'] });
+  assert.match(heldNoMutation(mixed).reason, /still open/);
 });
 
 test('attemptNew settles the current attempt and opens the next', () => {

@@ -994,6 +994,64 @@ export function taskIdScan(path) {
 }
 
 /**
+ * COULD THIS RECORD HAVE MADE A MUTATION AT ALL? `{ proven, reason }`.
+ *
+ * The proposition below, minus its Run term — and it answers a different
+ * question from `staleClaim`'s. That one asks "may I take this claim over?",
+ * where the recorded Run decides between a takeover and a replay. This one asks
+ * "did this record touch anything?", and a record proved to have touched
+ * nothing created no task, so it is unrelated to EVERY task whoever's Run it
+ * names. Mixing the two terms is what made a foreign, refused, empty record
+ * block the recovery of unrelated work (#205): the gate needs relatedness, and
+ * foreignness is not one of its grounds.
+ *
+ * The terms are the harsh ones, because the cost of being wrong is F-001: at
+ * least one phase; every phase of every attempt CLOSED (an exit and a receipt);
+ * every phase a conclusive `ok: false` refusal — an illegible receipt or a
+ * transport that never concluded is an UNKNOWN outcome and a success may name a
+ * live agent; and no refused phase reporting effects or residual resources, a
+ * refusal that created something being a mutation whatever it calls itself. ALL
+ * attempts, flattened: a first attempt refused says nothing about a second one
+ * still open.
+ *
+ * `reason` names the doubt when the proof fails, and is `''` when it holds —
+ * the caller quotes it rather than restating it.
+ */
+export function heldNoMutation(path) {
+  return noMutation(must(load(path), 'attempts', 'record root').flatMap(attempt => must(attempt, 'phases', 'attempt')));
+}
+
+/** The proof over phases a caller already holds — one loop, two callers (#161). */
+function noMutation(phases) {
+  if (phases.length === 0) return { proven: false, reason: 'record has no phase yet — its first mutation may be in flight' };
+
+  for (const ph of phases) {
+    const receipt = ph.receipt;
+    if (ph.exit === null || ph.exit === undefined || receipt === null || receipt === undefined) {
+      return { proven: false, reason: `phase "${ph.name}" is still open — its mutation may be in flight` };
+    }
+    if (typeof receipt !== 'object' || receipt.unparseable !== undefined || ph.transport) {
+      return { proven: false, reason: `phase "${ph.name}" ended with an unknown outcome — it may have committed` };
+    }
+    if (receipt.ok !== false) {
+      const tid = taskIdOf(receipt.result ?? {});
+      return {
+        proven: false,
+        reason: tid
+          ? `record carries a task id (${tid}) — it may name a real mutation`
+          : `phase "${ph.name}" succeeded — it may name a real mutation`,
+      };
+    }
+    const result = receipt.result ?? {};
+    if ((result.effects ?? []).length > 0 || (result.residualResources ?? []).length > 0) {
+      return { proven: false, reason: `refused phase "${ph.name}" still reports resources — they may exist` };
+    }
+  }
+
+  return { proven: true, reason: '' };
+}
+
+/**
  * Is a lost claim provably USELESS rather than merely suspicious?
  *
  * Measured 2026-08-14: a record written under ANOTHER session's Run fenced the
@@ -1003,45 +1061,22 @@ export function taskIdScan(path) {
  * second identity minted over a mutation that is still in flight.
  *
  * Reclaimable requires ALL of:
- *   - at least one phase, and every phase CLOSED (an exit and a receipt);
- *   - every phase a conclusive `ok: false` refusal — an illegible receipt or a
- *     transport that never concluded is an UNKNOWN outcome, not a refusal, and
- *     a success (with or without a task id) may name a live agent;
- *   - no refused phase reporting effects or residual resources — a refusal that
- *     still created something is a mutation, whatever it calls itself;
+ *   - the proof above — the record held no mutation at all;
  *   - a recorded Run, and one that is not the caller's (a caller's own Run is
  *     replayable from here, which is always better than a takeover).
+ *
+ * The first term is `noMutation`'s, shared rather than copied: two readings of
+ * "this record touched nothing" is how one of them starts reclaiming a record
+ * the other refuses. Its `reason` is forwarded verbatim, so every answer this
+ * function gave before the split it still gives.
  *
  * Anything else is precious: the reason says why, and the caller replays it.
  */
 export function staleClaim(path, callerRun) {
-  const rec = load(path);
-  const attempts = must(rec, 'attempts', 'record root');
+  const attempts = must(load(path), 'attempts', 'record root');
   const phases = attempts.flatMap(attempt => must(attempt, 'phases', 'attempt'));
-  if (phases.length === 0) return { stale: false, reason: 'record has no phase yet — its first mutation may be in flight' };
-
-  for (const ph of phases) {
-    const receipt = ph.receipt;
-    if (ph.exit === null || ph.exit === undefined || receipt === null || receipt === undefined) {
-      return { stale: false, reason: `phase "${ph.name}" is still open — its mutation may be in flight` };
-    }
-    if (typeof receipt !== 'object' || receipt.unparseable !== undefined || ph.transport) {
-      return { stale: false, reason: `phase "${ph.name}" ended with an unknown outcome — it may have committed` };
-    }
-    if (receipt.ok !== false) {
-      const tid = taskIdOf(receipt.result ?? {});
-      return {
-        stale: false,
-        reason: tid
-          ? `record carries a task id (${tid}) — it may name a real mutation`
-          : `phase "${ph.name}" succeeded — it may name a real mutation`,
-      };
-    }
-    const result = receipt.result ?? {};
-    if ((result.effects ?? []).length > 0 || (result.residualResources ?? []).length > 0) {
-      return { stale: false, reason: `refused phase "${ph.name}" still reports resources — they may exist` };
-    }
-  }
+  const empty = noMutation(phases);
+  if (!empty.proven) return { stale: false, reason: empty.reason };
 
   let recorded = '';
   for (const ph of phases) {
