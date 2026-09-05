@@ -154,32 +154,44 @@ export function namedList(out, key, command) {
  * Two absences are told apart. A store that was never created holds no record
  * and rules nothing out, so it is not an inability; a store that exists and
  * cannot be read is one, because the record that would have refused this gate
- * may be sitting in it. A single unparseable record is neither: it is disclosed
- * by name and the scan continues, because the store is host-global (./record.mjs)
- * and one corrupt file from another repository may not park every task on this
- * machine.
+ * may be sitting in it. A single unparseable record is the same inability:
+ * its task cannot be established from a torn file, so it cannot be proven
+ * unrelated to this one, and skipping it is how an empty worker-list answers
+ * "first launch" over a mutation that already committed (P1, PR #200).
  */
 function uncertainMutations(store, task) {
   const scan = scanStore(store);
   if (scan.reason !== '' && !scan.missing) return { ok: false, reason: `the dispatch store ${store} is unreadable: ${scan.reason}` };
+  if (scan.unreadable.length > 0) {
+    const first = scan.unreadable[0];
+    return {
+      ok: false,
+      reason: `${scan.unreadable.length} record(s) in the dispatch store cannot be read, so whether any of them is ${task} cannot be established. First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+    };
+  }
   const rows = [];
   for (const { file, stem } of scan.records) {
     const path = join(store, file);
     let named;
-    let verdict;
     try {
       named = taskIdScan(path);
-      if (named !== task) continue;
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `record ${file} cannot name its task (${String(error.message ?? error).slice(0, 160)}), so it cannot be proven unrelated to ${task}`,
+      };
+    }
+    if (named !== task) continue;
+    let verdict;
+    try {
       verdict = phaseVerdict(path, 'last');
-    } catch {
-      // A record naming no task, or holding no phase to judge, says nothing
-      // about THIS task: it is the `unreadable` disclosure's business, not a
-      // refusal of a gate about another subject.
+    } catch (error) {
+      rows.push({ request: stem, evidence: `the last phase of ${stem} could not be judged: ${String(error.message ?? error).slice(0, 200)}` });
       continue;
     }
     if (verdict.verdict === 'unknown') rows.push({ request: stem, evidence: String(verdict.evidence).slice(0, 300) });
   }
-  return { ok: true, rows, unreadable: scan.unreadable };
+  return { ok: true, rows };
 }
 
 export function gate(argv = [], { resolve = resolveOrca, runner, env = process.env, exec = defaultExec, cwd = process.cwd() } = {}) {

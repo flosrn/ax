@@ -458,6 +458,37 @@ test('#192: a recorded mutation that never concluded routes to the recorded repl
   assert.doesNotMatch(r.out, /ax worker dispatch/, 'a fresh identity is the one repair this case must never name');
 });
 
+test('#192: a torn record in the store is cannot-establish, never a first launch', () => {
+  // P1 on PR #200: scanStore names a corrupt file in `unreadable`, the loop
+  // never sees it, and the empty-row/known-task path answered 0. The mutation
+  // that file was write-ahead for may already have COMMITTED; worker-list has
+  // not yet exposed it. Missing/unreadable/ambiguous state is an inability
+  // (AGENTS.md), and a torn record cannot be proven unrelated to this task.
+  const dir = store();
+  writeFileSync(join(dir, 'torn-1.json'), '{ this is not json');
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /First launch|Safe to re-dispatch/, 'an unread record is not an absent one');
+  assert.match(r.out, /torn-1\.json/, 'the unread file is named');
+  assert.doesNotMatch(r.out, /ax worker dispatch/, 'a fresh identity is not the repair');
+});
+
+test('#192: a parseable record whose task cannot be read is cannot-establish too', () => {
+  // The catch that `continue`d: request matches the stem so scanStore lists it
+  // as a record, then taskIdScan raises and the gate skipped it. Same empty
+  // worker-list, same known task, same forbidden first launch.
+  const dir = store();
+  writeFileSync(join(dir, 'claimed-1.json'), JSON.stringify({ request: 'claimed-1', attempts: [] }));
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /First launch|Safe to re-dispatch/);
+  assert.match(r.out, /claimed-1/);
+});
+
 test('#192: a pane on a host that could not be asked refuses, and names the ask as the repair', () => {
   const dir = store();
   record(dir, '192-far', { dispatchId: 'ctx_far', handle: 'term_far', on: 'gapicore' });
