@@ -86,7 +86,7 @@ test('a job request that does not name the recorded repository is refused BY NAM
 });
 
 test('an implementation request names no triage job, and says so rather than a problem', () => {
-  for (const request of ['178-release-pass-proof', 'ws-merged', 'feat-triage-loop']) {
+  for (const request of ['178-release-pass-proof', 'ws-merged', 'feat-triage-loop', 'custom-migration', 'custom-migration-2025', 'custom-one-two-three']) {
     assert.deepEqual(parseRequest(request, 'acme/widgets'), { job: null, issue: '', pass: 0, problem: '' }, request);
   }
 });

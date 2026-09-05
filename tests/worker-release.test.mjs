@@ -747,6 +747,23 @@ test('a job request that does not name the recorded repository is refused by nam
   );
 });
 
+test('a legal implementation named custom-migration is not a custom pass', () => {
+  const dir = store();
+  record(dir, 'custom-migration', 'ctx_cm');
+  const r = run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_cm')],
+      terminals: [terminal('term_ctx_cm', { worktreePath: `${SCOPE}/custom-migration` })],
+    },
+    execOptions: {
+      answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 91, state: 'MERGED', headRefName: 'custom-migration' }]), stderr: '' } },
+    },
+  });
+  assert.match(r.out, /CLOSE.*PR #91 merged \(custom-migration, worktree gone\)/);
+  assert.doesNotMatch(r.out, /pane QUIET · KEEP/);
+});
+
 
 test('a dispatch this host never recorded cannot be placed, and an unplaceable row is never judged', () => {
   // #83: placement is the repository a RECORD names. A pane with no record at

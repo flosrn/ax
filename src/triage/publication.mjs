@@ -49,16 +49,16 @@ export const publicationMarker = ({ job, repo, issue, pass = 1 }) =>
   `<!-- ax:publication job=${job} repo=${repo} issue=${issue} pass=${pass} -->`;
 
 /**
- * The comment text WITHOUT its attribution — what a bytes comparison against a
- * locally rendered draft has to be made against.
+ * The comment text WITHOUT the publisher's leading attribution — what a bytes
+ * comparison against a locally rendered draft has to be made against.
  *
- * Both directions matter: a stamped comment must still be recognized as this
- * draft's rendering (the leftover-draft hazard, measured 26 times on
- * goodluckagency/ofmchat), and a comment published BEFORE attribution existed
- * carries no marker and must be recognized unchanged. Leading whitespace is left
- * to the caller's own normalization, which already trims.
+ * Only the leading stamp is stripped: a draft that quotes this protocol in a
+ * code block keeps those bytes, which is what the leftover-draft comparison
+ * must see. A comment published BEFORE attribution existed carries no leading
+ * marker and is recognized unchanged. Leading whitespace is left to the
+ * caller's own normalization, which already trims.
  */
-export const withoutMarker = text => String(text ?? '').replace(new RegExp(MARKER.source, 'g'), '');
+export const withoutMarker = text => String(text ?? '').replace(new RegExp(`^\\s*${MARKER.source}`), '');
 
 /**
  * Repository and job names compared the way the rest of this package compares an
@@ -71,28 +71,28 @@ const sameName = (a, b) => String(a).trim().toLowerCase() === String(b).trim().t
 /**
  * Which pass a comment is the publication of.
  *
- * Three answers, and the distinction between the last two is load-bearing:
+ * The publisher writes its stamp as the FIRST line (`../publish.mjs`). That is
+ * the governing identity. A reviewed draft that discusses this protocol may
+ * quote a second `<!-- ax:publication … -->` in prose or a fence; those bytes
+ * belong to the verdict, not to the stamp, and they must not make the
+ * publication unreadable.
  *
- *   `null` — no attribution at all. An ordinary comment, or an AI publication
- *   from before #178. It identifies nothing, and it is not evidence of absence
- *   either: a caller that must not publish twice still has its own bytes and
- *   disclaimer checks.
+ * Three answers:
  *
- *   `{ ok: false }` — an attribution that does not parse, or TWO attributions
- *   in one comment. AMBIGUOUS, never absent: something published for this
- *   ticket and nothing here can say for which pass, so no automatic decision
- *   may follow from it (F-028). A first marker that happens to match is not a
- *   match when a second one sits beside it.
+ *   `null` — no leading attribution. An ordinary comment, an AI publication
+ *   from before #178, or a body whose only markers sit in quoted examples.
+ *
+ *   `{ ok: false }` — a leading stamp that does not parse (missing field, or
+ *   two claims for `job`/`repo`/`issue`/`pass` in that one stamp). AMBIGUOUS
+ *   of THIS comment, never of the rest of the issue.
+ *
+ *   `{ ok: true, job, repo, issue, pass }` — the leading stamp is a complete
+ *   identity.
  */
 export function publicationIn(body) {
   const text = String(body ?? '');
-  // `matchAll` needs the global flag; the module-level pattern stays unflagged
-  // so a caller cannot be surprised by `lastIndex`. Two hits is the case a
-  // first-match reader would have treated as this pass — and must not.
-  const all = [...text.matchAll(new RegExp(MARKER.source, 'g'))];
-  if (all.length === 0) return null;
-  if (all.length > 1) return { ok: false, job: '', repo: '', issue: '', pass: 0 };
-  const found = all[0];
+  const found = new RegExp(`^\\s*${MARKER.source}`).exec(text);
+  if (found === null) return null;
   const fields = new Map();
   for (const pair of found[1].split(/\s+/)) {
     const at = pair.indexOf('=');
