@@ -47,10 +47,11 @@
 //
 // EVERY READ IS PROVED COMPLETE OR NOTHING: `pageInfo` must be an object with a
 // BOOLEAN `hasNextPage` — absent or malformed pagination is cannot-establish,
-// not a complete page. A DECLARED `triage.provenance` whose `spec`/`inbound`
-// are not lists of strings is cannot-establish too: coercing them to [] turns
-// the provenance gate silently off, which is a declared rule not applied. An
-// UNDECLARED provenance stays not-measured.
+// not a complete page. A DECLARED `triage.provenance` whose classes are not
+// lists of strings is cannot-establish too — every class the shared rule
+// supports (`src/triage/provenance.mjs`), because coercing one to [] turns the
+// provenance gate silently off for it, which is a declared rule not applied.
+// An UNDECLARED provenance stays not-measured.
 //
 // A dispatch record must NAME ITS OWN FILE (`request` equals the filename
 // stem) and carry a BOOLEAN `settled` — a record that fails either says
@@ -81,6 +82,7 @@ import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { clean, must, payload, succeeded } from './pr-grounds.mjs';
+import { PROVENANCE_KEYS, carriedClasses, sameLabel } from './triage/provenance.mjs';
 import { READY_LABEL } from './triage/spec.mjs';
 import { defaultStore } from './worker/record.mjs';
 
@@ -99,8 +101,9 @@ const GH_FLOOR = [2, 97];
  */
 const CANDIDATE_CAP = 200;
 
-/** Case-insensitive label identity — same rule as triage's `sameLabel`. */
-const sameLabel = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+// Label identity comes from the shared provenance rule — one comparator, and
+// the READY label is matched by it too: two normalizations of "the same label"
+// is how one of them ends up wrong.
 
 /**
  * The `triage` block alone, read from the checkout's own config — the same
@@ -247,7 +250,9 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
     const defects = [];
     if (provenance === null || typeof provenance !== 'object' || Array.isArray(provenance)) defects.push('triage.provenance is not an object');
     else {
-      for (const key of ['spec', 'inbound', 'findings']) {
+      // Every SUPPORTED class, from the shared vocabulary: a class checked
+      // here and not there — or the reverse — is a declared gate half applied.
+      for (const key of PROVENANCE_KEYS) {
         if (provenance[key] !== undefined && !listOfStrings(provenance[key])) defects.push(`triage.provenance.${key} is not a list of strings`);
       }
     }
@@ -258,9 +263,6 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       );
     }
   }
-  const specLabels = provenance?.spec ?? [];
-  const inboundLabels = provenance?.inbound ?? [];
-  const findingsLabels = provenance?.findings ?? [];
 
   if (dry) {
     section(`frontier — dry run (nothing read from the tracker)`);
@@ -418,15 +420,17 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       }
 
       // provenance-refused: the repository's own vocabulary contradicts itself
-      // on this ticket — two of spec-born, inbound and finding at once. Only
-      // measured where the mapping is declared; an undeclared ground is NOT
-      // measured (the repository is input). A finding that reached the ready
-      // label on its own is takeable: the `findings` class routes PASSES away
-      // from a ticket, never its implementation.
-      const carriedOf = declaredNames => declaredNames.filter(declaredName => carriedLabels.some(carried => sameLabel(declaredName, carried?.name ?? '')));
-      const classes = [carriedOf(specLabels), carriedOf(inboundLabels), carriedOf(findingsLabels)].filter(names => names.length > 0);
+      // on this ticket — two of the classes the shared rule supports at once.
+      // Only measured where the mapping is declared; an undeclared ground is
+      // NOT measured (the repository is input). A finding that reached the
+      // ready label on its own is takeable: the `findings` class routes PASSES
+      // away from a ticket, never its implementation.
+      const classes = carriedClasses(
+        provenance,
+        carriedLabels.map(carried => carried?.name ?? ''),
+      );
       if (classes.length > 1) {
-        excluded.push({ ...candidate, reason: `provenance-refused (carries ${classes[0][0]} and ${classes[1][0]} at once)` });
+        excluded.push({ ...candidate, reason: `provenance-refused (carries ${classes[0].names[0]} and ${classes[1].names[0]} at once)` });
         continue;
       }
 
