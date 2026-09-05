@@ -334,6 +334,157 @@ test('nothing is appended to a message that is not a dispatched worker completio
   ).toBe('');
 });
 
+// ─── the witnessed shape: a LOCAL supervised worker on the fork build ─────────
+//
+// Measured 2026-09-05 on the #162 wave (the Report's first real measurement,
+// flosrn/ax#168): the #164 worker's `worker_done` reached the orchestrator's Run
+// with `from_handle: term_0843…`, a `sender_pane_key`, and the dispatch id in
+// `payload.dispatchId` — not under a `dispatch:<id>` address. Both gates missed
+// it: attribution said pane, this module said not-a-completion, and the
+// completion was injected with no Report block and no finding. Silence, on the
+// one message this module exists to annotate. The `dispatch:<id>` shape is the
+// FEDERATED one (no pane key by contract); a local supervised worker arrives
+// witnessed, and the record — which names the pane it dispatched — is what
+// proves the payload's dispatch id is this sender's to claim.
+
+const PANE = 'term_08435344-a42a-4152-a220-82db976d8424';
+const PANE_KEY = 'd113fd70-347d-4ddf-893c-0090f117f7da:4eb71be1-ca2a-4e95-bc1d-446cde509ef8';
+
+/** A record whose worker-start also recorded the agent pane, as a real one does. */
+function witnessedWorktree(request = '164-work') {
+  const wt = withReport('## CRITERIA\n- Witness: MET, the record names this pane.\n\n## LEARNINGS\n', request);
+  wt.rec.attempts[0].phases[0].receipt.result.effects.push({ kind: 'terminal', role: 'agent', action: 'created', id: PANE });
+  return wt;
+}
+
+/** The envelope exactly as the fork build delivers a local worker's completion. */
+function witnessed(payload: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return {
+    id: 'msg_0ef061ff33f5',
+    type: 'worker_done',
+    body: 'Inherited the placement. Both suites green. Nothing left.',
+    from_handle: PANE,
+    to_handle: 'run:run_494da6a0f77c',
+    sender_pane_key: PANE_KEY,
+    payload: JSON.stringify(payload),
+    ...extra,
+  };
+}
+
+test('a witnessed pane whose payload names a dispatch this machine recorded FOR THAT PANE carries the Report', () => {
+  const wt = witnessedWorktree();
+
+  const block = completionReport(
+    witnessed({ taskId: 'task_3d703cad122b', dispatchId: DISPATCH, outcome: 'succeeded', reportPath: wt.derived }),
+    deps(wt.rec),
+  );
+
+  expect(block).toContain('## CRITERIA');
+  expect(block).toContain('- Witness: MET, the record names this pane.');
+  expect(block).not.toContain('FINDING');
+});
+
+test('a witnessed pane claiming a dispatch whose record names ANOTHER pane is a finding, and nothing is derived', () => {
+  const wt = witnessedWorktree();
+
+  const block = completionReport(
+    witnessed({ dispatchId: DISPATCH, outcome: 'succeeded' }, { from_handle: 'term_someone_else' }),
+    deps(wt.rec),
+  );
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain(PANE);
+  expect(block).toContain('term_someone_else');
+  expect(block).not.toContain('- Witness: MET');
+});
+
+test('an UNWITNESSED sender claiming a dispatch is a finding, whatever handle it typed', () => {
+  // Orca nulls `sender_pane_key` when a sender overrides its identity (`--from`).
+  // A handle equal to the recorded one proves nothing then: the witness is the
+  // pane key, and the payload alone never authorizes a derivation.
+  const wt = witnessedWorktree();
+
+  const block = completionReport(witnessed({ dispatchId: DISPATCH }, { sender_pane_key: '' }), deps(wt.rec));
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain('not witnessed');
+  expect(block).not.toContain('- Witness: MET');
+});
+
+test('a record that recorded no pane cannot cross-check a witnessed claim, and says so', () => {
+  const wt = withReport('## CRITERIA\n- x\n', '164-work');
+
+  const block = completionReport(witnessed({ dispatchId: DISPATCH }), deps(wt.rec));
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain('names no pane');
+  expect(block).not.toContain('- x');
+});
+
+test('a witnessed worker_done naming a dispatch this machine never recorded stays silent, like the federated stranger', () => {
+  const wt = witnessedWorktree();
+  expect(completionReport(witnessed({ dispatchId: 'ctx_stranger' }), deps(wt.rec))).toBe('');
+});
+
+test('the cross-check binds to the attempt that owns the claimed dispatch — a replaced pane never lends its identity', () => {
+  // Records ACCUMULATE: a `--replace` writes a second attempt with a second
+  // dispatch id and a second pane. A record-wide "any terminal this record ever
+  // named" scan would let the retired pane claim the new dispatch's completion,
+  // or refuse the new pane because the old one came first — the wrong-slice
+  // attribution `environmentOfDispatch` refuses for the same reason.
+  const wt = withReport('## CRITERIA\n- Replace: MET, the new pane reported.\n\n## LEARNINGS\n', '164-work');
+  const OLD_PANE = 'term_old_1111';
+  const NEW_PANE = 'term_new_2222';
+  const OLD_ID = 'ctx_old_attempt';
+  const worktreeEffect = wt.rec.attempts[0].phases[0].receipt.result.effects[0];
+  wt.rec.attempts = [
+    {
+      n: 1,
+      settled: true,
+      phases: [
+        {
+          name: 'worker-start',
+          argv: ['orca', 'orchestration', 'worker-start'],
+          receipt: { ok: true, result: { dispatchId: OLD_ID, state: 'failed', effects: [worktreeEffect, { kind: 'terminal', role: 'agent', action: 'created', id: OLD_PANE }] } },
+          exit: 1,
+        },
+      ],
+    },
+    {
+      n: 2,
+      settled: false,
+      phases: [
+        {
+          name: 'worker-start',
+          argv: ['orca', 'orchestration', 'worker-start', '--replace'],
+          receipt: { ok: true, result: { dispatchId: DISPATCH, state: 'ready', effects: [worktreeEffect, { kind: 'terminal', role: 'agent', action: 'created', id: NEW_PANE }] } },
+          exit: 0,
+        },
+      ],
+    },
+  ];
+
+  // The new pane claiming the new dispatch: derived.
+  const accepted = completionReport(witnessed({ dispatchId: DISPATCH }, { from_handle: NEW_PANE }), deps(wt.rec));
+  expect(accepted).toContain('- Replace: MET, the new pane reported.');
+  expect(accepted).not.toContain('FINDING');
+
+  // The retired pane claiming the new dispatch: a finding naming the pane the
+  // NEW attempt recorded, never the old one it happens to appear in.
+  const refused = completionReport(witnessed({ dispatchId: DISPATCH }, { from_handle: OLD_PANE }), deps(wt.rec));
+  expect(refused).toContain('FINDING');
+  expect(refused).toContain(NEW_PANE);
+  expect(refused).toContain(OLD_PANE);
+  expect(refused).not.toContain('- Replace: MET');
+  // The new pane claiming the OLD dispatch id: refused against the old attempt's
+  // own pane — the id decides which attempt is consulted. The lookup answers
+  // both ids from the one accumulated record, as the real store does.
+  const both = { record: (id: string) => (id === DISPATCH || id === OLD_ID ? { request: '164-work', json: wt.rec } : null), environmentOf: () => '' };
+  const stale = completionReport(witnessed({ dispatchId: OLD_ID }, { from_handle: NEW_PANE }), both);
+  expect(stale).toContain('FINDING');
+  expect(stale).toContain(OLD_PANE);
+});
+
 test('the reader is total: a lookup that throws becomes a finding, never a lost completion', () => {
   // The receiver appends this block to the completion it is about to inject. A
   // throw here would fail the injection and replay the whole delivery, so the

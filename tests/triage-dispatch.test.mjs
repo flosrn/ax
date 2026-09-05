@@ -338,6 +338,53 @@ test('one over the per-repository cap is refused, and the refusal shows the arit
   assert.deepEqual(r.started, []);
 });
 
+test('#161: a pane recorded by a legacy repair phase fills this verb’s cap too', () => {
+  // The THIRD verb through the one reader (ruled shape 2, 2026-09-04). The
+  // dispatch index carries a handle only for a `worker-start` phase, so a pane
+  // the bash-era `--inject` repair opened occupied no slot here while
+  // `ax worker ls` printed it VIVANT — the count that gates and the count that
+  // is read disagreeing about one machine.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(
+    join(store, 'triage-acme-widgets-1.json'),
+    JSON.stringify({
+      request: 'triage-acme-widgets-1',
+      createdAt: '2026-08-20T10:00:00.000Z',
+      repo: REPO,
+      attempts: [
+        {
+          n: 1,
+          phases: [
+            // The failed start carries no effects at all: nothing about this
+            // pane is a worker-start fact.
+            {
+              name: 'worker-start',
+              argv: ['orca', 'orchestration', 'worker-start'],
+              beganAt: '2026-08-20T10:00:00.000Z',
+              exit: 1,
+              receipt: { ok: false, error: { code: 'agent_readiness', message: 'timeout' } },
+            },
+            {
+              name: 'worker-start-inject',
+              argv: ['orca', 'orchestration', 'worker-start-inject'],
+              beganAt: '2026-08-20T10:05:00.000Z',
+              exit: 0,
+              receipt: { ok: true, result: { dispatchId: 'd-inject', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_live' }] } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const r = run(['--issue', '7'], { home, store, orca: { panes: ['term_live'] }, root: repo({ dispatch: { cap: 1 } }) });
+  assert.equal(r.code, 1, 'the pane is up, so the one slot this repository declared is taken');
+  assert.match(r.out, /1 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 1/);
+  assert.deepEqual(r.started, []);
+});
+
 test('#88: panes belonging to ANOTHER repository never park this one', () => {
   // The reported measurement, on the verb that did refuse: live panes that all
   // belong to another checkout, and a 13-issue wave here running at one slot.

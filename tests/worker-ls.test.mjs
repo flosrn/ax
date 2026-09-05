@@ -527,17 +527,18 @@ test('#152: a repaired child behind an unsettled start is capacity, and one term
   // settled `failed` at `dispatch_input` (upstream Orca's paste path, #151),
   // `ax worker repair` pressed the one Enter, and the child WORKED — `ax worker
   // tail` read status=running behind every one of those panes. During the three
-  // dispatches the preamble counted 0 -> 1 -> 2, because both dispatch verbs
-  // count through `liveCount` over `dispatchIndex`, which carries the pane of
-  // ANY worker-start phase. `ax worker ls` answered `0 live pane(s)` on the same
-  // store, because it counted by hand from the release-grade handle instead.
+  // dispatches the preamble counted 0 -> 1 -> 2, because the fences counted the
+  // pane of any worker-start phase, while `ax worker ls` answered
+  // `0 live pane(s)` on the same store — it counted by hand from the
+  // release-grade handle instead.
   //
   // Two numbers for one question, and this verb's own comment claimed its number
   // came "from the one contract both dispatch verbs refuse with". The direction
   // was decided before, in the module the fence reads (../worker/pane.mjs:
   // "their panes may be alive and consuming capacity, so leaving them out makes
   // the count UNDERSTATED, and a fence built on it can admit a pane past a cap
-  // that is already full"). So the reporter follows the fence.
+  // that is already full"). So the reporter followed the fence — and since #161
+  // neither tallies: both count through one reader (../worker/slots.mjs).
   //
   // What does NOT move: the row's verdict stays INCONNU (the association is
   // unproven), the repair stays an inspection, and no release is ever offered.
@@ -563,7 +564,7 @@ test('#152: a repaired child behind an unsettled start is capacity, and one term
   // ONE TERMINAL, ONE SLOT. A repair reuses the agent terminal, so a second
   // request can name the pane a first one already recorded — and a count keyed
   // by record would report two panes for one and refuse a dispatch the machine
-  // had room for. `liveCount` keys its sets by handle; so does this verb.
+  // had room for. The reader keys its sets by handle, so this verb does too.
   writeRecord(dir, '150-work', [
     {
       name: 'worker-start',

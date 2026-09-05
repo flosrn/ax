@@ -124,8 +124,12 @@ function workerStartResult(phase) {
  * declares a role. A receipt that labels its panes and labels none `agent` has
  * told us the agent pane is absent, and calling its setup pane the agent's is
  * how a half-made dispatch gets reported as a working worker.
+ *
+ * EXPORTED because the capacity reader asks it of every phase, not only of a
+ * `worker-start` (#161): one definition of "this receipt recorded an agent
+ * pane", or the fence and the listing disagree about what a pane even is.
  */
-function agentTerminal(result) {
+export function agentTerminal(result) {
   const effects = Array.isArray(result?.effects) ? result.effects : [];
   const panes = effects.filter(
     candidate => candidate?.kind === 'terminal' && typeof candidate.id === 'string' && candidate.id.startsWith('term_'),
@@ -717,6 +721,57 @@ export function dispatchFields(path) {
 }
 
 /**
+ * The store's records, parsed once: `{ records, unreadable, missing, reason }`,
+ * where each record is `{ file, stem, rec }`.
+ *
+ * Lenient PER FILE and never silent, which is the discipline every reader of
+ * this store owes: one unreadable record is named in `unreadable` and the scan
+ * continues, because a store a verb cannot fully parse still knows about the
+ * other dispatches — but a caller that concludes "nothing is there" must be
+ * able to say whether it looked (F-028). Two refusals are per-file and belong
+ * here rather than in either reader: a file that does not parse, and a record
+ * whose `request` disagrees with the filename it lives in — a stem substituted
+ * for an absent name would let any filename decide which record a reader is
+ * holding.
+ *
+ * SHARED BY THE TWO READERS OF THIS STORE, on purpose (#161). "Which dispatch
+ * owns this record" (`dispatchIndex`, below) and "which recorded pane is up"
+ * (`../worker/slots.mjs`) are two different questions with two different
+ * authority rules, and a second copy of the file discipline is how one of them
+ * starts skipping a record the other refuses on.
+ */
+export function scanStore(store) {
+  const unreadable = [];
+  let files;
+  try {
+    files = readdirSync(store, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => entry.name)
+      .sort();
+  } catch (error) {
+    return { records: [], unreadable, missing: error.code === 'ENOENT', reason: String(error) };
+  }
+
+  const records = [];
+  for (const file of files) {
+    let rec;
+    try {
+      rec = load(join(store, file));
+    } catch (error) {
+      unreadable.push({ file, error: String(error) });
+      continue;
+    }
+    const stem = file.slice(0, -'.json'.length);
+    if (rec.request !== stem) {
+      unreadable.push({ file, error: `record names request ${JSON.stringify(rec.request)}, which is not ${stem}` });
+      continue;
+    }
+    records.push({ file, stem, rec });
+  }
+  return { records, unreadable, missing: false, reason: '' };
+}
+
+/**
  * The whole store, indexed by the dispatch id each record produced.
  *
  * The store is the ONE place that knows what a dispatch was FOR: Orca's own
@@ -754,38 +809,20 @@ export function dispatchFields(path) {
  * UNKNOWN, not ours and not foreign (F-028), which is why it is surfaced as the
  * empty name rather than defaulted.
  *
- * Reading is lenient PER FILE and never silent: one unreadable record is named
- * in `unreadable` and the scan continues, because a store this verb cannot fully
- * parse still knows about the other dispatches — but a caller that concludes "no
- * provenance" must be able to say whether it looked.
+ * Reading is lenient PER FILE and never silent, through `scanStore` above: one
+ * unreadable record is named in `unreadable` and the scan continues, because a
+ * store this verb cannot fully parse still knows about the other dispatches —
+ * but a caller that concludes "no provenance" must be able to say whether it
+ * looked.
  */
 export function dispatchIndex(store) {
   const byDispatch = new Map();
-  const unreadable = [];
   const ambiguous = new Set();
-  let files;
-  try {
-    files = readdirSync(store, { withFileTypes: true })
-      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
-      .map(entry => entry.name)
-      .sort();
-  } catch (error) {
-    return { byDispatch, unreadable, ambiguous, missing: error.code === 'ENOENT', reason: String(error) };
-  }
+  const scan = scanStore(store);
+  const unreadable = scan.unreadable;
+  if (scan.reason !== '') return { byDispatch, unreadable, ambiguous, missing: scan.missing, reason: scan.reason };
 
-  for (const file of files) {
-    let rec;
-    try {
-      rec = load(join(store, file));
-    } catch (error) {
-      unreadable.push({ file, error: String(error) });
-      continue;
-    }
-    const stem = file.slice(0, -'.json'.length);
-    if (rec.request !== stem) {
-      unreadable.push({ file, error: `record names request ${JSON.stringify(rec.request)}, which is not ${stem}` });
-      continue;
-    }
+  for (const { file, stem, rec } of scan.records) {
     const recorded = typeof rec.repo === 'string' ? rec.repo.trim() : '';
     const created = Date.parse(rec.createdAt ?? '');
     const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];

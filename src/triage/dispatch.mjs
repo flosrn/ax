@@ -30,12 +30,13 @@ import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
 import { defaultStore, dispatchIndex } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
-import { hostScopes, liveInventory, terminalInventory } from '../worker/pane.mjs';
+import { hostScopes, terminalInventory } from '../worker/pane.mjs';
+import { livePanes } from '../worker/slots.mjs';
 import { start as startVerb } from '../worker/start.mjs';
 import { dispatchProof } from '../worker/transcript.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
-import { capLines, capVerdict, liveCount, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
+import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
 import { passPlan } from './capacity.mjs';
 import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
@@ -519,20 +520,6 @@ export function dispatch(
   const local = terminalInventory(run);
   if (!local.ok) return cannot(local.reason, 'orca open # the cap is counted, never assumed — it does not fail open');
   const store = defaultStore(env);
-  const index = dispatchIndex(store);
-  // An ENOENT store is a machine that has never dispatched: zero is the true
-  // count, and refusing would block the first dispatch ever. A store that
-  // exists and cannot be read is the opposite — zero would be a lie.
-  if (!index.missing && index.reason !== '') {
-    return cannot(`the dispatch store ${store} cannot be read, so live children cannot be counted: ${index.reason.slice(0, 160)}`, `ls -ld ${store}`);
-  }
-  if (index.unreadable.length > 0) {
-    const first = index.unreadable[0];
-    return cannot(
-      `${index.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live children cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
-      `ax worker ls --store ${store} # see every record, then repair or remove the unreadable one`,
-    );
-  }
   const machineCap = machineCapOf(config, env);
   if (!machineCap.ok) {
     return refuse(
@@ -540,20 +527,42 @@ export function dispatch(
       `unset ${machineCap.from} and declare ${machineCap.to} in ax.config.json if this machine needs a ceiling`,
     );
   }
-  // The same liveness `ax worker ls` prints and `ax worker dispatch` refuses on:
-  // this runtime's list, plus every pane a host named by a record says it still
-  // owns (../worker/pane.mjs). A fence counting only the local list, beside a
-  // listing that counts a remote pane as capacity, promises a number it does not
-  // enforce — which is #88 in a new place. The pass gates below read the same
-  // inventory, so a live remote rival is not read as free either.
+  // The same liveness `ax worker ls` prints and `ax worker dispatch` refuses on,
+  // from the one reader all three read (../worker/slots.mjs): every recorded
+  // agent pane this runtime's list or a named host reports as up, keyed on the
+  // pane and never on the dispatch that owns it. A fence counting only the local
+  // list, beside a listing that counts a remote pane as capacity, promises a
+  // number it does not enforce — which is #88 in a new place; a fence counting
+  // the dispatch index misses the pane a repair phase recorded, which is #161.
+  // The pass gates below read the same inventory, so a live remote rival is not
+  // read as free either.
   const scopes = hostScopes(run, () => ({ ok: true, config }));
-  const inventory = liveInventory({ local, index, scopes });
-  const live = liveCount({ index, inventory, repo: slug });
+  const slots = livePanes({ store, local, scopes, repo: slug });
+  // An ENOENT store is a machine that has never dispatched: zero is the true
+  // count, and refusing would block the first dispatch ever. A store that
+  // exists and cannot be read is the opposite — zero would be a lie.
+  if (slots.reason !== '' && !slots.missing) {
+    return cannot(`the dispatch store ${store} cannot be read, so live children cannot be counted: ${slots.reason.slice(0, 160)}`, `ls -ld ${store}`);
+  }
+  if (slots.unreadable.length > 0) {
+    const first = slots.unreadable[0];
+    return cannot(
+      `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live children cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+      `ax worker ls --store ${store} # see every record, then repair or remove the unreadable one`,
+    );
+  }
+  const inventory = slots.inventory;
+  const live = slots.live;
 
   // ── 4b. which PASS each issue is about to run ─────────────────────────────
   // The plan and its two anti-rival gates (F-001, F-028) live in
   // ./capacity.mjs; an outcome maps to this verb's own exit codes here.
-  const planned = passPlan({ store, root: paths.root, index, inventory, issues, job, slug, freshPass });
+  //
+  // THE DISPATCH INDEX IS READ HERE AND NOWHERE ELSE IN THIS VERB (#161): the
+  // rival gate asks which handles a PREVIOUS PASS's dispatch recorded, which is
+  // a provenance question and stays a `worker-start` fact. The cap above asks
+  // whether a pane is consuming a slot, and reads its own reader.
+  const planned = passPlan({ store, root: paths.root, index: dispatchIndex(store), inventory, issues, job, slug, freshPass });
   if (!planned.ok) return planned.kind === 'refuse' ? refuse(planned.message, planned.repair) : cannot(planned.message, planned.repair);
   const plan = planned.plan;
 
