@@ -567,7 +567,9 @@ test('a draft adding two declared classes to an issue carrying none is refused o
 test('a contradiction already on the tracker refuses even when the draft adds no source label', () => {
   // A contradictory established state is not silently valid because this draft
   // is innocent: the publication would leave the issue in it, and the repair is
-  // on the tracker rather than in the draft.
+  // on the tracker rather than in the draft. It names BOTH labels and asks
+  // which is wrong — prescribing one to remove would have this verb choosing an
+  // origin for the ticket, which is the reclassification it refuses to make.
   const root = repo({ provenance: PROVENANCE_FINDINGS });
   draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
   const r = run(['--issue', '7'], { root, answers: { carried: ['source:roadmap', 'source:agent-found', 'needs-triage'] } });
@@ -575,7 +577,8 @@ test('a contradiction already on the tracker refuses even when the draft adds no
   assert.equal(r.code, 1);
   assert.match(r.out, /source:roadmap/);
   assert.match(r.out, /source:agent-found/);
-  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --remove-label source:/, 'the repair corrects the established state');
+  assert.match(r.out, /gh issue view 7 --repo acme\/widgets --json labels/, 'the repair reads the established state');
+  assert.doesNotMatch(r.out, /--remove-label/, 'and never prescribes which of the two origins to drop');
   assert.deepEqual(mutations(r.calls), []);
 });
 

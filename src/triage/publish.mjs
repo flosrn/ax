@@ -382,12 +382,18 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
     // verbs read. Two directions of one comparison are not the same question as
     // the state the tracker would be left in.
     //
-    // NO RECLASSIFICATION, EITHER WAY. This verb applies exactly what a draft
-    // names, so the repair is a correction and never a composition: delete the
-    // offending name from the draft when the draft added it, or correct the
-    // established labels when the tracker is what contradicts itself. A draft
-    // whose `Remove labels:` line resolves the contradiction publishes — that
-    // one IS the correction, and the proposed result is consistent.
+    // NO RECLASSIFICATION, EITHER WAY, AND THAT BINDS THE REPAIR TOO. This verb
+    // applies exactly what a draft names, so the repair is a correction and
+    // never a composition: delete the offending name from the draft when the
+    // draft added it — the draft is what introduced it — or, when the tracker
+    // is what contradicts itself, name both labels and ask which of them is
+    // wrong. Naming ONE of them to remove would be this verb choosing an origin
+    // for the ticket with no evidence for the choice, and the class order in
+    // the shared vocabulary would make that choice `spec` every time. It is the
+    // same neutral repair `provenanceVerdict` prints over the same
+    // contradiction, for the same reason. A draft whose `Remove labels:` line
+    // resolves the contradiction publishes — that one IS the correction, and
+    // the proposed result is consistent.
     const proposed = [...tracker.carried.filter(carried => !draft.remove.some(name => sameLabel(name, carried))), ...draft.labels];
     const classes = carriedClasses(provenance, proposed);
     if (classes.length > 1) {
@@ -404,7 +410,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
         );
       } else {
         fix(
-          `gh issue edit ${issue} --repo ${slug} --remove-label ${named[0]} # the contradiction is already on the issue: correct the established labels, then re-run`,
+          `gh issue view ${issue} --repo ${slug} --json labels # ${named.join(', ')} are on the issue: remove whichever of them is wrong, then re-run — publish never picks an origin for a ticket`,
         );
       }
       blocked = true;
