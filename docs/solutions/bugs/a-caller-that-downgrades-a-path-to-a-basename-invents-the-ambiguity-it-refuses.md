@@ -60,7 +60,7 @@ The seam answers `{ file, reason, repair }`, and the printed recovery is keyed o
 with leading dashes stripped — a slug names one directory by construction, and the CLI refuses a
 proof value beginning with `-` before reading anything.
 
-## Three rules this paid for
+## Four rules this paid for
 
 **Refusing correctly is not the same as being asked correctly.** The resolver's ambiguity refusal
 was right in every reading; the defect was one level up, in a caller that owned a unique key and
@@ -80,9 +80,25 @@ to stderr and takes no default for the command, which makes "a `bad` without a `
 impossible on that stream. Exit codes and stdout stayed byte-identical, because a cross-version SSH
 reader discriminates on them.
 
+**A printed repair is program text, so every value in it is shell data** (found at merge-time
+review, one round after the fix landed). This key is derived from a checkout PATH: a checkout under
+a directory holding a space, a `*` or a `$(…)` yields a session slug holding it, and the unquoted
+line word-split or expanded in the shell that ran it — the same "a repair that cannot repair" in a
+new place. Both printed repairs quote every value through `src/worker/hosts.mjs`'s single POSIX
+form, reused rather than re-decided, and unconditionally: a classifier that decides which values
+"need" quoting is a second rule that can be wrong about one. The scope travels too — a read given
+an explicit `--sessions <root>` whose repair drops it sends the reader at the default root, which is
+another machine's answer or none.
+
 ## How it is proven
 
 Each of the three callers carries its own regression over a fixture of the measured collision — two
 session directories whose slugs both end in the checkout's basename, one of them the caller's own.
 The printed recovery is proven by **executing the printed string** rather than by matching its
-shape: a shape assertion is exactly what let a line that cannot run pass for a repair.
+shape: a shape assertion is exactly what let a line that cannot run pass for a repair. The first
+attempt at that proof called the verb's own function with a hand-split argv and passed, which
+skips the only two things that break a printed line — so the assertion now hands the printed bytes
+to `sh -c`, with an `ax` shim on PATH and an executable `ORCA_BIN` stub (the `worker` noun is
+`gated: 'orca'`, and visibility is not liveness, so the stub is never run and the suite stays
+offline). The fixture's own checkout path contains `$(touch <sentinel>)`: wrong quoting reports
+itself.
