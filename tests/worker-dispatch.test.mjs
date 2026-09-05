@@ -1899,16 +1899,29 @@ function dispatchWithLandings({ root, sha, notes, members = [190], closers, pare
       if (query.includes('parent {')) {
         return { status: 0, stdout: JSON.stringify({ data: { repository: { issue: { parent } } } }), stderr: '' };
       }
+      const landed = closers ?? { 190: { number: 196, sha } };
       const issues = {};
       for (const [, number] of query.matchAll(/i(\d+): issue\(/g)) {
+        const closer = landed[number];
         issues[`i${number}`] = {
           number: Number(number),
           state: 'CLOSED',
           closedByPullRequestsReferences: {
             pageInfo: { hasNextPage: false },
-            nodes: (closers ?? { 190: { number: 196, sha } })[number] === undefined
-              ? []
-              : [{ ...(closers ?? { 190: { number: 196, sha } })[number], state: 'MERGED', mergeCommit: { oid: (closers ?? { 190: { number: 196, sha } })[number].sha }, repository: { nameWithOwner: 'acme/widgets' } }],
+            // `mergedAt` is part of a landing: it is what orders two
+            // repositories against each other under the channel's cap.
+            nodes:
+              closer === undefined
+                ? []
+                : [
+                    {
+                      number: closer.number,
+                      state: 'MERGED',
+                      mergedAt: closer.mergedAt ?? '2026-09-01T00:00:00Z',
+                      mergeCommit: { oid: closer.sha },
+                      repository: { nameWithOwner: 'acme/widgets' },
+                    },
+                  ],
           },
         };
       }
@@ -1930,7 +1943,12 @@ function dispatchWithLandings({ root, sha, notes, members = [190], closers, pare
       return { ok: true, spec: { number, ref: `acme/widgets#${number}` }, comments: { ok: true, nodes: [] }, members: { ok: true, total: members.length, nodes: members.map(n => ({ number: n, repo: 'acme/widgets', ref: `acme/widgets#${n}` })) } };
     },
   });
-  const brief = readFileSync(join(r.home, 'specs', `dispatch-${GH_REQUEST}.spec.txt`), 'utf8');
+  // THE PATH THE DISPATCH RECORDED, never one this fixture composes — the same
+  // read as the brief assertions above (`--spec-file`). A guessed path turns a
+  // dispatch that exited before writing the brief into a confusing ENOENT, and
+  // a renamed spec file into a silent pass.
+  assert.equal(r.started.length, 1, r.out);
+  const brief = readFileSync(r.started[0].match(/--spec-file (\S+)/)[1], 'utf8');
   return { ...r, brief, queries, membership };
 }
 

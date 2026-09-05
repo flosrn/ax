@@ -44,12 +44,19 @@ function fakeGh({ closers = {}, hasNextPage = {}, status = 0, stderr = '', data 
           state: 'CLOSED',
           closedByPullRequestsReferences: {
             pageInfo: { hasNextPage: hasNextPage[key] ?? false },
-            nodes: (closers[key] ?? []).map(pr => ({
-              number: pr.number,
-              state: pr.state,
-              mergeCommit: pr.sha === undefined ? null : { oid: pr.sha },
-              repository: { nameWithOwner: pr.repo ?? repo },
-            })),
+            // `raw` places a node on the wire exactly as given, so a null node
+            // and a node with no `state` can be exercised as GitHub sends them.
+            nodes: (closers[key] ?? []).map(pr =>
+              pr === null || pr?.raw !== undefined
+                ? (pr === null ? null : pr.raw)
+                : {
+                    number: pr.number,
+                    state: pr.state,
+                    mergedAt: pr.mergedAt === undefined ? '2026-09-01T00:00:00Z' : pr.mergedAt,
+                    mergeCommit: pr.sha === undefined ? null : { oid: pr.sha },
+                    repository: { nameWithOwner: pr.repo ?? repo },
+                  },
+            ),
           },
         };
       }
@@ -80,6 +87,34 @@ function checkout(paths) {
   return { dir, sha, git: args => defaultExec('git', args, dir) };
 }
 
+/**
+ * A real TWO-PARENT merge: the base moved on its own while the branch did, and
+ * the merge commit has both as parents. `-m --first-parent` prints a per-parent
+ * diff for a commit like this — measured 2026-09-06, it named the base-only path
+ * as well — so this fixture is what keeps the surfaces read honest for a
+ * `--method merge` landing.
+ */
+function mergedCheckout() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-landed-merge-')));
+  const identity = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
+  const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  writeFileSync(join(dir, 'seed'), 'seed\n');
+  git(...identity, 'add', '-A');
+  git(...identity, 'commit', '-qm', 'seed');
+  git('checkout', '-qb', 'pr');
+  writeFileSync(join(dir, 'pr-only.txt'), 'from the branch\n');
+  git(...identity, 'add', '-A');
+  git(...identity, 'commit', '-qm', 'pr');
+  git('checkout', '-q', 'main');
+  writeFileSync(join(dir, 'base-only.txt'), 'from the base\n');
+  git(...identity, 'add', '-A');
+  git(...identity, 'commit', '-qm', 'base');
+  git(...identity, 'merge', '--no-ff', '-q', '-m', 'merge', 'pr');
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  return { dir, sha, git: args => defaultExec('git', args, dir) };
+}
+
 // ── the tracker read: what may be called merged ──────────────────────────────
 
 test('a landing is the tracker saying MERGED with a merge commit — the PR and the landed SHA', () => {
@@ -88,7 +123,9 @@ test('a landing is the tracker saying MERGED with a merge commit — the PR and 
 
   assert.deepEqual(read.unread, []);
   assert.equal(read.landings.length, 1);
-  assert.deepEqual(read.landings[0], { repo: SLUG, issue: 190, pr: 196, sha: 'a'.repeat(40) });
+  // The merge TIME rides with the landing: it is what orders two repositories
+  // against each other under the cap (a PR number cannot).
+  assert.deepEqual(read.landings[0], { repo: SLUG, issue: 190, pr: 196, sha: 'a'.repeat(40), mergedAt: Date.parse('2026-09-01T00:00:00Z') });
   assert.equal(calls.length, 1, 'one batched round-trip for the whole member set');
   assert.match(calls[0], /^api graphql -f query=/);
 });
@@ -195,7 +232,7 @@ test('an alias the batched read did not answer is unread per member, and its sib
   // The payload shape gh really prints, written out here: this branch parses
   // stdout itself, so it must be exercised against the wire shape and not
   // against the harness's convenience mapping.
-  const node = { number: 196, state: 'MERGED', mergeCommit: { oid: 'a'.repeat(40) }, repository: { nameWithOwner: SLUG } };
+  const node = { number: 196, state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z', mergeCommit: { oid: 'a'.repeat(40) }, repository: { nameWithOwner: SLUG } };
   const carried = { data: { r0: { i190: { number: 190, state: 'CLOSED', closedByPullRequestsReferences: { pageInfo: { hasNextPage: false }, nodes: [node] } } } } };
   const partial = readLandings({ members: [member(190), member(191)], gh: () => ({ status: 1, stdout: JSON.stringify(carried), stderr: 'gh: some aliases failed\n' }) });
   assert.deepEqual(partial.landings.map(landing => landing.pr), [196], 'a partial payload still classifies the aliases it carries');
@@ -462,7 +499,7 @@ test('a Spec in another repository keeps its identity, and its members keep thei
   const gh = args =>
     args.join(' ').includes('parent')
       ? { status: 0, stdout: JSON.stringify({ data: { repository: { issue: { parent: { number: 9, repository: { nameWithOwner: 'acme/specs' } } } } } }), stderr: '' }
-      : { status: 0, stdout: JSON.stringify({ data: { r0: { i7: { number: 7, state: 'CLOSED', closedByPullRequestsReferences: { pageInfo: { hasNextPage: false }, nodes: [{ number: 8, state: 'MERGED', mergeCommit: { oid: 'b'.repeat(40) }, repository: { nameWithOwner: 'acme/widgets' } }] } } } } }), stderr: '' };
+      : { status: 0, stdout: JSON.stringify({ data: { r0: { i7: { number: 7, state: 'CLOSED', closedByPullRequestsReferences: { pageInfo: { hasNextPage: false }, nodes: [{ number: 8, state: 'MERGED', mergedAt: '2026-09-02T00:00:00Z', mergeCommit: { oid: 'b'.repeat(40) }, repository: { nameWithOwner: 'acme/widgets' } }] } } } } }), stderr: '' };
   const membership = (number, options) => {
     assert.equal(number, 9);
     assert.equal(options.slug, 'acme/specs');
@@ -472,4 +509,68 @@ test('a Spec in another repository keeps its identity, and its members keep thei
   const answered = landedNotes({ ticket: { number: 195, repo: SLUG }, slug: SLUG, gh, git: repo.git, membership });
   assert.match(answered.text, /acme\/widgets#7 landed as PR #8/);
   assert.match(answered.text, /surfaces: NOT READ/);
+});
+
+
+// ── the three gate findings on PR #203 ───────────────────────────────────────
+
+test('a MERGE commit’s surfaces are what it brought in, not what the base moved beside it', () => {
+  // Measured 2026-09-06 on a real two-parent merge: `diff-tree -m
+  // --first-parent <sha>` prints a per-parent diff and named `base-only.txt`
+  // as well as `pr-only.txt` — so a `--method merge` landing would advertise a
+  // surface it never touched, and a worker would go looking for its change in
+  // the wrong file. The comparison is the landed SHA against its FIRST PARENT.
+  const repo = mergedCheckout();
+  const read = surfacesOf({ sha: repo.sha, git: repo.git });
+
+  assert.equal(read.reason, '');
+  assert.equal(read.text, 'pr-only.txt');
+  assert.doesNotMatch(read.text, /base-only/);
+});
+
+test('a closing-PR node with no readable state is NOT ESTABLISHED — never quietly "not landed"', () => {
+  // OPEN and CLOSED are answers; a null node, an absent `state` and a state
+  // nobody taught this are not. A filter on `state === 'MERGED'` read all three
+  // as "this sibling has not landed yet", which is the one thing they do not say.
+  for (const [name, node] of [
+    ['a null node', null],
+    ['no state at all', { raw: { number: 196, mergeCommit: { oid: 'a'.repeat(40) } } }],
+    ['a state nobody taught it', { raw: { number: 196, state: 'DRAFT', mergeCommit: { oid: 'a'.repeat(40) } } }],
+  ]) {
+    const { gh } = fakeGh({ closers: { [`${SLUG}#190`]: [node] } });
+    const read = readLandings({ members: [member(190)], gh });
+    assert.deepEqual(read.landings, [], name);
+    assert.equal(read.unread.length, 1, name);
+    assert.match(read.unread[0].detail, /state/, name);
+  }
+});
+
+test('a MERGED pull request with no readable merge time is named, not silently ranked', () => {
+  const { gh } = fakeGh({ closers: { [`${SLUG}#190`]: [merged(196, 'a'.repeat(40), { mergedAt: null })] } });
+  const read = readLandings({ members: [member(190)], gh });
+
+  assert.deepEqual(read.landings, []);
+  assert.match(read.unread[0].detail, /merge time/);
+});
+
+test('landings are ordered by when they MERGED, never by a number two repositories both use', () => {
+  // A pull request number is repository-local: #900 in one repository is older
+  // than #12 in another as often as not. Under the cap that arithmetic hides a
+  // landing — here a foreign #900 merged last year against a local #12 merged
+  // today, which is the pair a numeric sort gets backwards.
+  const repo = checkout(['src/a.mjs']);
+  const { gh } = fakeGh({
+    closers: {
+      ['acme/legacy#5']: [merged(900, 'b'.repeat(40), { mergedAt: '2025-01-01T00:00:00Z' })],
+      [`${SLUG}#7`]: [merged(12, repo.sha, { mergedAt: '2026-09-06T10:00:00Z' })],
+    },
+  });
+  const answered = landedFor({ members: [member(5, 'acme/legacy'), member(7)], slug: SLUG, gh, git: repo.git, cap: 1 });
+
+  assert.match(answered.text, /#7 landed as PR #12/);
+  assert.doesNotMatch(answered.text, /PR #900/, 'the older foreign landing may not displace the newer local one');
+  assert.match(answered.text, /1 older landing\(s\) of this Spec are not carried here/);
+
+  // And the merge time is what the query asks for.
+  assert.match(landingsQuery([{ owner: 'flosrn', name: 'ax', numbers: [190] }]), /mergedAt/);
 });

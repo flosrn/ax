@@ -72,6 +72,14 @@ export const SURFACE_NAMES = 8;
 /** Directory groups a grouped surface line names before it counts the rest. */
 const SURFACE_GROUPS = 6;
 
+/**
+ * The three states a pull request can be in, and the whole vocabulary this read
+ * accepts. A state outside it is unreadable, not "not merged": that distinction
+ * is what keeps a partial GraphQL answer — a node with no `state` at all — from
+ * being swept in beside an honest OPEN (review of PR #203).
+ */
+const PR_STATES = ['OPEN', 'CLOSED', 'MERGED'];
+
 const short = sha => String(sha).slice(0, 12);
 const firstLine = text => String(text ?? '').split('\n')[0].trim();
 
@@ -93,7 +101,7 @@ export function landingsQuery(groups) {
         number =>
           `i${number}: issue(number: ${number}) { number state ` +
           `closedByPullRequestsReferences(first: ${CLOSING_PAGE}, includeClosedPrs: true) ` +
-          `{ pageInfo { hasNextPage } nodes { number state mergeCommit { oid } repository { nameWithOwner } } } }`,
+          `{ pageInfo { hasNextPage } nodes { number state mergedAt mergeCommit { oid } repository { nameWithOwner } } } }`,
       )
       .join(' ');
   return `query { ${groups
@@ -246,9 +254,32 @@ export function readLandings({ members = [], gh }) {
         continue;
       }
 
-      const mergedPrs = closers.nodes.filter(node => String(node?.state ?? '').toUpperCase() === 'MERGED');
-      // NOT LANDED IS NOT UNREAD: an open, a closed and an absent closing pull
-      // request are all "still in flight", and the channel says nothing.
+      // EVERY NODE'S STATE IS AN ANSWER OR IT IS NOTHING. A filter on
+      // `state === 'MERGED'` swept three non-answers into "this sibling has not
+      // landed yet" (review of PR #203): a null node, a node with no `state` —
+      // which is what a PARTIAL GraphQL failure leaves behind — and a state
+      // nobody taught this. None of them says the sibling is still in flight,
+      // and one of them is a landing this channel would have hidden.
+      const states = closers.nodes.map(node => ({
+        node,
+        state: node !== null && typeof node === 'object' ? String(node.state ?? '').toUpperCase() : '',
+      }));
+      const unreadable = states.filter(entry => !PR_STATES.includes(entry.state));
+      if (unreadable.length > 0) {
+        unread.push({
+          ref,
+          detail: `${ref} is closed by ${unreadable.length} pull request(s) whose state this read cannot use (${unreadable
+            .map(entry => (entry.node === null || typeof entry.node !== 'object' ? 'a node that is not an object' : `#${entry.node.number ?? '?'} reads ${clean(String(entry.node.state ?? 'no state'))}`))
+            .join('; ')}) — an unreadable state is not "not merged"`,
+          repair: byHand,
+        });
+        continue;
+      }
+
+      const mergedPrs = states.filter(entry => entry.state === 'MERGED').map(entry => entry.node);
+      // NOT LANDED IS NOT UNREAD: an OPEN and a CLOSED closing pull request, and
+      // an issue with none at all, are all "still in flight", and the channel
+      // says nothing about them.
       if (mergedPrs.length === 0) continue;
       if (mergedPrs.length > 1) {
         unread.push({
@@ -288,7 +319,24 @@ export function readLandings({ members = [], gh }) {
         });
         continue;
       }
-      landings.push({ repo: group.repo, issue: number, pr: prNumber, sha });
+      // THE MERGE TIME IS PART OF THE LANDING, because the channel is capped and
+      // a cap has to order. A pull request NUMBER cannot: it is repository-local,
+      // so #900 in one repository is older than #12 in another as often as not,
+      // and the numeric sort this file shipped with hid a landing that merged
+      // today behind one that merged last year (review of PR #203). An
+      // unreadable `mergedAt` is therefore an inability rather than a landing
+      // ranked on a guess — GitHub sets it on every merged pull request, so its
+      // absence is a read that did not answer.
+      const mergedAt = Date.parse(String(pr?.mergedAt ?? ''));
+      if (!Number.isFinite(mergedAt)) {
+        unread.push({
+          ref,
+          detail: `${ref}: PR #${prNumber} reads MERGED and names no readable merge time (${clean(String(pr?.mergedAt ?? 'absent'))}), so this landing cannot be placed among the others`,
+          repair: `gh pr view ${prNumber} --repo ${group.repo} --json mergedAt,mergeCommit`,
+        });
+        continue;
+      }
+      landings.push({ repo: group.repo, issue: number, pr: prNumber, sha, mergedAt });
     }
   });
 
@@ -296,17 +344,26 @@ export function readLandings({ members = [], gh }) {
 }
 
 /**
- * The surfaces one landed SHA moved, as this checkout can name them.
+ * The surfaces one landed SHA moved, as this checkout can name them: the SHA
+ * against its OWN FIRST PARENT, which is where its branch started.
  *
- * `-m --first-parent` so a merge commit answers the same question a squash
- * does: without it `diff-tree` prints nothing for a true merge, and nothing
- * reads as "it changed no files". A commit this checkout does not carry, a git
- * that refuses, and a diff that names no path are each a NOT READ carrying its
- * own repair — an empty surface line would be a claim, and this read did not
- * make it.
+ * NOT `-m --first-parent <sha>`, which was the first form and was wrong for the
+ * one case it was chosen for. Measured 2026-09-06 on a real two-parent merge:
+ * `-m` prints a diff PER PARENT, so a `--method merge` landing named the paths
+ * the BASE had moved beside it as well as its own (`base-only.txt` and
+ * `pr-only.txt`, review of PR #203). A surface a landing never touched sends the
+ * next worker looking for its change in the wrong file, which is the whole
+ * failure this line exists to prevent. `<sha>^1 <sha>` is one comparison of two
+ * trees: it answers identically for a squash (one parent) and for a merge (the
+ * base tip), and it is undefined for a root commit — which git refuses, and a
+ * refusal here is a NOT READ like any other.
+ *
+ * A commit this checkout does not carry, a git that refuses, and a diff that
+ * names no path are each a NOT READ carrying its own repair — an empty surface
+ * line would be a claim, and this read did not make it.
  */
 export function surfacesOf({ sha, git }) {
-  const argv = ['diff-tree', '-r', '--no-commit-id', '--name-only', '-m', '--first-parent', String(sha)];
+  const argv = ['diff-tree', '-r', '--no-commit-id', '--name-only', `${String(sha)}^1`, String(sha)];
   const out = git(argv);
   if (out?.error) {
     return { text: '', reason: `NOT READ — git could not run here (${clean(String(out.error.message ?? out.error))})` };
@@ -315,8 +372,8 @@ export function surfacesOf({ sha, git }) {
     return {
       text: '',
       reason:
-        `NOT READ — ${short(sha)} is not in this checkout, or git refused to diff it (${clean(firstLine(out?.stderr)) || `exit ${out?.status}`}); ` +
-        'git fetch origin, then read it with git diff-tree -r --name-only -m --first-parent <sha>',
+        `NOT READ — ${short(sha)} is not in this checkout, or git refused to diff it against its first parent (${clean(firstLine(out?.stderr)) || `exit ${out?.status}`}); ` +
+        'git fetch origin, then read it with git diff-tree -r --name-only <sha>^1 <sha>',
     };
   }
   const paths = [
@@ -384,10 +441,14 @@ export function renderLanded({ landings = [], unread = [], slug = '', hidden = 0
  */
 export function landedFor({ members = [], slug = '', gh, git, cap = LANDED_CAP }) {
   const read = readLandings({ members, gh });
-  // Newest first, by the forge's own monotone number: a cap that has to hide a
-  // landing hides the oldest, because the seam that moved this morning is the
-  // one the next worker steps on.
-  const ordered = [...read.landings].sort((a, b) => b.pr - a.pr);
+  // Newest first BY MERGE TIME, which is the only order two repositories share:
+  // a pull request number is repository-local, and sorting on it hid a landing
+  // that merged today behind a foreign one that merged last year (review of PR
+  // #203). A cap that has to hide a landing hides the oldest, because the seam
+  // that moved this morning is the one the next worker steps on. `mergedAt` is
+  // established for every landing in this list (./readLandings), so the
+  // comparison has no unknown side.
+  const ordered = [...read.landings].sort((a, b) => b.mergedAt - a.mergedAt || a.repo.localeCompare(b.repo) || b.pr - a.pr);
   const carried = ordered.slice(0, Math.max(0, cap));
   const hidden = ordered.length - carried.length;
 
