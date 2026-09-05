@@ -8,6 +8,29 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.23.0](https://github.com/flosrn/ax/compare/v0.22.0...v0.23.0) (2026-09-05)
+
+
+### Features
+
+* **dispatch:** a --on dispatch reuses the worktree the host reports ([#154](https://github.com/flosrn/ax/issues/154)) ([a133598](https://github.com/flosrn/ax/commit/a133598465497f9a1a58e3e981f6f6991f52717c))
+* **worker:** settle --repo backfills a record that names no repository ([#155](https://github.com/flosrn/ax/issues/155)) ([0ef6240](https://github.com/flosrn/ax/commit/0ef6240be34018371f3e4274e569fd0812926ca9))
+
+
+### Bug Fixes
+
+* **peer:** a witnessed local worker_done carries its Report, keyed on the record's own pane ([57c431d](https://github.com/flosrn/ax/commit/57c431de97ba88ff513eb7a777c8a47bb91fcc31)), closes [#168](https://github.com/flosrn/ax/issues/168)
+* **worker:** --replace takes the claim lock before its own ([#153](https://github.com/flosrn/ax/issues/153)) ([dfda7a3](https://github.com/flosrn/ax/commit/dfda7a36396367fb4fa4afbb0ca88f915eb2f02e)), closes [#148](https://github.com/flosrn/ax/issues/148)
+* **worker:** a --replace inherits the recorded placement or refuses ([#166](https://github.com/flosrn/ax/issues/166)) ([65d0a21](https://github.com/flosrn/ax/commit/65d0a21e4708d81b30003c4783ca756533e15605))
+* **worker:** a live terminal is capacity in ls, whichever phase recorded it ([a77e40b](https://github.com/flosrn/ax/commit/a77e40b2c1dc3aa09ab0e43dd273a9e0600006de)), closes [#152](https://github.com/flosrn/ax/issues/152)
+* **worker:** a release KEEP names its repair, and a dirty tree says which kind ([#157](https://github.com/flosrn/ax/issues/157)) ([ac064de](https://github.com/flosrn/ax/commit/ac064de120d77a1bec90c470d021b3177449e92d))
+* **worker:** an unaskable leaked pane is an inability, and the note stops contradicting the count ([a65d11d](https://github.com/flosrn/ax/commit/a65d11d2175110bc76374eecde6526ed5442e979))
+* **worker:** capacity counts recorded panes through one reader, not the dispatch index ([#163](https://github.com/flosrn/ax/issues/163)) ([#167](https://github.com/flosrn/ax/issues/167)) ([c1fd8c4](https://github.com/flosrn/ax/commit/c1fd8c4c5cf66c7a35c3d8795f71ccc9b547cc87))
+* **worker:** ls and tail name the verb that continues a gone pane's record ([#169](https://github.com/flosrn/ax/issues/169)) ([0c94893](https://github.com/flosrn/ax/commit/0c94893d8b87e761f63f0b72eafd33ac4c9ae161))
+* **worker:** settle judges a pane from the host its record names; a named gone pane says what survives it ([f38edc8](https://github.com/flosrn/ax/commit/f38edc8f021207512d983ebdba06784f9fb3449d)), closes [#160](https://github.com/flosrn/ax/issues/160)
+* **worker:** the stall watcher's alert arrives as a message, not as its rejection ([#159](https://github.com/flosrn/ax/issues/159)) ([a2bd478](https://github.com/flosrn/ax/commit/a2bd47815477ba8913d6ce6fbe465c6771c2f22c))
+* **worker:** the worktree-scoped advisor ax writes is named ax, not pilot ([b1b2b06](https://github.com/flosrn/ax/commit/b1b2b0656cd8fec28815406afd900a2d615939bd))
+
 ## [0.22.0](https://github.com/flosrn/ax/compare/v0.21.1...v0.22.0) (2026-09-04)
 
 
