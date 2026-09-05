@@ -133,8 +133,10 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   // THE RUNTIME COMES WITH THE HANDLE, from the SAME row. A remote dispatch's
   // pane lives on the host its `worker-start --on` named, so a handle read
   // against the local runtime interrogates the wrong machine — and taking the
-  // runtime from the record's newest worker-start instead would mispair them the
-  // moment a `--replace` moved a child between hosts.
+  // runtime from the record's newest worker-start instead would mispair them
+  // whenever a record holds phases dispatched onto different hosts. (A
+  // `--replace` is no longer one of those: it inherits the recorded placement
+  // and refuses a contradicting one, #11.)
   let handle = target;
   let environment;
   if (!TERMINAL_HANDLE.test(target)) {

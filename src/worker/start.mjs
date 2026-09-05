@@ -24,6 +24,19 @@
 // in flight), returned the task to `ready` and started a worker, and the mint
 // then issued its own. One sanctioned mint plus one sanctioned recovery, and
 // F-001 rebuilt out of them.
+//
+// PLACEMENT IS INHERITED, NEVER RE-DERIVED (#11, trap 1). `--replace` puts the
+// replacement child exactly where the record says the first attempt ran — the
+// newest `worker-start` phase's own `--worktree`, `--agent`, `--on` and the
+// flags Orca reads with them — or refuses naming the field the record does not
+// carry. Placement used to be opaque passthrough, so a replace typed without
+// it inherited nothing and Orca defaulted `worktree=current`: measured
+// 2026-08-24, a PR-owning child was moved into the operator's own checkout on
+// `main`. A typed field that CONTRADICTS the record is refused rather than
+// honoured, because moving a child is a new dispatch. `inheritPlacement` is
+// that whole rule, and it answers before the live-agent gate — a placement
+// refusal issues nothing, not even the `task-update` that returns the task to
+// `ready`.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -56,6 +69,7 @@ import {
   taskId,
   taskIdScan,
   taskUpdateOk,
+  workerStartArgv,
 } from './record.mjs';
 import { briefDelivered } from './delivered.mjs';
 
@@ -157,6 +171,144 @@ function placementRefusal(passthru) {
     return `remote placement --on ${on} cannot resolve --worktree ${worktree}; use --on ${on} --worktree new-top-level --repo id:<uuid>`;
   }
   return '';
+}
+
+/**
+ * The flags that decide WHERE a child runs — exactly the group
+ * `ax worker dispatch` composes into one `place` array, local
+ * (`--worktree path:<abs> --agent <name>`) or remote (`--on <host> --worktree
+ * <selector> --repo <id> --name <request> --agent <name>`, plus a probe's
+ * `--setup skip`). They travel TOGETHER because Orca reads them together: a
+ * remote `--worktree` without its `--repo` resolves nothing, so inheriting the
+ * three fields #11 names and dropping the two beside them would trade one
+ * misplacement for one broken dispatch.
+ */
+const PLACEMENT = ['--worktree', '--agent', '--on', '--repo', '--name', '--setup'];
+
+/**
+ * An argv split into its placement and everything else, preserving order and
+ * both option forms. A bare placement flag at the end of an argv is dropped
+ * with the group rather than left in the remainder, where it would sit in
+ * front of the inherited value and consume it.
+ */
+function splitPlacement(argv) {
+  const placement = [];
+  const rest = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (PLACEMENT.some(name => arg.startsWith(`${name}=`))) {
+      placement.push(arg);
+      continue;
+    }
+    if (PLACEMENT.includes(arg)) {
+      placement.push(arg);
+      if (i + 1 < argv.length) {
+        placement.push(argv[i + 1]);
+        i += 1;
+      }
+      continue;
+    }
+    rest.push(arg);
+  }
+  return { placement, rest };
+}
+
+/**
+ * A placement slice as the (flag, value) pairs it NAMES, in order and with
+ * every occurrence kept.
+ *
+ * `argvValue` answers the FIRST match, which is the wrong reading on both
+ * sides of this comparison. Typed `--worktree path:<recorded> --worktree
+ * current` would compare equal on its first pair and then be dropped whole,
+ * honouring the second value in silence — the very misplacement this rule
+ * exists to refuse. And a record naming one flag twice cannot be resolved by
+ * position at all.
+ *
+ * A bare flag pairs with `null`: a typed `--worktree` with no value names no
+ * placement, so it contradicts a record that names one.
+ */
+function placementPairs(placement) {
+  const pairs = [];
+  for (let i = 0; i < placement.length; i += 1) {
+    const arg = placement[i];
+    const joined = PLACEMENT.find(name => arg.startsWith(`${name}=`));
+    if (joined) {
+      pairs.push([joined, arg.slice(joined.length + 1)]);
+      continue;
+    }
+    if (i + 1 < placement.length) {
+      pairs.push([arg, placement[i + 1]]);
+      i += 1;
+      continue;
+    }
+    pairs.push([arg, null]);
+  }
+  return pairs;
+}
+
+const shown = value => (value === null || value === undefined ? 'absent' : JSON.stringify(value));
+
+const DISPATCH_ROUTE = 'ax worker dispatch --issue <n> --slug <distinct-name>   # a dispatch PLACES a child; --replace only reinstates a recorded placement';
+
+/**
+ * THE RECORD IS THE PLACEMENT AUTHORITY (#11, trap 1). A `--replace` reinstates
+ * a child where the record says the first attempt ran, or refuses; it never
+ * derives a placement of its own and never lets Orca default one.
+ *
+ * Measured 2026-08-24 on ofmchat: `--replace --request 57-policy-offer-engine`
+ * was refused `agent_unconfigured` although the record named `agent=omp`, and
+ * the retry — typed with only `--agent omp` added — was placed in
+ * `worktree=current`, the operator's own checkout on `main`, instead of the
+ * recorded `.worktrees/57-policy-offer-engine`. Placement was opaque
+ * passthrough, so a replace that typed none of it inherited none of it and
+ * Orca chose. That silently moves a PR-owning child into the checkout an
+ * operator is working in.
+ *
+ * So, given the record's newest `worker-start` argv and what this call typed:
+ *
+ *   - no placement typed → the record's own bytes, in the record's order.
+ *   - a typed field EQUAL to the record's → accepted, and the record's bytes
+ *     are still what is issued.
+ *   - a typed field the record CONTRADICTS — a different value, a field the
+ *     record does not carry at all and therefore cannot corroborate, or a
+ *     SECOND occurrence naming something else → refused, naming both values.
+ *     Moving a child is a new dispatch, never a replace, which is why `ls` no
+ *     longer says a replace may move one between hosts.
+ *   - a record carrying no `--worktree` → refused naming that field. An absent
+ *     placement is UNKNOWN, never `current` (F-028); the route is a dispatch.
+ *   - a record naming one placement flag TWICE, differently → refused naming
+ *     both. Ambiguity is never resolved by position (placement.mjs, #84).
+ *
+ * Non-placement passthrough (`--from`, `--model`, `--effort`, `--notes`) stays
+ * opaque and untouched, as it always was.
+ */
+export function inheritPlacement(recordedArgv, typed) {
+  const { placement } = splitPlacement(recordedArgv);
+  const recorded = new Map();
+  for (const [name, value] of placementPairs(placement)) {
+    if (recorded.has(name) && recorded.get(name) !== value) {
+      return {
+        refusal: `the record's newest worker-start names ${name} twice, ${shown(recorded.get(name))} and ${shown(value)} — which of the two placed the child cannot be read off a position`,
+        repair: DISPATCH_ROUTE,
+      };
+    }
+    recorded.set(name, value);
+  }
+  if ((recorded.get('--worktree') ?? null) === null) {
+    return {
+      refusal: "the record's newest worker-start names no --worktree, so this replacement has no recorded placement to inherit — and an absent placement is unknown, never the current checkout",
+      repair: DISPATCH_ROUTE,
+    };
+  }
+  for (const [name, asked] of placementPairs(splitPlacement(typed).placement)) {
+    const known = recorded.get(name) ?? null;
+    if (known === asked) continue;
+    return {
+      refusal: `--replace may not re-place a child: the record's ${name} is ${shown(known)} and this call typed ${shown(asked)}`,
+      repair: 'ax worker dispatch --issue <n> --slug <distinct-name>   # moving a child is a new dispatch, never a replace',
+    };
+  }
+  return { passthru: [...splitPlacement(typed).rest, ...placement] };
 }
 
 /**
@@ -460,6 +612,25 @@ function replaceLocked(path, passthru, context) {
     return cannot(`the first phase never succeeded: ${String(error)}`);
   }
 
+  // BEFORE the gate, because a placement refusal must issue nothing at all —
+  // not a `task-list` read, not the `task-update` that returns the task to
+  // `ready`. The record is read under the replace lock, where the winner's
+  // phases are complete.
+  let placed;
+  try {
+    placed = inheritPlacement(workerStartArgv(path), passthru);
+  } catch (error) {
+    return refuse(
+      `the record names no readable worker-start placement, so --worktree cannot be inherited: ${String(error)}`,
+      'ax worker dispatch --issue <n> --slug <distinct-name>   # a dispatch PLACES a child; --replace only reinstates a recorded placement',
+    );
+  }
+  if (placed.refusal) return refuse(placed.refusal, placed.repair);
+  const inherited = placed.passthru;
+  const stillBad = placementRefusal(inherited);
+  if (stillBad) return refuse(stillBad);
+  note(redactSecrets(`inheriting the recorded placement: ${inherited.join(' ')}`));
+
   const gateCode = (context.gateFn ?? gate)([task, '--run', runId], { runner: context.run, env: context.env });
   if (gateCode === 1) return refuse('an agent is still alive for this task — do NOT replace it');
   if (gateCode === 2) {
@@ -475,7 +646,7 @@ function replaceLocked(path, passthru, context) {
 
   attemptNew(path);
   const identity = newIdentity();
-  const args = ['orchestration', 'worker-start', '--task', task, '--retry-request', identity, ...passthru, '--json'];
+  const args = ['orchestration', 'worker-start', '--task', task, '--retry-request', identity, ...inherited, '--json'];
   const failed = phaseFailure(phaseRun(path, 'worker-start', args, { ...context, identity }), { request: context.request });
   if (failed !== null) return failed;
 

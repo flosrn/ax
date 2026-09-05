@@ -611,6 +611,17 @@ export function workerPane(path) {
 }
 
 /**
+ * The newest `worker-start` phase's argv, whole and unmodified. The one read a
+ * `--replace` derives its placement from (#11, trap 1): the record wrote where
+ * the child went BEFORE the dispatch, so it is the authority, and a
+ * replacement that re-derives placement from anything else can move a
+ * PR-owning child into another checkout. Strict — a record with no
+ * `worker-start`, or one whose phase names no argv, THROWS rather than
+ * answering an empty placement that would read as "place it anywhere".
+ */
+export const workerStartArgv = path => [...must(lastWorkerStart(load(path)), 'argv', 'worker-start phase')];
+
+/**
  * WHERE the newest worker-start sent the child: the host named by `--on`, or
  * `''` for this machine. Read from the phase's argv alone, so it answers for a
  * start whose receipt failed or names no terminal — the shape `settle` judges.
@@ -621,7 +632,7 @@ export function workerPane(path) {
  * forever. The record wrote the host before the dispatch; it is the authority.
  */
 export function dispatchHost(path) {
-  return argvValue(must(lastWorkerStart(load(path)), 'argv', 'worker-start phase'), '--on') ?? '';
+  return argvValue(workerStartArgv(path), '--on') ?? '';
 }
 
 /**
@@ -822,10 +833,13 @@ export function dispatchIndex(store) {
         // Newest phase wins: a `--replace` records a second worker-start for the
         // same request, and the pane that matters is the one it opened.
         //
-        // `env` is PHASE-PAIRED with the handle, from this call's own `--on`. A
-        // caller that took the handle from one dispatch and the runtime from the
-        // record's newest worker-start would read a remote pane against the local
-        // runtime the moment a `--replace` moved a child between hosts.
+        // `env` is PHASE-PAIRED with the handle, from this call's own `--on`,
+        // because only the phase that named a handle can say where that handle
+        // lives. Taking the handle from one dispatch and the runtime from the
+        // record's newest worker-start would read one child's pane against
+        // another's runtime. (A `--replace` no longer moves a child between
+        // hosts — it inherits the recorded placement, #11 — but a record can
+        // still hold phases dispatched onto different hosts.)
         byDispatch.set(result.dispatchId, {
           request: stem,
           issuedAt: Number.isFinite(began) ? began : Number.isFinite(created) ? created : null,

@@ -557,6 +557,148 @@ test('replace with no recorded task cannot establish rather than inventing one',
   assert.match(r.out, /first phase never succeeded|no task id/);
 });
 
+// ── A replacement inherits the recorded placement, or refuses (#11, trap 1) ──
+//
+// Measured 2026-08-24 (`--replace --request 57-policy-offer-engine`): the
+// replace was refused `agent_unconfigured` although the record named the
+// agent, and the retry — typed with only `--agent omp` added — placed the child
+// in `worktree=current`, the operator's own checkout on `main`, instead of the
+// recorded `.worktrees/57-policy-offer-engine`. Placement was opaque
+// passthrough, so a replace typed without it inherited nothing.
+
+test("a replace with no placement flags issues the record's placement byte for byte", () => {
+  const home = scratch();
+  const placement = [
+    '--on', 'gapicore', '--worktree', 'repo_1::/srv/orca/ax/.worktrees/req-inherit',
+    '--repo', 'id:abc', '--name', 'req-inherit', '--agent', 'omp',
+  ];
+  const first = invoke(freshArgs(home, 'req-inherit', placement), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+
+  const run = fakeRunner();
+  const r = invoke(['--replace', '--request', 'req-inherit', '--', '--model', 'alias'], {
+    env: { HOME: home }, run, gateFn: () => 0,
+  });
+  assert.equal(r.code, 0, r.out);
+  const call = run.calls.find(args => args.includes('worker-start'));
+  // The caller's own non-placement passthrough survives; the placement is the
+  // record's, in the record's order.
+  assert.deepEqual(call.slice(-(placement.length + 3)), ['--model', 'alias', ...placement, '--json']);
+});
+
+test('a replace may retype the recorded placement, and one that differs is refused naming both values', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-typed', ['--worktree', 'path:/tmp/req-typed', '--agent', 'omp']), {
+    env: { HOME: home },
+  });
+  assert.equal(first.code, 0, first.out);
+
+  const same = fakeRunner();
+  const ok = invoke(['--replace', '--request', 'req-typed', '--', '--worktree', 'path:/tmp/req-typed'], {
+    env: { HOME: home }, run: same, gateFn: () => 0,
+  });
+  assert.equal(ok.code, 0, ok.out);
+  assert.deepEqual(
+    same.calls.find(args => args.includes('worker-start')).slice(-5),
+    ['--worktree', 'path:/tmp/req-typed', '--agent', 'omp', '--json'],
+  );
+
+  // EVERY OCCURRENCE, not the first: a typed flag repeated names two values,
+  // and the second one is the one an operator meant to change. Reading only
+  // the first accepts the pair as "equal to the record" and then drops both,
+  // which is a differing placement honoured in silence.
+  const before = readFileSync(recordAt(first.env, 'req-typed'), 'utf8');
+  const cases = [
+    { typed: ['--worktree', 'current'], names: [/--worktree/, /path:\/tmp\/req-typed/, /current/] },
+    { typed: ['--worktree=current'], names: [/--worktree/, /path:\/tmp\/req-typed/, /current/] },
+    { typed: ['--on', 'gapicore'], names: [/--on/, /gapicore/, /absent/] },
+    { typed: ['--agent', 'claude'], names: [/--agent/, /omp/, /claude/] },
+    {
+      typed: ['--worktree', 'path:/tmp/req-typed', '--worktree', 'current'],
+      names: [/--worktree/, /path:\/tmp\/req-typed/, /current/],
+    },
+    {
+      typed: ['--worktree=path:/tmp/req-typed', '--worktree=current'],
+      names: [/--worktree/, /path:\/tmp\/req-typed/, /current/],
+    },
+    { typed: ['--agent', 'omp', '--agent', 'claude'], names: [/--agent/, /omp/, /claude/] },
+    { typed: ['--worktree'], names: [/--worktree/, /path:\/tmp\/req-typed/, /absent/] },
+  ];
+  for (const { typed, names } of cases) {
+    const run = fakeRunner();
+    const r = invoke(['--replace', '--request', 'req-typed', '--', ...typed], {
+      env: { HOME: home }, run, gateFn: () => 0,
+    });
+    assert.equal(r.code, 1, `${typed.join(' ')} → ${r.out}`);
+    assert.match(r.out, /REFUSED/);
+    for (const name of names) assert.match(r.out, name, `${typed.join(' ')} → ${r.out}`);
+    assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'nothing issued');
+    assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0, 'the task was not returned to ready');
+    assert.equal(readFileSync(recordAt(first.env, 'req-typed'), 'utf8'), before);
+  }
+});
+
+test('a record whose newest worker-start names no --worktree refuses, naming the field and the dispatch route', () => {
+  for (const mangle of [
+    phases => { phases.findLast(ph => ph.name === 'worker-start').argv = ['orca', 'orchestration', 'worker-start', '--task', 'task_abc123', '--agent', 'omp', '--json']; },
+    phases => { phases.splice(phases.findIndex(ph => ph.name === 'worker-start'), 1); },
+  ]) {
+    const home = scratch();
+    const first = invoke(freshArgs(home, 'req-noplace'), { env: { HOME: home } });
+    assert.equal(first.code, 0, first.out);
+    const file = recordAt(first.env, 'req-noplace');
+    const record = JSON.parse(readFileSync(file, 'utf8'));
+    mangle(record.attempts[0].phases);
+    writeFileSync(file, JSON.stringify(record));
+
+    const run = fakeRunner();
+    const r = invoke(['--replace', '--request', 'req-noplace'], { env: { HOME: home }, run, gateFn: () => 0 });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /--worktree/);
+    assert.match(r.out, /ax worker dispatch/);
+    assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'nothing issued');
+    assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0);
+  }
+});
+
+// A record naming one placement flag twice is an AMBIGUITY, and ambiguity is
+// never resolved by position (the rule placement.mjs pays for in #84): which
+// of the two values placed the child cannot be read off an index, so the
+// replacement refuses rather than inheriting the first one it meets.
+test('a record naming one placement flag twice cannot be inherited by position', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-twice'), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const file = recordAt(first.env, 'req-twice');
+  const record = JSON.parse(readFileSync(file, 'utf8'));
+  const phase = record.attempts[0].phases.findLast(ph => ph.name === 'worker-start');
+  phase.argv = ['orca', 'orchestration', 'worker-start', '--task', 'task_abc123', '--worktree', 'path:/tmp/a', '--worktree', 'path:/tmp/b', '--agent', 'omp', '--json'];
+  writeFileSync(file, JSON.stringify(record));
+
+  const run = fakeRunner();
+  const r = invoke(['--replace', '--request', 'req-twice'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /--worktree/);
+  assert.match(r.out, /path:\/tmp\/a/);
+  assert.match(r.out, /path:\/tmp\/b/);
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'nothing issued');
+  assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0);
+});
+
+test('a replace never issues worktree=current unless the record recorded current', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-nocurrent', ['--worktree', 'path:/tmp/req-nocurrent', '--agent', 'omp']), {
+    env: { HOME: home },
+  });
+  assert.equal(first.code, 0, first.out);
+  const run = fakeRunner();
+  const r = invoke(['--replace', '--request', 'req-nocurrent'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 0, r.out);
+  const call = run.calls.find(args => args.includes('worker-start'));
+  assert.equal(call.includes('current'), false, call.join(' '));
+  assert.equal(call[call.indexOf('--worktree') + 1], 'path:/tmp/req-nocurrent');
+});
+
 // ── The pane is never touched from the automatic path ────────────────────────
 
 test('a USABLE dispatch touches the pane not at all', () => {
