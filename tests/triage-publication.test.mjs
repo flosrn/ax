@@ -99,8 +99,14 @@ test('the attribution is invisible to the bytes comparison that catches a replay
 
 // ── the joint: the publisher's own comment, read by Release ───────────────────
 
-/** A checkout with a draft per pass, and the dispatch records those passes wrote. */
-function checkout({ passes = [1], job = 'triage' } = {}) {
+/**
+ * A checkout with a draft per pass, and the dispatch records those passes wrote.
+ *
+ * `ax triage dispatch` passes `--kind <job>` to the minting verb, so every
+ * record a Pass writes carries the job it belongs to. `kind: null` writes the
+ * pre-`--kind` shape instead, which is the one nothing can type.
+ */
+function checkout({ passes = [1], job = 'triage', kind = job } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-pub-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
   mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
@@ -114,6 +120,7 @@ function checkout({ passes = [1], job = 'triage' } = {}) {
         request,
         repo: REPO,
         createdAt: '2026-08-20T10:00:00.000Z',
+        ...(kind === null ? {} : { kind }),
         attempts: [
           {
             n: 1,
@@ -357,5 +364,29 @@ test('a custom Pass stays KEEP beside a merged pull request, and never asks abou
     r.shell.filter(line => line.startsWith('gh pr')),
     [],
     'the custom proof path consulted the parent checkout for a pull request',
+  );
+});
+
+test('a record written before --kind is not released on a publication that may not be its own', () => {
+  // The same bytes, two histories: `triage-acme-widgets-7` is the mint of
+  // triage pass 1 on acme/widgets AND a legal `--name` for an implementation.
+  // A record that predates `--kind` says which one it was nowhere, so the real
+  // publisher's own publication for that identity still proves nothing here —
+  // it may belong to whoever actually ran that pass.
+  const root = checkout({ passes: [1], kind: null });
+  const mine = published(root, ['--issue', '7', '--job', 'triage']);
+  const r = releasing(root, ['--issue', '7', '--job', 'triage'], {
+    comments: [onIssue(mine)],
+    prs: [{ number: 91, state: 'MERGED', headRefName: 'ws' }],
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /KEEP.*cannot establish which proof/);
+  assert.match(r.out, /triage-acme-widgets-7\.json/, 'the row does not name the record nothing can type');
+  assert.deepEqual(r.closed, [], 'an untypeable record authorized a close mutation');
+  assert.deepEqual(
+    r.shell.filter(line => line.startsWith('gh pr')),
+    [],
+    'an untypeable record fell through to the parent checkout for a pull request',
   );
 });

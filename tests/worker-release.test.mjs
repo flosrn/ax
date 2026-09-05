@@ -310,7 +310,7 @@ test('nothing is released on the report path', () => {
   // The fixture MUST contain a row that would otherwise close: a report whose
   // input has nothing closeable cannot prove that a report closes nothing.
   const dir = store();
-  record(dir, jobRequest(4), 'ctx_ready');
+  record(dir, jobRequest(4), 'ctx_ready', { kind: 'triage' });
   const r = run(['--all'], {
     dir,
     orca: {
@@ -649,7 +649,7 @@ test('a dispatch is dated by the record it wrote, never by the file it lives in'
   // dispatch produced — which turns a proven session into a permanent KEEP, the
   // gate refusing exactly the case it exists to clear.
   const dir = store();
-  record(dir, jobRequest(12), 'ctx_dated', { createdAt: '2026-08-20T10:00:00.000Z' });
+  record(dir, jobRequest(12), 'ctx_dated', { createdAt: '2026-08-20T10:00:00.000Z', kind: 'triage' });
   const future = new Date('2026-08-24T00:00:00.000Z');
   utimesSync(join(dir, `${jobRequest(12)}.json`), future, future);
 
@@ -662,7 +662,7 @@ test('a dispatch is dated by the record it wrote, never by the file it lives in'
 
   // And a record whose date cannot be read proves nothing rather than everything.
   const junk = store();
-  record(junk, jobRequest(13), 'ctx_junk', { createdAt: 'not a date' });
+  record(junk, jobRequest(13), 'ctx_junk', { createdAt: 'not a date', kind: 'triage' });
   const undated = run(['--all'], {
     dir: junk,
     orca: { workers: [worker('ctx_junk')], terminals: [terminal('term_ctx_junk')] },
@@ -673,7 +673,7 @@ test('a dispatch is dated by the record it wrote, never by the file it lives in'
 
 test('a triage is proven by its own publication, and only that', () => {
   const dir = store();
-  record(dir, jobRequest(7), 'ctx_triage', { createdAt: '2026-08-20T10:00:00.000Z' });
+  record(dir, jobRequest(7), 'ctx_triage', { createdAt: '2026-08-20T10:00:00.000Z', kind: 'triage' });
 
   const after = run(['--all'], {
     dir,
@@ -696,7 +696,7 @@ test('a triage is proven by its own publication, and only that', () => {
 // by a merged PR, and never by a comment that merely follows the dispatch.
 test('a brief is proven by its own publication, like triage', () => {
   const dir = store();
-  record(dir, jobRequest(7, { job: 'brief' }), 'ctx_brief', { createdAt: '2026-08-20T10:00:00.000Z' });
+  record(dir, jobRequest(7, { job: 'brief' }), 'ctx_brief', { createdAt: '2026-08-20T10:00:00.000Z', kind: 'brief' });
 
   const after = run(['--all'], {
     dir,
@@ -715,7 +715,7 @@ test('a brief is proven by its own publication, like triage', () => {
 
 test('a hyphenated repository is read from the recorded identity, never guessed from the hyphens', () => {
   const dir = store();
-  record(dir, jobRequest(7, { repo: 'flosrn/ax-tools' }), 'ctx_hyphen', { repo: 'flosrn/ax-tools', createdAt: '2026-08-20T10:00:00.000Z' });
+  record(dir, jobRequest(7, { repo: 'flosrn/ax-tools' }), 'ctx_hyphen', { repo: 'flosrn/ax-tools', createdAt: '2026-08-20T10:00:00.000Z', kind: 'triage' });
   const r = run(['--all'], {
     dir,
     orca: { workers: [worker('ctx_hyphen')], terminals: [terminal('term_ctx_hyphen')] },
@@ -799,6 +799,82 @@ test('a recorded implementation whose name matches the triage mint still closes 
   assert.doesNotMatch(r.out, /pane QUIET · KEEP/);
 });
 
+// ── the records written before `--kind` ───────────────────────────────────────
+//
+// Both readings of an untyped record were tried in this file and both closed a
+// pane whose own work never landed, so neither is available any more: the row
+// names the fact it is missing and stops (#178).
+test('an untyped record whose name is exactly the triage mint is not released on that publication', () => {
+  const dir = store();
+  const request = jobRequest(7);
+  record(dir, request, 'ctx_untyped_mint', { createdAt: '2026-08-20T10:00:00.000Z' });
+  const r = run(['--all', '--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_untyped_mint')],
+      terminals: [terminal('term_ctx_untyped_mint')],
+      cursors: { term_ctx_untyped_mint: [4, 4] },
+    },
+    execOptions: {
+      answers: {
+        'gh issue view': commentsOf([publication({ issue: 7, createdAt: '2026-08-20T11:00:00.000Z' })]),
+        'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 44, state: 'MERGED', headRefName: request }]), stderr: '' },
+      },
+    },
+  });
+
+  // `--name triage-owner-repo-7` and the mint of triage pass 1 on owner/repo are
+  // the same bytes, so this publication may belong to somebody else's pane.
+  assert.match(r.out, /KEEP.*cannot establish which proof/);
+  assert.match(r.out, new RegExp(`${request}\\.json`), 'the row does not name the record that cannot type it');
+  assert.doesNotMatch(r.out, /CLOSE/);
+  assert.ok(r.calls.every(argv => !argv.includes('worker-release')), 'an untyped record authorized a close mutation');
+});
+
+test('an untyped malformed job name does not fall through to a merged pull request', () => {
+  const dir = store();
+  record(dir, 'triage-7', 'ctx_untyped_bad', { createdAt: '2026-08-20T10:00:00.000Z' });
+  const r = run(['--all', '--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_untyped_bad')],
+      terminals: [terminal('term_ctx_untyped_bad', { worktreePath: `${SCOPE}/triage-7` })],
+      cursors: { term_ctx_untyped_bad: [4, 4] },
+    },
+    execOptions: {
+      answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 91, state: 'MERGED', headRefName: 'triage-7' }]), stderr: '' } },
+    },
+  });
+
+  assert.match(r.out, /KEEP.*cannot establish which proof/);
+  assert.match(r.out, /triage-7\.json/);
+  assert.doesNotMatch(r.out, /PR #91/);
+  assert.ok(
+    r.shell.every(line => !line.startsWith('gh pr')),
+    'a record that cannot be typed asked the parent checkout for a pull request',
+  );
+  assert.ok(r.calls.every(argv => !argv.includes('worker-release')));
+});
+
+test('an untyped record naming no job word is still an implementation, proven by its own merged PR', () => {
+  // The grammar is complete for jobs: every minted job request opens with its
+  // job word, so a request carrying none was never a job. That is a fact the
+  // record establishes, and it keeps the whole pre-`--kind` estate closeable.
+  const dir = store();
+  record(dir, 'ws-untyped', 'ctx_untyped_impl');
+  const r = run(['--all'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_untyped_impl')],
+      terminals: [terminal('term_ctx_untyped_impl', { worktreePath: `${SCOPE}/ws-untyped` })],
+    },
+    execOptions: {
+      answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 62, headRefName: 'ws-untyped' }]), stderr: '' } },
+    },
+  });
+  assert.match(r.out, /CLOSE.*PR #62 merged \(ws-untyped, worktree gone\)/);
+});
+
 
 test('a dispatch this host never recorded cannot be placed, and an unplaceable row is never judged', () => {
   // #83: placement is the repository a RECORD names. A pane with no record at
@@ -836,7 +912,7 @@ test('a refused git call is a refusal, never good news', () => {
 
 test('a landed session whose pane is still moving is BUSY, not closeable', () => {
   const dir = store();
-  record(dir, jobRequest(8), 'ctx_busy');
+  record(dir, jobRequest(8), 'ctx_busy', { kind: 'triage' });
 
   const r = run(['--all'], {
     dir,
@@ -895,7 +971,7 @@ test('--no-proof is refused for a batch: an operator looks at one pane, not eigh
 
 test('a pane that cannot be read is never judged closed', () => {
   const dir = store();
-  record(dir, jobRequest(9), 'ctx_unread');
+  record(dir, jobRequest(9), 'ctx_unread', { kind: 'triage' });
 
   const { runner } = fakeOrca({ workers: [worker('ctx_unread')], terminals: [terminal('term_ctx_unread')] });
   const blind = args => (args[0] === 'terminal' && args[1] === 'read' ? { status: 1, stdout: '', stderr: 'read failed', receipt: {} } : runner(args));
@@ -914,7 +990,7 @@ test('a live pane recorded here but absent from worker-list is offered, not igno
   // F-048: a `--inject` repair produces a Dispatch without touching worker
   // terminal accounting, so the sweep that would clear it never sees it.
   const dir = store();
-  record(dir, jobRequest(11), 'ctx_injected');
+  record(dir, jobRequest(11), 'ctx_injected', { kind: 'triage' });
 
   const r = run(['--all', '--close'], {
     dir,
@@ -1337,7 +1413,7 @@ test('two equal malformed cursors are not a quiet pane', () => {
   // A string, a boolean or an object is not a cursor. Two equal ones would read
   // as "this pane did not move", which is how a working session gets closed.
   const dir = store();
-  record(dir, jobRequest(14), 'ctx_bad');
+  record(dir, jobRequest(14), 'ctx_bad', { kind: 'triage' });
   const r = run(['--all', '--close'], {
     dir,
     orca: {
@@ -1565,7 +1641,7 @@ const kept = (slug, answers, { exists = true } = {}) => () => {
 /** A triage row, proven by its own publication and nothing else. */
 const keptTriage = (slug, answers, recordOptions = {}) => () => {
   const dir = store();
-  record(dir, jobRequest(slug), `ctx_t${slug}`, recordOptions);
+  record(dir, jobRequest(slug), `ctx_t${slug}`, { kind: 'triage', ...recordOptions });
   return run(['--all'], {
     dir,
     orca: {
@@ -1649,7 +1725,7 @@ const KEEP_FIXTURES = [
     'a custom pass',
     () => {
       const dir = store();
-      record(dir, jobRequest(30, { job: 'custom' }), 'ctx_custom');
+      record(dir, jobRequest(30, { job: 'custom' }), 'ctx_custom', { kind: 'custom' });
       return run(['--all'], {
         dir,
         orca: { workers: [worker('ctx_custom')], terminals: [terminal('term_ctx_custom')], cursors: { term_ctx_custom: [4, 4] } },
@@ -1661,7 +1737,7 @@ const KEEP_FIXTURES = [
     'a job request that names no recorded repository',
     () => {
       const dir = store();
-      record(dir, 'triage-7', 'ctx_illegal');
+      record(dir, 'triage-7', 'ctx_illegal', { kind: 'triage' });
       return run(['--all'], {
         dir,
         orca: { workers: [worker('ctx_illegal')], terminals: [terminal('term_ctx_illegal')], cursors: { term_ctx_illegal: [4, 4] } },
@@ -1669,10 +1745,21 @@ const KEEP_FIXTURES = [
     },
   ],
   [
+    'a record written before --kind, carrying a job word',
+    () => {
+      const dir = store();
+      record(dir, 'triage-7', 'ctx_untyped');
+      return run(['--all'], {
+        dir,
+        orca: { workers: [worker('ctx_untyped')], terminals: [terminal('term_ctx_untyped')], cursors: { term_ctx_untyped: [4, 4] } },
+      });
+    },
+  ],
+  [
     'a pane nobody can read',
     () => {
       const dir = store();
-      record(dir, jobRequest(24), 'ctx_blind');
+      record(dir, jobRequest(24), 'ctx_blind', { kind: 'triage' });
       return run(['--all'], {
         dir,
         orca: { workers: [worker('ctx_blind')], terminals: [terminal('term_ctx_blind')], cursors: { term_ctx_blind: ['seven', 'seven'] } },
@@ -1816,7 +1903,7 @@ test('a comment is dated against the dispatch, not against the claim', () => {
   // A record claimed at 10:00 whose worker-start ran at 11:00: a 10:30 comment
   // is NOT after the dispatch, however comfortably it follows `createdAt`.
   const dir = store();
-  record(dir, jobRequest(15), 'ctx_late', { createdAt: '2026-08-20T10:00:00.000Z', beganAt: '2026-08-20T11:00:00.000Z' });
+  record(dir, jobRequest(15), 'ctx_late', { createdAt: '2026-08-20T10:00:00.000Z', beganAt: '2026-08-20T11:00:00.000Z', kind: 'triage' });
 
   const r = run(['--all'], {
     dir,

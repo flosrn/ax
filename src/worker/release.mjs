@@ -30,6 +30,19 @@
 //                     pull request — that substitution closed a report nobody
 //                     had read, on the merge of an unrelated branch.
 //   implementation    a MERGED pull request for that branch. Nothing else.
+//
+// WHICH OF THE THREE IS THE KIND ITS DISPATCH RECORDED, never the shape of its
+// name: `--name custom-one-two-2025` and a custom pass of issue 2025 on owner
+// `one` repo `two` are the same bytes, so only the verb that minted the record
+// knows. `--kind` (./start.mjs) writes it, and a record written before that
+// field whose request carries a job word is UNTYPEABLE: read as a job it closed
+// an implementation's pane on somebody else's publication, read as an
+// implementation it asked the parent checkout for a merged PR. Both were
+// measured on #178, so neither reading is available — the row names the missing
+// fact and closes nothing (F-028). A pre-`--kind` request carrying NO job word
+// is still an implementation: the mint grammar is complete, so that is a fact
+// the record establishes rather than a guess about it.
+//
 // An OPEN PR is deliberately NOT proof: that session may still owe its CI loop
 // and its review threads, and closing its pane is how a P1 waiting in a review
 // comment goes unanswered (F-031). Commits with no PR show the work started, not
@@ -705,20 +718,32 @@ function prove(gh, git, { request, kind, issuedAt, worktree, repo, base, dispatc
     }
     return provePublication(gh, { repo, job: named.job, issue: named.issue, pass: named.pass, issuedAt, dispatchId, recordPath });
   }
-  // Records written before `--kind`: a mint of this repository is still a job.
-  // Anything else is implementation — including a job-prefixed `--name`.
-  // A kind-bearing mismatch is refused above rather than guessed.
+  // A RECORD WRITTEN BEFORE `--kind` WHOSE REQUEST CARRIES A JOB WORD CANNOT BE
+  // TYPED, AND BOTH GUESSES WERE MEASURED CLOSING THE WRONG PANE (#178):
+  //   * read as a job, `--name triage-owner-repo-7` is byte-identical to the
+  //     mint of triage pass 1 on owner/repo, so an implementation's pane closed
+  //     on a publication belonging to whoever really ran that pass;
+  //   * read as an implementation, a malformed old job `triage-7` fell through
+  //     to `proveLanded` and asked the PARENT CHECKOUT for a merged PR — the
+  //     substitution this file exists to refuse.
+  // Missing information is not recoverable by choosing the more plausible
+  // history, so the row names the fact it lacks and stops: no proof is asked
+  // of either artifact and no close is offered. `kind` is written at mint now,
+  // so this estate is finite, and its disposition is the operator's after
+  // reading the pane — never a new override.
   const named = parseRequest(request, repo);
-  if (named.job && named.problem === '') {
-    if (named.job === 'custom') {
-      return missing(
-        CUSTOM_UNPROVABLE,
-        readThenSay(dispatchId, `${CUSTOM_UNPROVABLE}, and no pull request of this checkout stands in for reading it`),
-      );
-    }
-    return provePublication(gh, { repo, job: named.job, issue: named.issue, pass: named.pass, issuedAt, dispatchId, recordPath });
-  }
-  return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
+  // The mint grammar is COMPLETE for jobs (`requestFor` in ../triage/draft.mjs):
+  // every job request opens with its job word, so a request carrying none was
+  // never a job. That is a fact this record establishes rather than a reading
+  // of it, and it keeps every pre-`--kind` implementation closeable.
+  if (named.job === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
+  return missing(
+    `cannot establish which proof this owes — the record names no kind, and the request "${request}" carries the job word '${named.job}'`,
+    readThenSay(
+      dispatchId,
+      `${recordPath} was written before --kind, so nothing in it says whether this pane owes a ${named.job} publication or its own merged pull request`,
+    ),
+  );
 }
 
 // ── the mutation ─────────────────────────────────────────────────────────────

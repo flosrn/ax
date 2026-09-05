@@ -93,7 +93,8 @@ export const requestFor = ({ job, repo, issue, pass = 1 }) =>
  * Three shapes, and the third is the one that keeps a mismatch honest:
  *
  *   `{ job: null, problem: '' }` — the request names no triage job. An
- *   implementation request, whose proof is its own branch's merged PR.
+ *   implementation request, whose proof is its own branch's merged PR: the
+ *   grammar above is complete, so a request with no job word never was one.
  *
  *   `{ job, problem: '<why>' }` — it names a job word and is not a legal mint
  *   of this repository. `prove` consults the recorded `kind` before treating
@@ -101,6 +102,10 @@ export const requestFor = ({ job, repo, issue, pass = 1 }) =>
  *   implementation` and never comes here as a job.
  *
  *   `{ job, issue, pass, problem: '' }` — a legal mint of this repository.
+ *
+ * Neither of the last two shapes TYPES a record on its own, and `prove` never
+ * reads them that way: a request carrying a job word and a record carrying no
+ * `kind` is an untypeable pane that closes on nothing (../worker/release.mjs).
  */
 export function parseRequest(request, repo) {
   const text = String(request ?? '');

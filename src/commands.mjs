@@ -154,6 +154,12 @@ export const COMMANDS = [
   custom            nothing automatic — a report, so the operator's word after reading the pane
   implementation    a MERGED pull request for that branch. Nothing else.
 
+Which of the three a pane owes is the KIND ITS DISPATCH RECORDED, never the shape
+of its name. A record written before that field whose request carries a job word
+is untypeable — read as a job it closed an implementation's pane on somebody
+else's publication, read as an implementation it asked this checkout for a merged
+PR — so it closes nothing: read its pane, then --no-proof closes it.
+
 Never proof: an OPEN PR (it may still owe its review threads), commits with no PR,
 an empty diff against the base (squash-safe for minutes, then wrong forever), the
 child's own word, and silence. A pane still emitting is BUSY, not closed.
