@@ -303,18 +303,22 @@ test('an arbitrary later comment and another job’s publication are not this Pa
   );
 });
 
-test('a matching publication beside an unreadable attribution does not close', () => {
-  // The hole a first-match reader leaves: this pass's own comment is on the
-  // issue, AND a second comment carries an ax:publication nothing can read.
-  // Closing on the match would treat the unreadable one as if it were not
-  // there, which is how an ambiguous historical attribution authorizes Release.
+test('a matching publication beside an unreadable sibling still closes', () => {
+  // Ambiguity is of the CANDIDATE comment: two markers in one body, or
+  // duplicate identity keys, make that comment unreadable. A separate
+  // historical comment that cannot be read is not this Pass's artifact and
+  // does not withhold the exact, dated publication that is.
   const root = checkout({ passes: [1] });
   const mine = published(root, ['--issue', '7', '--job', 'triage']);
   const sibling = onIssue('<!-- ax:publication job=triage repo=acme/widgets issue=7 -->\nverdict\n', '2026-08-20T12:00:00.000Z');
   sibling.url = 'https://github.com/acme/widgets/issues/7#issuecomment-2';
   const r = releasing(root, ['--issue', '7', '--job', 'triage'], { comments: [onIssue(mine), sibling] });
-  assert.match(r.out, /KEEP.*attribution nothing can read/);
-  assert.deepEqual(r.closed, [], 'an unreadable sibling authorized a close');
+  assert.match(r.out, /CLOSE.*triage pass 1 publication on #7/);
+  assert.deepEqual(
+    r.closed.map(line => line.includes('ctx_p1')),
+    [true],
+    `a clean publication was withheld by an unrelated malformed comment:\n${r.out}`,
+  );
 });
 
 test('a custom Pass stays KEEP beside a merged pull request, and never asks about one', () => {

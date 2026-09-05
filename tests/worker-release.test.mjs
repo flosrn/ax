@@ -1590,15 +1590,6 @@ const KEEP_FIXTURES = [
     }),
   ],
   [
-    'a matching publication beside an unreadable one',
-    keptTriage('29', {
-      'gh issue view': commentsOf([
-        publication({ issue: 29, createdAt: '2026-08-21T09:00:00.000Z' }),
-        { body: '<!-- ax:publication job=triage repo=owner/repo issue=29 -->\nverdict\n', createdAt: '2026-08-21T10:00:00.000Z' },
-      ]),
-    }),
-  ],
-  [
     'a publication with no readable date',
     keptTriage('28', { 'gh issue view': commentsOf([publication({ issue: 28, createdAt: 'not-a-date' })]) }),
   ],

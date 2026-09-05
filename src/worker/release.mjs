@@ -513,20 +513,23 @@ function provePublication(gh, { repo, job, issue, pass, issuedAt, dispatchId, re
   if (!Array.isArray(body.comments)) return missing(`gh answered no comments array for #${issue}`, rerun(query));
 
   const read = body.comments.map(comment => ({ comment, publication: publicationIn(comment?.body) }));
-  // AN UNREADABLE ATTRIBUTION IS AMBIGUITY, NEVER ABSENCE (F-028), and it is
-  // decided BEFORE any match. A well-formed marker for this pass sitting next
-  // to a second marker nothing can read — in the same comment, or in another
-  // comment on the same issue — would otherwise close on the match and treat
-  // the unreadable one as if it were not there.
-  const ambiguous = read.filter(({ publication }) => publication !== null && publication.ok === false);
-  if (ambiguous.length > 0) {
-    return missing(
-      `${ambiguous.length} ax publication(s) on #${issue} carry an attribution nothing can read`,
-      rerun(['gh', 'issue', 'view', String(issue), '--repo', repo, '--comments'], 'read what those comments attribute themselves to; an unattributable publication authorizes nothing'),
-    );
-  }
   const mine = read.filter(({ publication }) => samePublication(identity, publication));
   if (mine.length === 0) {
+    // AN UNREADABLE ATTRIBUTION IS AMBIGUITY, NEVER ABSENCE (F-028) — of THIS
+    // comment. A second marker in the same body makes `publicationIn` return
+    // ok:false, so that comment is not in `mine`. A *separate* historical
+    // comment that cannot be read does not poison an exact match for this pass:
+    // the criterion says ambiguous attribution never authorizes Release, not
+    // that it withholds one. With no match, though, an unreadable stamp on the
+    // issue is why we cannot say this pass published, and the repair is a
+    // human read rather than a second verdict.
+    const ambiguous = read.filter(({ publication }) => publication !== null && publication.ok === false);
+    if (ambiguous.length > 0) {
+      return missing(
+        `${ambiguous.length} ax publication(s) on #${issue} carry an attribution nothing can read`,
+        rerun(['gh', 'issue', 'view', String(issue), '--repo', repo, '--comments'], 'read what those comments attribute themselves to; an unattributable publication authorizes nothing'),
+      );
+    }
     const others = read.filter(({ publication }) => publication?.ok === true);
     if (others.length > 0) {
       return missing(
