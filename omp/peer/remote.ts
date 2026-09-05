@@ -139,8 +139,21 @@ export function remoteReadCommand({ worktree, path, cap }) {
     // The transport guard: refused bytes never leave the host. The receiver's own
     // containment check is the authority, and both are pinned by tests.
     `case "$f" in "$r"/*) ;; *) printf '${MARK} file-outside\\n'; exit 0 ;; esac`,
+    // The fence is emitted AFTER the read succeeds. A pipeline's status is its
+    // LAST command's, so `head | base64` with a failing `head` still exits 0
+    // and an already-printed fence plus empty payload is an empty Report — a
+    // finding about the worker. `hs` is `head`'s own status: no `||` fallback
+    // that would replace it with printf's 0.
+    `t=\${TMPDIR:-/tmp}/ax-report.$$`,
+    `head -c ${cap + 1} -- "$f" > "$t" 2> /dev/null`,
+    'hs=$?',
+    `if [ "$hs" -ne 0 ]; then rm -f "$t"; printf '${MARK} file-unreadable\\n'; exit 0; fi`,
+    'enc=$(base64 < "$t")',
+    'bs=$?',
+    'rm -f "$t"',
+    `if [ "$bs" -ne 0 ]; then printf '${MARK} file-unreadable\\n'; exit 0; fi`,
     `printf '${MARK} bytes\\n'`,
-    `head -c ${cap + 1} -- "$f" | base64`,
+    'printf \'%s\\n\' "$enc"',
   ].join('\n');
 }
 

@@ -16,7 +16,7 @@
  */
 
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -256,6 +256,27 @@ test('a host without the tools the retrieval needs is a finding about the host',
   expect(got.buf).toBeUndefined();
   expect(String(got.reason)).toContain("'orca@vps' has no");
   expect(String(got.repair)).toContain('base64');
+});
+
+test('a head that is present but fails is a host read failure, not an empty Report', () => {
+  // THE PIPELINE'S LAST STATUS. `command -v head` only proves the tool exists.
+  // If it then fails on open, I/O, or a race, `head | base64` still exits 0
+  // (base64's success on empty stdin) and a `bytes` fence with no payload is
+  // an empty Report — a finding about the worker for a fault on the host.
+  const at = tree('## CRITERIA\n- HEAD-FAIL-SHOULD-NOT-APPEAR\n');
+  const bin = mkdtempSync(join(tmpdir(), 'ax-bin-'));
+  const stub = join(bin, 'head');
+  writeFileSync(stub, '#!/bin/sh\nexit 1\n');
+  chmodSync(stub, 0o755);
+
+  const got = fetch(at, {
+    ssh: (args: string[]) => run('sh', ['-c', `PATH=${bin}:$PATH; ${args[args.length - 1]}`]),
+  }) as Record<string, unknown>;
+
+  expect(got.buf).toBeUndefined();
+  expect(got.absent).toBeUndefined();
+  expect(String(got.reason)).toContain('not readable');
+  expect(JSON.stringify(got)).not.toContain('HEAD-FAIL-SHOULD-NOT-APPEAR');
 });
 
 // ─── the declaration, which is the only thing that says how to reach a host ──
