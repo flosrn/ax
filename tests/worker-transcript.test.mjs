@@ -753,9 +753,18 @@ function shim(home) {
   return { path: dir, orca };
 }
 
-/** The command as printed, run by a POSIX shell that can word-split and expand it. */
+/**
+ * The command as printed, run by a POSIX shell that can word-split and expand it.
+ *
+ * `cwd` is pinned because `bin/ax.mjs` is a delegating entry: it walks up from
+ * the cwd looking for a project that declared an ax pin (../src/delegation.mjs).
+ * Inheriting the runner's cwd would leave WHICH ax answers to the machine this
+ * suite happens to run on, and the caller asserts below that the one the shell
+ * reached is this code.
+ */
 const runInShell = (command, { home, store, path, orca }) =>
   spawnSync('sh', ['-c', command], {
+    cwd: home,
     encoding: 'utf8',
     env: { HOME: home, PATH: `${path}:/usr/bin:/bin`, ORCA_DISPATCH_STORE: store, ORCA_BIN: orca },
   });
@@ -803,6 +812,14 @@ test('#204 the printed repair survives a hostile checkout path and keeps its --s
   // machine's default root, where none of this exists.
   const rootless = runInShell(executable.replace(/ --sessions .*$/, ''), { home, store, path, orca });
   assert.equal(rootless.status, 1, 'dropping the scoped root would have repaired a different question');
+
+  // AND THE BINARY THE SHELL REACHED IS THIS CODE — otherwise the run above
+  // could be satisfied by any ax on the machine and would prove nothing about
+  // this one. The named stderr refusal exists only here (#204): an older ax
+  // exits 1 with two empty streams and fails this line.
+  const reached = runInShell(`ax worker transcript --dispatch-proof ax --sessions '${hostile}'`, { home, store, path, orca });
+  assert.equal(reached.status, 1);
+  assert.match(reached.stderr, /2 session directories/, 'the ax the shell reached is the one under test');
 });
 
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
