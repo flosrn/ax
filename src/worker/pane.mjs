@@ -171,9 +171,10 @@ export function terminalInventory(run, { environment = '' } = {}) {
  * one of the two ends up wrong. The third value is the whole point: a handle
  * missing from a terminal list that omits hosts is UNKNOWN, never dead (F-028),
  * and a caller about to create a rival child must not round that down. What a
- * verb DOES with a verdict stays the verb's own disposition, as this module's
- * header says of every predicate: `gate` maps INCONNU to "down, disclosed" and
- * stays fail-open; `stall` keeps its stricter `paneGone` (see its header).
+ * verb DOES with a verdict stays the verb's own disposition: `gate` refuses on
+ * INCONNU because the act it authorises is irreversible (#192), `settle`
+ * refuses to WRITE a death it cannot prove, and `stall` keeps its stricter
+ * `paneGone` (see each header). None of them may relabel the measurement.
  *
  * BUT OMISSION IS PER HOST, and reading it as global cost a real cleanup.
  * Measured 2026-08-25: one paired remote runtime was out of scope
@@ -279,6 +280,49 @@ export function hostScopes(run, declarations) {
     },
     /** Every host that was asked and could not answer, with what it answered. */
     unaskable: () => [...asked].filter(([, scope]) => scope.ok !== true),
+  };
+}
+
+/**
+ * THE VERDICT FOR ONE RECORDED HANDLE, asking the host that can decide it.
+ *
+ * The composition of the two readers above, and the one every verb that judges
+ * a recorded pane goes through: `ax worker ls` counts and lists with it, and
+ * `ax worker gate` authorises with it (#192). A second composition is how one
+ * of them starts reading an absence as a corpse where the other does not — the
+ * exact divergence #192 was filed on, where the listing asked a record's host
+ * and the gate did not, so the gate rounded every remote absence to "down" and
+ * printed a permission over it.
+ *
+ * EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first,
+ * unscoped list decides a local dispatch, an unknown placement, and any handle
+ * it already carries; a handle it does not carry, whose record names a host, is
+ * put to that host itself. Liveness is a union and death needs a covering
+ * answer, so a transient failure on the ask can never take back a pane this
+ * invocation observed.
+ *
+ * `host` keeps `paneVerdict`'s vocabulary exactly: `''` is a caller asserting
+ * "this record dispatched locally", `undefined` is a caller that has not
+ * established the owner and must keep the conservative answer.
+ */
+export function hostReader(scopes, local) {
+  return {
+    /**
+     * The verdict for ONE recorded handle, and whether the answer behind it came
+     * from the host itself — which is what lets an absence be a corpse rather
+     * than an omission (see paneVerdict).
+     */
+    verdictFor(handle, why, host) {
+      // No handle: nothing a host could answer about. Presence in the first
+      // list: proven alive, and no scope can take that back.
+      if (handle === null || local.byHandle.has(handle) || host === undefined || host === '') {
+        return { verdict: paneVerdict(handle, why, local, { host }), asked: false };
+      }
+      const scope = scopes.scopeFor(host);
+      return { verdict: paneVerdict(handle, why, scope, { host, asked: scope.ok === true }), asked: scope.ok === true };
+    },
+    /** Every host that was asked and could not answer, with what it answered. */
+    unaskable: () => scopes.unaskable(),
   };
 }
 

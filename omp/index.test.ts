@@ -402,7 +402,9 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   // review finding — a rewrite could keep the heading and lose the order).
   expect(role).toMatch(/tracker first/i);
   expect(role).toContain('ax worker gate <task|request>');
-  expect(role).toMatch(/Dispatch only where the\s+gate proves no live child exists/);
+  expect(role).toMatch(/Consume the receipt, never the wish/);
+  expect(role).toMatch(/unknown mutation is `ax worker start --resume/);
+  expect(role).toMatch(/Missing\s+handles and incomplete host coverage are not proofs of death/);
   expect(role).toMatch(/cannot establish.*read to repair, never\s+an empty frontier/s);
   // Overlap arbitration widened to every live pane, not one wave's members.
   expect(role).toMatch(/EVERY live pane/);
