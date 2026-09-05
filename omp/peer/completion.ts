@@ -23,6 +23,17 @@
  * derivation exists to prevent. A reference that contradicts the derived path is
  * therefore a finding about the sender, not an alternative location.
  *
+ * TWO ADDRESS SHAPES, ONE RECORD (#168). A remote worker reports under
+ * `dispatch:<id>`, an address the receiving runtime minted from its own row, and
+ * carries no pane key by contract. A LOCAL supervised worker on the fork build
+ * reports from its own pane — `from_handle: term_…`, a `sender_pane_key`, the
+ * dispatch id in `payload.dispatchId`. Measured 2026-09-05 on the first real
+ * measurement wave: the module keyed on the first shape alone and injected the
+ * second with nothing appended. The payload's id is the sender's word, so it is
+ * accepted only through two proofs this side already holds: the pane key (the
+ * witness) and the record's own recorded pane equal to `from_handle`. Either
+ * proof missing is a finding line, never a derivation.
+ *
  * FOUR DISPOSITIONS, NONE OF THEM A SILENCE. Missing file, contradicted
  * reference, absent reference, worktree on another host: each is a named line on
  * a completion that is still injected in full. A withheld completion would cost
@@ -40,7 +51,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { redactSecrets } from '../../src/redact.mjs';
 import { requestIdOk } from '../../src/worker/record.mjs';
 import { dispatchRecord } from './attribution.ts';
-import { environmentOfDispatch } from './route.ts';
+import { environmentOfDispatch, paneOfDispatch } from './route.ts';
 
 /** Where every implementation Report lives, relative to the child's worktree. */
 export const REPORT_DIR = join('.scratch', 'report');
@@ -251,11 +262,52 @@ export function completionReport(msg, deps = {}) {
     // has no record to derive from, and inventing one is the failure mode the
     // whole derivation exists to avoid.
     if (String(msg?.type ?? '') !== 'worker_done') return '';
-    const dispatched = /^dispatch:(.+)$/.exec(String(msg?.from_handle ?? '').trim());
-    if (dispatched === null) return '';
-    const id = dispatched[1] ?? '';
-    const rec = lookup(id);
-    if (rec === null || rec === undefined) return '';
+    const from = String(msg?.from_handle ?? '').trim();
+    const dispatched = /^dispatch:(.+)$/.exec(from);
+
+    let id;
+    let rec;
+    if (dispatched !== null) {
+      // THE FEDERATED SHAPE: the runtime minted the address from its own
+      // dispatch row and the sender carries no pane key by contract.
+      id = dispatched[1] ?? '';
+      rec = lookup(id);
+      if (rec === null || rec === undefined) return '';
+    } else {
+      // THE WITNESSED SHAPE (#168, measured 2026-09-05 on the fork build): a
+      // local supervised worker reports from its own pane, and the dispatch id
+      // travels in the payload — the sender's word. The record wrote which pane
+      // it dispatched before the dispatch went, and that is what proves the
+      // claim; the pane key is what proves the sender is that pane at all
+      // (Orca nulls it when a sender overrides its identity). A claim that
+      // fails either proof is a finding on the completion, never a derivation
+      // and never a silence — a forged "the slice ended" is the hazard here.
+      const claimed = String(bag(msg?.payload)?.dispatchId ?? '').trim();
+      if (claimed === '') return '';
+      rec = lookup(claimed);
+      if (rec === null || rec === undefined) return '';
+      const witnessed = String(msg?.sender_pane_key ?? '').trim() !== '';
+      if (!witnessed) {
+        return block(null, [
+          `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`) from ${from || 'no handle'}, but the sender is not witnessed — Orca recorded no pane key for it. The Report was NOT derived: a completion without a witness is a claim, not a completion.`,
+          `Repair: read the pane the record names (\`ax worker tail ${rec.request}\`) before acting on this message.`,
+        ]);
+      }
+      const recordedPane = paneOfDispatch(rec.json, claimed);
+      if (recordedPane === '') {
+        return block(null, [
+          `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`), and its record names no pane for that dispatch, so the sender ${from} cannot be cross-checked. The Report was NOT derived.`,
+          `Repair: \`ax worker ls\` for \`${rec.request}\` — a worker-start receipt with no terminal effect is the record's inability, and \`ax worker transcript ${rec.request}\` reads the session directly.`,
+        ]);
+      }
+      if (recordedPane !== from) {
+        return block(null, [
+          `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`), whose record names pane ${recordedPane} — not the sender ${from}. The Report was NOT derived: the claim is not this pane's to make.`,
+          `Repair: read both panes before acting — \`ax worker tail ${rec.request}\` for the recorded one; the sender is a peer, not this dispatch's worker.`,
+        ]);
+      }
+      id = claimed;
+    }
 
     const derived = reportPath(rec.json);
     if (derived.path === undefined) {
