@@ -1446,6 +1446,74 @@ test('a later success in the same delivery does not consume an earlier failed se
   });
 });
 
+test('a deferred later sequence does not make a missing middle one a duplicate', async () => {
+  await withStore(async () => {
+    const seen = new Set<string>();
+    const throwIds = new Set<string>(['m1']);
+    let attempt = 0;
+    const h = harness({
+      recordDelivery,
+      wasInjected: (id) => seen.has(id),
+      rememberInjected: (id) => seen.add(id),
+      peerContent: (msg) => `content of ${String(msg.id)}`,
+      sh: () => '{"ok":true}',
+      spawn: () => {
+        attempt += 1;
+        if (attempt === 1 || attempt === 2) {
+          return fakeChild(
+            JSON.stringify({
+              ok: true,
+              result: {
+                deliveryId: 'd-hole',
+                messages: [
+                  { id: 'm1', type: 'status', payload: JSON.stringify({ seq: 1 }) },
+                  { id: 'm3', type: 'status', payload: JSON.stringify({ seq: 3 }) },
+                ],
+              },
+            }),
+          );
+        }
+        if (attempt === 3) {
+          return fakeChild(
+            JSON.stringify({
+              ok: true,
+              result: {
+                deliveryId: 'd-mid',
+                messages: [{ id: 'm2', type: 'status', payload: JSON.stringify({ seq: 2 }) }],
+              },
+            }),
+          );
+        }
+        return fakeChild(WAIT_FAILED);
+      },
+    });
+    const originalSend = h.pi.sendMessage;
+    h.pi.sendMessage = (msg: Record<string, unknown>, opts?: Record<string, unknown>) => {
+      const details = msg.details;
+      const id =
+        details !== null && typeof details === 'object' && 'messageId' in details
+          ? String(details.messageId)
+          : '';
+      if (throwIds.has(id)) throw new Error('inject exploded');
+      return originalSend(msg, opts);
+    };
+
+    const r = createReceiver(h.deps);
+    r.useTimers(h.timers);
+    r.start(h.pi);
+    await settle();
+    throwIds.clear();
+    h.retries[0].fn();
+    await settle();
+    await settle();
+    r.stop();
+
+    expect(h.sent.filter((s) => String(s.content).includes('content of m1'))).toHaveLength(1);
+    expect(h.sent.filter((s) => String(s.content).includes('content of m2'))).toHaveLength(1);
+    expect(h.sent.filter((s) => String(s.content).includes('content of m3'))).toHaveLength(1);
+  });
+});
+
 test('heartbeat traffic cannot erase an unresolved failure from the bounded store', async () => {
   await withStore(async () => {
     recordDelivery({

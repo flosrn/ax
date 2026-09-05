@@ -298,8 +298,8 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
    * duplicate and ack it without the model ever seeing it.
    */
   const failedSeq = new Map<string, number>();
-  /** Highest seq injected while a failed gap is still open, so filling the gap can catch the watermark up. */
-  const deferredSeq = new Map<string, number>();
+  /** Sequences injected while a failed gap is open. The watermark advances through them only when they are contiguous. */
+  const deferredSeq = new Map<string, Set<number>>();
 
   /**
    * Persist one observation. Swallowed: a store that will not write must not
@@ -323,18 +323,25 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
     if (seq === null) return;
     const failed = failedSeq.get(sender);
     if (failed !== undefined && seq > failed) {
-      const prev = deferredSeq.get(sender);
-      if (prev === undefined || seq > prev) deferredSeq.set(sender, seq);
+      let pending = deferredSeq.get(sender);
+      if (pending === undefined) {
+        pending = new Set<number>();
+        deferredSeq.set(sender, pending);
+      }
+      pending.add(seq);
       return;
     }
     if (failed === seq) failedSeq.delete(sender);
-    let watermark = seq;
-    const deferred = deferredSeq.get(sender);
-    if (deferred !== undefined && deferred > watermark) {
-      watermark = deferred;
-      deferredSeq.delete(sender);
+    lastSeq.set(sender, seq);
+    const pending = deferredSeq.get(sender);
+    if (pending === undefined) return;
+    let next = seq + 1;
+    while (pending.has(next)) {
+      pending.delete(next);
+      lastSeq.set(sender, next);
+      next += 1;
     }
-    lastSeq.set(sender, watermark);
+    if (pending.size === 0) deferredSeq.delete(sender);
   }
 
   function noteFailedSeq(sender: string, seq: number | null): void {
