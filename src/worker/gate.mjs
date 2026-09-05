@@ -206,7 +206,7 @@ function uncertainMutations(store, task) {
         empty = { proven: false, reason: `its phases cannot be read: ${String(unreadable.message ?? unreadable).slice(0, 120)}` };
       }
       if (empty.proven) {
-        setAside.push({ file, ground: 'every recorded phase is an established rejection, with no effects and no residual resources' });
+        setAside.push({ file, ground: `every recorded phase is an established rejection, and ${empty.ground}` });
         continue;
       }
       return {

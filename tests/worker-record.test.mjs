@@ -348,8 +348,13 @@ test('#205: "held no mutation" is the stale-claim proof WITHOUT its Run term —
   const refusal = JSON.stringify({ ok: false, error: { code: 'consumer_fenced', message: 'bound to run_68c96672f718' } });
   const refused = (argv, receiptText = refusal, rest = {}) => closed(receiptText, { exit: 1, argv, ...rest });
 
-  // The measured legacy shape: closed, conclusively refused, empty-handed.
-  assert.deepEqual(heldNoMutation(refused(['orca', 'x', '--run', 'run_theirs'])), { proven: true, reason: '' });
+  // The measured legacy shape: closed, conclusively refused, and proved empty
+  // by the pre-write boundary its `task-create` fence stands on.
+  assert.deepEqual(heldNoMutation(refused(['orca', 'x', '--run', 'run_theirs'])), {
+    proven: true,
+    reason: '',
+    ground: "each was refused before Orca's first write — task-create fenced by consumer_fenced",
+  });
   assert.equal(heldNoMutation(refused(['orca', 'x', '--run', 'run_mine'])).proven, true, "the caller's own Run is still no mutation");
   assert.equal(heldNoMutation(refused(['orca', 'x', '--json'])).proven, true, 'a record naming no Run is still no mutation');
 
@@ -373,6 +378,67 @@ test('#205: "held no mutation" is the stale-claim proof WITHOUT its Run term —
   const mixed = refused(['orca', 'x', '--run', 'run_theirs']);
   phaseBegin(mixed, { name: 'worker-start', identity: 'id-2', argv: ['orca', 'orchestration', 'worker-start'] });
   assert.match(heldNoMutation(mixed).reason, /still open/);
+});
+
+test('#205 repair 1: relatedness needs POSITIVE emptiness — and is strictly stronger than reclaimability', () => {
+  // P1 on PR #209: `?? []` read an ABSENT container as an empty one, so
+  // "created nothing" was concluded from a silent receipt (F-028) in the one
+  // place whose consequence is a re-dispatch. Emptiness is now asserted, by one
+  // of exactly two positive grounds.
+  const phased = (name, receiptText, { exit = 1 } = {}) => {
+    const { path } = claimRecord(store(), 'req-1');
+    initRecord(path, { request: 'req-1', orca: 'orca' });
+    phaseBegin(path, { name, identity: 'id-1', argv: ['orca', 'orchestration', name, '--run', 'run_theirs', '--json'] });
+    phaseEnd(path, 'last', { exit, receiptText });
+    return path;
+  };
+  const quiet = code => JSON.stringify({ ok: false, error: { code, message: 'no runtime here' } });
+
+  // GROUND 1 — the receipt NAMES both containers and both are empty. The code
+  // is irrelevant then: the mutator itself reported creating nothing.
+  const named = phased('anything', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: [], residualResources: [] } }));
+  assert.deepEqual(heldNoMutation(named), { proven: true, reason: '', ground: 'each reports no effects and no residual resources' });
+
+  // GROUND 2 — a refusal Orca's source proves is raised before the mutation's
+  // first write, keyed by PHASE because `consumer_fenced` is not universally
+  // pre-mutation (mailbox delivery and the gate store raise it after writes).
+  assert.equal(heldNoMutation(phased('task-create', quiet('consumer_fenced'))).proven, true);
+  assert.match(
+    heldNoMutation(phased('worker-start', quiet('consumer_fenced'))).reason,
+    /names no effects/,
+    'the same code on a phase nobody read to the write is not proof',
+  );
+
+  // NEITHER GROUND — a silent receipt is unknown, whatever its code.
+  assert.match(heldNoMutation(phased('task-create', quiet('runtime_unavailable'))).reason, /names no effects/);
+  assert.match(
+    heldNoMutation(phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: null, residualResources: [] } }))).reason,
+    /names no effects/,
+    'null is not an empty list',
+  );
+  // A scalar is not a list either, and the two terms divide it: a non-empty one
+  // trips the resource term first (its `length` is not zero), while an EMPTY
+  // string would slip past that and is caught by the strict ground — which is
+  // exactly the hole `?? []` left open.
+  assert.match(
+    heldNoMutation(phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: 'none', residualResources: 'none' } }))).reason,
+    /still reports resources/,
+    'a non-empty scalar is refused as a reported resource',
+  );
+  assert.match(
+    heldNoMutation(phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: '', residualResources: '' } }))).reason,
+    /names no effects/,
+    'an empty scalar is not an empty list',
+  );
+
+  // THE ASYMMETRY, PINNED. `staleClaim` was ratified at the weaker strength on
+  // 2026-08-14 and #205 forbids changing its answers, so the same silent
+  // receipt is still reclaimable while it is NOT proof of unrelatedness. The
+  // stronger proof belongs to the stronger consequence, and the gap is
+  // deliberate rather than accidental.
+  const silent = phased('task-create', quiet('runtime_unavailable'));
+  assert.deepEqual(staleClaim(silent, 'run_mine'), { stale: true, foreignRun: 'run_theirs' }, "staleClaim's agreed answer is untouched");
+  assert.equal(heldNoMutation(silent).proven, false, 'and relatedness refuses the very same record');
 });
 
 test('attemptNew settles the current attempt and opens the next', () => {

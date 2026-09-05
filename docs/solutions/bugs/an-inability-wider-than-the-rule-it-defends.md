@@ -53,14 +53,36 @@ different question and were never available on their own.
 ## Rule
 
 An inability covers what cannot be ESTABLISHED, and nothing wider. "This record
-could not have created a task" is an established fact — at least one phase,
-every phase of every attempt closed, every phase a conclusive `ok: false`, no
-effects, no residual resources — so a record proved that way is unrelated to
-every task and the scan continues past it, disclosed by name and by its ground.
-The proposition lives in `record.mjs` as `heldNoMutation` and is shared with
-`staleClaim` rather than copied: two readings of "this record touched nothing"
-is how one of them starts reclaiming what the other refuses. Foreignness of the
-recorded Run stays out of it — that term guards takeover, not relatedness.
+could not have created a task" is an established fact — but only when the
+emptiness is ASSERTED rather than inferred from a silent receipt. The first cut
+of this fix read `(result.effects ?? []).length > 0`, which turns an ABSENT
+container into an empty list: F-028 in the one place whose consequence is a
+re-dispatch, since a failed receipt can still describe a partial mutation
+(P1 on PR #209). Two positive grounds, per phase, and nothing else:
+
+- the receipt NAMES both `effects` and `residualResources` and both are empty
+  arrays — the mutator itself reporting it created nothing; or
+- the refusal is one Orca's own source proves is raised before that phase's
+  first write. `PRE_WRITE_REFUSALS` in `record.mjs` holds exactly one row,
+  `task-create` / `consumer_fenced`, read from the fork checkout: the
+  `taskCreate` handler resolves the Run scope before `db.createTask`, and the
+  fence throws in between. Keyed by PHASE, never by code alone — Orca raises
+  `consumer_fenced` from the mailbox delivery paths and the decision-gate store
+  too, and those are not pre-write. A new row means reading that handler to its
+  first write in the same commit.
+
+Null, a scalar or an absent container is UNKNOWN under both. Observed resources
+refuse first, so the table can never overrule a receipt that names one.
+
+The proposition lives in `record.mjs` as `heldNoMutation`, layered over the
+`noMutation` terms `staleClaim` shares: relatedness is STRICTLY STRONGER than
+reclaimability, and the asymmetry is deliberate and pinned by a test. The same
+silent receipt is still reclaimable — that reader was ratified at the weaker
+strength on 2026-08-14 — while it is not proof of unrelatedness, because the
+consequences differ. Foreignness of the recorded Run stays out of it entirely:
+that term guards takeover, not relatedness. Whether reclaim deserves the same
+tightening is unsettled, and tightening it silently to solve a gate problem
+would be the trade this entry exists to refuse.
 
 Everything not positively proven empty still refuses at exit 3, and a refusal
 caused by ONE record is repaired at that record with READS: its own path, plus
