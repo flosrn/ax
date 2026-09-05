@@ -52,7 +52,7 @@ import {
 } from './attribution.ts';
 import { environmentOfDispatch, resolveChildRoute } from './route.ts';
 // The Report a worker's completion carries: derived from the dispatch record,
-// read under the worktree that record names, never from `payload.reportPath`.
+// read on the host that record names (here, or over ssh), never from `payload.reportPath`.
 import { completionReport } from './completion.ts';
 
 // Addressing, lineage and the registry, split by concern under this package.

@@ -35,9 +35,21 @@
  * proof missing is a finding line, never a derivation.
  *
  * FOUR DISPOSITIONS, NONE OF THEM A SILENCE. Missing file, contradicted
- * reference, absent reference, worktree on another host: each is a named line on
- * a completion that is still injected in full. A withheld completion would cost
- * the orchestrator the one message that says the slice ended.
+ * reference, absent reference, evidence that could not be established: each is a
+ * named line on a completion that is still injected in full. A withheld
+ * completion would cost the orchestrator the one message that says the slice
+ * ended.
+ *
+ * A WORKTREE ON ANOTHER HOST IS AN ADDRESS, NOT A DEAD END (#193). A dispatch
+ * placed with `--on <env>` writes its Report over there, and this module used to
+ * stop at that fact. It now retrieves it through `./remote.ts` — the recorded
+ * environment, the recorded worktree and the recorded request, over the ssh
+ * boundary the project's own `dispatch.hosts` declaration describes. Two rules
+ * hold whatever that retrieval answers: the owning host resolves its own
+ * realpaths and containment is proved on them before a byte is accepted, and
+ * NOTHING falls back to this machine. The same derived path usually exists here,
+ * holding another slice's file, so a failed retrieval is the named inability it
+ * always was — never a read of the impostor next door.
  *
  * TWO BOUNDS, AND THEY ARE NOT THE SAME BOUND (#180). `REPORT_CAP_BYTES` caps
  * what is INJECTED, after redaction. It never capped what was READ: the receiver
@@ -71,6 +83,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { redactSecrets } from '../../src/redact.mjs';
 import { requestIdOk } from '../../src/worker/record.mjs';
 import { dispatchRecord } from './attribution.ts';
+import { fetchRemoteReport } from './remote.ts';
 import { environmentOfDispatch, paneOfDispatch } from './route.ts';
 
 /** Where every implementation Report lives, relative to the child's worktree. */
@@ -201,14 +214,9 @@ function bag(payload) {
  * answers "is there more?" from the read itself — a `stat` would answer it from a
  * different observation, and a file being appended to makes the two disagree.
  *
- * THE LAST NEWLINE IS THE CUT, AND IT IS MADE ON THE BYTES. The bound falls where
- * the file put it: mid-line, mid-character, mid-token. 0x0A never occurs inside a
- * UTF-8 sequence, so the last newline in the window is at once a codepoint
- * boundary and a boundary no secret shape crosses. Decoding first would already
- * have turned a split character into U+FFFD; cutting later would leave a `dcap_`
- * head whose tail is past the bound. An empty `text` WITH `truncated` is a file
- * whose first line outruns the window — no safe prefix exists, and the caller
- * names that instead of showing the fragment.
+ * WHERE THE CUT IS MADE is `boundWindow`'s, shared with retrieved evidence. What
+ * stays here is the descriptor: opened once, filled in a loop, closed on both
+ * exits.
  */
 function boundedRead(path, cap) {
   const fd = openSync(path, 'r');
@@ -222,13 +230,50 @@ function boundedRead(path, cap) {
       if (n === 0) break;
       read += n;
     }
-    const truncated = read > cap;
-    if (!truncated) return { text: buf.toString('utf8', 0, read), truncated };
-    const nl = buf.lastIndexOf(0x0a, read - 1);
-    return { text: nl <= 0 ? '' : buf.toString('utf8', 0, nl), truncated };
+    return boundWindow(buf, read, cap);
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * `{ text, truncated }` — the window's own rule, applied to bytes from a local
+ * descriptor or from the host that owns them. ONE rule, because a second one for
+ * retrieved evidence is how a remote read comes to be bounded differently from a
+ * local one.
+ *
+ * `read` is how many of `buf`'s bytes are real. More than `cap` means the source
+ * ran past the bound, and the last newline inside the window is the cut: 0x0A
+ * never occurs inside a UTF-8 sequence, so it is at once a line boundary, a
+ * codepoint boundary and a boundary no secret shape crosses. An empty `text`
+ * WITH `truncated` is a source whose first line outruns the window — no safe
+ * prefix exists, and the caller names that instead of showing the fragment.
+ */
+function boundWindow(buf, read, cap) {
+  // The window is cap + 1, even when the source handed over more: a retrieved
+  // buffer is only as trustworthy as the host that produced it, and decoding
+  // past the bound is the cost #180 already refused on a local file.
+  const available = Math.min(read, buf.length);
+  const truncated = available > cap;
+  const window = truncated ? cap + 1 : available;
+  if (!truncated) return { text: buf.toString('utf8', 0, window), truncated };
+  const nl = buf.lastIndexOf(0x0a, window - 1);
+  return { text: nl <= 0 ? '' : buf.toString('utf8', 0, nl), truncated };
+}
+
+/**
+ * Whether `fileReal` is UNDER `dirReal`, both already resolved, with the
+ * separator named by the caller: `sep` for a path this runtime resolved, `/` for
+ * one a POSIX host resolved and reported. A prefix test on text would pass
+ * `/wt-other/…` against `/wt`, which is why the separator is part of the fence.
+ * An empty side is not a location (F-028): `''` plus `/` is `/`, which every
+ * absolute path starts with, so the empty case is a refusal rather than a
+ * containment of everything.
+ */
+function contained(dirReal, fileReal, separator) {
+  if (dirReal === '' || fileReal === '') return false;
+  const fence = dirReal.endsWith(separator) ? dirReal : `${dirReal}${separator}`;
+  return fileReal.startsWith(fence);
 }
 
 /**
@@ -255,19 +300,19 @@ function boundedRead(path, cap) {
  * (`dcap_x`, six bytes, becomes fifteen), which is why the cap is enforced below
  * on the redacted bytes and never on the raw window alone.
  */
-function bounded(text, cap, path, truncated) {
+function bounded(text, cap, path, truncated, where) {
   const clean = redactSecrets(text);
   const criteria = criteriaSpan(clean, truncated);
   if (criteria.open === true) {
     return {
       reason: `the Report's \`## CRITERIA\` section runs past the ${cap}-byte input bound — its end was never read, so no complete criteria list can be injected and nothing partial stands in for it`,
-      repair: `Repair: read ${path} — the criteria are there in full, and this block would only have shown the part that fit the bound.`,
+      repair: `Repair: read ${path} ${where} — the criteria are there in full, and this block would only have shown the part that fit the bound.`,
     };
   }
   if (criteria.bytes !== undefined && criteria.bytes > cap) {
     return {
       reason: `the Report's \`## CRITERIA\` section alone is ${criteria.bytes} bytes, past the ${cap}-byte cap, so no complete criteria list can be injected and nothing partial stands in for it`,
-      repair: `Repair: read ${path} — the criteria are there in full, and this block would only have shown part of them.`,
+      repair: `Repair: read ${path} ${where} — the criteria are there in full, and this block would only have shown part of them.`,
     };
   }
 
@@ -301,7 +346,7 @@ function bounded(text, cap, path, truncated) {
   if (cut <= 0) {
     return {
       reason: `the Report's first ${cap} redacted bytes hold no line boundary, so no safe prefix of it can be injected`,
-      repair: `Repair: read ${path} — a cut inside that line could split a character or a token, and the cap is not a quota to fill.`,
+      repair: `Repair: read ${path} ${where} — a cut inside that line could split a character or a token, and the cap is not a quota to fill.`,
     };
   }
   return { body: `${head.slice(0, cut)}\n--- Report ${disclosure} — ${trailer}` };
@@ -351,16 +396,55 @@ function block(path, lines, body = '') {
 }
 
 /**
+ * The block a window of Report bytes earns, whatever host they came off: the
+ * empty cases named apart, then the cap, the redaction and the criteria rules.
+ *
+ * ONE emitter for local and retrieved evidence. The alternative is a second copy
+ * of every disposition below, and the wordings that decide a merge gate are
+ * exactly the wordings two copies drift on — the same argument the Report-path
+ * twin pays a parity test for.
+ */
+function injected(input, cap, path, lines, where) {
+  if (input.text.trim() === '') {
+    // TWO WAYS TO HAVE NOTHING TO SHOW, and one of them is not an absence: a
+    // truncated window with no complete line inside it came off a file that has
+    // bytes, so calling it empty aims the repair at a worker who wrote one.
+    if (input.truncated) {
+      lines.push(
+        `FINDING: the Report ran past the ${cap}-byte input bound with no complete line inside it, so nothing from it can be shown safely — a cut mid-line could split a UTF-8 character or a secret.`,
+      );
+      lines.push(
+        `Repair: read ${path} ${where} — the file is not empty; its first line is longer than the bound this block reads.`,
+      );
+    } else {
+      lines.push('FINDING: the Report at this path is empty.');
+      lines.push(REPAIR);
+    }
+    return block(path, lines);
+  }
+
+  const shown = bounded(input.text, cap, path, input.truncated, where);
+  if (shown.body === undefined) {
+    lines.push(`FINDING: ${shown.reason}.`);
+    lines.push(shown.repair);
+    return block(path, lines);
+  }
+  return block(path, lines, shown.body);
+}
+
+/**
  * The Report block for a dispatched worker's completion, or `''` for a message
  * that is not one.
  *
- * `record` and `environmentOf` are named options with real defaults: the
- * dispatch store and the recorded argv are host answers, and a test must be able
- * to hand over both without a store on disk.
+ * `record`, `environmentOf` and `retrieve` are named options with real defaults:
+ * the dispatch store, the recorded argv and another host's filesystem are all
+ * machine answers, and a test must be able to hand over every one of them
+ * without a store on disk and without a network.
  */
 export function completionReport(msg, deps = {}) {
   const lookup = deps.record ?? dispatchRecord;
   const environmentOf = deps.environmentOf ?? environmentOfDispatch;
+  const retrieve = deps.retrieve ?? fetchRemoteReport;
   const cap = deps.cap ?? REPORT_CAP_BYTES;
 
   try {
@@ -435,17 +519,61 @@ export function completionReport(msg, deps = {}) {
       lines.push('NOTE: the completion named no reportPath; this Report was derived from the dispatch record.');
     }
 
-    // THE HOST CHECK COMES BEFORE THE FILESYSTEM. The same path exists on this
-    // machine often enough — every worktree tree is laid out identically — and
-    // reading it would answer with another slice's file. `--on <env>` on the
-    // recorded argv is this runtime's existing evidence for "that worktree is
-    // elsewhere" (`route.ts`).
+    // THE HOST DECIDES WHERE THE FILE IS, AND IT IS NOT NEGOTIABLE. The same
+    // path exists on this machine often enough — every worktree tree is laid out
+    // identically — and reading it would answer with another slice's file.
+    // `--on <env>` on the recorded argv is this runtime's evidence for "that
+    // worktree is elsewhere" (`route.ts`), and `./remote.ts` is what goes and
+    // gets it from there. No local fallback exists on this path: a retrieval that
+    // cannot be established is the named inability it always was, never a read of
+    // the impostor next door.
     const environment = String(environmentOf(rec.json, id) ?? '');
     if (environment !== '') {
+      const where = `on '${environment}'`;
+      const got = retrieve({ env: environment, worktree: derived.worktree, path: derived.path, cap });
+      if (got.absent === true) {
+        lines.push(`FINDING: no Report at this path ${where} — the worker completed without writing one there.`);
+        lines.push(REPAIR);
+        return block(derived.path, lines);
+      }
+      if (got.buf === undefined) {
+        lines.push(
+          `FINDING: Report inaccessible from this host — this dispatch ran on '${environment}', so the recorded worktree and its Report are on that host, and ${got.reason}.`,
+        );
+        lines.push(got.repair ?? REPAIR);
+        return block(derived.path, lines);
+      }
+      // THE HOST RESOLVED, THIS SIDE DECIDES. Only that host can resolve its own
+      // symlinks, so it reports the two real paths; the containment rule is the
+      // one below, on a POSIX separator because a POSIX shell answered. The host
+      // refuses to send an escaping path at all, and this refuses to accept one —
+      // a boundary that returns bytes anyway never turns them into evidence.
+      if (!contained(String(got.worktreeReal ?? ''), String(got.fileReal ?? ''), '/')) {
+        lines.push(
+          `FINDING: the derived path resolves outside the recorded worktree ${where} — ${got.fileReal} is not under ${got.worktreeReal}. It was NOT read.`,
+        );
+        lines.push(
+          'Repair: inspect that link before trusting anything from this slice; the Report must be a file under the worktree the record names, and a path leading out of it was not written by the rule.',
+        );
+        return block(derived.path, lines);
+      }
+      // A retrieval that honours the bound sends at most cap + 1. More than that
+      // is the same protocol break `./remote.ts` refuses on the wire: accepting
+      // a prefix would let an incomplete `## CRITERIA` look complete. The clip
+      // in `boundWindow` is defense in depth, not authorization.
+      if (got.buf.length > cap + 1) {
+        lines.push(
+          `FINDING: Report inaccessible from this host — this dispatch ran on '${environment}', so the recorded worktree and its Report are on that host, and the retrieval returned ${got.buf.length} bytes, past the ${cap}-byte bound this receiver reads.`,
+        );
+        lines.push(
+          `Repair: read ${derived.path} ${where} — a retrieval that honours the bound sends at most ${cap + 1} bytes, and an answer past that bound is not a Report this side will decode.`,
+        );
+        return block(derived.path, lines);
+      }
       lines.push(
-        `FINDING: Report inaccessible from this host — this dispatch ran on '${environment}', so the recorded worktree and its Report are on that host. No repair from here: \`ax worker transcript\` reads a session file that is over there too.`,
+        `NOTE: retrieved from '${environment}', the host this dispatch ran on, where ${got.fileReal} resolves under ${got.worktreeReal}.`,
       );
-      return block(derived.path, lines);
+      return injected(boundWindow(got.buf, got.buf.length, cap), cap, derived.path, lines, where);
     }
 
     // RESOLVE + REALPATH, both sides. The derived path is built from a record,
@@ -507,31 +635,7 @@ export function completionReport(msg, deps = {}) {
       lines.push(`Repair: read ${derived.path} on this host; the file resolved, so the fault is in reading it.`);
       return block(derived.path, lines);
     }
-    if (input.text.trim() === '') {
-      // TWO WAYS TO HAVE NOTHING TO SHOW, and one of them is not an absence: a
-      // truncated window with no complete line inside it came off a file that has
-      // bytes, so calling it empty aims the repair at a worker who wrote one.
-      if (input.truncated) {
-        lines.push(
-          `FINDING: the Report ran past the ${cap}-byte input bound with no complete line inside it, so nothing from it can be shown safely — a cut mid-line could split a UTF-8 character or a secret.`,
-        );
-        lines.push(
-          `Repair: read ${derived.path} on this host — the file is not empty; its first line is longer than the bound this block reads.`,
-        );
-      } else {
-        lines.push('FINDING: the Report at this path is empty.');
-        lines.push(REPAIR);
-      }
-      return block(derived.path, lines);
-    }
-
-    const shown = bounded(input.text, cap, derived.path, input.truncated);
-    if (shown.body === undefined) {
-      lines.push(`FINDING: ${shown.reason}.`);
-      lines.push(shown.repair);
-      return block(derived.path, lines);
-    }
-    return block(derived.path, lines, shown.body);
+    return injected(input, cap, derived.path, lines, 'on this host');
   } catch (err) {
     // A fault in THIS receiver, not in the completion above it. Saying so is the
     // repair: the reader must not go looking for a worker that misbehaved.

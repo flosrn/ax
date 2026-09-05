@@ -146,19 +146,25 @@ End your turn after dispatch. Completion and questions arrive on their own; neve
 poll or start a second consuming wait loop. On each wake, drain the whole inbox —
 process every queued completion and question before ending the turn, or a parked
 report stalls its ticket for a full cycle. Read the child's evidence, not merely
-its completion label — and read the Report it arrives with first: the file its
-`--report-path` names, whose `## CRITERIA` section carries every acceptance
-criterion the ticket named with the evidence observed for it. The completion's
-body is the Summary; three sentences never stand in for that file. A missing
-Report, a criterion with no observed evidence, or one marked `NOT MET`, is the
-worker's work — but none of them short-circuits the gate. Run the gate as a
-detector (no `--merge`) in the same wake, so every ground still runs, then send
-the pane ONE message carrying both: each criterion missing or unmet, and each
-ground the gate refused. That is one repair round, counted once under the two
-bounds below; routing the criteria first and the grounds on the next wake would
-spend the second bound on a defect the gate could already name. The gate reads
-grounds, the review bot reads the diff; the Report is the only place the diff
-meets what was asked. A Report is evidence to judge, not self-certified success.
+its completion label — and read the Report it arrives with first: the block the
+receiver appends, derived from the dispatch record (`docs/adr/0002`), whose
+`## CRITERIA` section carries every acceptance criterion the ticket named with
+the evidence observed for it. `--report-path` is a reference for Orca and for a
+human; nothing here opens that path — a worker-chosen file is not the criteria,
+and a remote worker's Report is retrieved from the host the record names, never
+from a same-named local file. A FINDING on that block (missing file, failed
+retrieval, escaped realpath) is the evidence that could not be established; a
+NOTE that it was retrieved names the host and the two realpaths the proof used.
+The completion's body is the Summary; three sentences never stand in for that
+block. A missing Report, a criterion with no observed evidence, or one marked
+`NOT MET`, is the worker's work — but none of them short-circuits the gate. Run
+the gate as a detector (no `--merge`) in the same wake, so every ground still
+runs, then send the pane ONE message carrying both: each criterion missing or
+unmet, and each ground the gate refused. That is one repair round, counted once
+under the two bounds below; routing the criteria first and the grounds on the
+next wake would spend the second bound on a defect the gate could already name.
+The gate reads grounds, the review bot reads the diff; the Report is the only
+place the diff meets what was asked. A Report is evidence to judge, not self-certified success.
 
 Workers own their procedure's implementation, reviews and repairs; you do not
 repeat them. Delegate verification only when the integrated result is unproven

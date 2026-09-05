@@ -27,8 +27,12 @@ location is derived from the dispatch record — `<worktree>/.scratch/report/<re
   human. Nothing in ax ever opens `payload.reportPath`: the receiver opens the derived path only,
   after `resolve` + `realpath` proves it sits under the worktree the record names. A reference that
   contradicts the derived path is a named finding; an absent reference with the file present is a
-  note. A worktree on another host is cannot-establish — "Report inaccessible from this host" —
-  and `ax worker transcript` is no repair there, the session file being on that host too.
+  note. A worktree on another host is RETRIEVED from that host: the recorded `--on <env>`, the
+  project's `dispatch.hosts.<env>.ssh` declaration and the record's own worktree are the address,
+  the owning host resolves its own realpaths and the receiver proves containment on them before
+  accepting a byte. Missing declaration, failed transport or unproven evidence keeps the existing
+  "Report inaccessible from this host" finding with a repair; no same-named local worktree and no
+  neighbouring local Report is ever read in its place.
 - The receiver injects the Report after the Summary, byte-capped and redacted, and a missing Report
   as a named finding on the completion it still injects — never a withheld completion, never an
   empty pass. A `failed` outcome writes a Report too, with `NOT MET` lines.
