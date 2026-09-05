@@ -20,7 +20,15 @@
  * ONE CONSUMER, EVER. `check --wait` consumes a delivery, so a second receiver
  * on the same Run would race this one and swallow its messages. `orca-peer.ts`
  * constructs exactly one.
+ *
+ * DIAGNOSTICS ARE WRITTEN HERE, READ ELSEWHERE (#194). Sequence gaps, filters,
+ * refused injections, missing reply routes and waiting acks are persisted at
+ * the point this loop knows them (`./diagnostics.ts`). An unreadable Report is
+ * recorded by `./completion.ts`, which is the point that knows that. The loop
+ * never branches on whether the write succeeded.
  */
+
+import type { DeliveryDiagnostic } from './diagnostics.ts';
 
 // `check --wait` holds the socket for this long, then returns an empty
 // delivery. Long enough that the loop is not a poll; short enough that a dead
@@ -118,6 +126,12 @@ export interface ReceiveDeps {
    * machine's dispatch store and its filesystem (`./completion.ts`).
    */
   completionReport?: (msg: Record<string, unknown>) => string;
+  /**
+   * Persist one delivery diagnostic. Optional: a host that cannot write still
+   * injects, and a test that does not care about the store passes nothing.
+   * The loop NEVER branches on whether the write succeeded.
+   */
+  recordDelivery?: (entry: DeliveryDiagnostic) => void;
 }
 
 /** The host `ctx` handed to `session_start`, of which only timers are used. */
@@ -278,16 +292,26 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
    */
   const lastSeq = new Map<string, number>();
 
-  function checkSequence(sender: string, seq: number | null): SequenceVerdict {
+  /**
+   * Persist one observation. Swallowed: a store that will not write must not
+   * change what the loop does with the message it is about.
+   */
+  function diagnose(entry: DeliveryDiagnostic): void {
+    try {
+      deps.recordDelivery?.(entry);
+    } catch {}
+  }
+
+  function inspectSequence(sender: string, seq: number | null): SequenceVerdict {
     if (seq === null) return { seq: null, lost: 0, expected: null, repeat: false };
     const last = lastSeq.get(sender);
-    if (last === undefined) {
-      lastSeq.set(sender, seq);
-      return { seq, lost: 0, expected: null, repeat: false };
-    }
+    if (last === undefined) return { seq, lost: 0, expected: null, repeat: false };
     if (seq <= last) return { seq, lost: 0, expected: last + 1, repeat: true };
-    lastSeq.set(sender, seq);
     return { seq, lost: seq - last - 1, expected: last + 1, repeat: false };
+  }
+
+  function acceptSequence(sender: string, seq: number | null): void {
+    if (seq !== null) lastSeq.set(sender, seq);
   }
 
   function scheduleRetry(pi: unknown): void {
@@ -361,6 +385,9 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
           ? payload.result.messages
           : [];
         deps.note(`delivery: ${messages.length} message(s)`);
+        const deliveryId = String(
+          payload.result?.deliveryId ?? payload.result?.delivery_id ?? '',
+        );
         // Two failure modes live here, and they pull in opposite directions:
         // acking a delivery whose injection threw consumes that message forever
         // without the model ever seeing it, while NOT acking replays the whole
@@ -370,7 +397,15 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
         for (const msg of messages) {
           try {
             // Group traffic (@all/@idle/@worktree:…) is recorded, never injected.
-            if (String(msg.to_handle ?? '').startsWith('@')) continue;
+            if (String(msg.to_handle ?? '').startsWith('@')) {
+              diagnose({
+                reason: 'filtered',
+                filter: 'group',
+                messageId: String(msg.id ?? '') || undefined,
+                deliveryId: deliveryId || undefined,
+              });
+              continue;
+            }
             // Heartbeats are liveness telemetry from orchestrated dispatches
             // (the injected preamble sends `alive`, empty body, but the payload
             // carries `phase`: investigating → implementing → reviewing). They
@@ -386,12 +421,21 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               try {
                 const hb = msg.payload;
                 const bag = typeof hb === 'string' ? deps.parse(hb) : hb;
-                phase = String(
-                  (bag as Record<string, unknown> | null)?.phase ?? '',
-                );
+                if (bag !== null && typeof bag === 'object' && 'phase' in bag) {
+                  phase = String(bag.phase ?? '');
+                }
               } catch {}
+              const who = deps.senderIdentity(msg);
+              diagnose({
+                reason: 'filtered',
+                filter: 'heartbeat',
+                peer: who.name,
+                messageId: hbId || undefined,
+                deliveryId: deliveryId || undefined,
+                detail: phase ? `phase: ${phase}` : undefined,
+              });
               deps.note(
-                `heartbeat from ${deps.senderIdentity(msg).name}${phase ? ` — phase: ${phase}` : ''} (consumed, not injected)`,
+                `heartbeat from ${who.name}${phase ? ` — phase: ${phase}` : ''} (consumed, not injected)`,
               );
               continue;
             }
@@ -421,6 +465,14 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 if (!origin.attributed) {
                   if (fwId) deps.rememberInjected(fwId);
                   deps.note(`forward REFUSED: unattributed sender asked to relay to ${forwardTo}`);
+                  diagnose({
+                    reason: 'filtered',
+                    filter: 'forward-unattributed',
+                    peer: origin.name,
+                    messageId: fwId || undefined,
+                    deliveryId: deliveryId || undefined,
+                    detail: `asked to relay to ${forwardTo}`,
+                  });
                   continue;
                 }
                 // A worker we started is NAMED, not authorised. Only a
@@ -428,11 +480,26 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 if (origin.kind === 'dispatch') {
                   if (fwId) deps.rememberInjected(fwId);
                   deps.note(`forward REFUSED: dispatch sender ${origin.name} is named, not pane-witnessed — no borrowed authority`);
+                  diagnose({
+                    reason: 'filtered',
+                    filter: 'forward-dispatch',
+                    peer: origin.name,
+                    messageId: fwId || undefined,
+                    deliveryId: deliveryId || undefined,
+                  });
                   continue;
                 }
                 if (!RUN_ADDRESS.test(forwardTo)) {
                   if (fwId) deps.rememberInjected(fwId);
                   deps.note(`forward REFUSED: malformed target '${forwardTo}'`);
+                  diagnose({
+                    reason: 'filtered',
+                    filter: 'forward-malformed',
+                    peer: origin.name,
+                    messageId: fwId || undefined,
+                    deliveryId: deliveryId || undefined,
+                    detail: `malformed target '${forwardTo}'`,
+                  });
                   continue;
                 }
                 try {
@@ -469,14 +536,37 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                   const receipt = deps.parse(relayOut) as { ok?: boolean } | null;
                   if (exitCode !== 0 || receipt?.ok !== true) {
                     allInjected = false;
-                    deps.note(`forward relay failed: ${relayErr.trim() || relayOut.trim() || `exit ${exitCode}`}`);
+                    const detail = relayErr.trim() || relayOut.trim() || `exit ${exitCode}`;
+                    deps.note(`forward relay failed: ${detail}`);
+                    diagnose({
+                      reason: 'injection-refused',
+                      peer: origin.name,
+                      messageId: fwId || undefined,
+                      deliveryId: deliveryId || undefined,
+                      detail,
+                    });
                   } else {
                     if (fwId) deps.rememberInjected(fwId);
                     deps.note(`relayed ${origin.name} → ${String(fwBag?.forwardToName ?? forwardTo)} (sibling forward)`);
+                    diagnose({
+                      reason: 'filtered',
+                      filter: 'forward',
+                      peer: origin.name,
+                      messageId: fwId || undefined,
+                      deliveryId: deliveryId || undefined,
+                      detail: `relayed to ${forwardTo}`,
+                    });
                   }
                 } catch (err) {
                   allInjected = false;
                   deps.note(`forward relay failed: ${err}`);
+                  diagnose({
+                    reason: 'injection-refused',
+                    peer: origin.name,
+                    messageId: fwId || undefined,
+                    deliveryId: deliveryId || undefined,
+                    detail: String(err),
+                  });
                 }
                 continue;
               }
@@ -529,6 +619,13 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 );
               } else {
                 deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
+                diagnose({
+                  reason: 'filtered',
+                  filter: 'self-echo',
+                  peer: who.name,
+                  messageId: msgId || undefined,
+                  deliveryId: deliveryId || undefined,
+                });
                 continue;
               }
             }
@@ -603,18 +700,25 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             }
 
             if (msgId && deps.wasInjected(msgId)) continue; // replayed, already seen
-
             // SEQUENCE GAP. Checked here and not earlier, so it is evaluated
             // exactly once per message the model is about to see: an id-deduped
             // replay must not be counted twice, and a message that was dropped
             // above (self-send, heartbeat, relay) carries no sequence of ours.
-            const verdict = checkSequence(who.name, sequenceOf(msgPayload));
+            const verdict = inspectSequence(who.name, sequenceOf(msgPayload));
             if (verdict.repeat) {
               // A duplicate the id dedup could not catch — same number, new id.
               // Saying so beats injecting the same words twice.
               deps.note(
                 `duplicate sequence ${verdict.seq} from ${who.name} — not injecting twice`,
               );
+              diagnose({
+                reason: 'filtered',
+                filter: 'duplicate-sequence',
+                peer: who.name,
+                messageId: msgId || undefined,
+                deliveryId: deliveryId || undefined,
+                sequence: verdict.seq ?? undefined,
+              });
               if (msgId) deps.rememberInjected(msgId);
               continue;
             }
@@ -671,6 +775,31 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               },
               { triggerTurn: true },
             );
+            acceptSequence(who.name, verdict.seq);
+            if (verdict.lost > 0) {
+              diagnose({
+                reason: 'sequence-gap',
+                peer: who.name,
+                messageId: msgId || undefined,
+                deliveryId: deliveryId || undefined,
+                sequence: verdict.seq ?? undefined,
+                expected: verdict.expected ?? undefined,
+                lost: verdict.lost,
+              });
+            }
+            if (!answerable) {
+              diagnose({
+                reason: 'no-reply-route',
+                peer: who.name,
+                messageId: msgId || undefined,
+                deliveryId: deliveryId || undefined,
+                detail: selfOriginAlert
+                  ? 'stall-watcher alert under this session handle'
+                  : who.kind === 'dispatch'
+                    ? 'no unique derived route'
+                    : 'it stated none and its pane publishes none',
+              });
+            }
             if (msgId) deps.rememberInjected(msgId);
             deps.note(
               `injected from ${who.name}${who.model ? ` (${who.model})` : ''}`,
@@ -678,11 +807,14 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
           } catch (err) {
             allInjected = false;
             deps.note(`inject failed: ${err}`);
+            diagnose({
+              reason: 'injection-refused',
+              messageId: String(msg.id ?? '') || undefined,
+              deliveryId: deliveryId || undefined,
+              detail: String(err),
+            });
           }
         }
-
-        const deliveryId =
-          payload.result?.deliveryId ?? payload.result?.delivery_id;
 
         // Ack only once every directed message reached the model. A retained
         // delivery is replayed by Orca, and the injected-id set keeps that
@@ -698,7 +830,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 '--run',
                 deps.runId(),
                 '--ack',
-                String(deliveryId),
+                deliveryId,
                 '--json',
               ],
               10_000,
@@ -707,11 +839,22 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
           ackOk = ack?.ok === true;
           if (ackOk) {
             deps.compactInjected();
+            diagnose({ reason: 'ack-settled', deliveryId });
           } else {
             deps.note(`ack failed for ${deliveryId} — will replay, dedup by message id`);
+            diagnose({
+              reason: 'ack-pending',
+              deliveryId,
+              detail: 'ack failed',
+            });
           }
         } else if (deliveryId) {
           deps.note(`ack withheld for ${deliveryId}: an injection failed`);
+          diagnose({
+            reason: 'ack-pending',
+            deliveryId,
+            detail: 'an injection failed',
+          });
         }
 
         // A delivery Orca still holds replays immediately, so going straight

@@ -166,6 +166,14 @@ next wake would spend the second bound on a defect the gate could already name.
 The gate reads grounds, the review bot reads the diff; the Report is the only
 place the diff meets what was asked. A Report is evidence to judge, not self-certified success.
 
+When the wake is about the channel rather than a child — a sequence gap, a
+withheld heartbeat, an unreadable Report — `peer_diagnostics` reads the reasons
+the previous session persisted. An observed filter is not an injection failure,
+and an unreadable Report is not a missing Summary. The store covers only this
+layer's send/receive seams; a hand-rolled `orca orchestration send` is
+invisible, and no delivery rate is computed from partial instrumentation.
+Stall-watch and card alerts still wake; do not treat a status as quieter mail.
+
 Workers own their procedure's implementation, reviews and repairs; you do not
 repeat them. Delegate verification only when the integrated result is unproven
 or coverage is absent or contradictory. The assignment names that gap and

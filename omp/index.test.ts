@@ -193,7 +193,7 @@ test('the one factory installs all four extensions, each exactly once', () => {
   expect(count('agent_end')).toBe(2);
 
   expect([...commands.keys()]).toEqual(['role']);
-  expect(tools).toEqual(['peer_reply', 'peer_send', 'peer_list', 'peer_read', 'peer_children']);
+  expect(tools).toEqual(['peer_reply', 'peer_send', 'peer_list', 'peer_read', 'peer_children', 'peer_diagnostics']);
 });
 
 test('nothing here is internally latched, so the single-install contract is load-bearing', () => {
@@ -207,7 +207,7 @@ test('nothing here is internally latched, so the single-install contract is load
   ax(first.pi as never, {});
 
   expect(first.events.length).toBe(once * 2);
-  expect(first.tools).toHaveLength(10);
+  expect(first.tools).toHaveLength(12);
 });
 
 // ── the dispatched path: `[omp role=worker …]` ───────────────────────────────

@@ -49,6 +49,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/peer/completion.ts` | the Report a worker's completion carries: the receiver's twin of the path rule, the containment proof, the cap — and the dispositions it is named under |
 | `omp/peer/remote.ts` | retrieving that Report from the host the record names: the ssh boundary, the answer's shape, and what a host may refuse to send |
+| `omp/peer/diagnostics.ts` | persisted send/receive diagnostic reasons a restarted session can read, and the coverage they do not claim |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |
 | `omp/shared/ax.ts`, `omp/shared/board.ts`, `omp/ax-run.mjs` | package-local ax invocation and the one board-write spawn; never PATH or a global version |
 | `src/config.mjs`, `src/schema.mjs`, `ax.schema.json` | the per-repository contract and defaults |
