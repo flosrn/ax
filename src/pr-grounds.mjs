@@ -113,6 +113,23 @@ const THREAD_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$cursor:String
  */
 const MAX_THREAD_PAGES = 50;
 
+/**
+ * WHAT A FIELD IS, in the one word a receipt has to print (#175). An incomplete
+ * read is only actionable if it names the shape it got: "absent" sends the
+ * caller to the query, "string" to the payload it came back with, and
+ * "an empty string" to a cursor that would advance nowhere.
+ */
+const shapeOf = value =>
+  value === undefined
+    ? 'absent'
+    : value === null
+      ? 'null'
+      : Array.isArray(value)
+        ? 'a list'
+        : value === ''
+          ? 'an empty string'
+          : typeof value;
+
 /** One ground's account: the entries it wants printed, in the order it found them. */
 function account() {
   const notes = [];
@@ -343,6 +360,33 @@ export function ciGround({ run, slug, sha, declared, pr }) {
  * before CI is decided is not an observation (F-031). So no GraphQL call is
  * issued at all here: a read whose answer cannot be trusted must not look like
  * one that can.
+ *
+ * A SUCCESSFUL RESPONSE IS NOT AN ESTABLISHED READ (#175). Every container
+ * this query needs was read by name — F-028's rule, applied down to
+ * `reviewThreads` — and then the two fields that decide the verdict were read
+ * with an `or`: `nodes` fell back to `[]` and `pageInfo` to `{}`. Three injected
+ * shapes — `nodes` absent, `nodes: null`, `nodes` an object — return HTTP 200
+ * with all containers present, and the old ground read each as "zero threads
+ * on a final page", which is this gate's PASSING answer. That is proved by the
+ * red entry-point tests with those payloads, not by live GitHub responses of
+ * that form or by three real merges. The same `or` on `pageInfo` made an
+ * absent or non-boolean `hasNextPage` end the pagination: `!== true` cannot
+ * tell "there is no next page" from "whether there is one was never answered"
+ * (the string `'false'` ended the read, same as an absent field).
+ *
+ * So the end of the list is a POSITIVE observation, tracked in `established`,
+ * and it is set by exactly one thing: a page whose `hasNextPage` is the boolean
+ * `false`. Every other exit registers an unknown that names the field or the
+ * page it could not establish — an unknown fails this gate closed, so an
+ * unestablished read is unmergeable-until-read and can never become the
+ * complete-empty case that passes.
+ *
+ * A CURSOR HAS TO ADVANCE. `endCursor` was read with `?? null`, so a page
+ * claiming a successor and naming a non-string cursor sent that value straight
+ * back into `-f cursor=`; naming the cursor it was ALREADY read with re-read
+ * the same page as though it were new, up to the page bound, and every thread
+ * past it stayed unread while the receipt showed fifty pages of progress. The
+ * cursors handed out are therefore remembered, and a repeat is an unknown.
  */
 export function threadsGround({ run, owner, name, pr, sha, ciDecided, invocation }) {
   const out = account();
@@ -350,7 +394,20 @@ export function threadsGround({ run, owner, name, pr, sha, ciDecided, invocation
     out.unknown(`threads: CI is not decided on ${sha} — a thread read now is no observation at all`, `${invocation()}   # once CI has finished`);
     return out;
   }
+  // The repair every incomplete read prints: the same query, narrowed to the
+  // shape that could not be established. `gh auth status` answers a call that
+  // FAILED; a call that answered 200 with a malformed page is diagnosed by
+  // looking at the page.
+  const probe =
+    `gh api graphql -f 'query=query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:50){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}'` +
+    ` -F owner=${owner} -F name=${name} -F pr=${pr}   # read the shape this gate could not, then re-run the gate`;
   let cursor = null;
+  let established = false;
+  let observed = 0;
+  let pagesRead = 0;
+  // The cursors this loop has already been READ WITH, so a page that names one
+  // of them is refused instead of re-read.
+  const spent = new Set();
   for (let page = 1; page <= MAX_THREAD_PAGES; page += 1) {
     const args = ['api', 'graphql', '-f', `query=${THREAD_QUERY}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `pr=${pr}`];
     if (cursor !== null) args.push('-f', `cursor=${cursor}`);
@@ -369,7 +426,16 @@ export function threadsGround({ run, owner, name, pr, sha, ciDecided, invocation
       out.unknown(`threads: ${error.message}; resolution state unread`, 'gh auth status   # then re-run this gate');
       break;
     }
-    const nodes = Array.isArray(threads.nodes) ? threads.nodes : [];
+    // The threads on this page, or the reason there is no list to read. NEVER
+    // `[]`: an absent list is unknown, and zero threads is a merge.
+    if (!Array.isArray(threads.nodes)) {
+      out.unknown(
+        `threads: page ${page} answered with no readable 'nodes' list ('nodes' is ${shapeOf(threads.nodes)}) — the threads on that page are unread, not absent`,
+        probe,
+      );
+      break;
+    }
+    const nodes = threads.nodes;
     let unresolved = 0;
     for (const thread of nodes) {
       if (thread?.isResolved === true) continue;
@@ -380,15 +446,64 @@ export function threadsGround({ run, owner, name, pr, sha, ciDecided, invocation
         `open ${clean(first.url)}   # resolve it there, then re-run this gate`,
       );
     }
+    // Counted before the page's own end is decided: a thread observed on an
+    // incompletely paginated read is still an observation, and it stays in the
+    // receipt beside the unknown that follows it.
+    observed += nodes.length;
+    pagesRead = page;
     out.note(`threads: page ${page} — ${nodes.length} thread(s), ${unresolved} unresolved`);
-    const info = threads.pageInfo ?? {};
-    if (info.hasNextPage !== true) break;
-    cursor = info.endCursor ?? null;
-    if (cursor === null) {
-      out.unknown('threads: a page claims a next one and names no cursor, so the remaining threads are unread', 'gh auth status   # then re-run this gate');
+    const info = threads.pageInfo;
+    if (info === null || typeof info !== 'object' || Array.isArray(info)) {
+      out.unknown(
+        `threads: page ${page} answered with no readable 'pageInfo' ('pageInfo' is ${shapeOf(info)}) — whether a further page of threads exists is unread`,
+        probe,
+      );
       break;
     }
-    if (page === MAX_THREAD_PAGES) out.unknown(`threads: pagination exceeded ${MAX_THREAD_PAGES} pages; stopped rather than looping`);
+    if (typeof info.hasNextPage !== 'boolean') {
+      out.unknown(
+        `threads: page ${page} names no boolean 'hasNextPage' ('hasNextPage' is ${shapeOf(info.hasNextPage)}) — the end of the thread list is unestablished`,
+        probe,
+      );
+      break;
+    }
+    // The ONE thing that establishes the read: the API said there is no next
+    // page.
+    if (info.hasNextPage === false) {
+      established = true;
+      break;
+    }
+    const next = info.endCursor;
+    if (typeof next !== 'string' || next === '') {
+      out.unknown(
+        `threads: page ${page} claims a next one and names no cursor to advance on ('endCursor' is ${shapeOf(next)}), so the remaining threads are unread`,
+        probe,
+      );
+      break;
+    }
+    if (spent.has(next)) {
+      out.unknown(
+        `threads: page ${page} claims a next one and repeats the cursor it was read with, so advancing would re-read this same page rather than a new one and the threads past it are unread`,
+        probe,
+      );
+      break;
+    }
+    spent.add(next);
+    cursor = next;
+    if (page === MAX_THREAD_PAGES) {
+      out.unknown(
+        `threads: pagination exceeded ${MAX_THREAD_PAGES} pages; stopped rather than looping, so the end of the thread list is unestablished`,
+        probe,
+      );
+    }
+  }
+  // The receipt's own distinction between a read that ENDED and one that
+  // merely stopped. The `else` is the structural backstop for this obligation:
+  // whatever a later exit path forgets to name, an unread end still fails the
+  // gate closed instead of passing as the complete-empty case.
+  if (established) out.note(`threads: read established — ${observed} thread(s) over ${pagesRead} page(s), the final page was observed`);
+  else if (out.unknowns.length === 0) {
+    out.unknown(`threads: the thread read ended after ${pagesRead} page(s) without an observed final page, so resolution is unestablished`, probe);
   }
   return out;
 }
