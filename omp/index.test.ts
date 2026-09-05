@@ -419,15 +419,16 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).toMatch(/distill the `wave:` bullets/);
   // The wave file demoted to cache; records, tracker and gate are authority.
   expect(role).toMatch(/wave-memory file is a CACHE/);
-  // The Spec axis (2026-09-03): the merge decision reads the worker's Report —
-  // the FILE that arrives with the completion (`docs/adr/0002`), not a section
-  // of the completion's body, which is where none of eight workers put it. A
-  // missing criterion travels back with every ground the gate refused, as ONE
-  // repair round — AGENTS.md: every merge ground runs, nothing stops after the
-  // first refusal. Review of the first draft (Codex, P2): "before any gate run"
-  // short-circuited exactly that.
+  // The Spec axis (2026-09-03, then #193): the merge decision reads the worker's
+  // Report — the block the receiver appends, derived from the dispatch record
+  // (`docs/adr/0002`), never the file `--report-path` names. Opening that path
+  // would let a worker choose the criteria, and a remote worker's file is not
+  // on this host. A missing criterion travels back with every ground the gate
+  // refused, as ONE repair round — AGENTS.md: every merge ground runs, nothing
+  // stops after the first refusal.
   expect(role).toMatch(/the Report/);
   expect(role).toMatch(/`--report-path`/);
+  expect(role).toMatch(/nothing here opens that path/);
   expect(role).toMatch(/NOT MET/);
   expect(role).toMatch(/one repair round/);
   // The Summary is not the Report, and a role that reads the body for criteria
