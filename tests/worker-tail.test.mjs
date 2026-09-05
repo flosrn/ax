@@ -433,3 +433,169 @@ test('an unreachable runtime cannot establish, and is probed before the read', (
   assert.deepEqual(calls, ['status --json'], 'the read must not be attempted against a runtime that does not answer');
   assert.match(out, /orca open/);
 });
+
+// ── #165: the continuation a gone pane's record still names ──────────────────
+// This verb is the other reader of a dead pane, and it answered EXITED with a
+// route to the child's history and nothing about the work: an operator holding
+// a corpse whose pull request was still open had to know `--replace` exists.
+// The decision is shared with `ax worker ls` (../src/worker/continuation.mjs),
+// so the two readers cannot disagree about which verb continues a record.
+
+/**
+ * A store holding ONE record whose newest worker-start recorded a real
+ * placement (`--worktree path:<abs>`) and the repository it belongs to — what
+ * a continuation read needs before it can name a branch at all.
+ *
+ * `superseded` adds the OLDER worker-start a `--replace` leaves behind: its own
+ * pane, dispatched an hour earlier, in the same record.
+ */
+function placed(request, { dispatchId = 'ctx_placed', pane = HANDLE, superseded = null } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'ax-tail-placed-'));
+  const worktree = join(home, request);
+  mkdirSync(worktree, { recursive: true });
+  const startedAt = Date.now();
+  const phase = (id, handle, at) => ({
+    name: 'worker-start',
+    exit: 0,
+    beganAt: new Date(at).toISOString(),
+    argv: ['orca', 'orchestration', 'worker-start', '--worktree', `path:${worktree}`, '--agent', 'omp', '--json'],
+    receipt: {
+      ok: true,
+      result: { dispatchId: id, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: handle }] },
+    },
+  });
+  writeFileSync(
+    join(home, `${request}.json`),
+    JSON.stringify({
+      request,
+      repo: 'acme/widgets',
+      attempts: [{
+        n: 1,
+        settled: false,
+        phases: [
+          ...(superseded === null ? [] : [phase(superseded.dispatchId, superseded.pane, startedAt - 3_600_000)]),
+          phase(dispatchId, pane, startedAt),
+        ],
+      }],
+    }),
+  );
+  return { HOME: home, ORCA_DISPATCH_STORE: home };
+}
+
+/** `git` (which branch) and `gh` (which pull requests), keyed on the subcommand. */
+function fakeShell({ branch = 'feat/165-work', prs = [], prExit = 0, prStderr = '' } = {}) {
+  const calls = [];
+  const exec = (bin, args) => {
+    const line = [bin, ...args].join(' ');
+    calls.push(line);
+    if (bin === 'git' && args.includes('rev-parse')) return { status: 0, stdout: `${branch}\n`, stderr: '' };
+    if (bin === 'gh' && args[0] === 'pr') {
+      return prExit === 0 ? { status: 0, stdout: JSON.stringify(prs), stderr: '' } : { status: prExit, stdout: '', stderr: prStderr };
+    }
+    return { status: 1, stdout: '', stderr: `no stub for ${line}\n` };
+  };
+  return { exec, calls };
+}
+
+const EXITED = frames =>
+  JSON.stringify({ ok: true, result: { terminal: { handle: HANDLE, status: 'exited', latestCursor: 0, tail: frames } } });
+
+test('#165: an EXITED pane whose branch has an OPEN pull request prints the continuation after its verdict', () => {
+  const env = placed('165-work');
+  const { runner } = fakeRunner({ receipt: EXITED(['Tests  709 passed']) });
+  const { exec, calls } = fakeShell({ prs: [{ number: 71, state: 'OPEN', headRefName: 'feat/165-work' }] });
+
+  const r = capture(() => tail(['165-work'], { runner, env, exec }));
+
+  assert.equal(r.code, 4, 'the verdict is unchanged: the pane is gone');
+  assert.match(r.out, /EXITED — /);
+  assert.match(r.out, /→ ax worker start --replace --request 165-work/, 'and the work it left is continued by one verb');
+  assert.doesNotMatch(r.out, /--replace.*--worktree/, 'placement is inherited from the record, never printed here');
+  assert.ok(
+    calls.some(line => line.includes('gh pr list') && line.includes('--head feat/165-work')),
+    `the proof is the --head read release already makes: ${calls.join(' | ')}`,
+  );
+});
+
+test('#165: an EXITED, SILENT pane carries the same continuation beside its transcript route', () => {
+  const env = placed('166-work');
+  const { runner } = fakeRunner({ receipt: EXITED([]) });
+  const { exec } = fakeShell({ branch: 'feat/166-work', prs: [{ number: 72, state: 'OPEN', headRefName: 'feat/166-work' }] });
+
+  const r = capture(() => tail(['166-work'], { runner, env, exec }));
+
+  assert.equal(r.code, 4);
+  assert.match(r.out, /EXITED, SILENT/);
+  assert.match(r.out, /ax worker transcript 166-work/, 'the session route it always had');
+  assert.match(r.out, /→ ax worker start --replace --request 166-work/, 'and the work route it did not');
+});
+
+test('#165: a MERGED pull request routes to release, and no pull request at all routes to settle', () => {
+  const merged = placed('167-work');
+  const { runner } = fakeRunner({ receipt: EXITED([]) });
+  const landed = capture(() =>
+    tail(['167-work'], {
+      runner,
+      env: merged,
+      exec: fakeShell({ branch: 'feat/167-work', prs: [{ number: 73, state: 'MERGED', headRefName: 'feat/167-work' }] }).exec,
+    }),
+  );
+  assert.match(landed.out, /→ ax worker release --dispatch ctx_placed/);
+  assert.doesNotMatch(landed.out, /--replace/);
+
+  const nothing = placed('168-work');
+  const { runner: runner2 } = fakeRunner({ receipt: EXITED([]) });
+  const unshipped = capture(() => tail(['168-work'], { runner: runner2, env: nothing, exec: fakeShell({ branch: 'feat/168-work' }).exec }));
+  assert.match(unshipped.out, /→ ax worker settle 168-work/);
+  assert.doesNotMatch(unshipped.out, /--replace/);
+});
+
+test('#165: a gh that refuses prints no continuation, and quotes the refusal', () => {
+  const env = placed('169-work');
+  const { runner } = fakeRunner({ receipt: EXITED([]) });
+  const { exec } = fakeShell({ branch: 'feat/169-work', prExit: 1, prStderr: 'API rate limit exceeded\n' });
+
+  const r = capture(() => tail(['169-work'], { runner, env, exec }));
+
+  assert.equal(r.code, 4);
+  assert.match(r.out, /API rate limit exceeded/);
+  assert.doesNotMatch(r.out, /--replace|ax worker settle|ax worker release/);
+});
+
+test('#165: an ALIVE pane is never offered a continuation, and its branch is never asked about', () => {
+  const env = placed('170-work');
+  const { runner } = fakeRunner({ receipt: alive(['working…']) });
+  const { exec, calls } = fakeShell({ branch: 'feat/170-work', prs: [{ number: 74, state: 'OPEN', headRefName: 'feat/170-work' }] });
+
+  const r = capture(() => tail(['170-work'], { runner, env, exec }));
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /ALIVE —/);
+  assert.doesNotMatch(r.out, /--replace/, 'replacing a working child is the mutation this must never advertise');
+  assert.ok(!calls.some(line => line.includes('gh pr list')), `a live pane asks nothing: ${calls.join(' | ')}`);
+});
+
+test('#165: a pane a --replace SUPERSEDED is offered no continuation, whatever its own state', () => {
+  // A replace records a second worker-start, so one record holds the old corpse
+  // beside the child that took over — and `ax worker tail ctx_old` reads that
+  // corpse by name. The continuation speaks about the record's CURRENT attempt,
+  // so printing it here would offer to replace the child working right now.
+  const env = placed('171-work', { dispatchId: 'ctx_new', pane: HANDLE, superseded: { dispatchId: 'ctx_old', pane: 'term_old-pane' } });
+  const { runner } = fakeRunner({
+    receipt: JSON.stringify({ ok: true, result: { terminal: { handle: 'term_old-pane', status: 'exited', latestCursor: 0, tail: [] } } }),
+  });
+  const { exec, calls } = fakeShell({ branch: 'feat/171-work', prs: [{ number: 75, state: 'OPEN', headRefName: 'feat/171-work' }] });
+
+  const r = capture(() => tail(['ctx_old'], { runner, env, exec }));
+
+  assert.equal(r.code, 4, 'the pane it named is still read, and still EXITED');
+  assert.doesNotMatch(r.out, /--replace/, 'the record has moved on: this pane no longer owns it');
+  assert.ok(!calls.some(line => line.includes('gh pr list')), `a superseded pane asks nothing: ${calls.join(' | ')}`);
+
+  // And the pane that DOES own the record still gets it.
+  const { runner: current } = fakeRunner({
+    receipt: JSON.stringify({ ok: true, result: { terminal: { handle: HANDLE, status: 'exited', latestCursor: 0, tail: [] } } }),
+  });
+  const owner = capture(() => tail(['ctx_new'], { runner: current, env, exec: fakeShell({ branch: 'feat/171-work', prs: [{ number: 75, state: 'OPEN', headRefName: 'feat/171-work' }] }).exec }));
+  assert.match(owner.out, /→ ax worker start --replace --request 171-work/);
+});

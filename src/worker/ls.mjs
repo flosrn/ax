@@ -50,6 +50,12 @@
 // the F-048 drift and the worker-list comparison are facts about the store, so
 // the flag changes what is SHOWN and never what was established.
 //
+// AND A ROW CARRIES A DECISION WHEN IT NAMES A VERB (#165). A MORT row left
+// this view because it named no repair; one whose pull request is still OPEN
+// names `ax worker start --replace` and is shown, because an unfinished slice
+// whose pane died is the row an operator most has to act on. Which verb — or
+// none — is ./continuation.mjs, the answer `ax worker tail` prints too.
+//
 // TWO COUNTS, AND THE LABEL SAYS WHICH GATES (#88). This verb used to end with
 // `N live pane(s) — this is the cap count`, where N was every live pane on the
 // machine: the store is host-global (./record.mjs), so read from one checkout it
@@ -84,6 +90,7 @@ import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
+import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { hostScopes, paneVerdict, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore } from './record.mjs';
 import { livePanes } from './slots.mjs';
@@ -477,6 +484,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     return 3;
   }
 
+  // ONE pull-request answer per branch, for this invocation (#165). Two records
+  // naming one worktree is ordinary — a re-dispatch under a fresh request id
+  // reuses the tree — and measured here 2026-09-05 it asked `feat/157-xapikey`
+  // twice out of 8 reads. The map is the listing's, so both rows read the same
+  // answer and neither pays for it twice.
+  const branchAnswers = new Map();
+
   const views = files.map(file => {
     const row = describeRecord(dir, file);
     // EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first list
@@ -543,7 +557,26 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // it is `ax worker settle` (#102) — this one only counts it.
     const deadAttempt = row.handle === null && leakedVerdict !== null && leakedVerdict.pane === 'MORT';
 
-    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt };
+    // AND A MORT ROW MAY STILL NAME ONE VERB (#165). A pane the runtime cannot
+    // see whose pull request is still OPEN is an unfinished slice, and the verb
+    // that continues it is `ax worker start --replace` — advertised only now
+    // that it lands where the first attempt ran (`inheritPlacement`, #164).
+    // Which verb (or none) is ./continuation.mjs's single answer, shared with
+    // `ax worker tail` so the two readers cannot disagree.
+    //
+    // ASKED FOR MORT ROWS ONLY, and only where a branch can be named at all.
+    // Measured on this machine 2026-09-05: 255 records, 222 of them MORT, and
+    // 10 naming a worktree that still exists — so the `gh` reads are bounded by
+    // the rows an operator can still act on, and the archaeology costs none. A
+    // VIVANT row is never asked: a working child's branch has an open PR by
+    // construction, and replacing that child is the mutation this verdict
+    // exists to prevent.
+    const continuation =
+      pane === 'MORT'
+        ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers })
+        : NO_CONTINUATION;
+
+    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation };
   });
 
   // THE DEFAULT VIEW (#70, ruled 2026-09-02). Measured on this machine: 189
@@ -560,15 +593,25 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // Two dispositions answer neither and leave, each disclosed as its own count:
   // a MORT row (a recorded handle the runtime cannot see), and a dead attempt
   // (unsettled, its recorded pane a corpse on a host that WAS read). Neither can
-  // be arbitrated against and neither is capacity; a MORT row additionally
-  // names no repair, and a dead attempt's two settlement routes ride with it
-  // into `--all`.
+  // be arbitrated against and neither is capacity, and a dead attempt's two
+  // settlement routes ride with it into `--all`.
+  //
+  // EXCEPT A MORT ROW THAT NAMES A VERB (#165). "A MORT row names no repair"
+  // was the reason that disposition left this view, and it stopped being true
+  // the moment its pull request decided a continuation: an unfinished slice
+  // whose pane died is exactly the row an operator must act on, and hiding it
+  // behind a flag is hiding the action. So a MORT row is shown when it carries
+  // one — a route to type, or a read that FAILED and must not read as an
+  // absence of one (F-028) — and the archaeology that names nothing keeps its
+  // count. Bounded by construction: only a record whose worktree still exists
+  // can name a branch at all (10 of 255 on this machine, 2026-09-05).
   //
   // The tallies above were taken before this split, so both views answer the
   // same machine: the flag changes what is SHOWN, never what was established.
-  const shown = all ? views : views.filter(view => view.pane !== 'MORT' && !view.deadAttempt);
+  const carries = view => view.continuation.route !== null || view.continuation.failed !== '';
+  const shown = all ? views : views.filter(view => (view.pane === 'MORT' ? carries(view) : !view.deadAttempt));
   const hidden = views.length - shown.length;
-  const withheldMort = views.filter(view => view.pane === 'MORT').length;
+  const withheldMort = views.filter(view => view.pane === 'MORT' && !carries(view)).length;
   const withheldAttempts = views.filter(view => view.deadAttempt).length;
 
   // The columns are sized on what is PRINTED: padding every line to the widest
@@ -580,7 +623,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
 
   section(`${hidden > 0 ? `${shown.length} of ${views.length}` : String(views.length)} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
 
-  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt } of shown) {
+  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation } of shown) {
     const suffix = leaked === null
       ? ''
       : leakedLive
@@ -620,6 +663,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // refuses a row that is not this checkout's, which is what makes naming it
       // here honest rather than a guess.
       if (deadAttempt) fix(`ax worker settle ${row.request}   # write the ending, once the gate's evidence proves it`);
+      // AND THE CONTINUATION OF A GONE PANE (#165), decided by
+      // ./continuation.mjs and rendered here. A failed read is printed as the
+      // failure it is, with the call to make, and offers no route: a route
+      // guessed over an unread pull request sends an operator to replace a
+      // child whose work already landed.
+      if (continuation.failed !== '') note(`the continuation of this row is undecided: ${continuation.failed}`);
+      if (continuation.fix !== '') fix(continuation.fix);
     }
   }
 
@@ -653,7 +703,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // count it cannot establish (F-028). The dead-attempt line is also the only
   // surface that counts a settlement debt, which is why it is a count and not
   // silence.
-  if (!all && withheldMort > 0) note(`${withheldMort} MORT record(s) not shown — a pane the runtime cannot see names no repair: ax worker ls --all`);
+  if (!all && withheldMort > 0) {
+    note(`${withheldMort} MORT record(s) not shown — their pane is gone and nothing here can name a branch to continue them with (#165): ax worker ls --all`);
+  }
   if (!all && withheldAttempts > 0) {
     note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker settle <request> writes the ending, ax worker ls --all names them`);
   }

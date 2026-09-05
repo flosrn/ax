@@ -35,12 +35,23 @@
 // preamble Orca injects into a supervised worker embeds that worker's `dcap_…`
 // twice before the child has done anything (2026-08-21 probe), so a child's
 // tail carries an authority token BY CONSTRUCTION.
+//
+// AN EXITED PANE IS ALSO A QUESTION ABOUT THE WORK (#165). Its verdict named
+// the child's history and nothing about what the child owed, so an operator
+// reading a corpse whose pull request was still open had to know `ax worker
+// start --replace` exists. That decision — replace, release, settle or nothing
+// — is ./continuation.mjs, shared with `ax worker ls` so the two readers of one
+// dead row cannot answer differently. It rides the EXITED verdict alone: the
+// other three answers are a live pane and two inabilities, and a `--replace`
+// offered on any of them re-places a child that may still be working.
 
 import { join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
+import { defaultExec } from '../exec.mjs';
 import { bad, fix, note, ok } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
+import { continuationFor } from './continuation.mjs';
 import { briefDelivered } from './delivered.mjs';
 import { readPane } from './pane.mjs';
 import { defaultStore, dispatchIndex, requestIdOk } from './record.mjs';
@@ -107,7 +118,59 @@ function channelWitness(target, handle, env) {
     : `channel   ${seen.count} message(s) recorded by the child, last at ${seen.lastAt}. Anything you sent after that has not been recorded.`;
 }
 
-export function tail(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
+/**
+ * THE RECORD BEHIND THIS PANE — the request id a continuation is typed with,
+ * the dispatch id `release` scopes to, and the file both are read from.
+ *
+ * Resolved from the HANDLE, not from the target, so a `term_…` and a request id
+ * reach the same record through one derivation. Zero or two owners is an
+ * inability, never a guess (F-028): offering to replace a request the store
+ * cannot tie to this pane is offering to re-place a stranger's child.
+ */
+function recordBehind(handle, env) {
+  const store = defaultStore(env);
+  const index = dispatchIndex(store);
+  const hits = [...index.byDispatch.entries()].filter(([, row]) => row.handle === handle);
+  if (new Set(hits.map(([, row]) => row.request)).size !== 1) return null;
+  const newest = pair => (pair[1].issuedAt ?? 0);
+  const [dispatchId, row] = hits.reduce((best, next) => (newest(next) >= newest(best) ? next : best), hits[0]);
+
+  // AND THIS PANE MUST BE THE RECORD'S NEWEST (found in review before #165
+  // shipped). A `--replace` records a SECOND worker-start, so a record can hold
+  // an old corpse beside the live child that superseded it — and `ax worker
+  // tail ctx_old` reads that corpse by name. The continuation speaks about the
+  // RECORD's current attempt (`workerStartArgv` is its newest placement), so
+  // printed under a superseded pane it would offer to replace the child that is
+  // working right now: the mutation every verdict here exists to prevent. A
+  // pane that is not the newest gets no continuation, and the row that carries
+  // one is the row that owns the record.
+  const current = [...index.byDispatch.values()]
+    .filter(entry => entry.request === row.request && entry.handle !== null)
+    .reduce((best, next) => ((next.issuedAt ?? 0) >= (best.issuedAt ?? 0) ? next : best));
+  if (current.handle !== handle) return null;
+
+  return { path: join(store, row.file), request: row.request, dispatchId };
+}
+
+/**
+ * THE VERB THAT CONTINUES THE WORK a gone pane left (#165) — printed after the
+ * EXITED verdict, and only there.
+ *
+ * This verb's other three answers are a LIVE pane and two inabilities, and
+ * `--replace` on any of them is the mutation `ax worker ls`'s verdicts exist to
+ * prevent: a working child re-placed, or one that is merely unreadable from
+ * here. The decision itself is ./continuation.mjs — the same answer `ls` prints,
+ * so the two readers of a dead row cannot disagree about which verb it takes.
+ */
+function sayContinuation(handle, env, exec) {
+  const record = recordBehind(handle, env);
+  if (record === null) return;
+  const { failed, fix: repair } = continuationFor(record.path, { request: record.request, dispatchId: record.dispatchId, exec });
+  if (failed !== '') note(redactSecrets(`the continuation of this pane is undecided: ${failed}`));
+  if (repair !== '') fix(redactSecrets(repair));
+}
+
+export function tail(argv = [], { resolve = resolveOrca, runner, env = process.env, exec = defaultExec } = {}) {
   const refuse = (message, repair) => {
     bad(`CANNOT ESTABLISH — ${message}`);
     fix(repair);
@@ -242,8 +305,10 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   if (lines.length > 0) {
     ok(`${exited ? 'EXITED' : 'ALIVE'} — ${handle}  status=${status}  cursor=${cursor}  ${lines.length} line(s)`);
     for (const line of lines) note(redactSecrets(line));
-    if (exited) note('The pane has EXITED: this tail is its last frame, not a session between turns.');
-    else {
+    if (exited) {
+      note('The pane has EXITED: this tail is its last frame, not a session between turns.');
+      sayContinuation(handle, env, exec);
+    } else {
       const channel = channelWitness(target, handle, env);
       if (channel !== '') note(redactSecrets(channel));
     }
@@ -261,6 +326,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     const owner = transcriptOwner(target, handle, env);
     if (owner) fix(redactSecrets(`ax worker transcript ${owner}   # what that child did, from its own history`));
     else fix('ax worker ls   # this handle has no unique request in the store, so transcript cannot take it');
+    sayContinuation(handle, env, exec);
     return 4;
   }
 
