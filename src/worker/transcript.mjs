@@ -38,6 +38,7 @@ import { basename, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, refuse as refuseLine, section as sectionLine, warn as warnLine } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
+import { quote } from './hosts.mjs';
 import { defaultStore, dispatchIndex } from './record.mjs';
 
 // ONE redaction boundary, on the emitters themselves. Redacting field by field
@@ -882,7 +883,25 @@ const PANE = 'ax worker ls --all   # every recorded request, and the pane its di
  * recorded under a different HOME than this process sees — falls back.
  */
 function selectSessionFile({ needle, cwd = '', dispatchId = '', request = '', env = process.env, sessionsRoot } = {}) {
-  const scoped = key => `ax worker transcript --dispatch-proof ${key}${request === '' ? '' : ` --request ${request}`}`;
+  // EVERY VALUE IN A PRINTED COMMAND IS SHELL DATA (review of #208). A checkout
+  // whose path carries a space or a metacharacter produces a session slug that
+  // carries it too, and an unquoted one word-splits — or expands — in the shell
+  // that runs the repair. That is this issue's own defect wearing a different
+  // hat: a repair line that cannot repair. The quoting form is
+  // `./hosts.mjs`'s single one, reused rather than re-decided, and it is
+  // unconditional: a classifier that decides which values "need" quoting is a
+  // second rule that can be wrong about one.
+  //
+  // AND THE ROOT TRAVELS WITH THE KEY. A read scoped to an explicit
+  // `--sessions <root>` whose repair drops it repairs a different question —
+  // the default root is another machine's answer, or nothing at all.
+  const scoped = key =>
+    [
+      'ax worker transcript --dispatch-proof',
+      quote(key),
+      ...(request === '' ? [] : ['--request', quote(request)]),
+      ...(String(sessionsRoot ?? '') === '' ? [] : ['--sessions', quote(sessionsRoot)]),
+    ].join(' ');
   const own = cwd === '' ? null : sessionFilesForCwd({ cwd, env, sessionsRoot });
   let where;
   let files;

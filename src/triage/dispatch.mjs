@@ -30,6 +30,7 @@ import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
 import { defaultStore, dispatchIndex } from '../worker/record.mjs';
 import { peerRun } from '../worker/peers.mjs';
+import { quote } from '../worker/hosts.mjs';
 import { hostScopes, terminalInventory } from '../worker/pane.mjs';
 import { livePanes } from '../worker/slots.mjs';
 import { start as startVerb } from '../worker/start.mjs';
@@ -374,7 +375,15 @@ function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot
     // anything. `basename(root)` stood here until #204 and reproduced the
     // inability it repairs on any host holding a second checkout whose slug
     // ends in the same basename; a slug names one directory by construction.
-    fix(`ax worker transcript --dispatch-proof ${slugOf(root, env).replace(/^-+/, '')} --request ${request}   # re-derive THIS pass's proof: the receipts may have landed since`);
+    //
+    // QUOTED, because that slug is derived from a PATH: a checkout under a
+    // directory with a space or a `$(…)` in its name yields a slug carrying it,
+    // and the operator pastes this line into a shell (review of #208). The
+    // sessions root travels the same way whenever this wait was scoped to an
+    // explicit one — a repair that drops it asks the default root instead.
+    fix(`ax worker transcript --dispatch-proof ${quote(slugOf(root, env).replace(/^-+/, ''))} --request ${quote(request)}${
+      String(sessionsRoot ?? '') === '' ? '' : ` --sessions ${quote(sessionsRoot)}`
+    }   # re-derive THIS pass's proof: the receipts may have landed since`);
     fix(`ax triage dispatch --wait <s>   # a wider window for a slow boot (or AX_TRIAGE_ROLE_WAIT=<s> for this machine); the pass above is unaffected`);
     return 'CANNOT-ESTABLISH';
   }

@@ -9,9 +9,11 @@
 // Offline by construction: the Orca runner is always injected, and every file
 // read is a fixture in a tmpdir.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
@@ -680,7 +682,7 @@ test('#204 every refusal names its own cause and its repair on stderr, with stdo
   assert.match(ambiguous.err, /2 session directories/, 'the cause: the needle named more than one checkout');
   assert.match(ambiguous.err, /-Code-flosrn-ax/, 'and it names the candidates');
   assert.match(ambiguous.err, /-orca-workspaces-improve-ax/);
-  assert.match(ambiguous.err, /--dispatch-proof <slug> --request custom-flosrn-ax-174/, 'the repair keeps the scope it was asked with');
+  assert.match(ambiguous.err, /--dispatch-proof '<slug>' --request 'custom-flosrn-ax-174' --sessions '/, 'the repair keeps the scope AND the root it was asked with, quoted');
 
   // A request with no dispatch on record — a different fact, and it now reads
   // differently from the ambiguity above.
@@ -713,6 +715,94 @@ test('#204 every refusal names its own cause and its repair on stderr, with stdo
   // Every refusal above carries a command, because a finding without one is not
   // actionable (AGENTS.md).
   for (const r of [ambiguous, unrecorded, none, two, nowhere]) assert.match(r.err, /→ ax /, 'each refusal names its repair');
+});
+
+// -- the printed repair, run by a real shell (review of #208) -----------------
+//
+// Two findings, one class: a repair line is program text an operator PASTES.
+// Its slug is derived from a checkout path, so a checkout under a directory
+// carrying a space or a `$(…)` yields a slug carrying it, and an unquoted one
+// word-splits or EXPANDS. And a read scoped to an explicit `--sessions <root>`
+// whose repair drops that root repairs a different question — the default root
+// on this machine is another answer, or none.
+//
+// Both are proven by running the printed bytes through `sh`, never by matching
+// their shape: a shape assertion is exactly what let a line that cannot run
+// pass for a repair once already.
+
+/**
+ * `ax` on PATH pointing at THIS checkout's bin, so the printed word `ax` runs,
+ * plus the machine answer the `worker` noun is gated on.
+ *
+ * `worker` is `gated: 'orca'`: on a machine that resolves no Orca binary the
+ * whole noun does not exist, and the repair would read `unknown command
+ * "worker"` — which is honest, since a line printed by `ax triage dispatch` was
+ * printed on a machine that had one. `ORCA_BIN` is the documented operator
+ * override and only has to be EXECUTABLE (`canRunDefault`), never runnable:
+ * visibility and liveness are two propositions (../src/orca-bin.mjs), and the
+ * proof branch answers before anything probes the runtime. So the suite stays
+ * offline and needs no Orca.
+ */
+function shim(home) {
+  const dir = join(home, 'bin');
+  mkdirSync(dir, { recursive: true });
+  const bin = fileURLToPath(new URL('../bin/ax.mjs', import.meta.url));
+  writeFileSync(join(dir, 'ax'), `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(bin)} "$@"\n`, { mode: 0o755 });
+  const orca = join(dir, 'orca-never-run');
+  writeFileSync(orca, '#!/bin/sh\necho "this stub is never executed" >&2\nexit 97\n', { mode: 0o755 });
+  return { path: dir, orca };
+}
+
+/** The command as printed, run by a POSIX shell that can word-split and expand it. */
+const runInShell = (command, { home, store, path, orca }) =>
+  spawnSync('sh', ['-c', command], {
+    encoding: 'utf8',
+    env: { HOME: home, PATH: `${path}:/usr/bin:/bin`, ORCA_DISPATCH_STORE: store, ORCA_BIN: orca },
+  });
+
+/** The `→ …` line a refusal printed, without the decoration or the trailing note. */
+const repairIn = text =>
+  (text.split('\n').find(line => line.includes('→ ax worker transcript')) ?? '')
+    .replace(/^\s*→\s*/, '')
+    .replace(/\s{3,}#.*$/, '');
+
+test('#204 the printed repair survives a hostile checkout path and keeps its --sessions root', () => {
+  // A sessions root under a directory whose name word-splits, globs, and would
+  // RUN if it reached a shell unquoted. `$(touch …)` is the assertion: if the
+  // quoting is wrong, the sentinel appears.
+  const home = mkdtempSync(join(tmpdir(), 'ax-shell-'));
+  const sentinel = join(home, 'expanded');
+  const hostile = join(home, `sessions dir; $(touch ${sentinel}) *`);
+  const store = join(home, 'store');
+  const { path, orca } = shim(home);
+
+  // The collision, inside that root: two directories ending in `-ax`.
+  const mine = join(hostile, '-Code-flosrn-ax');
+  mkdirSync(mine, { recursive: true });
+  mkdirSync(join(hostile, '-orca-workspaces-improve-ax'), { recursive: true });
+  passRecord(store, REQUEST, OWNER);
+  childSession(mine, 'child', { dispatchId: OWNER, request: REQUEST });
+
+  const refused = proofRun(['--dispatch-proof', 'ax', '--request', REQUEST, '--sessions', hostile], { HOME: home, ORCA_DISPATCH_STORE: store });
+  assert.equal(refused.code, 1);
+  const printed = repairIn(refused.err);
+  assert.ok(printed.startsWith('ax worker transcript'), `no repair was printed:\n${refused.err}`);
+
+  // The operator's own gesture, and the only one: substitute one of the
+  // directories the reason listed for the placeholder. Taken FROM the printed
+  // reason, so nothing here is hardcoded.
+  const candidate = refused.err.match(/: (-\S+), /)[1].replace(/^-+/, '');
+  const executable = printed.replace("'<slug>'", `'${candidate}'`);
+
+  const ran = runInShell(executable, { home, store, path, orca });
+  assert.equal(ran.status, 0, `the printed repair did not run:\n${executable}\n${ran.stderr}`);
+  assert.equal(JSON.parse(ran.stdout).sessionRole.role, 'triage-worker');
+  assert.equal(existsSync(sentinel), false, 'the path was pasted as DATA — nothing in it was expanded');
+
+  // And the root is load-bearing: the same command without it asks this
+  // machine's default root, where none of this exists.
+  const rootless = runInShell(executable.replace(/ --sessions .*$/, ''), { home, store, path, orca });
+  assert.equal(rootless.status, 1, 'dropping the scoped root would have repaired a different question');
 });
 
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
