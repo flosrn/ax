@@ -1,104 +1,23 @@
-// The two counts and the two caps, exercised through their own interface.
+// The two caps and the one refusal, exercised through their own interface.
 //
 // #88: `ax worker ls` labelled ONE machine-wide pane count "the cap count"
 // while `worker dispatch` enforced nothing and `triage dispatch` enforced a
 // machine-wide 3 nobody had armed — so a 13-issue wave in this repository ran
 // at one slot because another checkout's orchestrator held two panes. Every
-// proposition here is one of the two numbers, or one of the two caps that gate
-// them, and the verbs that print them are pinned in worker-dispatch.test.mjs,
+// proposition here is one of the two caps, or the verdict that gates on them,
+// and the verbs that print them are pinned in worker-dispatch.test.mjs,
 // triage-dispatch.test.mjs and worker-ls.test.mjs.
+//
+// THE COUNTS THEMSELVES MOVED to worker-slots.test.mjs (#161): they are read
+// from a store now, by the one reader all three verbs count through, and a
+// suite that could still fabricate them here would grade a shape no verb
+// passes.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { capLines, capVerdict, liveCount, machineCapOf, repoCapOf } from '../src/worker/capacity.mjs';
+import { capLines, capVerdict, machineCapOf, repoCapOf } from '../src/worker/capacity.mjs';
 
-const inventoryOf = entries => ({ ok: true, byHandle: new Map(entries), omitted: false });
-
-test('liveCount counts only recorded handles whose pane is alive and owned', () => {
-  const index = {
-    byDispatch: new Map([
-      ['d1', { handle: 'term_a', repo: 'acme/widgets' }],
-      ['d2', { handle: 'term_b', repo: 'acme/widgets' }],
-      ['d3', { handle: null, repo: 'acme/widgets' }],
-      ['d4', { handle: 'term_gone', repo: 'acme/widgets' }],
-    ]),
-  };
-  const inventory = inventoryOf([
-    ['term_a', { orphaned: false }],
-    ['term_b', { orphaned: true }],
-    ['term_editor', { orphaned: false }],
-  ]);
-  // term_b is orphaned, term_gone has no pane, term_editor has no record:
-  // none of them is dispatch capacity.
-  assert.deepEqual(liveCount({ index, inventory, repo: 'acme/widgets' }), { machine: 1, mine: 1, unknown: 0, unmeasured: { machine: 0, mine: 0 } });
-});
-
-test('liveCount scopes the per-repository count by the repository each record NAMES', () => {
-  // #88, the reported shape: live panes that are not this repository's. The
-  // machine total counts them all; MINE counts one — a wave here must not be
-  // parked by a wave over there.
-  const index = {
-    byDispatch: new Map([
-      ['d1', { handle: 'term_mine', repo: 'flosrn/ax' }],
-      ['d2', { handle: 'term_theirs', repo: 'goodluckagency/ofmchat' }],
-      ['d3', { handle: 'term_theirs_2', repo: 'GoodLuckAgency/OfmChat' }],
-      // No `repo` key at all: UNKNOWN, never "this repository" (F-028).
-      ['d4', { handle: 'term_nameless', repo: '' }],
-    ]),
-  };
-  const inventory = inventoryOf([
-    ['term_mine', { orphaned: false }],
-    ['term_theirs', { orphaned: false }],
-    ['term_theirs_2', { orphaned: false }],
-    ['term_nameless', { orphaned: false }],
-  ]);
-  const none = { machine: 0, mine: 0 };
-  assert.deepEqual(liveCount({ index, inventory, repo: 'flosrn/ax' }), { machine: 4, mine: 1, unknown: 1, unmeasured: none });
-  // The same store read from the other checkout: a slug differing only in case
-  // is the same repository, which is the comparison `ax worker start` already
-  // makes when it refuses a foreign record.
-  assert.deepEqual(liveCount({ index, inventory, repo: 'goodluckagency/ofmchat' }), { machine: 4, mine: 2, unknown: 1, unmeasured: none });
-  // A caller that cannot name itself owns NOTHING it can count, and says so
-  // through capVerdict rather than reading zero as room.
-  assert.deepEqual(liveCount({ index, inventory, repo: '' }), { machine: 4, mine: 0, unknown: 1, unmeasured: none });
-});
-
-test('liveCount: a pane its host could not answer for is UNMEASURED, scoped by the repository it names', () => {
-  // Not "not capacity": a container that could not be read (F-028). The scope
-  // matters, because only this repository's own unknowns can make the count
-  // `dispatch.cap` gates unmeasurable.
-  const index = {
-    byDispatch: new Map([
-      ['d1', { handle: 'term_mine', repo: 'flosrn/ax', env: '' }],
-      ['d2', { handle: 'term_mine_far', repo: 'flosrn/ax', env: 'gapicore' }],
-      ['d3', { handle: 'term_far', repo: 'goodluckagency/ofmchat', env: 'gapicore' }],
-    ]),
-  };
-  const inventory = {
-    ok: true,
-    byHandle: new Map([['term_mine', { orphaned: false }]]),
-    omitted: true,
-    unresolved: [
-      { handle: 'term_mine_far', repo: 'flosrn/ax', host: 'gapicore', reason: 'ssh_unreachable' },
-      { handle: 'term_far', repo: 'goodluckagency/ofmchat', host: 'gapicore', reason: 'ssh_unreachable' },
-    ],
-  };
-  assert.deepEqual(liveCount({ index, inventory, repo: 'flosrn/ax' }), {
-    machine: 1,
-    mine: 1,
-    unknown: 0,
-    unmeasured: { machine: 2, mine: 1 },
-  });
-  // Read from the other checkout, the same store: its own unknown is the one
-  // that could make ITS cap unmeasurable, and mine is only a machine-total fact.
-  assert.deepEqual(liveCount({ index, inventory, repo: 'goodluckagency/ofmchat' }), {
-    machine: 1,
-    mine: 0,
-    unknown: 0,
-    unmeasured: { machine: 2, mine: 1 },
-  });
-});
 
 test('repoCapOf: dispatch.cap is the fairness cap, and an undeclared one is 3', () => {
   assert.equal(repoCapOf({}), 3);
