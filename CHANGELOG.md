@@ -8,6 +8,27 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.0](https://github.com/flosrn/ax/compare/v0.23.0...v0.24.0) (2026-09-05)
+
+
+### Features
+
+* **frontier:** name established dependency cycles without rewriting edges ([#196](https://github.com/flosrn/ax/issues/196)) ([59cecca](https://github.com/flosrn/ax/commit/59cecca29fa9f76d7d6b5714402e0c409dbb6de8))
+
+
+### Bug Fixes
+
+* **orchestrator:** keep technical repair with agents after a second refusal ([#199](https://github.com/flosrn/ax/issues/199)) ([c1e44fa](https://github.com/flosrn/ax/commit/c1e44fa4ae9fccfd528c4f113d81cbbb6d5b4da2))
+* **peer:** bound the Report's input before decoding it ([#183](https://github.com/flosrn/ax/issues/183)) ([792da16](https://github.com/flosrn/ax/commit/792da163c6a45f31e5ad2588d04010af82edbc00)), closes [#180](https://github.com/flosrn/ax/issues/180)
+* **pin:** --dry-run withholds the init write, and the header says a flag here is parsed by the version being left ([9ade53c](https://github.com/flosrn/ax/commit/9ade53cdf1340cbecc25f1bc115b59467cfd64ec)), closes [#170](https://github.com/flosrn/ax/issues/170)
+* **pin,init:** a refused pin names the findings' own repair, and --init lands managed state a release adds ([b622119](https://github.com/flosrn/ax/commit/b622119850d2550b7275ef0b84e091392c1ea827)), closes [#170](https://github.com/flosrn/ax/issues/170) [#171](https://github.com/flosrn/ax/issues/171)
+* **pr-gate:** bind every git-backed ground to the validated head and the observed base ([#187](https://github.com/flosrn/ax/issues/187)) ([a18c98d](https://github.com/flosrn/ax/commit/a18c98d7af5cbbad0d52a2e17a9a6fa579a4bf11))
+* **pr-gate:** read every check-run page before authorizing merge ([#186](https://github.com/flosrn/ax/issues/186)) ([7fc1417](https://github.com/flosrn/ax/commit/7fc1417c8040034d979b8a620d32d00a3f82ed03))
+* **pr-gate:** refuse a review-thread read with no observed final page ([#181](https://github.com/flosrn/ax/issues/181)) ([d4421a9](https://github.com/flosrn/ax/commit/d4421a95fae4ad17e8cdd4350cea6cc74d0b9f35))
+* **triage:** admit a finding that names the approved obligation it serves ([#197](https://github.com/flosrn/ax/issues/197)) ([da13f0b](https://github.com/flosrn/ax/commit/da13f0be47916f8074bfcda15a9bc0722f276f4b))
+* **triage:** prove each job and Pass by its own published artifact ([#184](https://github.com/flosrn/ax/issues/184)) ([06cdb6e](https://github.com/flosrn/ax/commit/06cdb6ea991a6ae596840135c0e400ecd4c5936f))
+* **triage:** publish grades provenance on the proposed result, from one class vocabulary ([#182](https://github.com/flosrn/ax/issues/182)) ([e7c2552](https://github.com/flosrn/ax/commit/e7c2552c922d43f7d930bc5cdcc1fdafbf09591c)), closes [#179](https://github.com/flosrn/ax/issues/179)
+
 ## [0.23.0](https://github.com/flosrn/ax/compare/v0.22.0...v0.23.0) (2026-09-05)
 
 
