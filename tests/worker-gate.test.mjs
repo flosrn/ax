@@ -200,6 +200,28 @@ function record(dir, request, { dispatchId = 'ctx_rec', handle = 'term_rec', on 
   return path;
 }
 
+/**
+ * A record whose ONLY phase is an ESTABLISHED REJECTION — the legacy shape
+ * measured on this host (#205). Its `task-create` was fenced by Orca under
+ * another session's Run: exit 1, `ok: false`, `consumer_fenced`, no result. It
+ * carries no task id because no task was ever created, not because the id was
+ * lost.
+ */
+function fenced(dir, request, { exit = 1, phase = 'task-create', receiptText = JSON.stringify({
+  ok: false,
+  error: { code: 'consumer_fenced', message: 'This coordinator terminal is bound to run_68c96672f718, not run_c0cd903fc6e1.' },
+}) } = {}) {
+  const { path } = claimRecord(dir, request);
+  initRecord(path, { request, orca: 'orca' });
+  phaseBegin(path, {
+    name: phase,
+    identity: `id-create-${request}`,
+    argv: ['orca', 'orchestration', phase, '--run', 'run_c0cd903fc6e1', '--json'],
+  });
+  phaseEnd(path, 'last', { exit, receiptText });
+  return path;
+}
+
 /** Nothing on this machine answers a shell here: a test that needs one injects it. */
 const noExec = (bin, args) => ({ status: 1, stdout: '', stderr: `no ${bin} ${String(args?.[0] ?? '')} in this test\n` });
 
@@ -703,4 +725,145 @@ test('#192: a host that cannot say which worktrees it carries produces an inabil
   assert.match(r.out, /→ orca worktree list --repo id:repo-1 --environment gapicore --json/, 'the read that failed is the repair');
   assert.doesNotMatch(r.out, /--replace|ax worker settle|ax worker release/);
   assert.ok(!calls.some(line => line.startsWith('git ')), `nothing local answers for a remote tree: ${calls.join(' | ')}`);
+});
+
+// ── #205: a record that could not have created a task is not an inability ────
+// Measured on this host: two of 288 records carry no task id because their one
+// `task-create` was FENCED — exit 1, `ok: false`, `consumer_fenced`, no result,
+// no task. `taskIdScan` raised on them before the record's own recorded verdict
+// was ever consulted, and this verb turned that raise into a STORE-WIDE
+// CANNOT ESTABLISH: every recovery on the machine was refused over a record
+// that created nothing, behind a store-readability repair that could not act on
+// the named cause. The inability now covers what it was written for — a record
+// whose relation to this task cannot be ESTABLISHED — and nothing wider.
+
+test('#205: a record proved to hold no mutation is set aside, disclosed, and blocks nothing', () => {
+  const dir = store();
+  fenced(dir, 'phase2-fork-pipeline-20260825');
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /First launch/, 'the ordinary liveness verdict is reached');
+  assert.doesNotMatch(r.out, /CANNOT ESTABLISH/, 'the record is not the reason for an exit 3');
+  // Set aside is DISCLOSED, never hidden: the operator must be able to see
+  // which record was passed over and on what ground.
+  assert.match(r.out, /phase2-fork-pipeline-20260825\.json/, 'the record set aside is named');
+  assert.match(r.out, /established rejection/, 'and the ground it was set aside on is stated');
+});
+
+test('#205: a success carrying no legible task id still refuses, repaired against THAT record', () => {
+  const dir = store();
+  fenced(dir, 'started-1', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { state: 'ready' } }) });
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /First launch|Safe to re-dispatch/, 'a success may name a live agent');
+  assert.match(r.out, /started-1\.json/, 'the record whose relation cannot be established is named');
+  assert.match(r.out, /→ cat .*started-1\.json/, 'the repair reads THAT record');
+  assert.match(r.out, /→ ax worker ls --all/, 'and the existing read-only inventory beside it');
+  assert.match(r.out, /recovering .*receipt or identity/, 'the reconciliation condition is stated out loud');
+  assert.doesNotMatch(r.out, /ax worker dispatch/, 'a fresh identity is never the repair');
+  assert.doesNotMatch(r.out, /→ ls -ld/, 'the store is readable — its repair does not address this cause');
+  assert.doesNotMatch(r.out, /--resume/, 'a replay this record does not prove is never printed');
+});
+
+// ── #205 repair 1: the proof is POSITIVE, never missing-is-empty ─────────────
+// P1 on PR #209: `(result.effects ?? []).length > 0` reads an ABSENT container
+// as an empty one, so "this refusal created nothing" was concluded from the
+// silence of the receipt. That is F-028 in the one place whose consequence is a
+// re-dispatch. Emptiness now has to be ASSERTED — either the receipt names both
+// containers and both are empty, or the refusal is one Orca's own source proves
+// is raised before the mutation's first write.
+
+test('#205: an absent effects container is UNKNOWN, not empty — an unverified refusal still refuses', () => {
+  const dir = store();
+  fenced(dir, 'quiet-refusal', {
+    receiptText: JSON.stringify({ ok: false, error: { code: 'runtime_unavailable', message: 'no runtime here' } }),
+  });
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /First launch|Safe to re-dispatch/, 'a silent receipt is not a proof of emptiness');
+  assert.match(r.out, /quiet-refusal\.json/, 'the record is named');
+  assert.match(r.out, /names no effects/, 'and the missing evidence is the stated ground');
+  assert.match(r.out, /→ ax worker ls --all/, 'still a read-only repair');
+});
+
+test('#205: a null or non-array container is UNKNOWN too — only an explicit empty pair proves', () => {
+  const nulled = store();
+  fenced(nulled, 'nulled', {
+    receiptText: JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: null, residualResources: [] } }),
+  });
+  assert.equal(verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: nulled }).code, 3);
+
+  const scalar = store();
+  fenced(scalar, 'scalar', {
+    receiptText: JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: 'none', residualResources: 'none' } }),
+  });
+  assert.equal(verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: scalar }).code, 3);
+
+  // The positive shape: the receipt NAMES both containers and both are empty.
+  const named = store();
+  fenced(named, 'named-empty', {
+    receiptText: JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: [], residualResources: [] } }),
+  });
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: named });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /named-empty\.json/, 'set aside, disclosed');
+  assert.match(r.out, /reports no effects and no residual resources/, 'on the evidence it actually carries');
+});
+
+test('#205: the fenced legacy shape proves itself through Orca\'s own pre-write boundary', () => {
+  // The two records measured on this host carry NO result container at all, so
+  // the positive-evidence ground above cannot reach them. What does is the
+  // refusal itself: `orchestration.taskCreate` resolves the Run scope before
+  // its only write (`resolveRunScope` at orchestration-message-methods.ts:125,
+  // `db.createTask` at :135), and the fence throws in between
+  // (orchestration-run-scope.ts:126-129) — so a fenced `task-create` created no
+  // task. Read from the fork checkout, not assumed.
+  const dir = store();
+  fenced(dir, 'phase2-fork-pipeline-20260825');
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /First launch/);
+  assert.match(r.out, /phase2-fork-pipeline-20260825\.json/, 'set aside, disclosed');
+  assert.match(r.out, /before Orca's first write/, 'the ground names the verified boundary');
+});
+
+test('#205: the pre-write boundary is keyed by PHASE — an unverified phase with the same code refuses', () => {
+  // `consumer_fenced` is NOT universally pre-mutation: Orca raises it from the
+  // mailbox delivery paths (run-delivery.ts) and the decision-gate store, and
+  // `check --wait` reports it AFTER acknowledging a delivery. Only
+  // `task-create` was read to the write, so only `task-create` is allowed.
+  const dir = store();
+  fenced(dir, 'fenced-start', { phase: 'worker-start' });
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /First launch|Safe to re-dispatch/);
+  assert.match(r.out, /fenced-start\.json/);
+});
+
+test('#205: a fenced task-create that nonetheless reports an effect still refuses', () => {
+  // Observed resources beat the code every time: the allowlist answers "no
+  // write had happened yet", and a receipt naming one contradicts it.
+  const dir = store();
+  fenced(dir, 'fenced-with-effect', {
+    receiptText: JSON.stringify({
+      ok: false,
+      error: { code: 'consumer_fenced', message: 'bound elsewhere' },
+      result: { effects: [{ kind: 'terminal', id: 'term_x' }] },
+    }),
+  });
+
+  const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /still reports resources/, 'the existing resource term answers first');
 });

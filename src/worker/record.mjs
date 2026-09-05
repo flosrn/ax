@@ -994,6 +994,136 @@ export function taskIdScan(path) {
 }
 
 /**
+ * Refusals ORCA'S OWN SOURCE proves are raised before the mutation's first
+ * write, keyed by the PHASE whose handler was read to that write.
+ *
+ * Read from the fork checkout (~/Code/flosrn/orca, `upstream` stablyai/orca, at
+ * ee0cf466ed), because Orca is readable source and not a black box (ADR 0026):
+ * `orchestration.taskCreate`'s handler resolves the Run scope at
+ * `rpc/methods/orchestration-message-methods.ts:125` and reaches its ONLY write,
+ * `db.createTask`, at `:135`. The fence throws in between —
+ * `rpc/methods/orchestration-run-scope.ts:126-129`,
+ * `` `This coordinator terminal is bound to ${current.id}, not ${explicit.id}.` ``
+ * — which is the message the two legacy records on this host carry verbatim.
+ * Everything the handler does before that throw is a read (`getRun`,
+ * `getCurrentRunForPane`, `getTerminalPaneKey`) or the pure deps parse. Orca
+ * asserts the same boundary in its own tests: a fenced `taskCreate` leaves
+ * `db.listTasks({runId})` empty
+ * (`rpc/orchestration-11745-regression-verification.test.ts:325-326`).
+ *
+ * KEYED BY PHASE, NOT BY CODE, because `consumer_fenced` is NOT universally
+ * pre-write: Orca raises it from the mailbox delivery paths
+ * (`db/runs/run-delivery.ts:16,63,148`) and the decision-gate store
+ * (`db/decision-gates/decision-gate-store.ts:38-42`), and `check --wait`
+ * reports it AFTER acknowledging a delivery
+ * (`rpc/methods/orchestration-check-run.ts:176-181`). A code alone would
+ * generalise one verified boundary into six unverified ones. A phase this table
+ * does not name is unknown, never empty — adding a row means reading that
+ * handler to its first write, in the same commit.
+ */
+const PRE_WRITE_REFUSALS = new Map([['task-create', new Set(['consumer_fenced'])]]);
+
+/**
+ * COULD THIS RECORD HAVE MADE A MUTATION AT ALL? `{ proven, reason, ground }`.
+ *
+ * A different question from `staleClaim`'s. That one asks "may I take this
+ * claim over?", where the recorded Run decides between a takeover and a replay.
+ * This one asks "did this record touch anything?", and a record proved to have
+ * touched nothing created no task, so it is unrelated to EVERY task whoever's
+ * Run it names. Mixing the two terms is what made a foreign, refused, empty
+ * record block the recovery of unrelated work (#205): the gate needs
+ * relatedness, and foreignness is not one of its grounds.
+ *
+ * It is `noMutation`'s terms — every phase closed, conclusively `ok: false`,
+ * none reporting resources — AND THEN A STRICTLY STRONGER ONE, which is the
+ * whole of P1 on PR #209. `noMutation` reads an ABSENT `effects` container as an
+ * empty one, so "this refusal created nothing" was being concluded from the
+ * SILENCE of a receipt. That is F-028 in the one place whose consequence is a
+ * re-dispatch: a failed receipt can describe a partial mutation, and the two
+ * measured records carry no `result` container at all. So emptiness must be
+ * ASSERTED, by one of exactly two positive grounds, per phase:
+ *
+ *   - the receipt NAMES both containers and both are empty arrays — the mutator
+ *     itself reporting that it created nothing, whatever its code; or
+ *   - the refusal is one `PRE_WRITE_REFUSALS` proves precedes Orca's first
+ *     write for that phase.
+ *
+ * Null, a scalar, or an absent container is UNKNOWN under both. Observed
+ * resources refuse first, through `noMutation`, so the table can never overrule
+ * a receipt that names one.
+ *
+ * THE ASYMMETRY WITH `staleClaim` IS DELIBERATE AND MUST STAY VISIBLE. That
+ * reader was ratified at the weaker strength on 2026-08-14 and #205 forbids
+ * changing its answers, so the same silent receipt is still RECLAIMABLE while
+ * it is not proof of unrelatedness. The stronger proof belongs to the stronger
+ * consequence. Whether reclaim deserves the same tightening is a separate
+ * question with its own cost, and it is not settled here.
+ *
+ * `reason` names the doubt when the proof fails and `ground` the evidence when
+ * it holds; both are `''` in the other case, and the caller quotes rather than
+ * restates them.
+ */
+export function heldNoMutation(path) {
+  const phases = must(load(path), 'attempts', 'record root').flatMap(attempt => must(attempt, 'phases', 'attempt'));
+  const lenient = noMutation(phases);
+  if (!lenient.proven) return { ...lenient, ground: '' };
+
+  const grounds = new Set();
+  for (const ph of phases) {
+    const receipt = ph.receipt ?? {};
+    const result = receipt.result ?? {};
+    if (Array.isArray(result.effects) && result.effects.length === 0
+      && Array.isArray(result.residualResources) && result.residualResources.length === 0) {
+      grounds.add('each reports no effects and no residual resources');
+      continue;
+    }
+    const code = (receipt.error ?? {}).code;
+    if (PRE_WRITE_REFUSALS.get(ph.name)?.has(code) === true) {
+      grounds.add(`each was refused before Orca's first write — ${ph.name} fenced by ${code}`);
+      continue;
+    }
+    return {
+      proven: false,
+      ground: '',
+      reason: `refused phase "${ph.name}" names no effects and no residualResources arrays, and ${
+        code === undefined ? 'it carries no error code' : `"${String(code).slice(0, 60)}" is not a refusal proven to precede Orca's first write on that phase`
+      } — whether it created anything is UNKNOWN, not nothing`,
+    };
+  }
+  return { proven: true, reason: '', ground: [...grounds].join('; ') };
+}
+
+/** The proof over phases a caller already holds — one loop, two callers (#161). */
+function noMutation(phases) {
+  if (phases.length === 0) return { proven: false, reason: 'record has no phase yet — its first mutation may be in flight' };
+
+  for (const ph of phases) {
+    const receipt = ph.receipt;
+    if (ph.exit === null || ph.exit === undefined || receipt === null || receipt === undefined) {
+      return { proven: false, reason: `phase "${ph.name}" is still open — its mutation may be in flight` };
+    }
+    if (typeof receipt !== 'object' || receipt.unparseable !== undefined || ph.transport) {
+      return { proven: false, reason: `phase "${ph.name}" ended with an unknown outcome — it may have committed` };
+    }
+    if (receipt.ok !== false) {
+      const tid = taskIdOf(receipt.result ?? {});
+      return {
+        proven: false,
+        reason: tid
+          ? `record carries a task id (${tid}) — it may name a real mutation`
+          : `phase "${ph.name}" succeeded — it may name a real mutation`,
+      };
+    }
+    const result = receipt.result ?? {};
+    if ((result.effects ?? []).length > 0 || (result.residualResources ?? []).length > 0) {
+      return { proven: false, reason: `refused phase "${ph.name}" still reports resources — they may exist` };
+    }
+  }
+
+  return { proven: true, reason: '' };
+}
+
+/**
  * Is a lost claim provably USELESS rather than merely suspicious?
  *
  * Measured 2026-08-14: a record written under ANOTHER session's Run fenced the
@@ -1003,45 +1133,22 @@ export function taskIdScan(path) {
  * second identity minted over a mutation that is still in flight.
  *
  * Reclaimable requires ALL of:
- *   - at least one phase, and every phase CLOSED (an exit and a receipt);
- *   - every phase a conclusive `ok: false` refusal — an illegible receipt or a
- *     transport that never concluded is an UNKNOWN outcome, not a refusal, and
- *     a success (with or without a task id) may name a live agent;
- *   - no refused phase reporting effects or residual resources — a refusal that
- *     still created something is a mutation, whatever it calls itself;
+ *   - the proof above — the record held no mutation at all;
  *   - a recorded Run, and one that is not the caller's (a caller's own Run is
  *     replayable from here, which is always better than a takeover).
+ *
+ * The first term is `noMutation`'s, shared rather than copied: two readings of
+ * "this record touched nothing" is how one of them starts reclaiming a record
+ * the other refuses. Its `reason` is forwarded verbatim, so every answer this
+ * function gave before the split it still gives.
  *
  * Anything else is precious: the reason says why, and the caller replays it.
  */
 export function staleClaim(path, callerRun) {
-  const rec = load(path);
-  const attempts = must(rec, 'attempts', 'record root');
+  const attempts = must(load(path), 'attempts', 'record root');
   const phases = attempts.flatMap(attempt => must(attempt, 'phases', 'attempt'));
-  if (phases.length === 0) return { stale: false, reason: 'record has no phase yet — its first mutation may be in flight' };
-
-  for (const ph of phases) {
-    const receipt = ph.receipt;
-    if (ph.exit === null || ph.exit === undefined || receipt === null || receipt === undefined) {
-      return { stale: false, reason: `phase "${ph.name}" is still open — its mutation may be in flight` };
-    }
-    if (typeof receipt !== 'object' || receipt.unparseable !== undefined || ph.transport) {
-      return { stale: false, reason: `phase "${ph.name}" ended with an unknown outcome — it may have committed` };
-    }
-    if (receipt.ok !== false) {
-      const tid = taskIdOf(receipt.result ?? {});
-      return {
-        stale: false,
-        reason: tid
-          ? `record carries a task id (${tid}) — it may name a real mutation`
-          : `phase "${ph.name}" succeeded — it may name a real mutation`,
-      };
-    }
-    const result = receipt.result ?? {};
-    if ((result.effects ?? []).length > 0 || (result.residualResources ?? []).length > 0) {
-      return { stale: false, reason: `refused phase "${ph.name}" still reports resources — they may exist` };
-    }
-  }
+  const empty = noMutation(phases);
+  if (!empty.proven) return { stale: false, reason: empty.reason };
 
   let recorded = '';
   for (const ph of phases) {

@@ -81,7 +81,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { hostReader, hostScopes, terminalInventory } from './pane.mjs';
-import { defaultStore, dispatchIndex, phaseVerdict, scanStore, taskIdScan } from './record.mjs';
+import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, scanStore, taskIdScan } from './record.mjs';
 
 /**
  * The task a REQUEST id names, read from the dispatch record store, or null.
@@ -158,27 +158,62 @@ export function namedList(out, key, command) {
  * its task cannot be established from a torn file, so it cannot be proven
  * unrelated to this one, and skipping it is how an empty worker-list answers
  * "first launch" over a mutation that already committed (P1, PR #200).
+ *
+ * A RECORD THAT NAMES NO TASK IS CLASSIFIED, NOT RAISED ON (#205). Until then
+ * the raise from `taskIdScan` became the inability directly — and it fired
+ * before the `named !== task` filter, so ONE such record refused every recovery
+ * on the host, behind the store-readability repair, which the store being
+ * readable cannot act on. Two situations reach that raise and only one of them
+ * is a doubt: a mutation that may have committed without its id ever being
+ * learned, and a record that made no mutation at all. The second is an
+ * ESTABLISHED fact about the record — asked of the store's own proof
+ * (`heldNoMutation`, ./record.mjs), never re-derived here — and a record that
+ * created no task is unrelated to every task, so the scan continues past it and
+ * DISCLOSES it. Everything else still refuses: no phase recorded, an open
+ * phase, an illegible receipt, a transport that never concluded, a success with
+ * no legible task id, a torn file.
+ *
+ * The refusal carries its SCOPE, because the repair differs by it: a store
+ * nothing can read is repaired at the store, and one record nobody can place is
+ * repaired at that record — reads only, and never a `--resume` the record does
+ * not prove.
  */
 function uncertainMutations(store, task) {
   const scan = scanStore(store);
-  if (scan.reason !== '' && !scan.missing) return { ok: false, reason: `the dispatch store ${store} is unreadable: ${scan.reason}` };
+  if (scan.reason !== '' && !scan.missing) return { ok: false, scope: 'store', reason: `the dispatch store ${store} is unreadable: ${scan.reason}` };
   if (scan.unreadable.length > 0) {
     const first = scan.unreadable[0];
     return {
       ok: false,
+      scope: 'store',
       reason: `${scan.unreadable.length} record(s) in the dispatch store cannot be read, so whether any of them is ${task} cannot be established. First: ${first.file} — ${String(first.error).slice(0, 160)}`,
     };
   }
   const rows = [];
+  const setAside = [];
   for (const { file, stem } of scan.records) {
     const path = join(store, file);
     let named;
     try {
       named = taskIdScan(path);
     } catch (error) {
+      let empty;
+      try {
+        empty = heldNoMutation(path);
+      } catch (unreadable) {
+        // The proof itself could not be read off the record. That is the doubt
+        // in its purest form, and it is reported as the record's own.
+        empty = { proven: false, reason: `its phases cannot be read: ${String(unreadable.message ?? unreadable).slice(0, 120)}` };
+      }
+      if (empty.proven) {
+        setAside.push({ file, ground: `every recorded phase is an established rejection, and ${empty.ground}` });
+        continue;
+      }
       return {
         ok: false,
-        reason: `record ${file} cannot name its task (${String(error.message ?? error).slice(0, 160)}), so it cannot be proven unrelated to ${task}`,
+        scope: 'record',
+        path,
+        reason: `record ${file} cannot name its task (${String(error.message ?? error).slice(0, 160)}) and is not proven to hold no mutation (${empty.reason}), so it cannot be proven unrelated to ${task}`,
       };
     }
     if (named !== task) continue;
@@ -191,7 +226,7 @@ function uncertainMutations(store, task) {
     }
     if (verdict.verdict === 'unknown') rows.push({ request: stem, evidence: String(verdict.evidence).slice(0, 300) });
   }
-  return { ok: true, rows };
+  return { ok: true, rows, setAside };
 }
 
 export function gate(argv = [], { resolve = resolveOrca, runner, env = process.env, exec = defaultExec, cwd = process.cwd() } = {}) {
@@ -293,9 +328,26 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   if (!uncertain.ok) {
     bad(`CANNOT ESTABLISH — ${uncertain.reason}`);
     note('A record in that store may hold a mutation whose outcome is unknown, and a re-dispatch over one of those is F-001.');
-    fix(`ls -ld ${store}   # the store must be readable before any re-dispatch is authorised`);
+    if (uncertain.scope === 'record') {
+      // ONE RECORD'S INABILITY IS REPAIRED AT THAT RECORD (#205), and with
+      // reads: the store is readable, so `ls -ld` acts on nothing here, and
+      // there is no authority over this store that could be offered instead —
+      // an operator attestation would be a permission granted by an absence of
+      // observation, which is the shape of F-001 itself.
+      note('Reconciling it means recovering that record\'s own recorded receipt or identity first — never editing it, never backfilling an id, never removing it, and never launching again on the assumption it is empty.');
+      fix(`cat ${uncertain.path}   # this record: which phase never concluded, and what its receipt names`);
+      fix('ax worker ls --all   # every record, the pane it named and the host that answered for it');
+    } else {
+      fix(`ls -ld ${store}   # the store must be readable before any re-dispatch is authorised`);
+    }
     return 3;
   }
+
+  // A RECORD PROVED TO HOLD NO MUTATION IS SET ASIDE — AND SAID SO. It is not a
+  // refusal and stands in the way of nothing below; hiding it would leave an
+  // operator reading a verdict reached over a record they never knew was
+  // consulted.
+  for (const aside of uncertain.setAside) note(`set aside ${aside.file}: it created no task (${aside.ground}), so it is unrelated to ${task}.`);
 
   // The panes, judged by the answer that can decide each one — the same reader
   // `ax worker ls` counts with (./pane.mjs `hostReader`). A row this store does
