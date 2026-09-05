@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import { dispatch, roleWaitOf } from '../src/triage/dispatch.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
+import { quote } from '../src/worker/hosts.mjs';
 import { slugOf, transcript } from '../src/worker/transcript.mjs';
 
 const REPO = 'acme/widgets';
@@ -913,13 +914,34 @@ test('#204 the CANNOT-ESTABLISH repair line runs, from a checkout path a shell w
 
   // The printed bytes, handed to a POSIX shell exactly as an operator pastes
   // them. Nothing is re-quoted or re-split here.
-  const ran = spawnSync('sh', ['-c', printed], {
-    encoding: 'utf8',
-    env: { HOME: home, PATH: `${path}:/usr/bin:/bin`, ORCA_DISPATCH_STORE: r.store, ORCA_BIN: orca },
-  });
+  //
+  // `cwd` IS THE CHECKOUT IT WAS PRINTED IN, which is the criterion's own
+  // wording and not decoration: `bin/ax.mjs` is a delegating entry that walks
+  // up from the cwd for a project that declared an ax pin (../src/delegation.mjs),
+  // so inheriting the runner's cwd would leave WHICH ax answers to the machine
+  // this suite happens to run on.
+  const shell = command =>
+    spawnSync('sh', ['-c', command], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { HOME: home, PATH: `${path}:/usr/bin:/bin`, ORCA_DISPATCH_STORE: r.store, ORCA_BIN: orca },
+    });
+
+  const ran = shell(printed);
   assert.equal(ran.status, 0, `the printed repair did not run:\n${printed}\n${ran.stderr}`);
   assert.equal(JSON.parse(ran.stdout).sessionRole.role, 'triage-worker', 'and it answered with THIS checkout\'s own receipt');
   assert.equal(existsSync(sentinel), false, 'the checkout path was pasted as DATA — nothing in it was expanded');
+
+  // AND THE BINARY THE SHELL REACHED IS THIS CODE. Without this the run above
+  // could be satisfied by any ax on the machine and would prove nothing about
+  // this one. What identifies it is that a refused proof SPEAKS on stderr at
+  // all — before #204 that branch returned exit 1 with both streams empty — and
+  // that what it says carries a repair, which is the rule AGENTS.md states.
+  const reached = shell(`ax worker transcript --dispatch-proof no-such-checkout --request ${quote(request)}`);
+  assert.equal(reached.status, 1, 'still exit 1: the protocol did not move');
+  assert.equal(reached.stdout, '', 'and stdout is still the payload channel, still empty');
+  assert.match(reached.stderr, /✗ /, 'the ax the shell reached names its refusal — only this code does');
+  assert.match(reached.stderr, /→ ax /, 'and names what repairs it');
 
   // The key it replaced, on the same fixture: still ambiguous, still refused.
   const old = capture(() => transcript(['--dispatch-proof', basename(root), '--request', request], { env: { HOME: home, ORCA_DISPATCH_STORE: r.store } }));
