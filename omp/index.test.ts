@@ -489,6 +489,28 @@ test('the bundled orchestrator role delegates verification and keeps technical r
   expect(role).toMatch(/one repair round/);
 });
 
+// #191: Completion is a derived read of the Spec, not an empty takeable list.
+// Prompt-text pins are not a measured Wave — they prove the session would be
+// handed the doctrine, not that a Wave obeyed it.
+test('the bundled orchestrator role reads Completion from the Spec, not from an empty frontier', async () => {
+  const installed = install('[omp model=@task]');
+  await installed.commands.get('role')?.handler('orchestrator', installed.ctx);
+  const role = (await turn(installed, BASE))?.systemPrompt?.[2] ?? '';
+
+  expect(role).toContain('## Completion');
+  expect(role).toContain('ax frontier --spec <ref>');
+  expect(role).toMatch(/empty `takeable` list/);
+  expect(role).toMatch(/closed Wave/);
+  expect(role).toMatch(/Deployment target:/);
+  expect(role).toMatch(/Permitted operations:/);
+  expect(role).toMatch(/Observed:/);
+  expect(role).toMatch(/Blocked:/);
+  expect(role).toMatch(/named blocker/);
+  expect(role).toMatch(/chooses no Ticket and creates no Dispatch identity/);
+  expect(role).toMatch(/second scheduler/);
+  expect(role).toMatch(/do not establish a consumer's deployment/);
+});
+
 // The worker's half of the learnings channel (KTD7) and the refusal duty the
 // routing above depends on: a routed refusal with no worker contract to
 // receive it is a message into the void.
