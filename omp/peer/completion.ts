@@ -404,7 +404,7 @@ function block(path, lines, body = '') {
  * exactly the wordings two copies drift on — the same argument the Report-path
  * twin pays a parity test for.
  */
-function injected(input, cap, path, lines, where) {
+function injected(input, cap, path, lines, where, diagnose) {
   if (input.text.trim() === '') {
     // TWO WAYS TO HAVE NOTHING TO SHOW, and one of them is not an absence: a
     // truncated window with no complete line inside it came off a file that has
@@ -416,9 +416,11 @@ function injected(input, cap, path, lines, where) {
       lines.push(
         `Repair: read ${path} ${where} — the file is not empty; its first line is longer than the bound this block reads.`,
       );
+      diagnose?.({ disposition: 'truncated-empty', path });
     } else {
       lines.push('FINDING: the Report at this path is empty.');
       lines.push(REPAIR);
+      diagnose?.({ disposition: 'empty', path });
     }
     return block(path, lines);
   }
@@ -427,6 +429,7 @@ function injected(input, cap, path, lines, where) {
   if (shown.body === undefined) {
     lines.push(`FINDING: ${shown.reason}.`);
     lines.push(shown.repair);
+    diagnose?.({ disposition: 'unreadable', path, detail: shown.reason });
     return block(path, lines);
   }
   return block(path, lines, shown.body);
@@ -446,6 +449,15 @@ export function completionReport(msg, deps = {}) {
   const environmentOf = deps.environmentOf ?? environmentOfDispatch;
   const retrieve = deps.retrieve ?? fetchRemoteReport;
   const cap = deps.cap ?? REPORT_CAP_BYTES;
+  const diagnose = (entry) => {
+    try {
+      deps.diagnose?.({
+        reason: 'report-unreadable',
+        messageId: String(msg?.id ?? '') || undefined,
+        ...entry,
+      });
+    } catch {}
+  };
 
   try {
     // A completion, and one from a worker THIS machine dispatched. Anything else
@@ -478,6 +490,11 @@ export function completionReport(msg, deps = {}) {
       if (rec === null || rec === undefined) return '';
       const witnessed = String(msg?.sender_pane_key ?? '').trim() !== '';
       if (!witnessed) {
+        diagnose({
+          disposition: 'unwitnessed',
+          request: rec.request,
+          dispatch: claimed,
+        });
         return block(null, [
           `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`) from ${from || 'no handle'}, but the sender is not witnessed — Orca recorded no pane key for it. The Report was NOT derived: a completion without a witness is a claim, not a completion.`,
           `Repair: read the pane the record names (\`ax worker tail ${rec.request}\`) before acting on this message.`,
@@ -485,12 +502,22 @@ export function completionReport(msg, deps = {}) {
       }
       const recordedPane = paneOfDispatch(rec.json, claimed);
       if (recordedPane === '') {
+        diagnose({
+          disposition: 'pane-unrecorded',
+          request: rec.request,
+          dispatch: claimed,
+        });
         return block(null, [
           `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`), and its record names no pane for that dispatch, so the sender ${from} cannot be cross-checked. The Report was NOT derived.`,
           `Repair: \`ax worker ls\` for \`${rec.request}\` — a worker-start receipt with no terminal effect is the record's inability, and \`ax worker transcript ${rec.request}\` reads the session directly.`,
         ]);
       }
       if (recordedPane !== from) {
+        diagnose({
+          disposition: 'pane-mismatch',
+          request: rec.request,
+          dispatch: claimed,
+        });
         return block(null, [
           `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`), whose record names pane ${recordedPane} — not the sender ${from}. The Report was NOT derived: the claim is not this pane's to make.`,
           `Repair: read both panes before acting — \`ax worker tail ${rec.request}\` for the recorded one; the sender is a peer, not this dispatch's worker.`,
@@ -501,6 +528,11 @@ export function completionReport(msg, deps = {}) {
 
     const derived = reportPath(rec.json);
     if (derived.path === undefined) {
+      diagnose({
+        disposition: 'path-unestablished',
+        request: rec.request,
+        detail: derived.reason,
+      });
       return block(null, [
         `FINDING: ${derived.reason}.`,
         `Repair: read the dispatch record for \`${rec.request}\` in ax's store — it is the only thing that establishes where this worker's Report is, and it names no single worktree here.`,
@@ -534,6 +566,7 @@ export function completionReport(msg, deps = {}) {
       if (got.absent === true) {
         lines.push(`FINDING: no Report at this path ${where} — the worker completed without writing one there.`);
         lines.push(REPAIR);
+        diagnose({ disposition: 'absent', path: derived.path, request: rec.request, environment });
         return block(derived.path, lines);
       }
       if (got.buf === undefined) {
@@ -541,6 +574,13 @@ export function completionReport(msg, deps = {}) {
           `FINDING: Report inaccessible from this host — this dispatch ran on '${environment}', so the recorded worktree and its Report are on that host, and ${got.reason}.`,
         );
         lines.push(got.repair ?? REPAIR);
+        diagnose({
+          disposition: 'inaccessible',
+          path: derived.path,
+          request: rec.request,
+          environment,
+          detail: got.reason,
+        });
         return block(derived.path, lines);
       }
       // THE HOST RESOLVED, THIS SIDE DECIDES. Only that host can resolve its own
@@ -555,6 +595,7 @@ export function completionReport(msg, deps = {}) {
         lines.push(
           'Repair: inspect that link before trusting anything from this slice; the Report must be a file under the worktree the record names, and a path leading out of it was not written by the rule.',
         );
+        diagnose({ disposition: 'outside-worktree', path: derived.path, request: rec.request, environment });
         return block(derived.path, lines);
       }
       // A retrieval that honours the bound sends at most cap + 1. More than that
@@ -568,12 +609,13 @@ export function completionReport(msg, deps = {}) {
         lines.push(
           `Repair: read ${derived.path} ${where} — a retrieval that honours the bound sends at most ${cap + 1} bytes, and an answer past that bound is not a Report this side will decode.`,
         );
+        diagnose({ disposition: 'oversize', path: derived.path, request: rec.request, environment });
         return block(derived.path, lines);
       }
       lines.push(
         `NOTE: retrieved from '${environment}', the host this dispatch ran on, where ${got.fileReal} resolves under ${got.worktreeReal}.`,
       );
-      return injected(boundWindow(got.buf, got.buf.length, cap), cap, derived.path, lines, where);
+      return injected(boundWindow(got.buf, got.buf.length, cap), cap, derived.path, lines, where, diagnose);
     }
 
     // RESOLVE + REALPATH, both sides. The derived path is built from a record,
@@ -590,6 +632,12 @@ export function completionReport(msg, deps = {}) {
       lines.push(
         'Repair: check that worktree still exists — a released one takes its Report with it, and the record is then the only account of the slice.',
       );
+      diagnose({
+        disposition: 'worktree-unresolved',
+        path: derived.path,
+        request: rec.request,
+        detail: String(err?.code ?? err),
+      });
       return block(derived.path, lines);
     }
 
@@ -604,11 +652,18 @@ export function completionReport(msg, deps = {}) {
       if (err?.code === 'ENOENT') {
         lines.push('FINDING: no Report at this path — the worker completed without writing one there.');
         lines.push(REPAIR);
+        diagnose({ disposition: 'absent', path: derived.path, request: rec.request });
       } else {
         lines.push(
           `FINDING: the Report at this path did not resolve (${err?.code ?? err}); an absence would be ENOENT, so this is a path fault and not a missing Report.`,
         );
         lines.push(`Repair: inspect ${derived.path} on this host — the fault is in the path, not in the completion.`);
+        diagnose({
+          disposition: 'path-fault',
+          path: derived.path,
+          request: rec.request,
+          detail: String(err?.code ?? err),
+        });
       }
       return block(derived.path, lines);
     }
@@ -621,6 +676,7 @@ export function completionReport(msg, deps = {}) {
       lines.push(
         'Repair: inspect that link before trusting anything from this slice; the Report must be a file under the worktree the record names, and a path leading out of it was not written by the rule.',
       );
+      diagnose({ disposition: 'outside-worktree', path: derived.path, request: rec.request });
       return block(derived.path, lines);
     }
 
@@ -633,12 +689,19 @@ export function completionReport(msg, deps = {}) {
     } catch (err) {
       lines.push(`FINDING: the Report at this path could not be read: ${err?.code ?? err}.`);
       lines.push(`Repair: read ${derived.path} on this host; the file resolved, so the fault is in reading it.`);
+      diagnose({
+        disposition: 'unreadable',
+        path: derived.path,
+        request: rec.request,
+        detail: String(err?.code ?? err),
+      });
       return block(derived.path, lines);
     }
-    return injected(input, cap, derived.path, lines, 'on this host');
+    return injected(input, cap, derived.path, lines, 'on this host', diagnose);
   } catch (err) {
     // A fault in THIS receiver, not in the completion above it. Saying so is the
     // repair: the reader must not go looking for a worker that misbehaved.
+    diagnose({ disposition: 'receiver-fault', detail: String(err) });
     return block(null, [
       `FINDING: the Report could not be established: ${err}`,
       'Repair: the fault is in this receiver, not in the completion above — the Summary stands, and the Report is still on disk under the worktree the dispatch record names.',

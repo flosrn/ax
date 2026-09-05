@@ -54,6 +54,7 @@ import { environmentOfDispatch, resolveChildRoute } from './route.ts';
 // The Report a worker's completion carries: derived from the dispatch record,
 // read on the host that record names (here, or over ssh), never from `payload.reportPath`.
 import { completionReport } from './completion.ts';
+import { readDelivery, recordDelivery, renderDelivery } from './diagnostics.ts';
 
 // Addressing, lineage and the registry, split by concern under this package.
 // The naming rule that decides an address lives in `./address.ts` alone;
@@ -442,9 +443,11 @@ const receiver = createReceiver({
   // sender claimed. `store.ts`'s `runAddressOfHandle` carries the bound on that.
   paneRoute: (handle) => runAddressOfHandle(handle),
   peerContent,
-  // Its own defaults reach the dispatch store and the filesystem; nothing here
-  // re-derives the path, which is the point of the rule living in one module.
-  completionReport,
+  // Its own defaults reach the dispatch store and the filesystem; a FINDING
+  // is recorded at the point that knows it, so a restarted session can tell
+  // an unreadable Report from a missing Summary.
+  completionReport: (msg) => completionReport(msg, { diagnose: recordDelivery }),
+  recordDelivery,
   wasInjected: (id) => injectedIds.has(id),
   rememberInjected,
   compactInjected,
@@ -800,6 +803,24 @@ export default function (pi): void {
         ],
       };
     },
+  });
+
+  pi.registerTool({
+    name: 'peer_diagnostics',
+    description:
+      'Read what this session\'s communication channel could not deliver or ' +
+      'intentionally withheld — persisted across restart. Sequence gaps, ' +
+      'voluntary filters, refused injections, missing reply routes, unreadable ' +
+      'Reports and waiting acknowledgements are named separately. An observed ' +
+      'filter is not an injection failure, and an unreadable Report is not a ' +
+      'missing Summary. Coverage is partial: only this layer\'s send/receive ' +
+      'seams write here; a hand-rolled `orca orchestration send` is invisible. ' +
+      'No delivery rate is computed. Stall-watch and card alerts still wake; ' +
+      'this tool does not replace them.',
+    parameters: pi.zod.object({}),
+    execute: async () => ({
+      content: [{ type: 'text', text: renderDelivery(readDelivery()) }],
+    }),
   });
 
   // THE MODEL IS READ FROM WHAT ACTUALLY SERVED ON THE ACTIVE BRANCH, NOT

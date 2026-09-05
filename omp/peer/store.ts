@@ -12,8 +12,14 @@ import { randomUUID } from 'node:crypto';
 
 import { str } from './orca.ts';
 
-/** Overridable so the tests never touch the live registry. */
-function registryDir(): string {
+/**
+ * Overridable so the tests never touch the live registry.
+ *
+ * Exported because the delivery diagnostics live beside these entries
+ * (`./diagnostics.ts`) and a second derivation of this path is a second
+ * directory the day the override changes.
+ */
+export function registryDir(): string {
   return (
     process.env.ORCA_PEER_REGISTRY_DIR ||
     `${process.env.HOME}/.omp/run/orca-peers`
