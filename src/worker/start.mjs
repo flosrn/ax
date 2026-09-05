@@ -186,10 +186,23 @@ function placementRefusal(passthru) {
 const PLACEMENT = ['--worktree', '--agent', '--on', '--repo', '--name', '--setup'];
 
 /**
+ * A PLACEMENT FLAG'S VALUE IS NEVER ANOTHER OPTION. Every selector this group
+ * carries is a `path:`/`id:`/`name:`/`branch:`/`issue:`/`identity:` selector, a
+ * host, a repo id, a worktree name or `skip` — none of them start with `-`. So
+ * a placement flag followed by an option names NO value, and reading the next
+ * token regardless is how a bare `--worktree` swallowed the `--json` this verb
+ * appends to every call it issues: the placement then looked KNOWN, walked the
+ * live-agent gate and the `task-update`, and reissued `--worktree --json`
+ * (review of PR #166). A bare flag is unknown placement, and unknown is a
+ * refusal.
+ */
+const isOption = token => String(token ?? '').startsWith('-');
+
+/**
  * An argv split into its placement and everything else, preserving order and
- * both option forms. A bare placement flag at the end of an argv is dropped
- * with the group rather than left in the remainder, where it would sit in
- * front of the inherited value and consume it.
+ * both option forms. A bare placement flag travels with the group rather than
+ * staying in the remainder, where it would sit in front of the inherited value
+ * and consume it.
  */
 function splitPlacement(argv) {
   const placement = [];
@@ -202,7 +215,7 @@ function splitPlacement(argv) {
     }
     if (PLACEMENT.includes(arg)) {
       placement.push(arg);
-      if (i + 1 < argv.length) {
+      if (i + 1 < argv.length && !isOption(argv[i + 1])) {
         placement.push(argv[i + 1]);
         i += 1;
       }
@@ -224,8 +237,8 @@ function splitPlacement(argv) {
  * exists to refuse. And a record naming one flag twice cannot be resolved by
  * position at all.
  *
- * A bare flag pairs with `null`: a typed `--worktree` with no value names no
- * placement, so it contradicts a record that names one.
+ * A bare flag pairs with `null`, by the rule above: it names no placement, so
+ * it contradicts a record that names one and it cannot BE a record's placement.
  */
 function placementPairs(placement) {
   const pairs = [];
@@ -236,7 +249,7 @@ function placementPairs(placement) {
       pairs.push([joined, arg.slice(joined.length + 1)]);
       continue;
     }
-    if (i + 1 < placement.length) {
+    if (i + 1 < placement.length && !isOption(placement[i + 1])) {
       pairs.push([arg, placement[i + 1]]);
       i += 1;
       continue;

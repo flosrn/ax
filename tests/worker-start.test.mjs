@@ -642,6 +642,11 @@ test('a record whose newest worker-start names no --worktree refuses, naming the
   for (const mangle of [
     phases => { phases.findLast(ph => ph.name === 'worker-start').argv = ['orca', 'orchestration', 'worker-start', '--task', 'task_abc123', '--agent', 'omp', '--json']; },
     phases => { phases.splice(phases.findIndex(ph => ph.name === 'worker-start'), 1); },
+    // A BARE `--worktree` names no value, and the token after it is another
+    // option — `--json`, which `start` appends to every call it issues. Read
+    // as a value it makes the placement look KNOWN, and the replacement walks
+    // the gate and `task-update` before reissuing `--worktree --json`.
+    phases => { phases.findLast(ph => ph.name === 'worker-start').argv = ['orca', 'orchestration', 'worker-start', '--task', 'task_abc123', '--agent', 'omp', '--worktree', '--json']; },
   ]) {
     const home = scratch();
     const first = invoke(freshArgs(home, 'req-noplace'), { env: { HOME: home } });
