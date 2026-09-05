@@ -58,13 +58,19 @@ its conservative branch: `INCONNU`.
 
 ## Consequence to expect, not to fix
 
-On a Mac whose `terminal list` omits one stale paired runtime (measured 2026-08-22 and
-still true 2026-09-03), every locally-dispatched corpse is `MORT` to the listing and
-`INCONNU` to anything reading worker-list rows. Each verb's own disposition then decides
-the answer, and the two disposals of `INCONNU` are deliberately opposite:
+**Superseded in part by #192.** `ax worker gate` no longer discloses an INCONNU
+pane and answers 0. Unknown liveness is cannot-establish (exit 3), never
+permission to re-dispatch — see
+[unknown-liveness-is-not-permission-to-redispatch.md](./unknown-liveness-is-not-permission-to-redispatch.md).
+`paneVerdict` still has no `host` default; the gate now supplies placement from
+the dispatch record through the same `hostReader` `ls` uses. What remains true
+below is settle's refusal to WRITE a death it cannot prove.
 
-- `gate` asks *may I re-dispatch?* — unknown must fail closed toward **not dispatching**,
-  so it discloses the omission and answers 0.
+On a Mac whose `terminal list` omits one stale paired runtime (measured 2026-08-22 and
+still true 2026-09-03), every locally-dispatched corpse is `MORT` to the listing.
+A row `worker-list` cannot attribute stays INCONNU, and both verbs refuse:
+
+- `gate` asks *may I re-dispatch?* — unknown is exit 3, never `Safe to re-dispatch`.
 - `settle` asks *may I write death?* — unknown must fail closed toward **not writing**,
   so it answers 3 with the read that would settle the question.
 
@@ -75,6 +81,8 @@ pane being read from the host it was dispatched to), never a `host` default nobo
 ## Rule
 
 Before comparing two verbs' liveness answers, compare what each one could pass as
-`host`. A verb whose evidence is `worker-list` cannot establish placement, and giving it
-one — by defaulting `host` to `''`, or by reading the record's phase to decide death —
-trades a conservative unknown for a guess that authorises a mutation.
+`host`. `paneVerdict` still has no default: `''` is an assertion, an absent `host`
+is conservative INCONNU. #192 taught the gate to take placement from the dispatch
+*record* through `hostReader`, not from a default and not from `worker-list`.
+Defaulting `host` to `''` without that record is still the guess that authorises
+a mutation.
