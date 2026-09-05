@@ -60,6 +60,7 @@ const REPO_LABELS = [
   'needs-info',
   'source:agent-found',
   'source:user-report',
+  'source:roadmap',
 ];
 
 /**
@@ -504,6 +505,145 @@ test('a repository that declares no provenance vocabulary gates no ADD, and stil
   assert.match(r2.out, /needs-triage/);
   assert.match(r2.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.deepEqual(mutations(r2.calls), []);
+});
+
+// ── the declared classes are one vocabulary, and the check reads the whole
+// proposed result ───────────────────────────────────────────────────────────
+//
+// #179. This verb composed its OWN two-class list — `spec` plus `inbound` —
+// while `provenanceVerdict` and `ax frontier` already read three. An issue born
+// a declared FINDING was therefore invisible to the add-side gate: a draft
+// naming `source:user-report` over `source:agent-found` published, and the
+// issue ended up carrying two provenance labels, which is the exact state #101
+// exists to prevent.
+//
+// The birth comparison alone cannot see two further contradictions either — a
+// draft that adds two classes to an issue carrying none, and a contradiction
+// already established on the tracker that the draft merely leaves alone — so
+// what is graded is the PROPOSED RESULT: carried, minus the removes, plus the
+// adds.
+
+const PROVENANCE_FINDINGS = { spec: ['source:roadmap'], inbound: ['source:user-report'], findings: ['source:agent-found'] };
+
+test('a Labels: line adding inbound provenance to an issue born a declared FINDING refuses', () => {
+  // The counter-example: the same draft the two-class list let through.
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: category/bug, source:user-report\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:user-report/, 'the refusal names the label the draft adds');
+  assert.match(r.out, /source:agent-found/, 'and the finding the issue was born with');
+  assert.match(r.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'and the directive to correct');
+  assert.deepEqual(mutations(r.calls), [], 'nothing was applied and nothing was posted');
+});
+
+test('a spec provenance label added over a birth finding refuses too — the class added is not what decides', () => {
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:roadmap\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:roadmap/);
+  assert.match(r.out, /source:agent-found/);
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('a draft adding two declared classes to an issue carrying none is refused on the proposed result', () => {
+  // Nothing on the issue to compare a birth label against, and the draft would
+  // still land a contradiction. The refusal names both labels and the line.
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  const path = draft(root, 'triage-acme-widgets-7', 'Labels: source:roadmap, source:user-report\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:roadmap/);
+  assert.match(r.out, /source:user-report/);
+  assert.match(r.out, /spec-born/);
+  assert.match(r.out, /inbound/);
+  assert.match(r.out, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the draft is what has to be corrected');
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('a contradiction already on the tracker refuses even when the draft adds no source label', () => {
+  // A contradictory established state is not silently valid because this draft
+  // is innocent: the publication would leave the issue in it, and the repair is
+  // on the tracker rather than in the draft.
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:roadmap', 'source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /source:roadmap/);
+  assert.match(r.out, /source:agent-found/);
+  assert.match(r.out, /gh issue edit 7 --repo acme\/widgets --remove-label source:/, 'the repair corrects the established state');
+  assert.deepEqual(mutations(r.calls), []);
+});
+
+test('a draft whose Remove labels: line resolves a contradictory state publishes', () => {
+  // The proposed result is what is graded, so the one draft that repairs the
+  // tracker is not refused for the state it repairs.
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\nRemove labels: source:roadmap\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:roadmap', 'source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 0);
+  assert.equal(mutations(r.calls).length, 2, 'one edit, one comment');
+});
+
+test('an ordinary draft that leaves a valid birth finding alone still publishes', () => {
+  // The control. A declared finding is a VALID provenance: the class routes
+  // passes away from a ticket, and says nothing about publishing a verdict on
+  // one that was dispatched anyway.
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug, needs-info\nRemove labels: needs-triage\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 0);
+  const [edit] = mutations(r.calls);
+  assert.match(edit, /--add-label category\/bug --add-label needs-info --remove-label needs-triage/);
+  assert.equal(mutations(r.calls).length, 2);
+});
+
+test('one provenance contradiction in a batch is found before the first mutation', () => {
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  draft(root, 'triage-acme-widgets-7', 'Labels: category/bug\n\nFine.\n');
+  draft(root, 'triage-acme-widgets-8', 'Labels: source:user-report\n\nContradictory.\n');
+  const r = run(['--issue', '7', '--issue', '8'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 1);
+  assert.deepEqual(mutations(r.calls), [], 'the valid sibling was not partially published');
+});
+
+test('a project that declares no findings class keeps its two-class behavior', () => {
+  // The vocabulary is the project's, never a spelling this package knows: an
+  // undeclared `source:agent-found` is not provenance here, so a spec label
+  // joins it and publishes exactly as it did before the third class existed.
+  const root = repo({ provenance: { spec: ['source:roadmap'], inbound: ['source:user-report'] } });
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:roadmap\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found', 'needs-triage'] } });
+
+  assert.equal(r.code, 0, 'a label the project does not declare is not graded as provenance');
+  assert.equal(mutations(r.calls).length, 2);
+});
+
+test('a provenance declaration of the wrong shape refuses, and is never read as an undeclared contract', () => {
+  // A config that PARSES and declares a mapping this run cannot use is the same
+  // hazard as one that does not parse: read as "no provenance declared" it
+  // switches a declared gate silently off.
+  const root = repo({
+    config: JSON.stringify({
+      project: { name: 'widgets' },
+      apps: { web: 'apps/web' },
+      vendor: { repo: 'owner/kit' },
+      triage: { provenance: { spec: 'source:roadmap' } },
+    }),
+  });
+  draft(root, 'triage-acme-widgets-7', 'Labels: source:user-report\n\nIt reproduces.\n');
+  const r = run(['--issue', '7'], { root, answers: { carried: ['source:agent-found'] } });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /ax\.config\.json/);
+  assert.deepEqual(mutations(r.calls), []);
 });
 
 test('a config that exists and does not parse refuses, rather than reading as "no provenance declared"', () => {

@@ -36,7 +36,7 @@ import { repoSlug } from '../gh.mjs';
 import { defaultStore, dispatchIndex, handlesByRequest, report } from '../worker/record.mjs';
 import { paneVerdict, terminalInventory } from '../worker/pane.mjs';
 import { draftDirFor, passesIn, readDraft, requestFor } from './draft.mjs';
-import { declaredCarried, sameLabel } from './dispatch.mjs';
+import { carriedClasses, declaredCarried, declaredProvenance, sameLabel } from './provenance.mjs';
 import { REFINE_REMOVED, READY_LABEL } from './spec.mjs';
 
 const USAGE = 'ax triage publish --issue N [--issue M …] [--job triage|brief] [--pass N] [--repo <owner/repo>] [--republish] [--dry-run]';
@@ -180,21 +180,27 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   // The PROVENANCE vocabulary, which is the one label group whose doctrine
   // forbids a second name ("already on the issue at birth — keep it, never add
   // a second"). Read from the repository's own config, because the taxonomy is
-  // the repository's and never this package's.
+  // the repository's and never this package's — and read through the SHARED
+  // rule, because which classes exist is not this verb's to decide. It kept its
+  // own two-class list until #179, so an issue born a declared FINDING was
+  // invisible to the add-side gate below and a second `source:` label
+  // published over it.
   //
   // A config that exists and does not parse is an inability to establish, not a
   // declaration of nothing: read as "no provenance declared" it would silently
-  // switch the add-side gate below off. A repository that declares no
-  // provenance grades no ADD — an absent declaration is not a rule (F-028), and
-  // this verb publishes for repositories that never adopted the group — while a
-  // remove of a label the issue does not carry is graded everywhere, from the
-  // live labels alone.
+  // switch the add-side gate below off. The same holds for a mapping that
+  // parses and cannot be used — `ax.config.json` is schema-validated here, so a
+  // `spec` that is a string refuses above rather than reading as an undeclared
+  // contract. A repository that declares no provenance grades no ADD — an
+  // absent declaration is not a rule (F-028), and this verb publishes for
+  // repositories that never adopted the group — while a remove of a label the
+  // issue does not carry is graded everywhere, from the live labels alone.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (loaded.exists && loaded.errors.length > 0) {
     return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
   }
   const provenance = loaded.config?.triage?.provenance ?? {};
-  const declared = [...(provenance.spec ?? []), ...(provenance.inbound ?? [])];
+  const declared = declaredProvenance(provenance);
 
   // ── every draft read before the first mutation ────────────────────────────
   section(`drafts — ${slug} (job: ${job})`);
@@ -355,6 +361,52 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
         bad(`#${issue} asks to remove ${name}, which the issue does not carry — that directive does nothing`);
       }
       fix(`edit ${draft.path} # delete ${[...redundantAdds, ...absentRemoves].join(', ')} from its directive line — publish applies exactly what a draft names, so it refuses one that would change nothing rather than dropping it`);
+      blocked = true;
+      continue;
+    }
+
+    // ── would this publication leave the issue with two origins? ────────────
+    //
+    // The birth rule above compares the draft's ADDS to what the issue was born
+    // with, and that comparison is blind twice over: it says nothing when the
+    // issue carries no provenance at all — a draft naming two classes at once
+    // passed — and nothing when the draft names none, so a contradiction
+    // ALREADY on the tracker published as though it were valid. Neither is a
+    // state any consumer of this vocabulary accepts: `ax frontier` excludes
+    // such a ticket `provenance-refused`, and `ax triage dispatch` refuses
+    // every pass over it. Landing one here would publish work into a shape the
+    // rest of the flow then refuses to touch.
+    //
+    // So what is graded is the FULL PROPOSED RESULT — carried, minus the
+    // removes, plus the adds — through the same shared rule the other two
+    // verbs read. Two directions of one comparison are not the same question as
+    // the state the tracker would be left in.
+    //
+    // NO RECLASSIFICATION, EITHER WAY. This verb applies exactly what a draft
+    // names, so the repair is a correction and never a composition: delete the
+    // offending name from the draft when the draft added it, or correct the
+    // established labels when the tracker is what contradicts itself. A draft
+    // whose `Remove labels:` line resolves the contradiction publishes — that
+    // one IS the correction, and the proposed result is consistent.
+    const proposed = [...tracker.carried.filter(carried => !draft.remove.some(name => sameLabel(name, carried))), ...draft.labels];
+    const classes = carriedClasses(provenance, proposed);
+    if (classes.length > 1) {
+      const named = classes.flatMap(({ names }) => names);
+      const added = named.filter(name => draft.labels.some(add => sameLabel(add, name)));
+      bad(
+        `#${issue} would carry ${classes.map(({ names }) => names.join(', ')).join(' and ')} — one ticket cannot be both ${classes
+          .map(({ kind }) => kind)
+          .join(' and ')}, and no publication follows from a contradiction`,
+      );
+      if (added.length > 0) {
+        fix(
+          `edit ${draft.path} # delete ${added.join(', ')} from its directive line — publish applies exactly what a draft names, so it refuses a directive set that would leave two origins on one ticket`,
+        );
+      } else {
+        fix(
+          `gh issue edit ${issue} --repo ${slug} --remove-label ${named[0]} # the contradiction is already on the issue: correct the established labels, then re-run`,
+        );
+      }
       blocked = true;
       continue;
     }
