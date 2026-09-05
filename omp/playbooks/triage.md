@@ -13,7 +13,13 @@ The dispatch verb gates provenance before you exist, so an assignment that
 reached you is in scope: analyse it, and do not second-guess its origin from
 its labels. The one shape that gets no pass is a ticket the spec flow produced:
 it arrives `ready-for-agent` with its assignment already in the ticket body, so
-if your assignment names one, say so rather than analysing it.
+if your assignment names one, say so rather than analysing it. A finding that
+reached you was admitted because its issue named the approved Spec obligation
+it serves: reuse the finder's argv, raw output, expected state and cost, check
+existing coverage, assess whether that obligation stays unsatisfied without
+this work, and propose an executable Assignment. Missing evidence may be
+investigated; already-established evidence is not re-measured solely to change
+classification. Admission is a pass, not the ready label — you still write a draft.
 
 ## The job
 

@@ -28,10 +28,18 @@ or absent, never partial. It lives in the ticket body (spec-born) or in the Brie
 Work that arrived instead of being planned: reported, agent-found, or born as a follow-up.
 The only work triage may touch.
 
+**Finding**:
+A ticket the wave's own agents filed while working, carrying its measurement (argv, raw
+output, expected state, cost). Inbound by provenance; a triage or brief pass runs over one
+only when the issue names the approved Spec obligation it serves. Admission to a pass is
+not authorization to implement.
+_Avoid_: fourth provenance class, relabelling a finding as inbound.
+
 **Triage**:
 The on-ramp analysis deciding what one inbound issue is, landing exactly one of five states
 (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). It never
-runs over spec-born work — that categorization was decided by its spec.
+runs over spec-born work — that categorization was decided by its spec. A finding without
+a written necessity justification against an identified approved Spec is refused.
 _Avoid_: readiness, refinement, Definition-of-Ready.
 
 **Brief**:

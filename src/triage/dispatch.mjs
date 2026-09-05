@@ -39,6 +39,8 @@ import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft
 import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
 import { passPlan } from './capacity.mjs';
 import { carriedClasses } from './provenance.mjs';
+import { necessityOf } from './necessity.mjs';
+import { publicationIn } from './publication.mjs';
 import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
 const USAGE =
@@ -97,10 +99,19 @@ const LABEL_JOBS = new Set(['triage', 'brief']);
  * duplicate. Before this class existed the rule lived in role prose, which is
  * the state ADR 0001 rejected for spec-born work. The repair names the channel
  * that owns what was found — a maintainer verdict for the instrument,
- * `to-tickets` for the product — never another pass. A project that declares
- * no `findings` keeps the two-class behaviour to the byte.
+ * `to-tickets` for the product — never another pass.
+ *
+ * ONE ADMISSION (#188). The blanket had its own cost: a finding whose repair
+ * an APPROVED spec cannot be satisfied without had no lane. So a finding is
+ * admitted when its own issue names the approved obligation it serves, in the
+ * one line `./necessity.mjs` defines. The tool grades the SHAPE — an identified
+ * spec, a written obligation, read from the issue itself — and never the merit:
+ * whether the work is genuinely necessary is the pass's analysis. An unreadable
+ * justification is unknown, not absent (F-028), and a project that declares no
+ * `findings` keeps the two-class behaviour to the byte. Admission to a pass is
+ * not authorization to implement: the frontier remains that authority.
  */
-export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared }) {
+export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared, text }) {
   // WHICH classes this ticket carries comes from the shared vocabulary; what
   // FOLLOWS from carrying one is this verb's own decision, below.
   const carried = carriedClasses(declared, labels);
@@ -120,11 +131,28 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
   const spec = namesOf('spec');
 
   if (LABEL_JOBS.has(job) && findings.length > 0) {
+    const necessity = necessityOf(text ?? {});
+    if (necessity.ok) {
+      return {
+        admit: true,
+        notes: [
+          `^ carries ${findings.join(', ')} — admitted for #${necessity.spec}: ${necessity.obligation}`,
+          'admission is a pass, not the ready label: ax frontier remains the authority for implementation Dispatch',
+        ],
+      };
+    }
+    if (necessity.kind === 'unknown') {
+      return {
+        bad: `^ carries ${findings.join(', ')} and its necessity justification could not be read — ${necessity.why}`,
+        fix: [`gh issue view ${issue} --repo ${slug} --json ${necessity.field}`],
+      };
+    }
     return {
       bad: `^ carries ${findings.join(', ')} — your own agents filed this with its measurement attached, so the finder is the verifier and a ${job} pass would re-measure what is measured`,
       fix: [
         `gh issue comment ${issue} --repo ${slug} --body-file <verdict.md> # in the instrument: the maintainer answers it — fixed, refused with the cheaper thing, or unreproducible`,
         `to-tickets on the amended spec # in the product: the spec flow publishes it ready-for-agent, with the human in the room`,
+        `gh issue comment ${issue} --repo ${slug} --body "Necessary for: #<spec> — <obligation>" # only when an approved spec cannot be satisfied without this work; an agent recommending it is not necessity`,
         `gh issue edit ${issue} --repo ${slug} --remove-label ${findings[0]} # only if it truly arrived from outside, with no measurement of its own`,
       ],
     };
@@ -184,6 +212,31 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
 
   return null;
 }
+
+/**
+ * Has a triage pass already produced something a brief can distil?
+ *
+ * A comment count cannot answer: a `Necessary for:` ruling is a comment, and
+ * treating it as a completed pass lets `--job brief` skip the necessity
+ * assessment the triage child is assigned. The evidence is a recorded dispatch,
+ * an unpublished draft, or a comment that carries this package's own triage
+ * publication stamp — never "there is at least one comment".
+ */
+function triagePassEvidence({ store, root, slug, issue, comments = [] }) {
+  const triageBase = { job: 'triage', repo: slug, issue };
+  const passes = passesOf(store, draftDirFor(root), triageBase);
+  if (passes.length > 0) return { kind: 'record', pass: passes[passes.length - 1] };
+  const draft = readDraft(root, { ...triageBase, pass: 1 });
+  if (existsSync(draft.path)) return { kind: 'draft', path: draft.path };
+  for (const body of comments) {
+    const found = publicationIn(body);
+    if (found !== null && found.ok === true && String(found.job).trim().toLowerCase() === 'triage' && found.issue === String(issue)) {
+      return { kind: 'publication', pass: found.pass };
+    }
+  }
+  return null;
+}
+
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -616,12 +669,32 @@ export function dispatch(
       parent: meta.parent,
       parentCause: meta.parentCause,
       declared: config.triage?.provenance,
+      text: meta.text,
     });
     if (routing !== null) {
-      bad(routing.bad);
-      for (const repair of routing.fix) fix(repair);
-      blocked = true;
-      continue;
+      if (routing.admit) {
+        if (job === 'brief') {
+          const evidence = triagePassEvidence({
+            store,
+            root: paths.root,
+            slug,
+            issue,
+            comments: meta.text?.comments ?? [],
+          });
+          if (evidence === null) {
+            bad('^ a Necessary for: line admits a triage pass, not a brief — a comment is not a recorded draft or a published triage artifact');
+            fix(`ax triage dispatch --issue ${issue} # run the triage pass first; brief distils that, it does not replace it`);
+            blocked = true;
+            continue;
+          }
+        }
+        for (const line of routing.notes) note(line);
+      } else {
+        bad(routing.bad);
+        for (const repair of routing.fix) fix(repair);
+        blocked = true;
+        continue;
+      }
     }
     if (job === 'triage' && meta.comments > 0 && !force) {
       // WHICH refusal this is depends on whether a triage pass ever ran, and the
@@ -804,7 +877,7 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
 
 /**
  * State, comment count, title and labels in one read — plus, for every lane
- * that is routed by provenance, the sub-issue parent.
+ * that is routed by provenance, the sub-issue parent and the issue's own prose.
  *
  * EVERY LABEL-APPLYING LANE, and that used to be the retired readiness lane
  * only. The asymmetry is what let a triage pass start on a spec sub-issue: the
@@ -821,6 +894,13 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  * contradictory ticket. The parent read stays scoped to the routed lanes: it is
  * the expensive, capability-gated half, and only the spec branch consumes it.
  *
+ * THE BODY TOO, ON THE SAME READ (#188). A finding is admitted on a necessity
+ * justification written in the issue, so the routed lanes ask for `body` with
+ * the labels — a second round-trip after seeing the class would be a second
+ * chance to fail closed on a read the first one already had. The comments
+ * field was already requested; each comment's `body` is what the admission
+ * scans. An unanswered body or comment is unknown, never empty (F-028).
+ *
  * The parent read is best-effort and advisory: a gh older than the sub-issues
  * API fails the WHOLE view when asked for the field (it does not answer with the
  * field missing), so the naive read would turn a capability gap into a refusal.
@@ -835,12 +915,13 @@ const verdictOf = code => (code === 0 ? 'DISPATCHED' : code === 2 ? 'DUPLICATE' 
  */
 function readIssue(gh, repo, issue, job = 'triage') {
   const routed = LABEL_JOBS.has(job);
-  const fields = routed ? 'state,title,comments,labels,parent' : 'state,title,comments,labels';
+  const base = 'state,title,comments,labels';
+  const fields = routed ? `${base},parent,body` : base;
   let out = gh(['issue', 'view', issue, '--repo', repo, '--json', fields]);
   let parentReadable = routed;
   if (routed && !out.error && out.status !== 0 && /unknown json field.*parent/i.test(String(out.stderr ?? ''))) {
     parentReadable = false;
-    out = gh(['issue', 'view', issue, '--repo', repo, '--json', 'state,title,comments,labels']);
+    out = gh(['issue', 'view', issue, '--repo', repo, '--json', `${base},body`]);
   }
   if (out.error) return { ok: false, reason: `gh could not run: ${String(out.error.message ?? out.error)}` };
   if (out.status !== 0) {
@@ -886,6 +967,12 @@ function readIssue(gh, repo, issue, job = 'triage') {
         meta.parentCause = 'unparseable';
       }
     }
+    meta.text = {
+      body: Object.hasOwn(body, 'body') ? body.body : undefined,
+      comments: body.comments.map(comment =>
+        comment !== null && typeof comment === 'object' && Object.hasOwn(comment, 'body') ? comment.body : undefined,
+      ),
+    };
   }
   return meta;
 }
