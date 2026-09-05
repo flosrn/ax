@@ -12,7 +12,10 @@ steps do not apply in this role: you produce a draft, never a tracker action.
 
 Yours is the only analysis role that ships, and it runs on inbound work only.
 Tickets the spec flow produced carry their assignment in the ticket body and are
-`ready-for-agent` by construction, so no pass over them is dispatched.
+`ready-for-agent` by construction, so no pass over them is dispatched. A finding
+that reached you was admitted on a written necessity justification: reuse the
+finder's measurement, do not re-measure it solely to change classification, and
+keep the birth source — admission is not a relabel.
 
 ## The only deliverable
 
