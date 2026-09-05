@@ -31,7 +31,11 @@
 //   7. the contract. The project's, when it declares one; MECHANICS when it does
 //      not.
 //   8. the remote addendum, when the child runs on another host.
-//   9. the operator's own notes, verbatim and last, under a heading naming the
+//   9. the notes channel's DERIVED half: the landed facts of this Spec, read
+//      from the tracker and this checkout's git rather than from any Report
+//      (./landed.mjs). It is announced as derived, and it goes ABOVE the
+//      operator's words because those are verbatim and last.
+//  10. the operator's own notes, verbatim and last, under a heading naming the
 //      file it came from — an operator's words are never paraphrased by ax and
 //      never allowed to displace the contract above them.
 //
@@ -51,6 +55,18 @@
  * memory as its assignment. The flag that carries this file is `--notes`.
  */
 const OPERATOR_HEADING = 'OPERATOR NOTES';
+
+/**
+ * Where the DERIVED half of the notes channel starts, and the sentence that says
+ * it is derived.
+ *
+ * Two authorities share this channel and a reader must be able to tell them
+ * apart at a glance: ax derived these facts from established artifacts, the
+ * operator wrote everything under `OPERATOR_HEADING` by hand. The heading names
+ * both the derivation and its sources, because a fact whose provenance a child
+ * cannot see is one it has to go and re-establish (#195).
+ */
+export const LANDED_HEADING = "LANDED IN THIS SPEC (derived by ax from the tracker and this checkout's git, never from a Report)";
 
 /**
  * The contract ax itself owns: the mechanics of being a supervised child of the
@@ -277,6 +293,11 @@ function markerLine(model, instruction) {
  * the document is terminated with a newline only when its last block does not
  * already end in one, so a caller's bytes survive in both directions.
  *
+ * `landed` is the derived half of the notes channel (./landed.mjs), placed under
+ * `LANDED_HEADING` and above the operator's words. `''` renders NOTHING, heading
+ * included: a wave with no established landing has none to announce, and an empty
+ * section under that heading would read as a read that found nothing.
+ *
  * `ticket: null` says the dispatch HAS no ticket, which renders differently from a
  * ticket that could not be read.
  *
@@ -288,7 +309,7 @@ function markerLine(model, instruction) {
  * own receipt (`ticket <url> (<state>)` in ./verify.mjs), where a human reads it.
  * Linear answers no handle, so there the url is the only address there is.
  */
-export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', operator = null, name = '', report = {} } = {}) {
+export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', landed = '', operator = null, name = '', report = {} } = {}) {
   // `ticket: null` is not "a ticket I could not read" — it is a dispatch that has
   // none (`--name`). The two must not render the same: the tracked shape says
   // "read the ticket, it is canonical", and pointing that at nothing is how a
@@ -316,6 +337,11 @@ export function renderBrief({ model, instruction, ticket = {}, readCommand, run,
   ];
 
   if (host) lines.push(REMOTE);
+
+  // The DERIVED half of the notes channel, above the verbatim half: a fact ax
+  // read is not an instruction the operator wrote, and the operator keeps the
+  // last word here (#195).
+  if (String(landed ?? '') !== '') lines.push('', LANDED_HEADING, '', String(landed));
 
   if (operator) {
     lines.push('', `${OPERATOR_HEADING} (${operator.name})`, String(operator.text ?? ''));

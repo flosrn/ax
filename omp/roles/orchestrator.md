@@ -144,6 +144,19 @@ assignment, and wave memory is not an assignment. The file dies with the wave �
 when the spec's last ticket closes, promote what earned permanence into the
 repo's own stores, and never store session state as doctrine.
 
+Three facts are no longer yours to transcribe. For every established landing of
+this spec, dispatch DERIVES the governing pull request, the SHA that landed and
+the surfaces that SHA changed, and renders them into the notes channel above
+your own words — read from the tracker and this checkout's git, never from a
+Report, and never described as merged on anything less (`src/worker/landed.mjs`).
+So do not retype a PR number, a squash SHA or a file list into the wave file: a
+transcribed fact is a fact that drifts, and a landing the derivation could not
+establish arrives NAMED rather than absent. What stays yours is the judgment —
+the seam a sibling moved, the arbitration, the ruling, the warning a diff cannot
+carry — and your words stay verbatim and last in that channel. The derived block
+is facts only: it grants no dispatch, chooses no ticket, and is never authority
+for tracker state or for an Assignment.
+
 End your turn after dispatch. Completion and questions arrive on their own; never
 poll or start a second consuming wait loop. On each wake, drain the whole inbox —
 process every queued completion and question before ending the turn, or a parked

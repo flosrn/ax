@@ -79,6 +79,13 @@ import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, rea
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
+// The landed facts this dispatch's notes carry, and the SHARED reader that
+// scopes them. Membership has one owner — `specMembership` — and this verb is
+// the seam that hands its answer to the landing derivation: two readers of
+// "who is in this Spec" is how one of them starts including a ticket the other
+// excludes (#195).
+import { specMembership } from '../completion.mjs';
+import { landedNotes } from './landed.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
 // injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
@@ -177,6 +184,10 @@ export function dispatch(
     now = () => Date.now(),
     startFn = startVerb,
     setupFn = setupVerb,
+    // The shared Spec-membership reader, injected so this verb's suite stays
+    // offline. Its DEFAULT is the one implementation there is (#191): a second
+    // one here would be the duplicate representation the ruling refused.
+    membership = specMembership,
     sessionsRoot,
   } = {},
 ) {
@@ -537,6 +548,27 @@ export function dispatch(
       return refuse(`--notes ${flags.notes} could not be read: ${String(error.message ?? error)}`);
     }
   }
+
+  // ── the DERIVED half of the notes channel ──────────────────────────────────
+  // The landed pull request, the SHA that landed and the surfaces it moved, for
+  // every established landing of this ticket's Spec — read here rather than
+  // retyped by the orchestrator out of each Report (#195). It is a READ: it
+  // creates nothing, it writes nothing (the operator's own file is opened
+  // read-only above and never rewritten), and a tracker that cannot answer
+  // about a SIBLING never stops this dispatch — the inability travels into the
+  // brief and onto this receipt instead, because a missing section is
+  // indistinguishable from "this Spec landed nothing".
+  //
+  // `--name` carries no ticket, and a Linear ref carries no GitHub parent edge:
+  // neither names a Spec this read can scope, so neither derives anything.
+  const landed = landedNotes({
+    ticket: named || kind !== 'github' ? null : { number: flags.issue, repo: trackerRepo },
+    slug: trackerRepo,
+    gh: args => exec('gh', args, paths.root ?? cwd),
+    git: args => exec('git', args, paths.main ?? paths.root ?? cwd),
+    membership,
+  });
+  for (const line of landed.notes) note(line);
   // ── 4. placement ───────────────────────────────────────────────────────────
   const place = [];
   let worktree = '';
@@ -704,6 +736,7 @@ export function dispatch(
     run: runId,
     host: on,
     contract: contract.text,
+    landed: landed.text,
     operator,
     report,
   });

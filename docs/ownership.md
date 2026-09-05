@@ -17,6 +17,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/worktree/locate.mjs` | proof that a destructive worktree target belongs to ax |
 | `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
 | `src/worker/report.mjs` | the Report's path — one rule crossed by both the brief a dispatch composes and the reader of the completion that arrives, never a path the worker named |
+| `src/worker/landed.mjs` | the landed facts a next dispatch's notes carry: which pair of tracker answers may be called merged, and which surfaces this checkout may name for that SHA — never Spec membership, never a Report |
 | `src/worker/start.mjs`, `src/worker/dispatch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs`, `src/worker/settle.mjs` | write-ahead plumbing, the one creation verb, repair, close, and the ending written for an attempt the gate proved dead |
 | `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a DISPATCHED receipt carries |
 | `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes — including the host-aware inventory a cap is counted against |
