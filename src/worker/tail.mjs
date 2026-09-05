@@ -132,7 +132,23 @@ function recordBehind(handle, env) {
   const index = dispatchIndex(store);
   const hits = [...index.byDispatch.entries()].filter(([, row]) => row.handle === handle);
   if (new Set(hits.map(([, row]) => row.request)).size !== 1) return null;
-  const [dispatchId, row] = hits.reduce((newest, next) => ((next[1].issuedAt ?? 0) >= (newest[1].issuedAt ?? 0) ? next : newest), hits[0]);
+  const newest = pair => (pair[1].issuedAt ?? 0);
+  const [dispatchId, row] = hits.reduce((best, next) => (newest(next) >= newest(best) ? next : best), hits[0]);
+
+  // AND THIS PANE MUST BE THE RECORD'S NEWEST (found in review before #165
+  // shipped). A `--replace` records a SECOND worker-start, so a record can hold
+  // an old corpse beside the live child that superseded it — and `ax worker
+  // tail ctx_old` reads that corpse by name. The continuation speaks about the
+  // RECORD's current attempt (`workerStartArgv` is its newest placement), so
+  // printed under a superseded pane it would offer to replace the child that is
+  // working right now: the mutation every verdict here exists to prevent. A
+  // pane that is not the newest gets no continuation, and the row that carries
+  // one is the row that owns the record.
+  const current = [...index.byDispatch.values()]
+    .filter(entry => entry.request === row.request && entry.handle !== null)
+    .reduce((best, next) => ((next.issuedAt ?? 0) >= (best.issuedAt ?? 0) ? next : best));
+  if (current.handle !== handle) return null;
+
   return { path: join(store, row.file), request: row.request, dispatchId };
 }
 
