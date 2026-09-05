@@ -333,4 +333,6 @@ test('the composed command is one shell string, with every value quoted', () => 
 
   expect(command).toContain(`w='/srv/o'\\''brien'`);
   expect(command).toContain('head -c 17 --');
+  expect(command).toContain('mktemp');
+  expect(command).not.toContain('ax-report.$$');
 });

@@ -115,7 +115,9 @@ export function remoteReadCommand({ worktree, path, cap }) {
     'n=0',
     // Before anything is read: a pipeline's status is its last command's, so an
     // absent `head` would look like an empty file rather than a missing tool.
-    `for t in head base64; do command -v "$t" > /dev/null 2>&1 || { printf '${MARK} tool-missing %s\\n' "$t"; exit 0; }; done`,
+    // `mktemp` is in the same probe: a predictable `/tmp/ax-report.$$` is a
+    // symlink-clobber of whatever that name already points at.
+    `for t in head base64 mktemp; do command -v "$t" > /dev/null 2>&1 || { printf '${MARK} tool-missing %s\\n' "$t"; exit 0; }; done`,
     `r=$(CDPATH= cd -P -- "$w" 2> /dev/null && pwd) || r=''`,
     `[ -n "$r" ] || { printf '${MARK} worktree-unresolved\\n'; exit 0; }`,
     `printf '${MARK} worktree %s\\n' "$r"`,
@@ -144,7 +146,7 @@ export function remoteReadCommand({ worktree, path, cap }) {
     // and an already-printed fence plus empty payload is an empty Report — a
     // finding about the worker. `hs` is `head`'s own status: no `||` fallback
     // that would replace it with printf's 0.
-    `t=\${TMPDIR:-/tmp}/ax-report.$$`,
+    `t=$(mktemp) || { printf '${MARK} file-unreadable\\n'; exit 0; }`,
     `head -c ${cap + 1} -- "$f" > "$t" 2> /dev/null`,
     'hs=$?',
     `if [ "$hs" -ne 0 ]; then rm -f "$t"; printf '${MARK} file-unreadable\\n'; exit 0; fi`,
