@@ -731,6 +731,57 @@ test('#176: a commit announcing 101 runs is read past its first page of 100', ()
   assert.match(out, new RegExp(`checks: 101 check-run\\(s\\) reported on ${headSha.slice(0, 12)} — the read is complete`));
 });
 
+// ── the FULL page that counts enough, which is not the end of a list ────────
+//
+// A total that is an exact multiple of the page size is the case a reconciled
+// COUNT cannot decide: page 1 announces 100 and supplies 100, so the tally
+// balances on a page whose own length proves nothing (a short page is the last
+// one; a full page is a list this run cannot prove complete). Establishing
+// there authorises on arithmetic rather than on an observation — and the page
+// never asked for is exactly where a stale or under-announced total shows
+// itself.
+
+/** A page of the commit that announces a round 100. */
+const roundPage = (rows, over = {}) => checkPage(rows, { total_count: 100, ...over });
+
+test('#176: a full page that reaches the announced total is still read to the endpoint’s own end', () => {
+  const { code, out, calls } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [roundPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), roundPage([])],
+  });
+  assert.equal(code, 0, out);
+  // TWO reads: the count balanced on page 1 and the gate asked anyway.
+  const reads = calls.filter(call => call.includes('/check-runs'));
+  assert.equal(reads.length, 2, reads.join(' | '));
+  assert.match(reads[1], /page=2/);
+  assert.match(out, /checks: 100 check-run\(s\) reported on .* — the read is complete/);
+});
+
+test('#176: a stale total that a full page happens to satisfy cannot pass on the count', () => {
+  // The endpoint announced 100 and holds 150. The old exit — and a reconciled
+  // count alone — would authorise on page 1; the terminal read finds the rows
+  // the total did not admit to.
+  const { code, out } = run(['--pr', '1845'], {
+    ...CLEAN,
+    checks: [roundPage([checkRun(AGGREGATE, 'success'), ...filler(99)]), roundPage(filler(50, 100))],
+  });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: the read observed 150 distinct run\(s\).*where 100 were announced/);
+  assert.doesNotMatch(out, /PASS —/);
+});
+
+test('#176: a repeated page after a balanced full page leaves the end of the list unread', () => {
+  // Only page 1 is supplied, so page 2 is page 1 again: the count balances and
+  // the endpoint never showed an end.
+  const { code, out, calls } = run(['--pr', '1845'], { ...CLEAN, checks: [roundPage([checkRun(AGGREGATE, 'success'), ...filler(99)])] });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — checks: page 2 repeats runs this read already observed and adds none/);
+  assert.match(out, /100 distinct run\(s\) observed of the 100 announced/);
+  assert.doesNotMatch(out, /checks: 100 check-run\(s\) reported/);
+  // Two reads, then a stop: never a 25-page loop over one page.
+  assert.equal(calls.filter(call => call.includes('/check-runs')).length, 2);
+});
+
 test('#176: a green declared check on page one alone cannot establish completeness', () => {
   // ONE page supplied where the endpoint announced 101 rows, so page 2 is page
   // 1 again — the read never reconciles, and the green aggregate on page 1

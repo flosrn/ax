@@ -431,12 +431,22 @@ export function ciGround({ run, slug, sha, declared, pr }) {
       unread(`checks: the read observed ${runs.length} distinct run(s) on ${short} where ${announced} were announced, so the pages cannot be reconciled`);
       break;
     }
-    // The ONE thing that establishes the read: every announced run observed.
-    if (runs.length === announced) {
-      established = true;
-      break;
-    }
-    if (rows.length < CHECK_RUNS_PAGE) {
+    // A PAGE SHORT OF THE CAP IS THE LAST ONE, and a FULL page is not — the
+    // same inference `prCommits` below stands on: a full page is a list this
+    // run cannot prove complete. So reaching the announced total on a full
+    // page is NOT the end of the read. Where the total is an exact multiple of
+    // the page size, stopping there would authorise on a count instead of on
+    // an observation, and the page that was never asked for is where a stale
+    // or under-announced total shows itself: the next page's rows either
+    // exceed the total (inconsistent, below) or repeat the one just read.
+    const ended = rows.length < CHECK_RUNS_PAGE;
+    if (ended) {
+      // The ONE thing that establishes the read: every announced run observed,
+      // AND a page the endpoint's own pagination ended on.
+      if (runs.length === announced) {
+        established = true;
+        break;
+      }
       unread(
         `checks: page ${page} answered ${rows.length} run(s) and the read stands at ${runs.length} of the ${announced} announced on ${short}, so the endpoint's pagination ended before its own total and the rest are unread`,
       );
@@ -444,7 +454,7 @@ export function ciGround({ run, slug, sha, declared, pr }) {
     }
     if (fresh === 0) {
       unread(
-        `checks: page ${page} repeats runs this read already observed and adds none, so advancing would re-read it while ${announced - runs.length} of the ${announced} announced run(s) stay unread on ${short}`,
+        `checks: page ${page} repeats runs this read already observed and adds none, so advancing would re-read it rather than reach the end of the list, and whether ${short} carries further runs is unread (${tally()})`,
       );
       break;
     }
