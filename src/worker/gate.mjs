@@ -22,12 +22,45 @@
 // measured heart of F-001, 2×2 agents on 2026-08-09), and a dispatch whose
 // terminal has disappeared is a corpse (F-003), orphaned included.
 //
+// AN UNPROVEN PANE IS NOT A DEAD ONE, AND THIS VERB ANSWERS THE DIFFERENCE
+// (#192). Until then INCONNU was mapped to "down, disclosed": the omission was
+// printed and `Safe to re-dispatch` was printed under it, so the only thing a
+// caller consumes — the authorization — was granted by an absence of
+// observation. `terminal list` omits hosts on this very Mac (measured
+// 2026-08-22: one stale runtime, 155 of 218 dispatch panes absent because of
+// it), so that was the ordinary case rather than the exotic one. Missing
+// handles and incomplete host coverage are now refusals, not permissions.
+//
+// WHAT KEEPS THAT FROM REFUSING EVERY ORDINARY RE-DISPATCH is the dispatch
+// store, which this verb already reads for its request-id substitution: a
+// record says where its dispatch was PLACED, so a local pane absent from a list
+// that covered `local` is proven dead whatever remote host that list omitted
+// (omission is per host, ./pane.mjs), and a pane placed with `--on <env>` is
+// put to THAT host through the same reader `ax worker ls` uses. The refusal is
+// then the case nothing could decide, not the case nobody asked about.
+//
+// AND A RECORDED MUTATION WHOSE OUTCOME IS UNKNOWN OUTRANKS AN EMPTY LIST. A
+// `worker-start` that never concluded may have COMMITTED (F-001): Orca can hold
+// a Dispatch this host never learned the id of, so `worker-list` is empty while
+// a child comes up. "First launch, safe to start" there is the duplicate by the
+// front door, and the answer is the recorded replay — `ax worker start
+// --resume` — never a fresh identity.
+//
+// A PROVEN-DEAD ATTEMPT IS AUTHORISED AND ROUTED. Death answers this verb's
+// question, so it still exits 0; what it does NOT answer is which verb the
+// record takes next, and that is decided by its branch's pull request
+// (./continuation.mjs): OPEN takes `--replace`, MERGED is `release`'s, none or
+// closed-unmerged is `settle`'s, and unreadable evidence takes none of them.
+// Printing that beside the permission is what keeps a fresh orchestrator from
+// reading "safe" as "start another one" over work that is already open.
+//
 // Exit codes are per-verb (ADR 0003), and this verb is FAIL-CLOSED — the
 // opposite of `ax board`, because the act it authorises is irreversible:
-//   0  safe: no live agent to duplicate
+//   0  safe: every dispatch of this task is proven gone (or there is none)
 //   1  one live agent — do NOT re-dispatch
 //   2  duplicate: two or more live agents on one task
-//   3  cannot establish — never a permission
+//   3  cannot establish — never a permission, and that includes an unproven
+//      pane, an unaskable host and a mutation whose outcome nobody knows
 //
 // `--help` NEVER REACHES THIS VERB, and that reverses what this header said
 // until #89. The rule was that the original had no `--help`, that a `--help`
@@ -43,9 +76,12 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { resolveOrca, createRunner, runtimeReady } from '../orca-bin.mjs';
+import { defaultExec } from '../exec.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { paneVerdict, terminalInventory } from './pane.mjs';
-import { defaultStore, taskIdScan } from './record.mjs';
+import { continuationFor } from './continuation.mjs';
+import { declarationOf } from './hosts.mjs';
+import { hostReader, hostScopes, terminalInventory } from './pane.mjs';
+import { defaultStore, dispatchIndex, phaseVerdict, scanStore, taskIdScan } from './record.mjs';
 
 /**
  * The task a REQUEST id names, read from the dispatch record store, or null.
@@ -100,7 +136,53 @@ export function namedList(out, key, command) {
   return { ok: true, rows };
 }
 
-export function gate(argv = [], { resolve = resolveOrca, runner, env = process.env } = {}) {
+/**
+ * THE RECORDS OF THIS TASK WHOSE LAST MUTATION NEVER CONCLUDED (#192).
+ *
+ * The one thing an empty `worker-list` cannot rule out. A `worker-start` whose
+ * call died in transport, answered no legible receipt or recorded no exit status
+ * may have COMMITTED — that is F-001's whole premise, and `phaseVerdict` names
+ * it `unknown` rather than failed for exactly this reason (./record.mjs). Orca
+ * then holds a Dispatch whose id this host never learned, so no row joins it and
+ * no pane can be judged: the only evidence is the record, and the only safe act
+ * is the replay it was written for.
+ *
+ * Read through the store's own scanner and its own verdict reader — no second
+ * parser of either (#161) — and keyed on the task the record NAMES, the same
+ * direction `taskFromRequest` resolves in reverse.
+ *
+ * Two absences are told apart. A store that was never created holds no record
+ * and rules nothing out, so it is not an inability; a store that exists and
+ * cannot be read is one, because the record that would have refused this gate
+ * may be sitting in it. A single unparseable record is neither: it is disclosed
+ * by name and the scan continues, because the store is host-global (./record.mjs)
+ * and one corrupt file from another repository may not park every task on this
+ * machine.
+ */
+function uncertainMutations(store, task) {
+  const scan = scanStore(store);
+  if (scan.reason !== '' && !scan.missing) return { ok: false, reason: `the dispatch store ${store} is unreadable: ${scan.reason}` };
+  const rows = [];
+  for (const { file, stem } of scan.records) {
+    const path = join(store, file);
+    let named;
+    let verdict;
+    try {
+      named = taskIdScan(path);
+      if (named !== task) continue;
+      verdict = phaseVerdict(path, 'last');
+    } catch {
+      // A record naming no task, or holding no phase to judge, says nothing
+      // about THIS task: it is the `unreadable` disclosure's business, not a
+      // refusal of a gate about another subject.
+      continue;
+    }
+    if (verdict.verdict === 'unknown') rows.push({ request: stem, evidence: String(verdict.evidence).slice(0, 300) });
+  }
+  return { ok: true, rows, unreadable: scan.unreadable };
+}
+
+export function gate(argv = [], { resolve = resolveOrca, runner, env = process.env, exec = defaultExec, cwd = process.cwd() } = {}) {
   let task = '';
   let runId = '';
 
@@ -189,6 +271,74 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
 
   const rows = workers.rows.filter(w => w.taskId === task);
 
+  // THE STORE, ONCE — the provenance every disposition below stands on. It is
+  // the same store this verb already resolves a request id through, so it adds
+  // no second source of truth: what it answers is which record produced a
+  // Dispatch (and therefore where its pane was PLACED, ./record.mjs
+  // `dispatchIndex`), and which recorded mutation of this task never concluded.
+  const store = defaultStore(env);
+  const uncertain = uncertainMutations(store, task);
+  if (!uncertain.ok) {
+    bad(`CANNOT ESTABLISH — ${uncertain.reason}`);
+    note('A record in that store may hold a mutation whose outcome is unknown, and a re-dispatch over one of those is F-001.');
+    fix(`ls -ld ${store}   # the store must be readable before any re-dispatch is authorised`);
+    return 3;
+  }
+
+  // The panes, judged by the answer that can decide each one — the same reader
+  // `ax worker ls` counts with (./pane.mjs `hostReader`). A row this store does
+  // not attribute keeps `undefined` for its host, which is `paneVerdict`'s
+  // conservative branch: a placement nobody recorded may never be asserted to
+  // be local.
+  const index = dispatchIndex(store);
+  const hosts = hostReader(hostScopes(run, declarationOf(cwd)), terminals);
+  const live = [];
+  const dead = [];
+  const unproven = [];
+  if (rows.length > 0) note(`Dispatches for ${task}: ${rows.length}`);
+  for (const w of rows) {
+    const handle = typeof w.agentTerminalHandle === 'string' ? w.agentTerminalHandle : null;
+    const prov = typeof w.dispatchId === 'string' ? index.byDispatch.get(w.dispatchId) : undefined;
+    const verdict = hosts.verdictFor(handle, 'this dispatch recorded no pane, so nothing here proves it ended', prov === undefined ? undefined : prov.env).verdict;
+    if (verdict.pane === 'VIVANT') live.push(w);
+    else if (verdict.pane === 'MORT') dead.push({ w, prov });
+    else unproven.push({ w, prov, detail: verdict.detail });
+    const label = verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'MORT   ' : 'INCONNU';
+    note(
+      `${label} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(w.agentTerminalHandle ?? '—').slice(0, 24)}` +
+        `${verdict.pane === 'VIVANT' ? '' : ` · ${verdict.detail}`}`,
+    );
+  }
+
+  // A LIVE AGENT IS THE MOST CONCRETE REFUSAL, so it answers first: the operator
+  // has a pane to go and read, which no other branch here can offer.
+  if (live.length === 1) {
+    bad(`STOP — one live agent (${live[0].dispatchId}). DO NOT re-dispatch: it is working.`);
+    note('A `failed` Dispatch describes the receipt, never the process.');
+    fix(`ax worker tail ${live[0].agentTerminalHandle}   # read it instead of re-dispatching`);
+    return 1;
+  }
+  if (live.length > 1) {
+    bad(`DUPLICATE — ${live.length} live agents on one task, therefore one working tree.`);
+    for (const w of live) fix(`orca terminal close --terminal ${w.agentTerminalHandle}`);
+    note('Keep the current Dispatch\'s. Then warn the survivor: its tree mixes two sets of writes, so it must re-read everything with `git diff`.');
+    note('Check reflog / upstream / dangling too.');
+    return 2;
+  }
+
+  // AN UNCONCLUDED MUTATION OUTRANKS AN EMPTY LIST (#192). It is checked before
+  // both remaining answers because it is the one fact neither of them can see:
+  // the Dispatch it may have created carries an id this host never learned, so
+  // no row joins it, and "no Dispatch for this task" then reads as a first
+  // launch over a child that is coming up.
+  if (uncertain.rows.length > 0) {
+    bad(`CANNOT ESTABLISH — ${uncertain.rows.length} recorded mutation(s) of ${task} never concluded, so a pane of this task may still be appearing.`);
+    for (const row of uncertain.rows) note(`${row.request}: ${row.evidence}`);
+    note('That is not a failure to report: the call may have COMMITTED (F-001), which is exactly what the recorded replay exists for.');
+    for (const row of uncertain.rows) fix(`ax worker start --resume --request ${row.request}   # replay the recorded call; never a second request`);
+    return 3;
+  }
+
   if (rows.length === 0) {
     if (known) {
       // The task exists and nothing was ever dispatched for it. First launch,
@@ -211,51 +361,49 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     return 3;
   }
 
-  note(`Dispatches for ${task}: ${rows.length}`);
-  const live = [];
-  const unproven = [];
-  for (const w of rows) {
-    // One verdict definition (pane.mjs), this verb's own disposition on top:
-    // `worker-list` carries no per-dispatch host, so the verdict keeps its
-    // conservative branch (absent + omitted hosts = INCONNU), and the mapping
-    // here — VIVANT is live, MORT and INCONNU are down, INCONNU is disclosed
-    // below — is what keeps this gate's documented fail-open answer.
-    const handle = typeof w.agentTerminalHandle === 'string' ? w.agentTerminalHandle : null;
-    const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, {});
-    const on = verdict.pane === 'VIVANT';
-    if (on) live.push(w);
-    if (verdict.pane === 'INCONNU' && handle !== null) unproven.push(w);
-    note(`${on ? 'LIVE ' : 'down '} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(w.agentTerminalHandle ?? '—').slice(0, 24)}`);
-  }
-
-  if (live.length === 0) {
-    // An absent handle is a corpse only when every host was asked, and
-    // `terminal list` omits hosts on this very Mac (measured 2026-08-22: one
-    // stale runtime, and 155 of 218 dispatch panes absent because of it). So the
-    // absence is DISCLOSED rather than either hidden or turned into a refusal:
-    // refusing here answered 3 for every ordinary re-dispatch on this machine,
-    // and "answered 3 for a day" is the bug this verb was written to stop
-    // repeating. The gate's scope is this host, as its header says, and a pane
-    // on another one is `--on <host>`'s business, not a duplicate this host can
-    // create.
-    if (terminals.omitted && unproven.length > 0) {
-      note(`${unproven.length} of these panes are absent from a terminal list that omits ${terminals.omittedHosts.join(', ')}.`);
-      note('On this host they are down. If this task was dispatched with `--on <host>`, establish them there before re-dispatching.');
+  // AN UNPROVEN PANE IS NOT A DEAD ONE (#192). Until then this branch printed
+  // the omission and authorised anyway, on this very Mac, where `terminal list`
+  // omits hosts as a matter of course — so the disclosure sat under a
+  // permission, and the permission is the only thing a caller consumes. Each
+  // cause is named apart from proven death and each carries the read that would
+  // settle it: a host that could not be asked, an omission this list could not
+  // see past, a dispatch no record attributes.
+  if (unproven.length > 0) {
+    bad(`CANNOT ESTABLISH — ${unproven.length} of ${rows.length} dispatch(es) of ${task} have NO proven pane, and an absence nobody covered is not a death (F-028).`);
+    note('Do not re-dispatch on this result: a pane that may be alive is the pane a second child duplicates (F-001).');
+    if (terminals.omitted) {
+      note(`This host's terminal list omits ${terminals.omittedHosts.join(', ')}, so a pane placed on one of those is invisible from here.`);
     }
-    ok('no live agent. Safe to re-dispatch (return the task to `ready` first).');
-    return 0;
+    for (const [host, scope] of hosts.unaskable()) {
+      fix(`orca terminal list --environment ${host} --json   # '${host}' could not answer (${scope.reason}) — ask it, then re-run this gate`);
+    }
+    for (const row of unproven) {
+      if (row.prov !== undefined) fix(`ax worker tail ${row.prov.request}   # the record behind ${row.w.dispatchId}: is its pane still emitting?`);
+    }
+    fix('ax worker ls   # every record, the pane it named and the host that answered for it');
+    return 3;
   }
 
-  if (live.length === 1) {
-    bad(`STOP — one live agent (${live[0].dispatchId}). DO NOT re-dispatch: it is working.`);
-    note('A `failed` Dispatch describes the receipt, never the process.');
-    fix(`ax worker tail ${live[0].agentTerminalHandle}   # read it instead of re-dispatching`);
-    return 1;
+  // PROVEN DEAD: the question this verb was asked is answered, so it authorises
+  // — and the verb that record takes NEXT is not this one's to guess. Its
+  // branch's pull request decides between replacing an unfinished slice,
+  // releasing a landed one and settling one that shipped nothing
+  // (./continuation.mjs), and unreadable evidence decides none of them. Naming
+  // it here is what keeps "safe to re-dispatch" from being read as "start
+  // another one" over work that is already open.
+  ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch (return the task to `ready` first).');
+  const branches = new Map();
+  for (const { w, prov } of dead) {
+    if (prov === undefined) continue;
+    const continuation = continuationFor(join(store, prov.file), {
+      request: prov.request,
+      dispatchId: typeof w.dispatchId === 'string' ? w.dispatchId : null,
+      exec,
+      memo: branches,
+      run,
+    });
+    if (continuation.failed !== '') note(`the continuation of ${prov.request} is undecided: ${continuation.failed}`);
+    if (continuation.fix !== '') fix(continuation.fix);
   }
-
-  bad(`DUPLICATE — ${live.length} live agents on one task, therefore one working tree.`);
-  for (const w of live) fix(`orca terminal close --terminal ${w.agentTerminalHandle}`);
-  note('Keep the current Dispatch\'s. Then warn the survivor: its tree mixes two sets of writes, so it must re-read everything with `git diff`.');
-  note('Check reflog / upstream / dangling too.');
-  return 2;
+  return 0;
 }

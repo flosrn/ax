@@ -206,10 +206,26 @@ happens to find. In order:
 1. The tracker first: the spec's ticket set and each ticket's state. A closed
    ticket needs no pane check.
 2. The dispatch records: request ids and recorded ticket argv name what was
-   already dispatched, and `ax worker ls` counts what is live.
-3. `ax worker gate <task|request>` per undecided member — it alone proves
-   whether a re-dispatch would duplicate a live child. Dispatch only where the
-   gate proves no live child exists.
+   already dispatched, and `ax worker ls` counts what is live. Read the
+   dispositions, not the count alone: VIVANT is capacity, INCONNU is an
+   unproven pane (a host that could not be asked, or a mutation that never
+   concluded), MORT is a proven corpse whose continuation the listing already
+   names.
+3. `ax worker gate <task|request>` per undecided member — it is the
+   authorization, fail-closed. Consume the receipt, never the wish that "no
+   live pane" means "start another one":
+   - exit 1 or 2: a live child owns the slice. Do not dispatch.
+   - exit 3: cannot establish. An unproven pane, an unaskable host and a
+     mutation whose outcome nobody knows are three different refusals, each
+     naming its repair. An unknown mutation is `ax worker start --resume
+     --request <same>` — the recorded replay, never a fresh `--slug`. Missing
+     handles and incomplete host coverage are not proofs of death.
+   - exit 0: every dispatch is a proven corpse, or there never was one. Follow
+     the continuation the receipt prints — `--replace` for an OPEN pull
+     request, `ax worker release` for a MERGED one, `ax worker settle` for
+     none or closed-unmerged. Unreadable PR evidence prints no route: do not
+     guess one. A first launch (no Dispatch, task known) is the only case
+     that authorises `ax worker dispatch` of a new identity.
 4. Then `ax frontier`, and the loop continues as if the session had never
    changed.
 

@@ -36,10 +36,23 @@
 // placement flag: a `--worktree` or `--on` typed onto a `--replace` is refused,
 // and one printed from a reader is a placement derived a second time.
 //
-// The branch comes from the recorded worktree, so a child dispatched onto
-// another host (`--on <env>`) is silent by construction: its tree is not on this
-// machine, and a `git -C` over a path that only exists there would answer about
-// whatever local directory happens to share the name.
+// HOST-SPECIFIC EVIDENCE FOLLOWS THE PLACEMENT ON THE RECORD (#192). A child
+// dispatched with `--on <env>` has its worktree on THAT host, so the branch is
+// asked of that host — through the federation read `placeRemote` already makes,
+// `orca worktree list --repo <id> --environment <env> --json`, never ssh and
+// never a path spelled here. A `git -C` over a local path that only exists
+// there would answer about whatever local directory happens to share the name,
+// which is the one reading this module must never do.
+//
+// AND WHAT THAT HOST CANNOT ANSWER IS SAID, not skipped. Until #192 a remote
+// record produced NO continuation at all — silent by construction — and
+// silence is indistinguishable from "nothing to continue" in both readers: an
+// operator recovering a wave saw a dead remote row that named no verb, which is
+// the finding #165 exists against, reintroduced for exactly the rows a fresh
+// session cannot inspect by hand. So an unavailable owning-host read is a NAMED
+// inability carrying the exact call to make, like every other unread question
+// here. Only the pull request stays a local read: a forge fact is the same fact
+// from any machine.
 
 import { existsSync } from 'node:fs';
 
@@ -76,11 +89,101 @@ const failedRead = (detail, argv) => ({
 });
 
 /**
+ * THE ABSOLUTE PATH A PLACEMENT SELECTOR NAMES, or `''`.
+ *
+ * Two forms carry one: `path:<abs>`, and the `id:<repoId>::<abs>` a remote
+ * placement records because a bare `path:` loses the repo id and the runtime
+ * answers `selector_ambiguous` (../worker/placement.mjs). Every other form —
+ * `new-top-level`, `name:`, `branch:`, `issue:` — names no path, and a path
+ * guessed from a name is the wrong tree on either machine.
+ */
+function selectorPath(selector) {
+  if (selector.startsWith('path:')) return selector.slice('path:'.length);
+  const remote = /^id:[^:]+::(\/.+)$/.exec(selector);
+  return remote === null ? '' : remote[1];
+}
+
+/**
+ * The branch of a LOCAL recorded worktree: the tree must still be here, and git
+ * must answer for it. A tree already removed is silent — there is nothing to
+ * ask and nothing to continue with — and a git that refuses is a named read.
+ */
+function localBranch(selector, exec) {
+  if (!selector.startsWith('path:')) return { branch: '' };
+  const worktree = physical(selector.slice('path:'.length));
+  if (worktree === '' || !existsSync(worktree)) return { branch: '' };
+
+  const gitArgs = ['-C', worktree, 'rev-parse', '--abbrev-ref', 'HEAD'];
+  const out = exec('git', gitArgs, worktree);
+  const branch = firstLine(out?.stdout);
+  if (out?.error) {
+    return { failed: failedRead(`the branch of ${worktree} is unread: git could not run — ${String(out.error.message ?? out.error)}`, ['git', ...gitArgs]) };
+  }
+  if (out?.status !== 0 || branch === '' || /\s/.test(branch)) {
+    return {
+      failed: failedRead(
+        `the branch of ${worktree} is unread: git refused — ${firstLine(out?.stderr) || branch || `exit ${out?.status}`}`,
+        ['git', ...gitArgs],
+      ),
+    };
+  }
+  return { branch };
+}
+
+/**
+ * The branch of a worktree on the host this record's placement NAMES, asked of
+ * that host (#192).
+ *
+ * The read is `placeRemote`'s own — `worktree list --repo <id> --environment
+ * <env>`, over the Orca federation — and every step of it can fail to answer:
+ * a caller holding no runtime, a placement naming no path or no repository, a
+ * host that cannot list, a row that carries no branch, two rows on one path.
+ * Each is a NAMED inability with the exact call to make, never a fallback to
+ * the local machine: `/srv/orca/<name>` there and a same-named directory here
+ * are different trees, and the local one would answer for a stranger.
+ */
+function remoteBranch(host, selector, repoArg, run) {
+  const listing = ['orca', 'worktree', 'list', '--repo', repoArg === '' ? 'id:<repo-id>' : repoArg, '--environment', host, '--json'];
+  const unread = detail => ({ failed: failedRead(`the branch of this record's worktree on '${host}' is unread: ${detail}`, listing) });
+
+  if (run === null) return unread('this reader was given no runtime to ask that host with');
+  const path = selectorPath(selector);
+  if (path === '') {
+    return unread(
+      selector === ''
+        ? 'its placement names no worktree at all'
+        : `its placement names ${JSON.stringify(selector)}, which carries no path that host could be asked about`,
+    );
+  }
+  if (repoArg === '') return unread(`nothing scopes the listing to a repository, and an unscoped one answers about every repository '${host}' carries`);
+
+  const out = run(['worktree', 'list', '--repo', repoArg, '--environment', host, '--json']);
+  const receipt = out?.receipt ?? {};
+  const rows = receipt.result?.worktrees;
+  if (out?.status !== 0 || receipt.ok !== true || !Array.isArray(rows)) {
+    const detail = String(receipt.unparseable ?? receipt.error?.code ?? out?.stderr ?? '').replace(/\s+/g, ' ').trim();
+    return unread(`'${host}' could not say which worktrees it carries (${detail === '' ? 'no receipt' : detail})`);
+  }
+
+  // Compared as strings on `/`: nothing here resolves a symlink or stats a
+  // directory on another machine (../worker/placement.mjs).
+  const mine = rows.filter(row => String(row?.path ?? '').replace(/\/+$/, '') === path.replace(/\/+$/, ''));
+  if (mine.length === 0) return unread(`'${host}' lists no worktree at ${path}`);
+  if (mine.length > 1) return unread(`'${host}' lists ${mine.length} worktrees at ${path}, so nothing here can say which branch this pane worked on`);
+  const branch = String(mine[0].branch ?? '').replace(/^refs\/heads\//, '').trim();
+  if (branch === '' || /\s/.test(branch)) return unread(`the row '${host}' gave for ${path} carries no branch`);
+  return { branch };
+}
+
+/**
  * The verb that continues the record at `recordPath`, or nothing.
  *
  * `request` is the id the continuation is typed with, `dispatchId` the one
  * `release` scopes to (absent on a record that never named one). `exec` is the
- * caller's own seam, so every suite stays offline.
+ * caller's own `git`/`gh` seam and `run` its Orca runner — the one a record
+ * naming a host is asked through — so every suite stays offline. A caller that
+ * passes no `run` can still read a local record; a remote one then answers
+ * with the inability rather than with this machine's directories (#192).
  *
  * `memo` is ONE invocation's answers, keyed by repository and branch. Two
  * records naming one worktree is an ordinary shape — a re-dispatch under a
@@ -91,7 +194,7 @@ const failedRead = (detail, argv) => ({
  * listing is a point-in-time answer, and two different answers inside one
  * receipt would be worse than a stale one.
  */
-export function continuationFor(recordPath, { request, dispatchId = null, exec = defaultExec, memo = null } = {}) {
+export function continuationFor(recordPath, { request, dispatchId = null, exec = defaultExec, memo = null, run = null } = {}) {
   let recorded;
   let repo;
   try {
@@ -109,25 +212,19 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
 
   const placement = inheritPlacement(recorded, []);
   if (placement.passthru === undefined) return NO_CONTINUATION;
-  if ((argvValue(placement.passthru, '--on') ?? '') !== '') return NO_CONTINUATION;
 
+  // WHERE THE BRANCH IS READ FROM IS THE PLACEMENT'S DECISION, never this
+  // machine's: a record naming a host is answered by that host, and one naming
+  // none is answered by the tree it recorded here.
+  const host = argvValue(placement.passthru, '--on') ?? '';
   const selector = argvValue(placement.passthru, '--worktree') ?? '';
-  if (!selector.startsWith('path:')) return NO_CONTINUATION;
-  const worktree = physical(selector.slice('path:'.length));
-  if (worktree === '' || !existsSync(worktree)) return NO_CONTINUATION;
-
-  const gitArgs = ['-C', worktree, 'rev-parse', '--abbrev-ref', 'HEAD'];
-  const branchOut = exec('git', gitArgs, worktree);
-  const branch = firstLine(branchOut?.stdout);
-  if (branchOut?.error) {
-    return failedRead(`the branch of ${worktree} is unread: git could not run — ${String(branchOut.error.message ?? branchOut.error)}`, ['git', ...gitArgs]);
-  }
-  if (branchOut?.status !== 0 || branch === '' || /\s/.test(branch)) {
-    return failedRead(
-      `the branch of ${worktree} is unread: git refused — ${firstLine(branchOut?.stderr) || branch || `exit ${branchOut?.status}`}`,
-      ['git', ...gitArgs],
-    );
-  }
+  const read =
+    host === ''
+      ? localBranch(selector, exec)
+      : remoteBranch(host, selector, argvValue(placement.passthru, '--repo') ?? '', run);
+  if (read.failed !== undefined) return read.failed;
+  if (read.branch === '') return NO_CONTINUATION;
+  const branch = read.branch;
 
   const prArgs = ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json', 'number,state,headRefName'];
   const key = `${repo}\t${branch}`;

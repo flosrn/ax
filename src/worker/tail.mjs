@@ -162,10 +162,10 @@ function recordBehind(handle, env) {
  * here. The decision itself is ./continuation.mjs — the same answer `ls` prints,
  * so the two readers of a dead row cannot disagree about which verb it takes.
  */
-function sayContinuation(handle, env, exec) {
+function sayContinuation(handle, env, exec, run) {
   const record = recordBehind(handle, env);
   if (record === null) return;
-  const { failed, fix: repair } = continuationFor(record.path, { request: record.request, dispatchId: record.dispatchId, exec });
+  const { failed, fix: repair } = continuationFor(record.path, { request: record.request, dispatchId: record.dispatchId, exec, run });
   if (failed !== '') note(redactSecrets(`the continuation of this pane is undecided: ${failed}`));
   if (repair !== '') fix(redactSecrets(repair));
 }
@@ -307,7 +307,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     for (const line of lines) note(redactSecrets(line));
     if (exited) {
       note('The pane has EXITED: this tail is its last frame, not a session between turns.');
-      sayContinuation(handle, env, exec);
+      sayContinuation(handle, env, exec, run);
     } else {
       const channel = channelWitness(target, handle, env);
       if (channel !== '') note(redactSecrets(channel));
@@ -326,7 +326,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     const owner = transcriptOwner(target, handle, env);
     if (owner) fix(redactSecrets(`ax worker transcript ${owner}   # what that child did, from its own history`));
     else fix('ax worker ls   # this handle has no unique request in the store, so transcript cannot take it');
-    sayContinuation(handle, env, exec);
+    sayContinuation(handle, env, exec, run);
     return 4;
   }
 
