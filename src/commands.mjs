@@ -312,8 +312,12 @@ What a pass is NOT:
     // store, so it answers wherever ax is installed — no Orca required to ask
     // what is takeable.
     summary: 'the takeable set — blockers, cycles, provenance and dispatch, one receipt',
-    agentLine: '`ax frontier` — the takeable ticket set in one receipt: ready label, blocking edges, dispatch records, each exclusion named. An empty takeable list does not establish Completion.',
-    options: [['--dry-run', 'name the reads without issuing them — no gh call']],
+    agentLine:
+      '`ax frontier` — the takeable ticket set in one receipt: ready label, blocking edges, dispatch records, each exclusion named. An empty takeable list does not establish Completion; pass `--spec <ref>` to derive that from the Spec itself.',
+    options: [
+      ['--spec <ref>', "Completion for that Spec — members, admitted work, mandate"],
+      ['--dry-run', 'name the reads without issuing them — no gh call'],
+    ],
 
   },
   {

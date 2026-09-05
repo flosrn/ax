@@ -70,9 +70,23 @@ _Avoid_: escalation (the exception, not the mechanism).
 ## Orchestration
 
 **Orchestrator**:
-The one operator session: it dispatches children on both lanes — implementation and
-triage — rules their questions, and owns the validated merge.
+The one operator session accountable for a Spec's Completion, including necessary work
+discovered during execution. It owns dispatch, technical rulings and the validated merge,
+while investigations and verification may be delegated.
 _Avoid_: coordinator, readiness (retired role).
+
+**Completion**:
+The state in which a Spec's approved result is deployed and verified under its Deployment
+mandate, including necessary work discovered during execution. Finishing the initial tickets
+alone does not establish it. `ax frontier --spec <ref>` derives the read from the Spec's
+members, admitted work and mandate; an empty takeable list does not.
+_Avoid_: done, shipped (unqualified), closing the Wave.
+
+**Deployment mandate**:
+The authorization agreed before execution that identifies the deployment target, permitted
+operations and observations required to establish the deployed result. It lives on the Spec
+as prose a human writes (`Deployment target:`, `Permitted operations:`, `Observation:`);
+missing or unreadable mandate information is a named blocker, not an implicit authorization.
 
 **Dispatch**:
 The recorded act of creating one child session for one assignment, written before it is
@@ -92,8 +106,9 @@ Advisor spoke; `[ax]` identifies the worktree-scoped Advisor added by ax. `nit`,
 A child analyzing one inbound issue. It writes exactly one draft and mutates nothing.
 
 **Wave**:
-One fan-out of children of one kind, implementation or triage. It closes on proof-by-kind:
-every PR merged or abandoned, or every verdict published.
+One fan-out of children of one kind, implementation or triage. Its closure requires every PR
+merged or abandoned, or every verdict published; it does not by itself establish the Spec's
+Completion.
 
 **Frontier**:
 The set of tickets whose blockers are all closed — the boundary between landed and waiting,
