@@ -157,10 +157,22 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
 
   const pr = mine[0];
   if (pr.state === 'OPEN') {
+    // WHAT THE OPEN LINE SAYS, and why it names the merge beside the replace
+    // (review of PR #169, P1). An OPEN pull request does not distinguish a
+    // slice that stalled from one that FINISHED and whose pane exited while it
+    // waited for a merge, and this reader cannot: it would have to judge review
+    // threads, CI and a body. So the line stays an OFFER — every route here is
+    // a command an operator reads and types, never an action a verb takes — and
+    // it names the other exit in the same breath, so the reader holding a
+    // finished slice is not walked into replacing it. Which of the two applies
+    // is the merge gate's question, and `ax pr gate` answers it with grounds
+    // (../pr-gate.mjs). Widening the route itself to that judgement is a
+    // decision for the ticket, not for a reader (#165 defines this case as
+    // MORT + OPEN).
     return {
       route: 'replace',
       failed: '',
-      fix: `ax worker start --replace --request ${request}   # PR #${pr.number} is still open and this pane is gone: --replace reinstates the placement this record names, and nothing may re-place it`,
+      fix: `ax worker start --replace --request ${request}   # PR #${pr.number} is OPEN and this pane is gone: --replace reinstates the placement this record names, and nothing may re-place it — a slice that FINISHED merges through ax pr gate --pr ${pr.number} instead`,
     };
   }
   if (pr.state === 'MERGED') {

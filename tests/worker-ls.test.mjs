@@ -1063,6 +1063,7 @@ test('#165: a MORT pane whose branch has an OPEN pull request carries the replac
   assert.match(out, /→ ax worker start --replace --request dead-1/, 'the continuation, exactly as it is typed');
   assert.doesNotMatch(out, /--replace.*--worktree|--replace.*--on /, 'placement is inherited from the record, never printed here');
   assert.match(out, /#71/, 'and the open PR that makes it the right verb is named');
+  assert.match(out, /ax pr gate --pr 71/, 'beside the exit for a slice that FINISHED while its PR waited (review of #169)');
   assert.ok(
     calls.some(line => line.includes('gh pr list') && line.includes('--head feat/dead-1')),
     `the open-PR proof is the --head read release already makes: ${calls.join(' | ')}`,
