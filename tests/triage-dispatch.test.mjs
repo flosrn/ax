@@ -21,12 +21,13 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { dispatch, roleWaitOf } from '../src/triage/dispatch.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
+import { slugOf, transcript } from '../src/worker/transcript.mjs';
 
 const REPO = 'acme/widgets';
 
@@ -824,6 +825,63 @@ test('the no-receipt verdict names both repairs — the request-scoped read, and
   assert.match(r.out, /--request triage-acme-widgets-7/, 'scoped to this pass, not newest-wins across the wave');
   assert.match(r.out, /--wait/, 'and the flag that would have kept the window open');
   assert.match(r.out, /AX_TRIAGE_ROLE_WAIT/, 'including the machine-wide default it reads');
+});
+
+// #204 — THE PRINTED REPAIR HAS TO EXECUTE, and the proof of that is running
+// it, not matching its shape. A shape assertion is exactly what let a line
+// that cannot run pass for a repair.
+//
+// Measured 2026-09-05 on integrated main f446f229: this loop held the whole
+// checkout path and handed the resolver `basename(root)`, then composed that
+// same basename into the recovery it printed. On the reporting host two session
+// directories end in `-ax`, so no read inside the 120 s window could have
+// answered, and the printed recovery reproduced the inability it repairs —
+// exit 1, both streams empty. The key is now the checkout's own session slug,
+// which names one directory by construction.
+test('#204 the CANNOT-ESTABLISH repair line resolves to ONE directory when executed verbatim', () => {
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const asked = [];
+  const r = run(['--issue', '7'], {
+    root,
+    home,
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
+    proofFn: options => (asked.push(options), null),
+  });
+
+  assert.equal(r.code, 3);
+  assert.equal(asked[0].cwd, root, 'the wait passes the checkout it holds, not only that path\'s basename');
+
+  const printed = (r.out.match(/ax worker transcript --dispatch-proof \S+ --request \S+/) ?? [])[0];
+  assert.ok(printed, `the verdict printed no proof recovery at all:\n${r.out}`);
+
+  // The child this pass really dispatched, on disk: its record names the
+  // dispatch Orca minted, and its session's first turn names the same id.
+  const request = 'triage-acme-widgets-7';
+  record(r.store, request, { dispatchId: 'ctx_204204204204' });
+  const sessions = join(home, '.omp', 'agent', 'sessions');
+  const mine = join(sessions, slugOf(root, { HOME: home }));
+  mkdirSync(mine, { recursive: true });
+  writeFileSync(
+    join(mine, '2026-09-05T21-00-00-000Z_child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker. Your dispatch is ctx_204204204204.' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'claude-opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
+    ].join('\n'),
+  );
+  // THE COLLISION, which is the whole reason this test exists: a second session
+  // directory whose slug ends in this checkout's basename.
+  mkdirSync(join(sessions, `-elsewhere-${basename(root)}`), { recursive: true });
+
+  const env = { HOME: home, ORCA_DISPATCH_STORE: r.store };
+  const ran = capture(() => transcript(printed.split(' ').slice(3), { env }));
+  assert.equal(ran.code, 0, `the printed repair must ANSWER, and it said:\n${ran.out}`);
+  assert.equal(JSON.parse(ran.out).sessionRole.role, 'triage-worker', 'and answer with this checkout\'s own receipt');
+
+  // The key it replaced, on the same fixture: still ambiguous, still refused.
+  const old = capture(() => transcript(['--dispatch-proof', basename(root), '--request', request], { env }));
+  assert.equal(old.code, 1, 'the basename names two checkouts here — that is the failure this line was printing');
 });
 
 // The reported friction: 30 s against the worker family's 120 s for one

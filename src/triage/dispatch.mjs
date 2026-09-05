@@ -33,7 +33,7 @@ import { peerRun } from '../worker/peers.mjs';
 import { hostScopes, terminalInventory } from '../worker/pane.mjs';
 import { livePanes } from '../worker/slots.mjs';
 import { start as startVerb } from '../worker/start.mjs';
-import { dispatchProof } from '../worker/transcript.mjs';
+import { dispatchProof, slugOf } from '../worker/transcript.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
@@ -329,7 +329,15 @@ function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot
   for (;;) {
     let proof = null;
     try {
-      proof = proofFn({ needle: basename(root), request, env, sessionsRoot, store });
+      // THE PATH, not its basename (#204). `root` is the whole checkout this
+      // pass placed its child in, and `slugOf(root)` names one session
+      // directory by construction — measured 2026-09-05, two directories on
+      // this host end in `-ax`, so the basename made the resolver refuse and
+      // the whole 120 s window was spent on a question no read inside it could
+      // answer. The needle rides along for the one case exact-cwd cannot
+      // serve: a session recorded under a different HOME than this process
+      // sees, where the directory genuinely is not there.
+      proof = proofFn({ needle: basename(root), cwd: root, request, env, sessionsRoot, store });
     } catch {
       proof = null;
     }
@@ -361,7 +369,12 @@ function verifyPassRole({ request, job = 'triage', root, wait, env, sessionsRoot
     // widens the window that closed too early, and names the flag before the
     // env knob because a flag is discoverable from the command surface and the
     // env name is what nobody could find.
-    fix(`ax worker transcript --dispatch-proof ${basename(root)} --request ${request}   # re-derive THIS pass's proof: the receipts may have landed since`);
+    // THE KEY IS THE CHECKOUT'S OWN SLUG, with its leading dashes stripped,
+    // because the CLI refuses a proof value beginning with `-` before it reads
+    // anything. `basename(root)` stood here until #204 and reproduced the
+    // inability it repairs on any host holding a second checkout whose slug
+    // ends in the same basename; a slug names one directory by construction.
+    fix(`ax worker transcript --dispatch-proof ${slugOf(root, env).replace(/^-+/, '')} --request ${request}   # re-derive THIS pass's proof: the receipts may have landed since`);
     fix(`ax triage dispatch --wait <s>   # a wider window for a slow boot (or AX_TRIAGE_ROLE_WAIT=<s> for this machine); the pass above is unaffected`);
     return 'CANNOT-ESTABLISH';
   }

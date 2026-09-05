@@ -120,7 +120,14 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
   if (dispatchId === '') {
     return { known: false, reason: `the record at ${recordPath} names no dispatched worker, so no session can be tied to it` };
   }
-  const file = sessionFileForNeedle({ needle: basename(worktree), dispatchId, env, sessionsRoot });
+  // THE WORKTREE, not its basename (#204). This witness holds the exact path
+  // the record names, and `slugOf(worktree)` names one session directory by
+  // construction: two checkouts whose slugs end in the same basename made the
+  // tail match refuse, and that refusal was reported as "no single session"
+  // for a child that had its brief. Nothing else moves — the dispatch id still
+  // selects among that directory's files, so this reads more truthfully and
+  // authorizes no more than it did before.
+  const file = sessionFileForNeedle({ needle: basename(worktree), cwd: worktree, dispatchId, env, sessionsRoot });
   if (file === null) return { known: false, reason: `no single session under ${worktree} names ${dispatchId}` };
 
   // And a session older than the mutation that created the pane cannot be that

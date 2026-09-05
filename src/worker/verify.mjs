@@ -83,7 +83,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
 
   for (;;) {
     if (!settled()) {
-      const proof = readProof({ needle, env, sessionsRoot, host, exec, cwd });
+      const proof = readProof({ needle, worktree, env, sessionsRoot, host, exec, cwd });
       // The file is cumulative, so a later read supersedes an earlier one: the
       // quota fallback that follows a marker is the model the child serves.
       if (proof !== null) {
@@ -185,8 +185,15 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
  * boot-wait poll, and a transport failure is not a vocabulary problem. The
  * fallback retires with the alias, in the next breaking release.
  */
-export function readProof({ needle, env, sessionsRoot, host, exec, cwd }) {
-  if (host === null) return dispatchProof({ needle, env, sessionsRoot });
+export function readProof({ needle, worktree = '', env, sessionsRoot, host, exec, cwd }) {
+  // THE OWNING WORKTREE, when this loop holds one (#204). The needle is its
+  // basename, and a second checkout whose slug ends in that basename made this
+  // read refuse for the whole boot wait; `slugOf(worktree)` names one session
+  // directory by construction. It travels ONLY on the local branch: a slug
+  // computed here names nothing on another host, so the remote argv below is
+  // unchanged. A dispatch that named no worktree holds no path and stays
+  // needle-only.
+  if (host === null) return dispatchProof({ needle, cwd: worktree, env, sessionsRoot });
   const root = host.sessions ?? '';
   if (root === '') return null;
   // Through ssh because ssh rejoins its arguments into one remote command.
