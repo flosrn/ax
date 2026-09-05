@@ -231,6 +231,42 @@ test('a phase that recorded a pane and NO argv makes its record unreadable, neve
   assert.equal(slots.live.machine, 1, 'the readable record still counts; the named one is the caller’s refusal');
 });
 
+test('a record whose phases cannot be walked is NAMED, never a crash inside the count', () => {
+  const dir = store();
+  // An argv carrying a non-string — hand-edited, foreign-written, half-repaired
+  // — makes `argvValue` throw from inside this reader, and BOTH fences call it
+  // for the number that authorises a mutation. A stack trace there replaces a
+  // refusal carrying its repair with an exit nobody can act on, and that record
+  // decides nothing either way: it joins the ones the count could not read.
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'malformed.json'),
+    JSON.stringify({
+      request: 'malformed',
+      repo: 'acme/widgets',
+      attempts: [
+        {
+          n: 1,
+          phases: [
+            {
+              name: 'worker-start-inject',
+              argv: ['orca', 'orchestration', 7, null],
+              exit: 0,
+              receipt: { ok: true, result: { dispatchId: 'ctx_x', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_x' }] } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  record(dir, 'ordinary', [recorded({ handle: 'term_ok' })]);
+
+  const slots = count(dir, { local: [['term_ok', up], ['term_x', up]] });
+  assert.deepEqual(slots.unreadable.map(entry => entry.file), ['malformed.json']);
+  assert.match(slots.unreadable[0].error, /phases cannot be read/);
+  assert.equal(slots.live.machine, 1, 'the record that reads still counts, and the other is the fences’ refusal');
+});
+
 test('a record that does not name itself is unreadable, and a broken one does not hide the rest', () => {
   const dir = store();
   mkdirSync(dir, { recursive: true });

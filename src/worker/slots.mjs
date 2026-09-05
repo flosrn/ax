@@ -88,19 +88,32 @@ function recordedPanes(store) {
     const attempts = Array.isArray(rec.attempts) ? rec.attempts : [];
     const found = [];
     let unnamed = null;
-    for (const attempt of attempts) {
-      for (const ph of Array.isArray(attempt.phases) ? attempt.phases : []) {
-        const result = ph?.receipt?.result;
-        if (result === null || typeof result !== 'object') continue;
-        const handle = agentTerminal(result);
-        if (handle === null) continue;
-        if (!Array.isArray(ph.argv)) {
-          unnamed = `phase ${String(ph.name)} recorded pane ${handle} and no argv, so its placement cannot be read`;
-          break;
+    try {
+      for (const attempt of attempts) {
+        for (const ph of Array.isArray(attempt.phases) ? attempt.phases : []) {
+          const result = ph?.receipt?.result;
+          if (result === null || typeof result !== 'object') continue;
+          const handle = agentTerminal(result);
+          if (handle === null) continue;
+          if (!Array.isArray(ph.argv)) {
+            unnamed = `phase ${String(ph.name)} recorded pane ${handle} and no argv, so its placement cannot be read`;
+            break;
+          }
+          found.push({ handle, host: argvValue(ph.argv, '--on') ?? '' });
         }
-        found.push({ handle, host: argvValue(ph.argv, '--on') ?? '' });
+        if (unnamed !== null) break;
       }
-      if (unnamed !== null) break;
+    } catch (error) {
+      // A SHAPE THIS WALK CANNOT READ IS AN UNREADABLE RECORD, never a crash.
+      // `argvValue` calls `startsWith` on each entry, so an argv carrying a
+      // non-string — hand-edited, foreign-written, half-repaired — throws from
+      // inside the count. Both fences call this reader for the number that
+      // authorises a mutation: a stack trace there replaces a refusal carrying
+      // its repair with an exit nobody can act on, and the record would decide
+      // nothing either way. So it joins the records the count could not read,
+      // which is exactly what the fences already refuse on (F-028).
+      unreadable.push({ file, error: `its phases cannot be read: ${String(error?.message ?? error)}` });
+      continue;
     }
     if (unnamed !== null) {
       unreadable.push({ file, error: unnamed });
