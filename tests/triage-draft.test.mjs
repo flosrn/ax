@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { draftDirFor, draftPath, parseDraft, passesIn, readDraft, requestFor } from '../src/triage/draft.mjs';
+import { draftDirFor, draftPath, parseDraft, parseRequest, passesIn, readDraft, requestFor } from '../src/triage/draft.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-draft-'));
 
@@ -43,6 +43,52 @@ test('pass 1 is unsuffixed, so every record written before passes existed still 
   assert.equal(requestFor({ job: 'triage', repo: 'acme/widgets', issue: '7' }), 'triage-acme-widgets-7');
   assert.equal(requestFor({ job: 'triage', repo: 'acme/widgets', issue: '7', pass: 1 }), 'triage-acme-widgets-7');
   assert.equal(requestFor({ job: 'triage', repo: 'acme/widgets', issue: '7', pass: 2 }), 'triage-acme-widgets-7-p2');
+});
+
+// ── the identity, READ BACK: what the mint composes, the proof takes apart ────
+
+test('every legal request one job mints is read back, pass 1 unsuffixed and pass 2 suffixed', () => {
+  // The reader that consumed this grammar by hand — `request.split('-').pop()`
+  // — read `p2` as the issue number and refused every suffixed pass as naming
+  // no issue. So the mint and the reader are proved against each other here:
+  // whatever `requestFor` composes for a job and a pass, `parseRequest` names.
+  for (const job of ['triage', 'brief', 'custom']) {
+    for (const pass of [1, 2, 11]) {
+      const request = requestFor({ job, repo: 'acme/widgets', issue: '7', pass });
+      assert.deepEqual(parseRequest(request, 'acme/widgets'), { job, issue: '7', pass, problem: '' }, request);
+    }
+  }
+});
+
+test('a repository whose name carries hyphens is not guessed apart from the issue', () => {
+  // `owner/ax-tools` slugifies to `owner-ax-tools`, and nothing in the text says
+  // where the repository stops. The recorded identity does, which is why it is
+  // an argument here rather than something reconstructed from the hyphens.
+  assert.deepEqual(parseRequest('triage-flosrn-ax-tools-7-p2', 'flosrn/ax-tools'), { job: 'triage', issue: '7', pass: 2, problem: '' });
+  assert.deepEqual(parseRequest('brief-flosrn-ax-tools-190', 'flosrn/ax-tools'), { job: 'brief', issue: '190', pass: 1, problem: '' });
+});
+
+test('a job request that does not name the recorded repository is refused BY NAME, never re-read as an implementation', () => {
+  // The dangerous direction: a mismatched identity falling through to the
+  // implementation rule asks for a merged pull request in the parent checkout
+  // and can find one that has nothing to do with this pass.
+  const foreign = parseRequest('triage-other-repo-7', 'acme/widgets');
+  assert.equal(foreign.job, 'triage');
+  assert.match(foreign.problem, /acme\/widgets/);
+  const legacy = parseRequest('triage-7', 'acme/widgets');
+  assert.equal(legacy.job, 'triage');
+  assert.notEqual(legacy.problem, '');
+  const ragged = parseRequest('triage-acme-widgets-7-p2-again', 'acme/widgets');
+  assert.equal(ragged.job, 'triage');
+  assert.notEqual(ragged.problem, '');
+  // A record naming no repository establishes no identity to read against.
+  assert.notEqual(parseRequest('triage-acme-widgets-7', '').problem, '');
+});
+
+test('an implementation request names no triage job, and says so rather than a problem', () => {
+  for (const request of ['178-release-pass-proof', 'ws-merged', 'feat-triage-loop']) {
+    assert.deepEqual(parseRequest(request, 'acme/widgets'), { job: null, issue: '', pass: 0, problem: '' }, request);
+  }
 });
 
 test('the passes present in a directory are found, oldest first, whatever order the disk lists them', () => {

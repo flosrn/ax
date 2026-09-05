@@ -193,6 +193,12 @@ Release a pane only after its artifact has provably landed:
 ax worker release
 ```
 
+A triage or brief pane lands when that job and that Pass have their own
+publication on the issue — not an arbitrary later comment, not another job's,
+not a previous Pass's. A custom pane never lands automatically: its draft is a
+report, so the disposition is yours after reading it. An implementation pane
+lands on its own branch's merged PR.
+
 ## Get bearings
 
 A fresh session resumes a wave from authority, never from memory or a file it

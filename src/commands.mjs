@@ -150,7 +150,8 @@ export const COMMANDS = [
     helpBody: {
       release: `A pane closes because the WORK LANDED, never because the session said it was done.
 
-  triage / brief    a comment on that issue, created AFTER the dispatch
+  triage / brief    this job and Pass's own publication on that issue
+  custom            nothing automatic — a report, so the operator's word after reading the pane
   implementation    a MERGED pull request for that branch. Nothing else.
 
 Never proof: an OPEN PR (it may still owe its review threads), commits with no PR,

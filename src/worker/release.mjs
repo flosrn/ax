@@ -16,7 +16,19 @@
 // proves nothing either.
 //
 // WHAT COUNTS AS LANDED, PER KIND OF SESSION
-//   triage / brief    a comment on that issue, created AFTER the dispatch
+//   triage / brief    the PUBLICATION of that job and that Pass on that issue:
+//                     a comment carrying ax's own attribution for this
+//                     repository, issue, job and pass (../triage/publication.mjs).
+//                     "A comment created after the dispatch" was the rule until
+//                     #178 and it proved the wrong thing: a reporter's reply,
+//                     another job's Agent Brief and the PREVIOUS pass's verdict
+//                     are all comments newer than the dispatch, and each of them
+//                     closed a pane whose own work never landed.
+//   custom            NOTHING, automatically. Its draft is a report to the
+//                     operator, so the only disposition is a human's after
+//                     reading the pane. It never inherits the parent checkout's
+//                     pull request — that substitution closed a report nobody
+//                     had read, on the merge of an unrelated branch.
 //   implementation    a MERGED pull request for that branch. Nothing else.
 // An OPEN PR is deliberately NOT proof: that session may still owe its CI loop
 // and its review threads, and closing its pane is how a P1 waiting in a review
@@ -148,6 +160,8 @@ import {
   attemptSettle,
 } from './record.mjs';
 import { physical } from '../worktree/locate.mjs';
+import { parseRequest } from '../triage/draft.mjs';
+import { publicationIn, publicationName, samePublication } from '../triage/publication.mjs';
 
 const USAGE =
   'ax worker release [--all] [--close] [--dispatch <id>] [--no-proof] [--base <ref>] [--gap <s>] [--store <dir>]';
@@ -464,37 +478,80 @@ function proveClean(stdout, { branch, worktree, checkout, ignore }) {
 }
 
 /**
- * A comment on that issue, created AFTER the dispatch. Nothing else.
+ * THE PUBLICATION OF THIS PASS, and nothing else.
  *
- * Every refusal names the query that produced it, and every absence names the
- * pane: a triage that cannot be proven is either an unanswered `gh` or a pass
- * that never published, and those are two different next moves.
+ * The identity is whole — repository, issue, job, pass — and it is read through
+ * the rule the publisher stamps with, so neither half can drift into proving
+ * something the other never claimed (../triage/publication.mjs). Every refusal
+ * below names the artifact that is missing rather than a status, because the
+ * repair for an unproven pass is to PUBLISH its reviewed draft: a pass whose
+ * verdict never reached the tracker has not finished, whatever its pane says.
+ *
+ * The dispatch date stays a second gate, and it is not redundant: one pass may
+ * be re-dispatched under its own request, and the publication of the attempt
+ * before it must not discharge the attempt after it.
  */
-function proveIssue(gh, { repo, number, issuedAt, dispatchId, recordPath }) {
+function provePublication(gh, { repo, job, issue, pass, issuedAt, dispatchId, recordPath }) {
   if (!repo) return missing('no repo to query', GH_AUTH);
-  const query = ['gh', 'issue', 'view', String(number), '--repo', repo, '--json', 'comments'];
+  const identity = { job, repo, issue, pass };
+  const named = `${job} pass ${pass} publication on #${issue}`;
+  // The repair is the ARTIFACT, never a close: an operator who has read the pane
+  // still has `--no-proof`, but a row printing it as its routine repair is a row
+  // teaching that the proof is optional (#178).
+  const publishIt = `ax triage publish --issue ${issue} --job ${job} --pass ${pass} --repo ${repo}   # this pane closes on that publication and nothing else — publish the reviewed draft, and it closes on the next run`;
+  const query = ['gh', 'issue', 'view', String(issue), '--repo', repo, '--json', 'comments'];
   if (issuedAt === null) {
     return missing(
       'the record carries no readable dispatch date',
-      readThenSay(dispatchId, `${recordPath} carries no readable dispatch date, so no comment can be proven newer than it`),
+      readThenSay(dispatchId, `${recordPath} carries no readable dispatch date, so no publication can be proven newer than it`),
     );
   }
   const out = gh(query.slice(1));
   if (out.error) return missing(`gh could not run: ${String(out.error.message ?? out.error)}`, rerun(query));
   if (out.status !== 0) return missing(`gh refused — ${firstLine(out.stderr) || `exit ${out.status}`}`, rerun(query));
   const body = parseReceipt(out.stdout);
-  if (!Array.isArray(body.comments)) return missing(`gh answered no comments array for #${number}`, rerun(query));
-  const newest = body.comments.reduce((max, comment) => {
-    const at = Date.parse(comment?.createdAt ?? '');
-    return Number.isFinite(at) && at > max ? at : max;
-  }, -1);
-  if (newest < 0) return missing(`no comment on #${number}`, readThenSay(dispatchId, `#${number} carries no comment, so this pass published nothing`));
-  return newest > issuedAt
-    ? landed(`comment on #${number} after dispatch`)
-    : missing(
-        `newest comment on #${number} predates dispatch`,
-        readThenSay(dispatchId, `every comment on #${number} is older than this dispatch, so this pass published nothing`),
+  if (!Array.isArray(body.comments)) return missing(`gh answered no comments array for #${issue}`, rerun(query));
+
+  const read = body.comments.map(comment => ({ comment, publication: publicationIn(comment?.body) }));
+  // AN UNREADABLE ATTRIBUTION IS AMBIGUITY, NEVER ABSENCE (F-028), and it is
+  // decided BEFORE any match. A well-formed marker for this pass sitting next
+  // to a second marker nothing can read — in the same comment, or in another
+  // comment on the same issue — would otherwise close on the match and treat
+  // the unreadable one as if it were not there.
+  const ambiguous = read.filter(({ publication }) => publication !== null && publication.ok === false);
+  if (ambiguous.length > 0) {
+    return missing(
+      `${ambiguous.length} ax publication(s) on #${issue} carry an attribution nothing can read`,
+      rerun(['gh', 'issue', 'view', String(issue), '--repo', repo, '--comments'], 'read what those comments attribute themselves to; an unattributable publication authorizes nothing'),
+    );
+  }
+  const mine = read.filter(({ publication }) => samePublication(identity, publication));
+  if (mine.length === 0) {
+    const others = read.filter(({ publication }) => publication?.ok === true);
+    if (others.length > 0) {
+      return missing(
+        `no ${named} — #${issue} carries ${[...new Set(others.map(({ publication }) => publicationName(publication)))].slice(0, 4).join(', ')}`,
+        publishIt,
       );
+    }
+    return missing(
+      body.comments.length === 0 ? `no comment on #${issue}` : `no ${named} — ${body.comments.length} comment(s) on #${issue}, none of them this pass's publication`,
+      publishIt,
+    );
+  }
+
+  const dated = mine
+    .map(({ comment }) => ({ at: Date.parse(comment?.createdAt ?? ''), url: String(comment?.url ?? '') }))
+    .filter(({ at }) => Number.isFinite(at));
+  if (dated.length === 0) {
+    return missing(`the ${named} carries no readable date`, rerun(query, 'the publication exists and nothing can place it against the dispatch'));
+  }
+  const newest = dated.reduce((max, row) => (row.at > max.at ? row : max));
+  // The receipt names the ACTUAL publication it closed on: a verdict whose
+  // evidence cannot be opened is a verdict that has to be re-derived.
+  return newest.at > issuedAt
+    ? landed(`${named} — ${newest.url || 'no url given'}`)
+    : missing(`the ${named} predates this dispatch`, publishIt);
 }
 
 /**
@@ -607,6 +664,15 @@ function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, igno
     : missing(`${ahead} commit(s), no PR`, readThenSay(dispatchId, `${branch} carries ${ahead} commit(s) that never became a PR — re-engage that pane to open one, or accept the work is unshipped`));
 }
 
+/**
+ * A custom pass produces no landing artifact, and that is its contract rather
+ * than a gap: `ax triage publish` refuses `--job custom` by name ("its draft is
+ * a report to you, not a tracker mutation"), so there is nothing on the tracker
+ * to prove and nothing to wait for. The disposition is the operator's, after
+ * reading the pane — the path this KEEP names, and the only one it ever had.
+ */
+const CUSTOM_UNPROVABLE = 'a custom pass publishes nothing that could prove it';
+
 /** Which proof a session owes, decided by the request that dispatched it. */
 function prove(gh, git, { request, issuedAt, worktree, repo, base, dispatchId, checkout, ignore, recordPath }) {
   if (request === null) {
@@ -615,18 +681,33 @@ function prove(gh, git, { request, issuedAt, worktree, repo, base, dispatchId, c
       readThenSay(dispatchId, 'this host recorded no request for the dispatch, so nothing here knows which proof it owes'),
     );
   }
-  // The set shrank from three to two, and that is a removal and not an
-  // omission: the `refine-` request kind went with the readiness lane `ax
-  // ready` no longer has. A stale `refine-…` record on some host falls through
-  // to `proveLanded`, which asks for a merged PR and answers MISSING — the
-  // conservative direction, and the one a retired kind deserves.
-  const kind = /^(triage|brief)-/.exec(request);
-  if (kind === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
-  const number = request.split('-').pop() ?? '';
-  if (!/^[1-9][0-9]*$/.test(number)) {
-    return missing('the request names no issue', readThenSay(dispatchId, `the request "${request}" names no issue number, so no comment can be asked for`));
+  // ONE GRAMMAR, READ WHERE IT IS MINTED (`../triage/draft.mjs`). The hand-rolled
+  // reader here matched `/^(triage|brief)-/` and took the issue number off the
+  // END of the request, so `…-7-p2` read as issue "p2" and every suffixed pass
+  // was refused as naming no issue; `custom-…` matched no kind at all and fell
+  // through to `proveLanded`, which asked the parent checkout for a merged PR.
+  //
+  // A retired kind is still handled the conservative way: `refine-…` is no job
+  // this package knows, so it takes the implementation branch, is asked for a
+  // merged PR, and answers MISSING.
+  const named = parseRequest(request, repo);
+  if (named.job === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
+  // A JOB REQUEST THAT IS NOT THIS REPOSITORY'S IS REFUSED BY NAME. Reading it
+  // as an implementation instead is how an unrelated merged pull request becomes
+  // a triage pass's proof, and the identity is exactly what is in doubt.
+  if (named.problem !== '') {
+    return missing(
+      `the request "${request}" is no legal ${named.job} identity — ${named.problem}`,
+      rerun(['cat', recordPath], `a ${named.job} request reads <job>-<owner>-<repo>-<issue>[-p<pass>] for ${repo || 'the repository it was dispatched from'}; establish which pass this pane belongs to before anything closes it`),
+    );
   }
-  return proveIssue(gh, { repo, number, issuedAt, dispatchId, recordPath });
+  if (named.job === 'custom') {
+    return missing(
+      CUSTOM_UNPROVABLE,
+      readThenSay(dispatchId, `${CUSTOM_UNPROVABLE}, and no pull request of this checkout stands in for reading it`),
+    );
+  }
+  return provePublication(gh, { repo, job: named.job, issue: named.issue, pass: named.pass, issuedAt, dispatchId, recordPath });
 }
 
 // ── the mutation ─────────────────────────────────────────────────────────────
@@ -1412,8 +1493,8 @@ export function release(
 
   if (!close) {
     note('report only — nothing was closed. Add --close to act.');
-    note('a CLOSE verdict needs an artifact: a comment after the dispatch for a triage, a MERGED PR for an');
-    note('implementation. An OPEN PR is not proof — that session may still owe its review threads.');
+    note('a CLOSE verdict needs an artifact: this job and Pass\'s publication for a triage or brief, a MERGED PR for an');
+    note('implementation. A custom pass publishes nothing. An OPEN PR is not proof — that session may still owe its review threads.');
     return 0;
   }
 
