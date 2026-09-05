@@ -158,3 +158,38 @@ export function environmentOfDispatch(record: unknown, dispatchId: string): stri
   }
   return '';
 }
+
+/**
+ * The agent pane a dispatch RECORDED, read from the worker-start receipt that
+ * names that dispatch id — `{kind:'terminal', role:'agent', id}` among its
+ * effects. `''` when the record names none.
+ *
+ * This is the cross-check a witnessed completion needs (#168): on the fork
+ * build a local supervised worker's `worker_done` arrives from its pane, with
+ * the dispatch id in the payload rather than in the address, and the payload is
+ * the sender's word. The record wrote which pane it dispatched before the
+ * dispatch went; a claim from any other pane is a finding, never a derivation.
+ * Per attempt and per phase for the same reason `environmentOfDispatch` is: a
+ * `--replace` may have recorded a second pane under a second dispatch id.
+ */
+export function paneOfDispatch(record: unknown, dispatchId: string): string {
+  const attempts = field(record, 'attempts');
+  if (!Array.isArray(attempts)) return '';
+  for (const attempt of attempts) {
+    const phases = field(attempt, 'phases');
+    if (!Array.isArray(phases)) continue;
+    for (const phase of phases) {
+      const result = field(field(phase, 'receipt'), 'result');
+      if (str(field(result, 'dispatchId')) !== dispatchId) continue;
+      const effects = field(result, 'effects');
+      if (!Array.isArray(effects)) return '';
+      for (const effect of effects) {
+        if (str(field(effect, 'kind')) === 'terminal' && str(field(effect, 'role')) === 'agent') {
+          return str(field(effect, 'id'));
+        }
+      }
+      return '';
+    }
+  }
+  return '';
+}

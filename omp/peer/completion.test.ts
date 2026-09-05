@@ -334,6 +334,98 @@ test('nothing is appended to a message that is not a dispatched worker completio
   ).toBe('');
 });
 
+// ─── the witnessed shape: a LOCAL supervised worker on the fork build ─────────
+//
+// Measured 2026-09-05 on the #162 wave (the Report's first real measurement,
+// flosrn/ax#168): the #164 worker's `worker_done` reached the orchestrator's Run
+// with `from_handle: term_0843…`, a `sender_pane_key`, and the dispatch id in
+// `payload.dispatchId` — not under a `dispatch:<id>` address. Both gates missed
+// it: attribution said pane, this module said not-a-completion, and the
+// completion was injected with no Report block and no finding. Silence, on the
+// one message this module exists to annotate. The `dispatch:<id>` shape is the
+// FEDERATED one (no pane key by contract); a local supervised worker arrives
+// witnessed, and the record — which names the pane it dispatched — is what
+// proves the payload's dispatch id is this sender's to claim.
+
+const PANE = 'term_08435344-a42a-4152-a220-82db976d8424';
+const PANE_KEY = 'd113fd70-347d-4ddf-893c-0090f117f7da:4eb71be1-ca2a-4e95-bc1d-446cde509ef8';
+
+/** A record whose worker-start also recorded the agent pane, as a real one does. */
+function witnessedWorktree(request = '164-work') {
+  const wt = withReport('## CRITERIA\n- Witness: MET, the record names this pane.\n\n## LEARNINGS\n', request);
+  wt.rec.attempts[0].phases[0].receipt.result.effects.push({ kind: 'terminal', role: 'agent', action: 'created', id: PANE });
+  return wt;
+}
+
+/** The envelope exactly as the fork build delivers a local worker's completion. */
+function witnessed(payload: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return {
+    id: 'msg_0ef061ff33f5',
+    type: 'worker_done',
+    body: 'Inherited the placement. Both suites green. Nothing left.',
+    from_handle: PANE,
+    to_handle: 'run:run_494da6a0f77c',
+    sender_pane_key: PANE_KEY,
+    payload: JSON.stringify(payload),
+    ...extra,
+  };
+}
+
+test('a witnessed pane whose payload names a dispatch this machine recorded FOR THAT PANE carries the Report', () => {
+  const wt = witnessedWorktree();
+
+  const block = completionReport(
+    witnessed({ taskId: 'task_3d703cad122b', dispatchId: DISPATCH, outcome: 'succeeded', reportPath: wt.derived }),
+    deps(wt.rec),
+  );
+
+  expect(block).toContain('## CRITERIA');
+  expect(block).toContain('- Witness: MET, the record names this pane.');
+  expect(block).not.toContain('FINDING');
+});
+
+test('a witnessed pane claiming a dispatch whose record names ANOTHER pane is a finding, and nothing is derived', () => {
+  const wt = witnessedWorktree();
+
+  const block = completionReport(
+    witnessed({ dispatchId: DISPATCH, outcome: 'succeeded' }, { from_handle: 'term_someone_else' }),
+    deps(wt.rec),
+  );
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain(PANE);
+  expect(block).toContain('term_someone_else');
+  expect(block).not.toContain('- Witness: MET');
+});
+
+test('an UNWITNESSED sender claiming a dispatch is a finding, whatever handle it typed', () => {
+  // Orca nulls `sender_pane_key` when a sender overrides its identity (`--from`).
+  // A handle equal to the recorded one proves nothing then: the witness is the
+  // pane key, and the payload alone never authorizes a derivation.
+  const wt = witnessedWorktree();
+
+  const block = completionReport(witnessed({ dispatchId: DISPATCH }, { sender_pane_key: '' }), deps(wt.rec));
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain('not witnessed');
+  expect(block).not.toContain('- Witness: MET');
+});
+
+test('a record that recorded no pane cannot cross-check a witnessed claim, and says so', () => {
+  const wt = withReport('## CRITERIA\n- x\n', '164-work');
+
+  const block = completionReport(witnessed({ dispatchId: DISPATCH }), deps(wt.rec));
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain('names no pane');
+  expect(block).not.toContain('- x');
+});
+
+test('a witnessed worker_done naming a dispatch this machine never recorded stays silent, like the federated stranger', () => {
+  const wt = witnessedWorktree();
+  expect(completionReport(witnessed({ dispatchId: 'ctx_stranger' }), deps(wt.rec))).toBe('');
+});
+
 test('the reader is total: a lookup that throws becomes a finding, never a lost completion', () => {
   // The receiver appends this block to the completion it is about to inject. A
   // throw here would fail the injection and replay the whole delivery, so the
