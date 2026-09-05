@@ -27,10 +27,14 @@
 // An empty takeable list does not establish Completion. Two observed tickets
 // blocking each other classify `blocked-by-cycle:` in excluded — an established
 // stuck graph, not quiet waiting — so they cannot masquerade as finished work.
-// Cycle detection names a repair and never removes, reverses or invents a
-// blocking edge. A truncated or malformed blocker page stays unestablished; a
-// node outside the corpus stays outside it. The receipt never infers global
-// acyclicity from the candidates it happened to read.
+// Cycle detection names a repair and never rewrites a blocking edge. `--spec
+// <ref>` adds the Spec-scoped Completion read to the same receipt (#191): the
+// Spec's members, admitted necessary work, the Deployment mandate and the
+// observations that mandate named. It classifies nothing and dispatches
+// nothing — the triad remains the only authority for what is takeable.
+// A truncated or malformed blocker page stays unestablished; a node outside
+// the corpus stays outside it. The receipt never infers global acyclicity
+// from the candidates it happened to read.
 
 // `untrusted-labeler`: the ready label is the tracker's assertion that a ticket
 // is a complete assignment, and on a public repository anyone can apply it. A
@@ -84,6 +88,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { completionReceipt } from './completion.mjs';
 import { repoPaths } from './config.mjs';
 import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
@@ -93,7 +98,7 @@ import { PROVENANCE_KEYS, carriedClasses, sameLabel } from './triage/provenance.
 import { READY_LABEL } from './triage/spec.mjs';
 import { defaultStore } from './worker/record.mjs';
 
-const USAGE = 'ax frontier [--dry-run]';
+const USAGE = 'ax frontier [--spec <ref>] [--dry-run]';
 
 const CONFIG_FILE = 'ax.config.json';
 
@@ -305,10 +310,26 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   // Identifiers and flags only. `--dry-run` follows `init`/`pin`: name what
   // would be read, touch nothing — here that means NO gh call at all, which is
   // also what lets the AGENTS-block liveness test exercise this verb offline.
+  //
+  // `--spec <ref>` adds the Spec-scoped Completion read to the same receipt
+  // (#191). It is a value flag DECLARED as one in the registry, so
+  // `ax frontier --spec --help` asks what the verb does instead of reading the
+  // tracker for a Spec numbered `--help`.
   let dry = false;
-  for (const arg of argv) {
+  let spec = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     if (arg === '--dry-run') dry = true;
-    else return usageError(`unknown argument "${arg}"`);
+    else if (arg === '--spec') {
+      const value = argv[index + 1];
+      index += 1;
+      if (value === undefined) return usageError('--spec needs the Spec issue it scopes Completion to');
+      const number = /^#?([1-9]\d*)$/.exec(String(value).trim());
+      if (number === null) {
+        return usageError(`--spec takes the Spec's issue number, and "${value}" is not one — Completion is scoped to one approved Spec, never to a label or a title`);
+      }
+      spec = Number(number[1]);
+    } else return usageError(`unknown argument "${arg}"`);
   }
 
   const paths = repoPaths(cwd);
@@ -349,6 +370,11 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
     note(`would list    open issues carrying ${READY_LABEL} (to a cap of ${CANDIDATE_CAP})`);
     note(`would batch   one GraphQL round-trip: blockedBy, subIssues, labeled events per candidate`);
     note(`would cross   the dispatch store read-only: unsettled → already-dispatched, settled → attempt-ended-unmerged`);
+    if (spec !== null) {
+      note(`would read    #${spec} in one GraphQL round-trip: body, comments, and every sub-issue with the pull requests that closed it`);
+      note(`would list    issues carrying a declared findings label, graded by 'Necessary for: #${spec}'`);
+      note(`would ask     the write permission of every login that declared the mandate or recorded an observation`);
+    }
     return 0;
   }
   const run = args => gh(args, paths.root);
@@ -372,6 +398,21 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
     return cannot("could not resolve this checkout's repository", 'gh auth status   # then re-run from a checkout with a GitHub remote');
   }
   const [owner, name] = slug.split('/');
+
+  /**
+   * One permission read per unique login, cached for the run. Hoisted above
+   * the candidate loop because the Completion read asks the same question
+   * about a different set of logins — the ones that declared the mandate and
+   * recorded its observations — and two caches would ask GitHub twice.
+   */
+  const permissionCache = new Map();
+  const writeAccess = login => {
+    if (!permissionCache.has(login)) {
+      const answer = payload(run(['api', `repos/${slug}/collaborators/${login}/permission`]));
+      permissionCache.set(login, answer.ok ? ['admin', 'write'].includes(String(answer.value?.permission ?? '')) : null);
+    }
+    return permissionCache.get(login);
+  };
 
   // ── Candidates: every OPEN issue carrying the ready label. An unreachable
   // tracker stops here — an empty answer from a failed read is not an empty
@@ -442,16 +483,6 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         return cannot(`the dispatch store at ${store} is unreadable (${String(error.message ?? error).slice(0, 160)})`, `ls ${store}`);
       }
     }
-
-    /** One permission read per unique labeler, cached for the run. */
-    const permissionCache = new Map();
-    const writeAccess = login => {
-      if (!permissionCache.has(login)) {
-        const answer = payload(run(['api', `repos/${slug}/collaborators/${login}/permission`]));
-        permissionCache.set(login, answer.ok ? ['admin', 'write'].includes(String(answer.value?.permission ?? '')) : null);
-      }
-      return permissionCache.get(login);
-    };
 
     for (const candidate of candidates) {
       const issue = answered.value?.data?.repository?.[`i${candidate.number}`];
@@ -687,6 +718,27 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   for (const entry of unestablished) {
     bad(`CANNOT ESTABLISH — #${entry.number}: ${entry.read}`);
     fix(entry.repair);
+  }
+
+  // ── The Spec-scoped Completion read, on the same receipt and after the
+  // triad it annotates: an excluded member stays VISIBLE as unfinished work,
+  // which is the whole reason this read is here rather than in a verb of its
+  // own. It classifies nothing and dispatches nothing — the frontier remains
+  // the only authority for what is takeable (#191).
+  if (spec !== null) {
+    const classified = new Map();
+    for (const entry of takeable) classified.set(entry.number, 'takeable on this receipt');
+    for (const entry of excluded) classified.set(entry.number, `excluded: ${entry.reason}`);
+    for (const entry of unestablished) classified.set(entry.number, `the frontier could not establish it: ${entry.read}`);
+    return completionReceipt(spec, {
+      run,
+      slug,
+      owner,
+      name,
+      writeAccess,
+      provenance,
+      frontierOf: number => classified.get(number) ?? null,
+    });
   }
 
   return 0;
