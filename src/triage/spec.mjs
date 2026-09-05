@@ -68,7 +68,7 @@ export const REFINE_REMOVED =
  * close, never the bare size labels — is the publisher's contract now, and
  * belongs to `ax triage publish`. What the child owes is one file.
  */
-export function renderSpec({ job, model, issue, repo = '', draft, labels, triaged, instruction, pass = 1, previous = null, because = '' }) {
+export function renderSpec({ job, model, issue, repo = '', draft, labels, triagePass = null, instruction, pass = 1, previous = null, because = '' }) {
   const marker = `[omp role=${ROLE_BY_JOB[job].role} model=${model}]`;
   // The write-failure ladder exists because #60 (2026-08-23) could not write
   // its draft at all, put the verdict in its terminal, and its report was the
@@ -173,8 +173,35 @@ export function renderSpec({ job, model, issue, repo = '', draft, labels, triage
   // prefix is not decoration: hand-rolling this dispatch outside the script on
   // 2026-08-10 produced a spec opening on "read skill://triage" for an
   // already-triaged issue, and the session had to be steered off mid-flight.
-  const prefix = triaged
-    ? `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass; it is in its comments: do not re-triage it, render no verdict, apply no label or state. `
-    : '';
+  //
+  // WHAT ESTABLISHES THE PASS TRAVELS WITH IT (#207). The input was a boolean
+  // the dispatch verb derived from the issue's COMMENT COUNT, and the sentence
+  // asserted a place — "it is in its comments" — that a count cannot establish.
+  // Measured 2026-09-05 on a spec-born issue whose two comments were a sibling
+  // link and an execution mandate: the child was told a triage verdict was
+  // waiting for it in comments that held none. So the input is the evidence
+  // class `triagePassEvidence` answers (dispatch.mjs), and each class names
+  // where it actually is. Only a publication stamp puts the pass in the
+  // comments. Evidence this renderer cannot name asserts the pass and NO place;
+  // no evidence at all says nothing, exactly as an untriaged issue does.
+  //
+  // This stays PURE: the store, the draft directory and the comment bodies are
+  // the dispatch verb's reads, injected here as one named option.
+  // `null` — nothing establishes a pass, so nothing is said. `''` — evidence
+  // whose class this renderer cannot name: the pass is established and its place
+  // is not, so the sentence carries no locative rather than a guessed one.
+  const locate = evidence => {
+    if (evidence === null || evidence === undefined || evidence === false) return null;
+    if (typeof evidence !== 'object') return '';
+    if (evidence.kind === 'publication') return 'it is in its comments';
+    if (evidence.kind === 'record') return `pass ${evidence.pass} is recorded in this checkout's dispatch store`;
+    if (evidence.kind === 'draft') return `its unpublished draft is at ${evidence.path}`;
+    return '';
+  };
+  const where = locate(triagePass);
+  const prefix =
+    where === null
+      ? ''
+      : `Issue #${issue} (issue://${issue}) has ALREADY had its triage pass${where === '' ? '' : `; ${where}`}: do not re-triage it, render no verdict, apply no label or state. `;
   return `${marker} ${prefix}${instruction.replace(/\s+/g, ' ').trim()} Write what you find to ${draft}. ${nothing}`;
 }

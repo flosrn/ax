@@ -81,6 +81,7 @@ import { closeSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import { redactSecrets } from '../../src/redact.mjs';
+import { parseRequest } from '../../src/triage/draft.mjs';
 import { requestIdOk } from '../../src/worker/record.mjs';
 import { dispatchRecord } from './attribution.ts';
 import { fetchRemoteReport } from './remote.ts';
@@ -191,6 +192,75 @@ export function reportPath(rec) {
     return { reason: 'the request violates the request-id grammar, so the Report path cannot be established' };
   }
   return { path: join(worktree, REPORT_DIR, `${rec.request}.md`), worktree };
+}
+
+/**
+ * The four kinds a mint writes (`initRecord`), and nothing else is one. The
+ * membership is `../../src/worker/release.mjs`'s: a `kind` outside it collapses
+ * to "no kind", exactly as `prove()` collapses it, because a vocabulary read two
+ * ways is two vocabularies.
+ */
+const RECORDED_KINDS = { implementation: true, triage: true, brief: true, custom: true };
+
+/** The kinds whose Pass produces a Draft and no implementation Report. */
+const ANALYSIS_KINDS = { triage: true, brief: true, custom: true };
+
+/**
+ * `{ kind: 'implementation' }` | `{ analysis }` | `{ reason }` — WHICH artifact
+ * this completion owes, decided by the kind its dispatch recorded.
+ *
+ * THE MEASUREMENT (#207, 2026-09-05). A `--job custom` verification of #174
+ * completed with its prescribed Draft written, and this receiver — which never
+ * read `kind` — derived an implementation Report path for it, called the Draft
+ * the completion named an unauthorized path, reported the Report absent and
+ * printed a repair instructing the worker to write one. Two findings, wrong in
+ * opposite directions, about an artifact that Pass is forbidden to produce.
+ *
+ * THE VOCABULARY IS `prove()`'s, NOT A SECOND ONE. `rec.kind` plus the job word
+ * `parseRequest` reads, and the same precedence:
+ *
+ *   * a recorded `implementation` is an implementation, whatever its request
+ *     spells — `--name custom-migration` records `kind: implementation` and was
+ *     never a job (`../../src/triage/draft.mjs`), so a name that merely looks
+ *     like a job word is not a conflict;
+ *   * a recorded analysis kind owes a Draft, unless the request's job word names
+ *     a DIFFERENT job — the disagreement `prove()` refuses for `triage`/`brief`,
+ *     and an exemption is the one thing a contradiction must not buy;
+ *   * no kind and no job word is the established implementation it always was,
+ *     which keeps every pre-`--kind` record readable;
+ *   * no kind and a job word is the untypeable case #178 measured, where both
+ *     guesses closed the wrong pane: the fact that is missing is named, and
+ *     nothing is derived (F-028).
+ *
+ * WHY THE MINT-LEGALITY HALF IS NOT CONSULTED, though `prove()` does consult it
+ * for `triage`/`brief` (`named.problem`): that verb has to FIND a publication,
+ * so it needs the issue and the pass the request encodes, and a request that is
+ * no legal mint of the recorded repository denies it both. This side needs
+ * neither — the only question here is which artifact is owed, and the kind
+ * answers it whole. So an odd but same-job request keeps its Draft exemption,
+ * and only a DIFFERENT job word contradicts the record. `parseRequest` carries
+ * no emitter dependency — its module imports `node:fs`, `node:path`, the
+ * package's hash helper and the spec module, which imports nothing — so reusing
+ * it costs this runtime no startup.
+ */
+export function classifyDispatch(rec) {
+  const declared = typeof rec?.kind === 'string' ? rec.kind.trim() : '';
+  const recorded = RECORDED_KINDS[declared] === true ? declared : '';
+  const request = String(rec?.request ?? '');
+  const named = parseRequest(request, rec?.repo);
+  if (recorded === 'implementation') return { kind: 'implementation' };
+  if (ANALYSIS_KINDS[recorded] === true) {
+    if (named.job !== null && named.job !== recorded) {
+      return {
+        reason: `the record types this dispatch as '${recorded}' while its request \`${request}\` opens on the job word '${named.job}', so which artifact this completion owes cannot be established`,
+      };
+    }
+    return { analysis: recorded };
+  }
+  if (named.job === null) return { kind: 'implementation' };
+  return {
+    reason: `the record names no kind, and the request \`${request}\` carries the job word '${named.job}', so which artifact this completion owes cannot be established`,
+  };
 }
 
 /** JSON or null. Local, because this module borrows nothing from the host. */
@@ -384,13 +454,20 @@ function criteriaSpan(text, truncated) {
  * every `${err}` beside it: a worker's own path claim and a filesystem error
  * naming the line it failed on are both child-authored, and the preamble puts a
  * `dcap_…` in reach of both.
+ *
+ * `head` exists because the default one is a CLAIM: a Pass that owes no
+ * implementation Report had nothing derived from its record, and printing
+ * "derived from the dispatch record" over that block would be the same false
+ * assertion this module exists to refuse (#207).
  */
-function block(path, lines, body = '') {
-  const head =
-    path === null
-      ? '--- REPORT (derived from the dispatch record)'
-      : `--- REPORT (derived from the dispatch record) · ${path}`;
-  const parts = [head, ...lines];
+function block(path, lines, body = '', head = '') {
+  const stated =
+    head !== ''
+      ? head
+      : path === null
+        ? '--- REPORT (derived from the dispatch record)'
+        : `--- REPORT (derived from the dispatch record) · ${path}`;
+  const parts = [stated, ...lines];
   if (body !== '') parts.push('---', body);
   return `\n\n${redactSecrets(parts.join('\n'))}\n`;
 }
@@ -449,11 +526,18 @@ export function completionReport(msg, deps = {}) {
   const environmentOf = deps.environmentOf ?? environmentOfDispatch;
   const retrieve = deps.retrieve ?? fetchRemoteReport;
   const cap = deps.cap ?? REPORT_CAP_BYTES;
+  // The kind this receiver ESTABLISHED, once it has: it rides every diagnostic
+  // written after classification and nothing before it (#207). A guard row
+  // carries none, because the guards decide before any kind is read, and a row
+  // asserting a job the receiver never typed is the readout defect this repair
+  // is about.
+  let established = '';
   const diagnose = (entry) => {
     try {
       deps.diagnose?.({
         reason: 'report-unreadable',
         messageId: String(msg?.id ?? '') || undefined,
+        ...(established === '' ? {} : { kind: established }),
         ...entry,
       });
     } catch {}
@@ -524,6 +608,50 @@ export function completionReport(msg, deps = {}) {
         ]);
       }
       id = claimed;
+    }
+
+    // WHICH ARTIFACT THIS COMPLETION OWES, read from the record's own `kind`
+    // BEFORE any path is derived — and after the guards above, which decide
+    // whether there is a completion to classify at all. A job-aware exemption
+    // is not authentication, and no kind turns an unproven claim into one.
+    const typed = classifyDispatch(rec.json);
+    if (typed.reason !== undefined) {
+      // NEITHER OBLIGATION IS GRANTED. Not an implementation Report — nothing is
+      // derived and no absence is asserted; not an analysis exemption either —
+      // a contradiction must not buy one. The fact that is missing is the whole
+      // finding (#178, F-028).
+      diagnose({ disposition: 'kind-unestablished', request: rec.request, detail: typed.reason });
+      return block(
+        null,
+        [
+          `FINDING: ${typed.reason}.`,
+          `Repair: read the dispatch record for \`${rec.request}\` in ax's store — it is the only thing that says which artifact this Pass owes, and nothing here derived a path or asked for a file.`,
+        ],
+        '',
+        '--- REPORT (the dispatch record does not type this completion)',
+      );
+    }
+    established = typed.kind ?? typed.analysis;
+    if (typed.analysis !== undefined) {
+      // A TYPED ANALYSIS PASS OWES A DRAFT, and the Draft is STATED rather than
+      // located: this receiver derives, names and opens no Draft path, so no
+      // second twin of a path rule is created (the ruling on #207). The
+      // obligation is the block's own statement, which leaves the ONE note below
+      // for the one thing that is news about this completion.
+      const lines = [
+        `The governing artifact of this Pass is the Draft its own assignment prescribed — not an implementation Report. None was derived here, and none is owed.`,
+      ];
+      // The path a worker names is still never opened, and here it is not even a
+      // finding: an analysis completion naming its Draft is doing what its
+      // assignment asked. The note says a path arrived and that this side did
+      // nothing with it — the bytes stay out, because quoting them would be the
+      // one thing "not validated" must not look like.
+      if (String(bag(msg?.payload)?.reportPath ?? '').trim() !== '') {
+        lines.push(
+          'NOTE: this completion supplied a path in payload.reportPath; it was neither opened nor validated, and no containment proof is claimed for it.',
+        );
+      }
+      return block(null, lines, '', `--- PASS ARTIFACT (typed from the dispatch record) · ${typed.analysis} Pass \`${rec.request}\``);
     }
 
     const derived = reportPath(rec.json);

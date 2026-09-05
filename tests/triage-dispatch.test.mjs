@@ -674,9 +674,13 @@ test('custom notes an already-triaged issue but does not block on it', () => {
   const root = repo();
   const instruction = join(root, 'task.txt');
   writeFileSync(instruction, 'Check the log rotation\n');
+  // Real evidence, not a comment count (#207): the pass this note reports is a
+  // draft sitting in the checkout, which is what `--job brief` distils.
+  mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
+  writeFileSync(join(root, '.scratch', 'triage', 'triage-acme-widgets-7.md'), '# verdict\n');
   const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], { root, issues: { 7: 'OPEN|2|Triaged' } });
   assert.equal(r.code, 0);
-  assert.match(r.out, /already triaged/);
+  assert.match(r.out, /already triaged \(its draft is on disk here\)/);
 });
 
 test('every issue is prechecked before any is dispatched', () => {
@@ -725,13 +729,61 @@ test('the brief spec forbids a second verdict and names the bundled Agent Brief 
   assert.match(r.out, /brief-acme-widgets-7\.md/, 'a brief writes its own draft, not the triage one');
 });
 
-test('the custom spec inlines the instruction on ONE line, prefixed by the triage state', () => {
+// The defect #207 measured: the prior-pass sentence was gated on the issue's
+// COMMENT COUNT, so a spec-born ticket whose comments were a sibling link and an
+// execution mandate was told its triage pass "is in its comments". A comment
+// count cannot establish a pass, and it certainly cannot establish where it is.
+// The reader that can is the one the `brief` lane already refuses on.
+test('the custom spec inlines the instruction on ONE line, and comments alone assert no prior pass', () => {
   const root = repo();
   const instruction = join(root, 'task.txt');
   writeFileSync(instruction, 'Measure the query\nand report the number\n');
   const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], { root, issues: { 7: 'OPEN|2|Triaged' } });
-  assert.match(r.out, /has ALREADY had its triage pass/);
   assert.match(r.out, /Measure the query and report the number/);
+  assert.doesNotMatch(r.out, /ALREADY had its triage pass/, 'two comments and no evidence establish no pass');
+  assert.doesNotMatch(r.out, /already triaged/, 'and the precheck note answers from the same reader');
+});
+
+test('a recorded triage pass is named as recorded, and never located in the comments', () => {
+  const root = repo();
+  const instruction = join(root, 'task.txt');
+  writeFileSync(instruction, 'Verify the fix.\n');
+  const store = join(realpathSync(mkdtempSync(join(tmpdir(), 'ax-store-'))), 'store');
+  record(store, 'triage-acme-widgets-7');
+  const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], {
+    root,
+    issues: { 7: 'OPEN|2|Triaged' },
+    store,
+  });
+  assert.match(r.out, /has ALREADY had its triage pass/);
+  assert.match(r.out, /pass 1 is recorded in this checkout's dispatch store/);
+  assert.doesNotMatch(r.out, /it is in its comments/, 'the store is where it is, and the sentence says so');
+});
+
+test('an unpublished triage draft is named at its path', () => {
+  const root = repo();
+  const instruction = join(root, 'task.txt');
+  writeFileSync(instruction, 'Verify the fix.\n');
+  const draft = join(root, '.scratch', 'triage', 'triage-acme-widgets-7.md');
+  mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
+  writeFileSync(draft, '# verdict\n');
+  const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], { root, issues: { 7: 'OPEN|0|Triaged' } });
+  assert.match(r.out, /has ALREADY had its triage pass/);
+  assert.ok(r.out.includes(`its unpublished draft is at ${draft}`), 'the draft is the evidence, and its path is where it is');
+  assert.doesNotMatch(r.out, /it is in its comments/);
+});
+
+test('a published triage comment is the ONE evidence that locates the pass in the comments', () => {
+  const root = repo();
+  const instruction = join(root, 'task.txt');
+  writeFileSync(instruction, 'Verify the fix.\n');
+  const r = run(['--issue', '7', '--job', 'custom', '--instruction', instruction, '--dry-run'], {
+    root,
+    issues: { 7: 'OPEN|1|Triaged' },
+    tracker: { text: { 7: { comments: ['<!-- ax:publication job=triage repo=acme/widgets issue=7 pass=1 -->\nVerdict: ready\n'] } } },
+  });
+  assert.match(r.out, /has ALREADY had its triage pass; it is in its comments/);
+  assert.match(r.out, /already triaged \(published as a comment on this issue\)/, 'the precheck note names the same evidence');
 });
 
 test('the custom spec omits the already-triaged prefix on an untriaged issue', () => {

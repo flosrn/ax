@@ -99,6 +99,48 @@ const REASONS: Record<string, true> = {
 /** Which records a later `ack-settled` for the same delivery resolves. */
 const RESOLVED_BY_ACK: Record<string, true> = { 'ack-pending': true, 'injection-refused': true };
 
+/**
+ * WHICH CLASS A `report-unreadable` DISPOSITION BELONGS TO, as literals — the
+ * same reason `REASONS` is a literal: a table built at runtime is a table a new
+ * disposition can slip into unclassified while reading as though it were known.
+ *
+ * The three classes are the three different things a reader can act on, and
+ * `completion.ts` decides them in this order:
+ *
+ *   CLAIM_UNPROVED       attribution was refused, so there is no completion yet
+ *   ARTIFACT_UNAVAILABLE the completion was attributed; its file was not read
+ *   NOT_CLASSIFIED       named here, and everything else, rendered conservatively
+ *
+ * A disposition in NONE of them still renders (the readout drops nothing) and
+ * renders as not established, naming itself. Adding a disposition over in
+ * `completion.ts` without adding it here costs the row its precise sentence and
+ * never its existence.
+ */
+const CLAIM_UNPROVED: Record<string, true> = {
+  unwitnessed: true,
+  'pane-unrecorded': true,
+  'pane-mismatch': true,
+};
+
+const ARTIFACT_UNAVAILABLE: Record<string, true> = {
+  'path-unestablished': true,
+  absent: true,
+  inaccessible: true,
+  'outside-worktree': true,
+  oversize: true,
+  'worktree-unresolved': true,
+  'path-fault': true,
+  unreadable: true,
+  empty: true,
+  'truncated-empty': true,
+};
+
+const NOT_CLASSIFIED: Record<string, string> = {
+  'kind-unestablished':
+    'The record does not type this dispatch, so no Report path was derived and which artifact it owes is unknown',
+  'receiver-fault': 'The fault was in the receiver of that completion, not in the completion or its Report',
+};
+
 export interface DeliveryDiagnostic {
   reason: DeliveryReason;
   /** ISO, stated by the caller in tests and defaulted to now. */
@@ -113,6 +155,15 @@ export interface DeliveryDiagnostic {
   filter?: string;
   /** `report-unreadable`: which disposition `completion.ts` reached. */
   disposition?: string;
+  /**
+   * `report-unreadable`: the dispatch kind the receiver ESTABLISHED — never the
+   * job word its request happens to open on (#207). Absent means the receiver
+   * did not type it: the guards refused before classification, or the record
+   * types nothing. The renderer says "not established" rather than reading the
+   * request as a job, because that promotion is what made a `custom` Pass owe
+   * an implementation Report.
+   */
+  kind?: string;
   /** `sequence-gap`: the number carried, the one expected, how many are gone. */
   sequence?: number;
   expected?: number;
@@ -357,14 +408,48 @@ export function renderDelivery(read: DeliveryRead): string {
         `${at(r)}  ${who(r)}: arrived with no verified way back${r.detail ? ` — ${r.detail}` : ''}. ` +
         'Repair: establish the destination yourself (peer_list, or the pane the dispatch record names); peer_reply refuses it.',
     );
-  const reports = open
-    .filter((r) => r.reason === 'report-unreadable')
+  // THREE CLASSES, AND NO CATCH-ALL THAT GRANTS THE STRONGEST WORDING (#207).
+  // One sentence used to render every disposition `completion.ts` writes, and
+  // it asserted an arrival — over rows whose own findings call the completion a
+  // claim, and with a repair naming a path for rows that carry none.
+  const identity = (r: DeliveryDiagnostic): string =>
+    `${at(r)}  ${who(r)}${r.request ? ` (request ${r.request})` : ''} [${r.kind ? `job ${r.kind}` : 'job not established'}]`;
+  const observed = (r: DeliveryDiagnostic): string =>
+    `${r.disposition ?? 'unnamed disposition'}${r.path ? ` at ${r.path}` : ''}${r.environment ? ` on ${r.environment}` : ''}` +
+    `${r.detail ? ` — ${r.detail}` : ''}`;
+  const claims = open
+    .filter((r) => r.reason === 'report-unreadable' && CLAIM_UNPROVED[String(r.disposition)] === true)
     .map(
       (r) =>
-        `${at(r)}  ${who(r)}${r.request ? ` (request ${r.request})` : ''}: Report NOT established — ` +
-        `${r.disposition ?? 'unnamed disposition'}${r.path ? ` at ${r.path}` : ''}${r.environment ? ` on ${r.environment}` : ''}` +
-        `${r.detail ? ` — ${r.detail}` : ''}. The Summary itself arrived; this is the file, not the message. ` +
-        'Repair: answer that completion on the channel it arrived on and have the worker write THAT path.',
+        `${identity(r)}: completion NOT proved — ${observed(r)}. Attribution was refused, so this is a claim rather than a completion, ` +
+        'and nothing was derived from it. Repair: read the pane the dispatch record names before acting on it.',
+    );
+  const artifacts = open
+    .filter((r) => r.reason === 'report-unreadable' && ARTIFACT_UNAVAILABLE[String(r.disposition)] === true)
+    .map(
+      (r) =>
+        `${identity(r)}: Report NOT established — ${observed(r)}. The artifact could not be read here; ` +
+        'that is evidence unavailable, not a Summary that never came. ' +
+        // The write instruction is the implementation Report's repair and
+        // nothing else's: an analysis Pass owes none, and a dispatch this side
+        // never typed owes an unknown one. A path is named only when the row
+        // carries one.
+        (r.kind === 'implementation' && r.path
+          ? `Repair: answer that completion on the channel it arrived on and have the worker write ${r.path}.`
+          : 'Repair: read the dispatch record for that request — it says which artifact this Pass owes, and where.'),
+    );
+  const unclassified = open
+    .filter(
+      (r) =>
+        r.reason === 'report-unreadable' &&
+        CLAIM_UNPROVED[String(r.disposition)] !== true &&
+        ARTIFACT_UNAVAILABLE[String(r.disposition)] !== true,
+    )
+    .map(
+      (r) =>
+        `${identity(r)}: Report NOT established — ${observed(r)}. ` +
+        `${NOT_CLASSIFIED[String(r.disposition)] ?? 'This disposition is not classified in this readout, so treat nothing about the completion or its artifact as established'}. ` +
+        'Repair: read the pane the dispatch record names, and the record beside it.',
     );
   const waiting = open
     .filter((r) => r.reason === 'ack-pending')
@@ -382,7 +467,9 @@ export function renderDelivery(read: DeliveryRead): string {
     ...section('WITHHELD — this side did not inject it, on purpose', withheld),
     ...section('REFUSED INJECTION — could not reach the model', refused),
     ...section('NO REPLY ROUTE — answerable only after you establish one', routeless),
-    ...section('REPORT NOT ESTABLISHED — the completion arrived, its Report did not', reports),
+    ...section('COMPLETION NOT PROVED — attribution refused, so the claim stands unproved', claims),
+    ...section('REPORT NOT ESTABLISHED — artifact evidence unavailable', artifacts),
+    ...section('REPORT NOT ESTABLISHED — disposition not classified here', unclassified),
     ...section('WAITING ACKNOWLEDGEMENT — Orca still holds it', waiting),
     '',
     COVERAGE,

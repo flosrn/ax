@@ -36,7 +36,7 @@ import { livePanes } from '../worker/slots.mjs';
 import { start as startVerb } from '../worker/start.mjs';
 import { dispatchProof, slugOf } from '../worker/transcript.mjs';
 import { repoSlug } from '../gh.mjs';
-import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
+import { draftDirFor, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
 import { passPlan } from './capacity.mjs';
 import { carriedClasses } from './provenance.mjs';
@@ -215,20 +215,38 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
 }
 
 /**
- * Has a triage pass already produced something a brief can distil?
+ * Has a triage pass already produced something a brief can distil, and WHICH
+ * evidence says so — `record` | `draft` | `publication`, or `null`.
  *
  * A comment count cannot answer: a `Necessary for:` ruling is a comment, and
  * treating it as a completed pass lets `--job brief` skip the necessity
  * assessment the triage child is assigned. The evidence is a recorded dispatch,
  * an unpublished draft, or a comment that carries this package's own triage
  * publication stamp — never "there is at least one comment".
+ *
+ * THE CLASS IS LOAD-BEARING, not a label on one answer (#207). `--job custom`
+ * puts it in the child's own instruction, where it says WHERE the pass is, so
+ * the two sides of the union are read apart: a `.json` in the store is a
+ * dispatched pass, a `.md` in the draft directory is a written one, and calling
+ * a draft-only pass "recorded" is the same false locative this reader replaced.
+ * The union is unchanged, so what `brief` refuses on is byte-identical.
+ *
+ * `passesIn` answers `[]` for a directory it cannot read, which is an absence
+ * and not an emptiness (F-028), so the pass-1 draft is also probed directly —
+ * the one thing an unreadable draft directory must not do is hide a verdict
+ * that is sitting in it.
  */
 function triagePassEvidence({ store, root, slug, issue, comments = [] }) {
   const triageBase = { job: 'triage', repo: slug, issue };
-  const passes = passesOf(store, draftDirFor(root), triageBase);
-  if (passes.length > 0) return { kind: 'record', pass: passes[passes.length - 1] };
+  const recorded = passesIn(store, triageBase, '.json');
+  if (recorded.length > 0) return { kind: 'record', pass: recorded[recorded.length - 1] };
+  const written = passesIn(draftDirFor(root), triageBase, '.md');
+  if (written.length > 0) {
+    const pass = written[written.length - 1];
+    return { kind: 'draft', pass, path: draftPath(root, { ...triageBase, pass }) };
+  }
   const draft = readDraft(root, { ...triageBase, pass: 1 });
-  if (existsSync(draft.path)) return { kind: 'draft', path: draft.path };
+  if (existsSync(draft.path)) return { kind: 'draft', pass: 1, path: draft.path };
   for (const body of comments) {
     const found = publicationIn(body);
     if (found !== null && found.ok === true && String(found.job).trim().toLowerCase() === 'triage' && found.issue === String(issue)) {
@@ -237,6 +255,13 @@ function triagePassEvidence({ store, root, slug, issue, comments = [] }) {
   }
   return null;
 }
+
+/** What a reader is told the evidence IS, in the precheck note and nowhere else. */
+const EVIDENCE_WORD = {
+  record: 'a dispatch of that pass is recorded here',
+  draft: 'its draft is on disk here',
+  publication: 'published as a comment on this issue',
+};
 
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -661,6 +686,10 @@ export function dispatch(
   section(`precheck — ${slug} (job: ${job})`);
   let blocked = false;
   const state = new Map();
+  // What establishes a prior triage pass, per issue, read ONCE here and spent
+  // twice: the precheck note below and the child's own instruction (#207). One
+  // reader, so the note and the assignment cannot say different things.
+  const passEvidence = new Map();
   for (const issue of issues) {
     const meta = readIssue(gh, slug, issue, job);
     if (!meta.ok) {
@@ -769,7 +798,17 @@ export function dispatch(
       }
       if (meta.comments === 0) note(`  distilling the unpublished draft at ${draft.path}`);
     }
-    if (job === 'custom' && meta.comments > 0) note('  ^ already triaged — the spec opens by saying so, and forbids a re-triage');
+    if (job === 'custom') {
+      // THE COUNT IS NOT THE EVIDENCE (#207). This note and the child's own
+      // first sentence answer from one reader, so an issue carrying comments and
+      // no pass is told nothing about a pass — and one carrying a pass is told
+      // which artifact establishes it.
+      const evidence = triagePassEvidence({ store, root: paths.root, slug, issue, comments: meta.text?.comments ?? [] });
+      passEvidence.set(issue, evidence);
+      if (evidence !== null) {
+        note(`  ^ already triaged (${EVIDENCE_WORD[evidence.kind] ?? `evidence class ${evidence.kind}`}) — the spec opens by saying so, and forbids a re-triage`);
+      }
+    }
   }
   if (blocked) return refuse('precheck refused — nothing was dispatched');
 
@@ -804,7 +843,9 @@ export function dispatch(
       repo: slug,
       draft,
       labels: labels.path,
-      triaged: (state.get(issue)?.comments ?? 0) > 0,
+      // Only the `custom` lane reads this: `triage` and `brief` carry their own
+      // sentences, and `brief`'s is earned by the precheck above.
+      triagePass: passEvidence.get(issue) ?? null,
       instruction: job === 'custom' ? readFileSync(instruction, 'utf8') : '',
       pass,
       previous,
@@ -989,13 +1030,19 @@ function readIssue(gh, repo, issue, job = 'triage') {
         meta.parentCause = 'unparseable';
       }
     }
-    meta.text = {
-      body: Object.hasOwn(body, 'body') ? body.body : undefined,
-      comments: body.comments.map(comment =>
-        comment !== null && typeof comment === 'object' && Object.hasOwn(comment, 'body') ? comment.body : undefined,
-      ),
-    };
   }
+  // THE COMMENT BODIES ARE ALREADY IN THIS ANSWER, for every job: `comments` is
+  // in the base field list, and only the ISSUE body is routed-lane-only. They
+  // are exposed here because `--job custom` now reads them for the triage
+  // publication stamp (#207), and a second `gh issue view` for text this read
+  // already holds would be a second chance to fail on a question this one
+  // answered. An absent `body` key is unknown, never an empty string (F-028).
+  meta.text = {
+    body: Object.hasOwn(body, 'body') ? body.body : undefined,
+    comments: body.comments.map(comment =>
+      comment !== null && typeof comment === 'object' && Object.hasOwn(comment, 'body') ? comment.body : undefined,
+    ),
+  };
   return meta;
 }
 

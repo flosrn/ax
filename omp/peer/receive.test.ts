@@ -1334,8 +1334,17 @@ test('an unreadable Report is persisted as that, not as a missing Summary', asyn
       expect(unread[0].request).toBe('194-delivery-diagnostics');
       const text = renderDelivery(fresh);
       expect(text).toContain('REPORT NOT ESTABLISHED');
-      expect(text).toContain('The Summary itself arrived');
+      // The contract this row has always carried: an unreadable or absent file
+      // is not a missing Summary. What went (#207) is the ARRIVAL claim beside
+      // it — `completionReport` can run before the send, so a file observation
+      // cannot prove the message landed, whatever the disposition.
       expect(text).not.toContain('missing Summary');
+      expect(text).not.toContain('Summary itself arrived');
+      expect(text).toContain('evidence unavailable');
+      // The row is an implementation whose file is absent, so its repair is the
+      // one that names the derived path — and it names the path the row carries.
+      expect(text).toContain('job implementation');
+      expect(text).toContain(join(wt, '.scratch', 'report', '194-delivery-diagnostics.md'));
     } finally {
       rmSync(wt, { recursive: true, force: true });
     }
