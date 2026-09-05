@@ -233,3 +233,93 @@ test('a reason the vocabulary does not name is refused rather than persisted as 
   expect(ok).toBe(false);
   expect(readDelivery().records).toEqual([]);
 });
+
+// ─── what a report-unreadable row is allowed to say (#207) ───────────────────
+//
+// One sentence rendered all of `completion.ts`'s dispositions, and it asserted
+// an arrival: "The Summary itself arrived; this is the file, not the message" —
+// including for the two rows whose own findings say a completion without a
+// witness is a claim and that a mismatched pane's claim is not its to make. Its
+// repair said "have the worker write THAT path" for rows that carry no path.
+// `completionReport` can also run BEFORE the send, so a file observation alone
+// cannot prove delivery whatever the disposition.
+
+test('an attribution refusal renders as an unproven claim, and asserts no arrival', () => {
+  for (const disposition of ['unwitnessed', 'pane-unrecorded', 'pane-mismatch']) {
+    rmSync(diagnosticsPath(HANDLE), { force: true });
+    put({ reason: 'report-unreadable', peer: 'child:174', messageId: 'm1', disposition, request: 'custom-flosrn-ax-174' });
+
+    const text = renderDelivery(readDelivery());
+    expect(text).toContain(disposition);
+    expect(text).toContain('custom-flosrn-ax-174');
+    expect(`${disposition}: ${text.includes('Summary itself arrived')}`).toBe(`${disposition}: false`);
+    expect(`${disposition}: ${text.includes('the completion arrived')}`).toBe(`${disposition}: false`);
+    // A row with no path never names one in its repair.
+    expect(`${disposition}: ${text.includes('write THAT path')}`).toBe(`${disposition}: false`);
+    expect(text.toLowerCase()).toContain('claim');
+  }
+});
+
+test('a file failure on an established completion reads as evidence unavailable, and never as a missing Summary', () => {
+  put({
+    reason: 'report-unreadable',
+    peer: 'child:194',
+    messageId: 'm2',
+    disposition: 'absent',
+    kind: 'implementation',
+    request: '194-work',
+    path: '/w/.scratch/report/194-work.md',
+  });
+
+  const text = renderDelivery(readDelivery());
+  expect(text).toContain('REPORT NOT ESTABLISHED');
+  expect(text).toContain('/w/.scratch/report/194-work.md');
+  expect(text).toContain('job implementation');
+  // The distinction the old sentence protected, kept without asserting arrival.
+  expect(text).not.toContain('missing Summary');
+  expect(text).not.toContain('Summary itself arrived');
+});
+
+test('a disposition this renderer does not know still renders, names itself, and establishes nothing', () => {
+  put({ reason: 'report-unreadable', peer: 'child:207', messageId: 'm3', disposition: 'something-new-1a2b', request: 'x-work' });
+
+  const text = renderDelivery(readDelivery());
+  expect(text).toContain('something-new-1a2b');
+  expect(text).toContain('NOT ESTABLISHED');
+  expect(text).not.toContain('Summary itself arrived');
+  expect(text).not.toContain('write THAT path');
+});
+
+test('a row whose kind the receiver never established says so, and no repair asks it for a Report', () => {
+  put({
+    reason: 'report-unreadable',
+    peer: 'child:207',
+    messageId: 'm4',
+    disposition: 'kind-unestablished',
+    request: 'triage-flosrn-ax-207',
+    detail: 'the record names no kind, and the request carries the job word',
+  });
+
+  const text = renderDelivery(readDelivery());
+  // The request is an identifier; it never becomes a proved job.
+  expect(text).toContain('triage-flosrn-ax-207');
+  expect(text).toContain('job not established');
+  expect(text).not.toContain('job triage');
+  expect(text).not.toContain('write THAT path');
+  expect(text).not.toContain('have the worker write');
+});
+
+test('a row written before the kind evidence existed still renders, and keeps its reason', () => {
+  // The persisted vocabulary is unchanged, so a restarted session reads what an
+  // older pane wrote: `reason` is still `report-unreadable` and a missing kind
+  // costs the row nothing.
+  put({ reason: 'report-unreadable', peer: 'child:180', messageId: 'm5', disposition: 'empty', request: '180-work', path: '/w/r.md' });
+
+  const read = readDelivery();
+  expect(read.records[0].reason).toBe('report-unreadable');
+  expect(read.records[0].kind).toBeUndefined();
+  const text = renderDelivery(read);
+  expect(text).toContain('180-work');
+  expect(text).toContain('empty');
+  expect(text).toContain('job not established');
+});

@@ -78,10 +78,29 @@ test('the brief child is told to name ready-for-agent itself, in its own Labels 
   }
 });
 
-test('a custom spec on a triaged issue opens by forbidding a re-triage', () => {
-  const spec = renderSpec({ ...base, job: 'custom', triaged: true, instruction: 'Measure the flaky test.\n' });
-  assert.match(spec, /ALREADY had its triage pass/);
-  assert.match(spec, /Measure the flaky test\./);
-  const untouched = renderSpec({ ...base, job: 'custom', triaged: false, instruction: 'Measure it.' });
+// The input is EVIDENCE, not a boolean from a comment count (#207): the sentence
+// asserts where the pass is, and only one of the three evidence classes can put
+// it in the comments. An evidence-less issue is told nothing at all.
+test('a custom spec on a triaged issue opens by forbidding a re-triage, and locates the pass by its evidence', () => {
+  const published = renderSpec({ ...base, job: 'custom', triagePass: { kind: 'publication', pass: 1 }, instruction: 'Measure the flaky test.\n' });
+  assert.match(published, /ALREADY had its triage pass; it is in its comments/);
+  assert.match(published, /Measure the flaky test\./);
+
+  const recorded = renderSpec({ ...base, job: 'custom', triagePass: { kind: 'record', pass: 2 }, instruction: 'Measure it.' });
+  assert.match(recorded, /ALREADY had its triage pass; pass 2 is recorded in this checkout's dispatch store/);
+  assert.ok(!recorded.includes('in its comments'), 'a recorded pass is not a comment');
+
+  const drafted = renderSpec({ ...base, job: 'custom', triagePass: { kind: 'draft', path: '/w/.scratch/triage/triage-acme-widgets-7.md' }, instruction: 'Measure it.' });
+  assert.match(drafted, /ALREADY had its triage pass; its unpublished draft is at \/w\/\.scratch\/triage\/triage-acme-widgets-7\.md/);
+
+  // Evidence whose class this renderer does not know establishes the pass and
+  // nothing about its place: the assertion stays, the locative goes.
+  const unclassed = renderSpec({ ...base, job: 'custom', triagePass: { kind: 'something-new' }, instruction: 'Measure it.' });
+  assert.match(unclassed, /ALREADY had its triage pass: do not re-triage it/);
+  for (const locative of ['in its comments', 'is recorded in', 'unpublished draft']) {
+    assert.ok(!unclassed.includes(locative), `no place is claimed for evidence this renderer cannot name (${locative})`);
+  }
+
+  const untouched = renderSpec({ ...base, job: 'custom', triagePass: null, instruction: 'Measure it.' });
   assert.ok(!untouched.includes('ALREADY'));
 });

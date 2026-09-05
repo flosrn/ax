@@ -972,3 +972,155 @@ test('the wired defaults classify a remote dispatch from the recorded argv alone
     resetDispatchNames();
   }
 });
+
+// ─── which artifact the completion owes, typed from the record (#207) ─────────
+//
+// Measured 2026-09-05 on a `--job custom` verification of #174: the receiver
+// typed every completion as an implementation, called the Pass's own prescribed
+// Draft an unauthorized path, and then reported an implementation Report absent
+// and asked the worker to write one — an artifact a `custom` assignment forbids.
+// The mint records `kind`; `prove()` in `src/worker/release.mjs` has typed a pane
+// from it plus the request's job word since #178, and this is that same question,
+// asked here before any path is derived.
+
+/** The same record, carrying the kind its mint would have written. */
+const typed = (rec: Record<string, unknown>, kind: string, extra: Record<string, unknown> = {}) => ({ ...rec, kind, ...extra });
+
+/** Wiring whose lookup answers with the record's OWN request, which typing reads. */
+function typedDeps(rec: Record<string, unknown>, diagnose?: unknown) {
+  return {
+    record: (id: string) => (id === DISPATCH ? { request: String(rec.request ?? ''), json: rec } : null),
+    environmentOf: () => '',
+    retrieve: retriever(UNREACHABLE),
+    ...(diagnose === undefined ? {} : { diagnose }),
+  };
+}
+
+test('a typed analysis Pass owes no implementation Report: none is derived, none is absent, none is asked for', () => {
+  for (const kind of ['custom', 'triage', 'brief']) {
+    // A file sits at the derived path holding another slice's bytes. Reading it
+    // would be the impostor read; deriving the path at all is what stops.
+    const wt = withReport(`## CRITERIA\n- ANALYSIS-IMPOSTOR-4c1d\n`, `${kind}-acme-widgets-7`);
+
+    const block = completionReport(completion(), typedDeps(typed(wt.rec, kind, { repo: 'acme/widgets' })));
+
+    expect(block).toContain(kind);
+    // The governing artifact is STATED, never located: no Draft path is derived,
+    // named or opened, and no second path twin exists to do it.
+    expect(block).toContain('Draft');
+    expect(`${kind}: ${block.includes(wt.derived)}`).toBe(`${kind}: false`);
+    expect(`${kind}: ${block.includes('.scratch')}`).toBe(`${kind}: false`);
+    expect(`${kind}: ${block.includes('FINDING')}`).toBe(`${kind}: false`);
+    expect(`${kind}: ${block.includes('no Report at this path')}`).toBe(`${kind}: false`);
+    expect(`${kind}: ${block.includes('have the worker write')}`).toBe(`${kind}: false`);
+    expect(`${kind}: ${block.includes('ANALYSIS-IMPOSTOR-4c1d')}`).toBe(`${kind}: false`);
+    // Nothing is worded as news when the completion supplied no path at all.
+    expect(`${kind}: ${block.includes('NOTE:')}`).toBe(`${kind}: false`);
+  }
+});
+
+test('a path an analysis completion supplies is ONE note, never a finding and never an open file', () => {
+  const wt = worktree('custom-acme-widgets-7');
+  const elsewhere = join(mkdtempSync(join(tmpdir(), 'ax-draft-')), 'draft.md');
+  writeFileSync(elsewhere, 'SUPPLIED-PATH-BYTES-9a02\n');
+
+  const block = completionReport(
+    completion({ reportPath: elsewhere }),
+    typedDeps(typed(wt.rec, 'custom', { repo: 'acme/widgets' })),
+  );
+
+  expect(block).toContain('supplied a path in payload.reportPath');
+  expect(block).toContain('neither opened nor validated');
+  expect(block).not.toContain('FINDING');
+  // The proof, not the intention: neither the bytes nor the path itself travel.
+  expect(block).not.toContain('SUPPLIED-PATH-BYTES-9a02');
+  expect(block).not.toContain(elsewhere);
+  // EXACTLY ONE NOTE on the block, and it is this one: the Draft obligation is
+  // the block's own statement, so the only thing worded as news is the path
+  // nothing was done with.
+  expect(block.match(/NOTE:/g) ?? []).toHaveLength(1);
+  expect(block).toContain('governing artifact of this Pass is the Draft');
+});
+
+test('an implementation kind behaves exactly as an untyped record: the path is derived and the absence is a finding', () => {
+  const wt = worktree();
+
+  const explicit = completionReport(completion({ reportPath: wt.derived }), typedDeps(typed(wt.rec, 'implementation')));
+  const untyped = completionReport(completion({ reportPath: wt.derived }), typedDeps(wt.rec));
+
+  expect(explicit).toBe(untyped);
+  expect(explicit).toContain('FINDING: no Report at this path');
+  expect(explicit).toContain(wt.derived);
+});
+
+test('a record with no kind whose request carries a job word is an inability, and derives nothing', () => {
+  const wt = withReport('## CRITERIA\n- UNTYPED-IMPOSTOR-77ab\n', 'triage-acme-widgets-7');
+
+  const block = completionReport(completion(), typedDeps({ ...wt.rec, repo: 'acme/widgets' }));
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain('names no kind');
+  expect(block).toContain("'triage'");
+  // Nothing derived, nothing asserted absent, no exemption granted.
+  expect(block).not.toContain(wt.derived);
+  expect(block).not.toContain('no Report at this path');
+  expect(block).not.toContain('UNTYPED-IMPOSTOR-77ab');
+  expect(block).not.toContain('have the worker write');
+});
+
+test('a kind that disagrees with the request job word is an inability, never a typed exemption', () => {
+  const wt = withReport('## CRITERIA\n- CONFLICT-IMPOSTOR-31de\n', 'triage-acme-widgets-7');
+
+  const block = completionReport(completion(), typedDeps(typed(wt.rec, 'custom', { repo: 'acme/widgets' })));
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain("types this dispatch as 'custom'");
+  expect(block).toContain("'triage'");
+  expect(block).not.toContain(wt.derived);
+  expect(block).not.toContain('CONFLICT-IMPOSTOR-31de');
+  // The exemption an analysis kind earns is not granted on a contradiction.
+  expect(block).not.toContain('governing artifact');
+});
+
+test('the witness and pane guards decide before any kind is read', () => {
+  const wt = witnessedWorktree('custom-acme-widgets-7');
+  const rec = typed(wt.rec, 'custom', { repo: 'acme/widgets' });
+
+  const unwitnessed = completionReport(witnessed({ dispatchId: DISPATCH }, { sender_pane_key: '' }), typedDeps(rec));
+  expect(unwitnessed).toContain('not witnessed');
+  expect(unwitnessed).toContain('a claim, not a completion');
+  expect(unwitnessed).not.toContain('governing artifact');
+
+  const mismatched = completionReport(
+    witnessed({ dispatchId: DISPATCH }, { from_handle: 'term_someone_else' }),
+    typedDeps(rec),
+  );
+  expect(mismatched).toContain("not this pane's to make");
+  expect(mismatched).not.toContain('governing artifact');
+});
+
+test('a diagnostic entry carries the kind this receiver established, and never one it did not', () => {
+  const wt = witnessedWorktree('137-work');
+  const rows: Array<Record<string, unknown>> = [];
+  const collect = (entry: Record<string, unknown>) => {
+    rows.push(entry);
+  };
+
+  // Established: an implementation whose file is absent.
+  const absent = worktree();
+  absent.rec.attempts[0].phases[0].receipt.result.effects.push({ kind: 'terminal', role: 'agent', action: 'created', id: PANE });
+  completionReport(witnessed({ dispatchId: DISPATCH }), typedDeps(typed(absent.rec, 'implementation'), collect));
+  expect(rows[0]).toMatchObject({ reason: 'report-unreadable', disposition: 'absent', kind: 'implementation' });
+
+  // Not established: the guards refused before any classification ran.
+  rows.length = 0;
+  completionReport(witnessed({ dispatchId: DISPATCH }, { sender_pane_key: '' }), typedDeps(typed(wt.rec, 'implementation'), collect));
+  expect(rows[0]?.disposition).toBe('unwitnessed');
+  expect('kind' in (rows[0] ?? {})).toBe(false);
+
+  // Not established, and named as such: the record types nothing.
+  rows.length = 0;
+  completionReport(witnessed({ dispatchId: DISPATCH }), typedDeps({ ...wt.rec, request: 'triage-acme-widgets-7', repo: 'acme/widgets' }, collect));
+  expect(rows[0]?.disposition).toBe('kind-unestablished');
+  expect('kind' in (rows[0] ?? {})).toBe(false);
+});
