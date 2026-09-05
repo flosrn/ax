@@ -822,6 +822,25 @@ test('#175: an unestablished read on --merge mutates nothing — no merge call i
   assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
 });
 
+test('#175: the page bound reached with the pagination still advancing is unestablished, and merges nothing', () => {
+  // FIFTY pages, each one genuinely advancing — distinct cursors, so nothing
+  // here trips the repeated-cursor refusal. The bound is the last exit that
+  // could still have read as a finished list, and it is the one shape the
+  // fixture list has to spell out in full: the stub repeats its LAST page, so
+  // a shorter list would establish the read on a repeat instead.
+  const advancing = Array.from({ length: 50 }, (_, i) => threadPage([thread(`T${i + 1}`, true)], true, `CURSOR_${i + 2}`));
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { threads: advancing });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — threads: pagination exceeded 50 pages; stopped rather than looping, so the end of the thread list is unestablished/);
+  // The bound's finding is actionable — it used to carry no repair at all.
+  assert.match(out, /gh api graphql .*reviewThreads/);
+  // Fifty reads, then a stop: the bound holds, and it never becomes a pass.
+  assert.equal(calls.filter(call => call.startsWith('api graphql')).length, 50);
+  assert.doesNotMatch(out, /threads: read established/);
+  assert.doesNotMatch(out, /PASS —/);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), `a merge was issued at the page bound: ${calls.join(' | ')}`);
+});
+
 test('#175: an incomplete read still names an actionable repair, and the other grounds keep reporting', () => {
   const { code, out } = run(['--pr', '1845'], { threads: [threadShape({ pageInfo: { hasNextPage: false, endCursor: null } })], shape: 'stale' });
   assert.equal(code, 1, out);
