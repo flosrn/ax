@@ -57,6 +57,27 @@ export function fix(command) {
   process.stdout.write(`      → ${command}\n`);
 }
 
+/**
+ * A refusal and its repair, on STDERR, for a verb whose stdout is a payload.
+ *
+ * `bad`/`fix` write to stdout, which is correct for a doctor and wrong for
+ * `ax worker transcript --dispatch-proof`: a remote reader takes the first
+ * stdout line as the proof, so a finding printed there would be parsed as one.
+ * Before this existed that branch printed NOTHING at all — measured 2026-09-05
+ * on #204, exit 1 with both streams empty, and an ambiguous needle, a request
+ * with no record and a dispatch with two owners were indistinguishable to the
+ * caller that ran it.
+ *
+ * ONE call carries both halves because the alternative is the rule AGENTS.md
+ * states ("a `bad` without a `fix` is a finding neither an agent nor a human
+ * can act on") re-broken on a second stream: `command` has no default, so a
+ * refusal here cannot be emitted without naming what repairs it.
+ */
+export function refuse(message, command) {
+  process.stderr.write(`  ${red('✗')} ${message}\n`);
+  process.stderr.write(`      → ${command}\n`);
+}
+
 export function warn(message) {
   process.stderr.write(`${yellow('warning')}: ${message}\n`);
 }

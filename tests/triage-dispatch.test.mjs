@@ -18,21 +18,26 @@
 // smell.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { dispatch, roleWaitOf } from '../src/triage/dispatch.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
+import { slugOf, transcript } from '../src/worker/transcript.mjs';
 
 const REPO = 'acme/widgets';
 
 /** A real git repo with a label contract, because the preflight reads both. */
-function repo({ labels = 'docs/agents/triage-labels.md', provenance, dispatch: block } = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-triage-')));
+function repo({ labels = 'docs/agents/triage-labels.md', provenance, dispatch: block, at } = {}) {
+  // `at` exists for one proposition: a checkout path carrying whitespace or a
+  // shell metacharacter, which is what a printed repair has to survive.
+  if (at !== undefined) mkdirSync(at, { recursive: true });
+  const root = realpathSync(at ?? mkdtempSync(join(tmpdir(), 'ax-triage-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
   writeFileSync(
     join(root, 'ax.config.json'),
@@ -821,9 +826,104 @@ test('the no-receipt verdict names both repairs — the request-scoped read, and
   });
   assert.equal(r.code, 3);
   assert.match(r.out, /--dispatch-proof/, 'the verb that actually reads the session file');
-  assert.match(r.out, /--request triage-acme-widgets-7/, 'scoped to this pass, not newest-wins across the wave');
+  // Quoted since #208's review: the line is pasted into a shell, and every
+  // value in it is data.
+  assert.match(r.out, /--request 'triage-acme-widgets-7'/, 'scoped to this pass, not newest-wins across the wave');
   assert.match(r.out, /--wait/, 'and the flag that would have kept the window open');
   assert.match(r.out, /AX_TRIAGE_ROLE_WAIT/, 'including the machine-wide default it reads');
+});
+
+// #204 — THE PRINTED REPAIR HAS TO EXECUTE, and the proof of that is a SHELL
+// running the bytes it printed. Matching its shape, or calling the verb's
+// function with a hand-split argv, is what let a line that cannot run pass for
+// a repair once already (review of #208): both skip the two things that break
+// it — word splitting and expansion.
+//
+// Measured 2026-09-05 on integrated main f446f229: this loop held the whole
+// checkout path and handed the resolver `basename(root)`, then composed that
+// same basename into the recovery it printed. On the reporting host two session
+// directories end in `-ax`, so no read inside the 120 s window could have
+// answered, and the printed recovery reproduced the inability it repairs —
+// exit 1, both streams empty. The key is now the checkout's own session slug,
+// quoted, which names one directory by construction.
+
+/** `ax` on PATH pointing at THIS checkout's bin, plus the machine answer `worker` is gated on. */
+function shim(home) {
+  const dir = join(home, 'bin');
+  mkdirSync(dir, { recursive: true });
+  const bin = fileURLToPath(new URL('../bin/ax.mjs', import.meta.url));
+  writeFileSync(join(dir, 'ax'), `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(bin)} "$@"\n`, { mode: 0o755 });
+  // `worker` is `gated: 'orca'`, so a machine resolving no Orca binary does not
+  // have the noun at all. `ORCA_BIN` only has to be EXECUTABLE — visibility and
+  // liveness are two propositions — and the proof branch answers before
+  // anything probes a runtime, so this stub is never run and the suite stays
+  // offline.
+  const orca = join(dir, 'orca-never-run');
+  writeFileSync(orca, '#!/bin/sh\nexit 97\n', { mode: 0o755 });
+  return { path: dir, orca };
+}
+
+/** The `→ …` line a verdict printed, without the decoration or the trailing note. */
+const repairIn = text =>
+  (text.split('\n').find(line => line.includes('→ ax worker transcript')) ?? '')
+    .replace(/^\s*→\s*/, '')
+    .replace(/\s{3,}#.*$/, '');
+
+test('#204 the CANNOT-ESTABLISH repair line runs, from a checkout path a shell would mangle', () => {
+  // A checkout whose own path word-splits, globs, and would EXECUTE if it ever
+  // reached a shell unquoted — `$(touch …)` is the assertion, since a wrong
+  // quoting leaves the sentinel behind.
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'ax-triage-shell-')));
+  const sentinel = join(parent, 'expanded');
+  const root = repo({ at: join(parent, `my ax; $(touch ${sentinel}) *`) });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const { path, orca } = shim(home);
+  const asked = [];
+  const r = run(['--issue', '7'], {
+    root,
+    home,
+    env: { AX_TRIAGE_ROLE_WAIT: '0' },
+    proofFn: options => (asked.push(options), null),
+  });
+
+  assert.equal(r.code, 3);
+  assert.equal(asked[0].cwd, root, 'the wait passes the checkout it holds, not only that path\'s basename');
+
+  const printed = repairIn(r.out);
+  assert.ok(printed.startsWith('ax worker transcript'), `the verdict printed no proof recovery at all:\n${r.out}`);
+
+  // The child this pass really dispatched, on disk: its record names the
+  // dispatch Orca minted, and its session's first turn names the same id.
+  const request = 'triage-acme-widgets-7';
+  record(r.store, request, { dispatchId: 'ctx_204204204204' });
+  const sessions = join(home, '.omp', 'agent', 'sessions');
+  const mine = join(sessions, slugOf(root, { HOME: home }));
+  mkdirSync(mine, { recursive: true });
+  writeFileSync(
+    join(mine, '2026-09-05T21-00-00-000Z_child.jsonl'),
+    [
+      JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are a dispatched worker. Your dispatch is ctx_204204204204.' }] } }),
+      JSON.stringify({ type: 'model_change', model: 'claude-opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'triage-worker', skills: ['triage'], status: 'applied' } }),
+    ].join('\n'),
+  );
+  // THE COLLISION, which is the whole reason this test exists: a second session
+  // directory whose slug ends in this checkout's basename.
+  mkdirSync(join(sessions, `-elsewhere-${basename(root)}`), { recursive: true });
+
+  // The printed bytes, handed to a POSIX shell exactly as an operator pastes
+  // them. Nothing is re-quoted or re-split here.
+  const ran = spawnSync('sh', ['-c', printed], {
+    encoding: 'utf8',
+    env: { HOME: home, PATH: `${path}:/usr/bin:/bin`, ORCA_DISPATCH_STORE: r.store, ORCA_BIN: orca },
+  });
+  assert.equal(ran.status, 0, `the printed repair did not run:\n${printed}\n${ran.stderr}`);
+  assert.equal(JSON.parse(ran.stdout).sessionRole.role, 'triage-worker', 'and it answered with THIS checkout\'s own receipt');
+  assert.equal(existsSync(sentinel), false, 'the checkout path was pasted as DATA — nothing in it was expanded');
+
+  // The key it replaced, on the same fixture: still ambiguous, still refused.
+  const old = capture(() => transcript(['--dispatch-proof', basename(root), '--request', request], { env: { HOME: home, ORCA_DISPATCH_STORE: r.store } }));
+  assert.equal(old.code, 1, 'the basename names two checkouts here — that is the failure this line was printing');
 });
 
 // The reported friction: 30 s against the worker family's 120 s for one

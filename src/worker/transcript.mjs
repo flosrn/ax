@@ -33,11 +33,12 @@
 //   3  cannot establish: no orca, runtime silent, target unresolvable or
 //      ambiguous, source file unreadable
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { basename, isAbsolute, join, resolve as resolvePath } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
-import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, section as sectionLine, warn as warnLine } from '../log.mjs';
+import { bad as badLine, fix as fixLine, note as noteLine, raw as rawLine, refuse as refuseLine, section as sectionLine, warn as warnLine } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
+import { quote } from './hosts.mjs';
 import { defaultStore, dispatchIndex } from './record.mjs';
 
 // ONE redaction boundary, on the emitters themselves. Redacting field by field
@@ -54,6 +55,9 @@ const warn = message => warnLine(redactSecrets(message));
 // this module prints — a needle is a worktree name, but the line crosses a
 // transport and every emission here goes through one boundary.
 const raw = text => rawLine(redactSecrets(text));
+// The refusal of the proof mode, whose stdout belongs to the payload: reason
+// and repair together, on stderr, redacted like everything else here.
+const refuse = (reason, repair) => refuseLine(redactSecrets(reason), redactSecrets(repair));
 
 /** `orca open` is the repair for every gate refusal of this verb. */
 const OPEN = 'orca open   # start the Orca runtime, then re-run';
@@ -329,11 +333,25 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
     // `dispatchProof` answers null and this exits 1 with nothing on stdout, so
     // no caller can read a sibling pass as this one (F-028 — an ambiguity is
     // not an answer).
+    //
+    // The EXIT AND STDOUT PROTOCOL IS THE CONTRACT — `readProof` discriminates
+    // on the remote's exit status and parses the first stdout line as the proof
+    // — so the cause lands on stderr instead, the stream this branch already
+    // uses for the retired-flag warning. Until #204 it printed nothing at all
+    // on either stream: measured 2026-09-05, an operator met exit 1 with two
+    // empty streams and could not tell an ambiguous needle from a request with
+    // no record from a dispatch with no owner.
+    //
+    // NO `cwd` HERE, deliberately. The operator typed a needle, and honouring
+    // it exactly is the whole of what they asked; preferring this process's own
+    // checkout would answer a question that was not put. The callers that hold
+    // an owning path pass it themselves.
     const found = dispatchProof({
       needle,
       request: requestAt === -1 ? '' : argv[requestAt + 1],
       env,
       sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1],
+      onRefusal: refusal => refuse(refusal.reason, refusal.repair),
     });
     if (found === null) return 1;
     raw(JSON.stringify(found));
@@ -569,21 +587,38 @@ function sessionsById(root, target) {
  * old name outlived the rename. A proof named after a verb nobody can type
  * sends a reader looking for a `launch` that no longer exists.
  *
+ * `cwd` is the OWNING LOCAL checkout or worktree, passed only by a caller that
+ * genuinely holds it, and never derived from this machine for a read that
+ * targets another host (#204). `onRefusal` is how the one caller whose stdout
+ * is not a payload prints WHY this answered null; the poll loops leave it unset,
+ * because a bounded wait re-asks this question hundreds of times and every
+ * not-yet would print.
+ *
  * The model mover and the session role are independent. `model_change.role`
  * says who selected the model (`default` is the spec adapter); a hidden custom
  * message says whether the top-level role and every declared autoload skill
  * reached the first turn. Neither proposition can stand in for the other.
  */
-export function dispatchProof({ needle, request = '', env = process.env, sessionsRoot, store = defaultStore(env) } = {}) {
+export function dispatchProof({ needle, request = '', cwd = '', env = process.env, sessionsRoot, store = defaultStore(env), onRefusal = () => {} } = {}) {
   // A request names a pass through its RECORD — the newest `worker-start`
   // receipt's `ctx_…` — never through the prose the child was handed (#126).
   // A request with no dispatch on record owns no session, and that is `null`
   // here rather than a fall back to the unscoped newest-wins read: a caller
   // that named a pass must never be answered with a neighbouring one.
   const dispatchId = request === '' ? '' : dispatchOfRequest(store, request);
-  if (request !== '' && dispatchId === '') return null;
-  const file = sessionFileForNeedle({ needle, dispatchId, env, sessionsRoot });
-  if (file === null) return null;
+  if (request !== '' && dispatchId === '') {
+    onRefusal({
+      reason: `no dispatch on record for ${request} under ${store}: no record names itself there, or its newest worker-start came back with no dispatch id`,
+      repair: 'ax worker ls --all   # every recorded request, and the pane its dispatch was placed in',
+    });
+    return null;
+  }
+  const chosen = selectSessionFile({ needle, cwd, dispatchId, request, env, sessionsRoot });
+  if (chosen.file === null) {
+    onRefusal({ reason: chosen.reason, repair: chosen.repair });
+    return null;
+  }
+  const file = chosen.file;
 
   let model = null;
   let sessionRole = null;
@@ -632,6 +667,46 @@ const mtime = path => {
   }
 };
 
+/** Orca's own advisor sidecars share the directory and are not sessions. */
+const sessionNames = names => names.filter(name => name.endsWith('.jsonl') && !name.startsWith('__advisor.'));
+
+/** Every session file in ONE directory; an unreadable directory holds none. */
+function sessionFilesIn(dir) {
+  try {
+    return sessionNames(readdirSync(dir)).map(name => join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The session directories whose slug equals `needle` or ends in `-<needle>`.
+ *
+ * Split out from `sessionFilesForNeedle` for its CARDINALITY: zero and two are
+ * different refusals to whoever ran the command, and a reader that only ever
+ * saw an empty file list could not tell them apart — measured 2026-09-05 on
+ * #204 as exit 1 with nothing on either stream.
+ */
+function sessionDirsForNeedle({ needle, env = process.env, sessionsRoot } = {}) {
+  const root = sessionsRootOf(env, sessionsRoot);
+  const tail = String(needle ?? '');
+  if (tail === '') return { root, dirs: [] };
+  try {
+    return {
+      root,
+      dirs: readdirSync(root, { withFileTypes: true })
+        .filter(entry => {
+          if (!entry.isDirectory()) return false;
+          const slug = entry.name.replace(/-+$/, '');
+          return slug === tail || slug.endsWith(`-${tail}`);
+        })
+        .map(entry => join(root, entry.name)),
+    };
+  } catch {
+    return { root, dirs: [] };
+  }
+}
+
 /**
  * Exactly one session file under the cwd slug ending in `needle`.
  *
@@ -641,29 +716,8 @@ const mtime = path => {
  * inability to establish, never newest-wins.
  */
 function sessionFilesForNeedle({ needle, env = process.env, sessionsRoot } = {}) {
-  const root = sessionsRootOf(env, sessionsRoot);
-  const tail = String(needle ?? '');
-  if (tail === '') return [];
-  let dirs;
-  try {
-    dirs = readdirSync(root, { withFileTypes: true })
-      .filter(entry => {
-        if (!entry.isDirectory()) return false;
-        const slug = entry.name.replace(/-+$/, '');
-        return slug === tail || slug.endsWith(`-${tail}`);
-      })
-      .map(entry => join(root, entry.name));
-  } catch {
-    return [];
-  }
-  if (dirs.length !== 1) return [];
-  try {
-    return readdirSync(dirs[0])
-      .filter(name => name.endsWith('.jsonl') && !name.startsWith('__advisor.'))
-      .map(name => join(dirs[0], name));
-  } catch {
-    return [];
-  }
+  const { dirs } = sessionDirsForNeedle({ needle, env, sessionsRoot });
+  return dirs.length === 1 ? sessionFilesIn(dirs[0]) : [];
 }
 
 /**
@@ -684,13 +738,7 @@ function sessionFilesForNeedle({ needle, env = process.env, sessionsRoot } = {})
 function sessionFilesForCwd({ cwd, env = process.env, sessionsRoot } = {}) {
   const dir = join(sessionsRootOf(env, sessionsRoot), slugOf(cwd, env));
   try {
-    return {
-      dir,
-      found: true,
-      files: readdirSync(dir)
-        .filter(name => name.endsWith('.jsonl') && !name.startsWith('__advisor.'))
-        .map(name => join(dir, name)),
-    };
+    return { dir, found: true, files: sessionNames(readdirSync(dir)).map(name => join(dir, name)) };
   } catch (error) {
     return { dir, found: (error?.code ?? '') !== 'ENOENT', files: [] };
   }
@@ -805,17 +853,110 @@ function dispatchOfRequest(store, request) {
   return dispatchIndex(store).byDispatch.get(id)?.request === request ? id : '';
 }
 
-function sessionFileForNeedle({ needle, dispatchId = '', env = process.env, sessionsRoot } = {}) {
-  const files = sessionFilesForNeedle({ needle, env, sessionsRoot });
-  if (files.length === 0) return null;
-  if (dispatchId !== '') {
-    // Still exactly one, and still never newest-wins: zero owners and two
-    // owners are both an inability to establish. What the key changed is only
-    // WHICH files count as candidates.
-    const matching = files.filter(path => ownsDispatch(path, dispatchId));
-    return matching.length === 1 ? matching[0] : null;
+/** The repair for every refusal that is about a PANE rather than a key. */
+const PANE = 'ax worker ls --all   # every recorded request, and the pane its dispatch was placed in';
+
+/**
+ * WHICH session file holds this dispatch's proof — or WHY none can.
+ *
+ * Exactly one of `file` and `reason` is set, and a `reason` never travels
+ * without the `repair` that acts on it. Four causes reach a caller as one
+ * `null` today and are four different gestures: the needle named N checkouts,
+ * the right directory holds no session, nothing there owns the dispatch, or two
+ * things do.
+ *
+ * THE OWNING CWD IS THE STRICTER KEY, and taking it is what #204 paid for.
+ * Measured 2026-09-05: two session directories on the reporting host end in
+ * `-ax` (`-Code-flosrn-ax` and `-orca-workspaces-improve-ax`), so the needle
+ * `ax` matched both and this resolver refused — correctly — while every caller
+ * that asked held the whole checkout path and had handed over its basename.
+ * `slugOf(cwd)` names one directory by construction, so the ambiguity is
+ * removed from the QUESTION rather than resolved by a guess: no newest-wins
+ * among directories, and the tail match below is untouched for the callers that
+ * hold no path.
+ *
+ * The fallback is `sessionFilesForCwd`'s own rule, and the asymmetry is the
+ * whole of F-028: a directory that is THERE and holds nothing readable is no
+ * proof and permits no sibling read, because borrowing another checkout's
+ * session on the strength of an absence is how one dispatch's grant reaches
+ * another caller. Only ENOENT — no directory at all, the shape of a session
+ * recorded under a different HOME than this process sees — falls back.
+ */
+function selectSessionFile({ needle, cwd = '', dispatchId = '', request = '', env = process.env, sessionsRoot } = {}) {
+  // EVERY VALUE IN A PRINTED COMMAND IS SHELL DATA (review of #208). A checkout
+  // whose path carries a space or a metacharacter produces a session slug that
+  // carries it too, and an unquoted one word-splits — or expands — in the shell
+  // that runs the repair. That is this issue's own defect wearing a different
+  // hat: a repair line that cannot repair. The quoting form is
+  // `./hosts.mjs`'s single one, reused rather than re-decided, and it is
+  // unconditional: a classifier that decides which values "need" quoting is a
+  // second rule that can be wrong about one.
+  //
+  // AND THE ROOT TRAVELS WITH THE KEY. A read scoped to an explicit
+  // `--sessions <root>` whose repair drops it repairs a different question —
+  // the default root is another machine's answer, or nothing at all.
+  const scoped = key =>
+    [
+      'ax worker transcript --dispatch-proof',
+      quote(key),
+      ...(request === '' ? [] : ['--request', quote(request)]),
+      ...(String(sessionsRoot ?? '') === '' ? [] : ['--sessions', quote(sessionsRoot)]),
+    ].join(' ');
+  const own = cwd === '' ? null : sessionFilesForCwd({ cwd, env, sessionsRoot });
+  let where;
+  let files;
+
+  if (own !== null && own.found) {
+    if (own.files.length === 0) {
+      return {
+        file: null,
+        reason: `${own.dir} holds no readable session for ${cwd}, and no sibling checkout's session can stand in for this one`,
+        repair: PANE,
+      };
+    }
+    where = own.dir;
+    files = own.files;
+  } else {
+    const { root, dirs } = sessionDirsForNeedle({ needle, env, sessionsRoot });
+    if (dirs.length !== 1) {
+      return dirs.length === 0
+        ? {
+            file: null,
+            reason: `no session directory under ${root} whose slug ends in "${needle}"${own === null ? '' : `, and none for ${cwd} itself`}`,
+            repair: PANE,
+          }
+        : {
+            file: null,
+            reason: `the needle "${needle}" matches ${dirs.length} session directories under ${root}, so none of them is this dispatch's by name alone: ${dirs.map(dir => basename(dir)).join(', ')}`,
+            repair: `${scoped('<slug>')}   # <slug>: ONE of the directories above, without its leading dash`,
+          };
+    }
+    where = dirs[0];
+    files = sessionFilesIn(dirs[0]);
+    if (files.length === 0) {
+      return { file: null, reason: `${where} holds no readable session`, repair: PANE };
+    }
   }
-  return files.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null);
+
+  if (dispatchId === '') {
+    return { file: files.reduce((best, path) => (best === null || mtime(path) > mtime(best) ? path : best), null), reason: '', repair: '' };
+  }
+  // Still exactly one, and still never newest-wins: zero owners and two owners
+  // are both an inability to establish. What a key changes is only WHICH files
+  // count as candidates.
+  const owners = files.filter(path => ownsDispatch(path, dispatchId));
+  if (owners.length === 1) return { file: owners[0], reason: '', repair: '' };
+  return {
+    file: null,
+    reason: owners.length === 0
+      ? `no session under ${where} names ${dispatchId} in its first user turn, so nothing there is that dispatch's child`
+      : `${owners.length} sessions under ${where} name ${dispatchId}, so none of them can be established as its child`,
+    repair: PANE,
+  };
+}
+
+function sessionFileForNeedle({ needle, cwd = '', dispatchId = '', env = process.env, sessionsRoot } = {}) {
+  return selectSessionFile({ needle, cwd, dispatchId, env, sessionsRoot }).file;
 }
 
 /** Exported for the doctor of a wrong answer: which files a target would consider. */

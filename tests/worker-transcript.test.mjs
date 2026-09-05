@@ -9,9 +9,11 @@
 // Offline by construction: the Orca runner is always injected, and every file
 // read is a fixture in a tmpdir.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
@@ -572,6 +574,235 @@ test('the retired --launch-proof spelling carries --request identically', () => 
   assert.deepEqual(JSON.parse(r.out), dispatchProof({ needle: 'current', request: 'triage-acme-7', sessionsRoot: root, store }));
   assert.doesNotMatch(r.out, /triage-acme-8/, 'the alias scopes, it does not fall back to newest');
   assert.match(r.err, /retired/, 'the alias still warns, and still on stderr');
+});
+
+// -- #204: two checkouts, one basename, and a caller holding the exact path ---
+//
+// Measured 2026-09-05 on integrated main f446f229: a real custom verification
+// Dispatch spent its whole 120 s window and settled CANNOT ESTABLISH. Two
+// session directories on that host end in `-ax` — `-Code-flosrn-ax` and
+// `-orca-workspaces-improve-ax` — so the needle `ax` matched both and the tail
+// match refused, correctly. `sessionFilesForNeedle({needle:'ax'})` answered 0
+// files while the exact-cwd read answered that checkout's own directory with 63
+// files and the applied `triage-worker` receipt in it. The caller had held
+// `/Users/flo/Code/flosrn/ax` the whole time and handed over its basename.
+//
+// Exact-cwd selection is STRICTER than the tail match, so nothing below weakens
+// the ambiguity refusal: it removes the ambiguity from the question instead of
+// resolving one. The refusal on a basename is asserted unchanged in every case.
+
+/**
+ * That collision as a fixture: two session directories whose slugs both end in
+ * `-ax`, one of them the caller's own checkout.
+ */
+function checkouts() {
+  const home = scratch();
+  const root = join(home, '.omp', 'agent', 'sessions');
+  const store = join(home, 'store');
+  const mine = join(home, 'Code', 'flosrn', 'ax');
+  const sibling = join(home, 'orca', 'workspaces', 'improve-ax');
+  const env = { HOME: home, ORCA_DISPATCH_STORE: store };
+  const dirs = { mine: join(root, slugOf(mine, env)), sibling: join(root, slugOf(sibling, env)) };
+  mkdirSync(dirs.mine, { recursive: true });
+  mkdirSync(dirs.sibling, { recursive: true });
+  return { root, store, mine, sibling, env, dirs };
+}
+
+const REQUEST = 'custom-flosrn-ax-174';
+const OWNER = 'ctx_174174174174';
+
+test('#204 the proof answers from the caller OWN checkout when two slugs end in its basename', () => {
+  const { root, store, mine, env, dirs } = checkouts();
+  passRecord(store, REQUEST, OWNER);
+  childSession(dirs.mine, 'child', { dispatchId: OWNER, request: REQUEST, skills: ['triage', 'mine'] });
+  // The adversarial sibling: it names the SAME dispatch, so nothing but the
+  // directory can tell the two apart. A read that merely FILTERED by dispatch
+  // would still be ambiguous here.
+  childSession(dirs.sibling, 'stranger', { dispatchId: OWNER, request: REQUEST, skills: ['triage', 'sibling'] });
+
+  assert.equal(
+    dispatchProof({ needle: 'ax', request: REQUEST, sessionsRoot: root, store, env }),
+    null,
+    'a basename that names two checkouts still cannot choose — the refusal is untouched',
+  );
+  assert.deepEqual(
+    dispatchProof({ needle: 'ax', cwd: mine, request: REQUEST, sessionsRoot: root, store, env })?.sessionRole.skills,
+    ['triage', 'mine'],
+    'the caller that holds the path gets ITS checkout, never the sibling ending in the same basename',
+  );
+});
+
+test('#204 an own directory that holds no readable session is no proof — never a sibling one', () => {
+  const { root, mine, sibling, env, dirs } = checkouts();
+  childSession(dirs.sibling, 'stranger', { dispatchId: 'ctx_999999999999', request: 'other' });
+  const readable = slugOf(sibling, env).replace(/^-+/, '');
+
+  // Present and empty: an absence inside MY directory is not permission to
+  // borrow another checkout's session (F-028).
+  assert.equal(dispatchProof({ needle: 'ax', cwd: mine, sessionsRoot: root, env }), null);
+  assert.notEqual(
+    dispatchProof({ needle: readable, sessionsRoot: root, env }),
+    null,
+    'the sibling is readable, so the null above is a refusal and not an empty fixture',
+  );
+
+  // Present and unreadable — here a plain file, so `readdir` answers ENOTDIR.
+  // Anything but ENOENT means the directory is THERE, and no fallback follows.
+  rmSync(dirs.mine, { recursive: true });
+  writeFileSync(dirs.mine, 'not a directory');
+  assert.equal(dispatchProof({ needle: 'ax', cwd: mine, sessionsRoot: root, env }), null);
+});
+
+test('#204 an own directory that genuinely is not there still falls back to the tail match', () => {
+  const { root, mine, env, dirs } = checkouts();
+  rmSync(dirs.mine, { recursive: true });
+  rmSync(dirs.sibling, { recursive: true });
+  // The case the tail match still answers: a session recorded under a different
+  // HOME than this process sees, and exactly one slug ending in the basename.
+  const elsewhere = join(root, '-elsewhere-ax');
+  mkdirSync(elsewhere, { recursive: true });
+  childSession(elsewhere, 'recorded-elsewhere', { dispatchId: 'ctx_888888888888', request: 'other' });
+
+  assert.equal(
+    dispatchProof({ needle: 'ax', cwd: mine, sessionsRoot: root, env })?.sessionRole.role,
+    'triage-worker',
+    'ENOENT is the only absence that permits the fallback, and it still permits it',
+  );
+});
+
+test('#204 every refusal names its own cause and its repair on stderr, with stdout still empty', () => {
+  const { root, store, env, dirs } = checkouts();
+  passRecord(store, REQUEST, OWNER);
+  childSession(dirs.mine, 'child', { dispatchId: OWNER, request: REQUEST });
+
+  // The reported argv, verbatim: exit 1, empty stdout — and no longer silent.
+  const ambiguous = proofRun(['--dispatch-proof', 'ax', '--request', REQUEST, '--sessions', root], env);
+  assert.equal(ambiguous.code, 1, 'the exit protocol is unchanged');
+  assert.equal(ambiguous.out, '', 'and so is stdout: the remote reader parses its first line as the proof');
+  assert.match(ambiguous.err, /2 session directories/, 'the cause: the needle named more than one checkout');
+  assert.match(ambiguous.err, /-Code-flosrn-ax/, 'and it names the candidates');
+  assert.match(ambiguous.err, /-orca-workspaces-improve-ax/);
+  assert.match(ambiguous.err, /--dispatch-proof '<slug>' --request 'custom-flosrn-ax-174' --sessions '/, 'the repair keeps the scope AND the root it was asked with, quoted');
+
+  // A request with no dispatch on record — a different fact, and it now reads
+  // differently from the ambiguity above.
+  const unrecorded = proofRun(['--dispatch-proof', 'Code-flosrn-ax', '--request', 'custom-flosrn-ax-999', '--sessions', root], env);
+  assert.equal(unrecorded.code, 1);
+  assert.equal(unrecorded.out, '');
+  assert.match(unrecorded.err, /no dispatch on record/);
+  assert.doesNotMatch(unrecorded.err, /session directories/, 'a missing record is not an ambiguous needle');
+
+  // Zero owners: the directory is right, nothing in it names this dispatch.
+  passRecord(store, 'custom-flosrn-ax-175', 'ctx_175175175175');
+  const none = proofRun(['--dispatch-proof', 'Code-flosrn-ax', '--request', 'custom-flosrn-ax-175', '--sessions', root], env);
+  assert.equal(none.code, 1);
+  assert.equal(none.out, '');
+  assert.match(none.err, /ctx_175175175175/, 'the refusal names the dispatch nothing owns');
+
+  // Two owners: an ambiguity among the right directory files, still refused.
+  childSession(dirs.mine, 'child-again', { dispatchId: OWNER, request: REQUEST });
+  const two = proofRun(['--dispatch-proof', 'Code-flosrn-ax', '--request', REQUEST, '--sessions', root], env);
+  assert.equal(two.code, 1);
+  assert.equal(two.out, '');
+  assert.match(two.err, /2 sessions/, 'two owners is an ambiguity, and it says so');
+
+  // No session directory at all under the needle: the fourth distinct cause.
+  const nowhere = proofRun(['--dispatch-proof', 'no-such-checkout', '--sessions', root], env);
+  assert.equal(nowhere.code, 1);
+  assert.equal(nowhere.out, '');
+  assert.match(nowhere.err, /no session directory/);
+
+  // Every refusal above carries a command, because a finding without one is not
+  // actionable (AGENTS.md).
+  for (const r of [ambiguous, unrecorded, none, two, nowhere]) assert.match(r.err, /→ ax /, 'each refusal names its repair');
+});
+
+// -- the printed repair, run by a real shell (review of #208) -----------------
+//
+// Two findings, one class: a repair line is program text an operator PASTES.
+// Its slug is derived from a checkout path, so a checkout under a directory
+// carrying a space or a `$(…)` yields a slug carrying it, and an unquoted one
+// word-splits or EXPANDS. And a read scoped to an explicit `--sessions <root>`
+// whose repair drops that root repairs a different question — the default root
+// on this machine is another answer, or none.
+//
+// Both are proven by running the printed bytes through `sh`, never by matching
+// their shape: a shape assertion is exactly what let a line that cannot run
+// pass for a repair once already.
+
+/**
+ * `ax` on PATH pointing at THIS checkout's bin, so the printed word `ax` runs,
+ * plus the machine answer the `worker` noun is gated on.
+ *
+ * `worker` is `gated: 'orca'`: on a machine that resolves no Orca binary the
+ * whole noun does not exist, and the repair would read `unknown command
+ * "worker"` — which is honest, since a line printed by `ax triage dispatch` was
+ * printed on a machine that had one. `ORCA_BIN` is the documented operator
+ * override and only has to be EXECUTABLE (`canRunDefault`), never runnable:
+ * visibility and liveness are two propositions (../src/orca-bin.mjs), and the
+ * proof branch answers before anything probes the runtime. So the suite stays
+ * offline and needs no Orca.
+ */
+function shim(home) {
+  const dir = join(home, 'bin');
+  mkdirSync(dir, { recursive: true });
+  const bin = fileURLToPath(new URL('../bin/ax.mjs', import.meta.url));
+  writeFileSync(join(dir, 'ax'), `#!/bin/sh\nexec ${process.execPath} ${JSON.stringify(bin)} "$@"\n`, { mode: 0o755 });
+  const orca = join(dir, 'orca-never-run');
+  writeFileSync(orca, '#!/bin/sh\necho "this stub is never executed" >&2\nexit 97\n', { mode: 0o755 });
+  return { path: dir, orca };
+}
+
+/** The command as printed, run by a POSIX shell that can word-split and expand it. */
+const runInShell = (command, { home, store, path, orca }) =>
+  spawnSync('sh', ['-c', command], {
+    encoding: 'utf8',
+    env: { HOME: home, PATH: `${path}:/usr/bin:/bin`, ORCA_DISPATCH_STORE: store, ORCA_BIN: orca },
+  });
+
+/** The `→ …` line a refusal printed, without the decoration or the trailing note. */
+const repairIn = text =>
+  (text.split('\n').find(line => line.includes('→ ax worker transcript')) ?? '')
+    .replace(/^\s*→\s*/, '')
+    .replace(/\s{3,}#.*$/, '');
+
+test('#204 the printed repair survives a hostile checkout path and keeps its --sessions root', () => {
+  // A sessions root under a directory whose name word-splits, globs, and would
+  // RUN if it reached a shell unquoted. `$(touch …)` is the assertion: if the
+  // quoting is wrong, the sentinel appears.
+  const home = mkdtempSync(join(tmpdir(), 'ax-shell-'));
+  const sentinel = join(home, 'expanded');
+  const hostile = join(home, `sessions dir; $(touch ${sentinel}) *`);
+  const store = join(home, 'store');
+  const { path, orca } = shim(home);
+
+  // The collision, inside that root: two directories ending in `-ax`.
+  const mine = join(hostile, '-Code-flosrn-ax');
+  mkdirSync(mine, { recursive: true });
+  mkdirSync(join(hostile, '-orca-workspaces-improve-ax'), { recursive: true });
+  passRecord(store, REQUEST, OWNER);
+  childSession(mine, 'child', { dispatchId: OWNER, request: REQUEST });
+
+  const refused = proofRun(['--dispatch-proof', 'ax', '--request', REQUEST, '--sessions', hostile], { HOME: home, ORCA_DISPATCH_STORE: store });
+  assert.equal(refused.code, 1);
+  const printed = repairIn(refused.err);
+  assert.ok(printed.startsWith('ax worker transcript'), `no repair was printed:\n${refused.err}`);
+
+  // The operator's own gesture, and the only one: substitute one of the
+  // directories the reason listed for the placeholder. Taken FROM the printed
+  // reason, so nothing here is hardcoded.
+  const candidate = refused.err.match(/: (-\S+), /)[1].replace(/^-+/, '');
+  const executable = printed.replace("'<slug>'", `'${candidate}'`);
+
+  const ran = runInShell(executable, { home, store, path, orca });
+  assert.equal(ran.status, 0, `the printed repair did not run:\n${executable}\n${ran.stderr}`);
+  assert.equal(JSON.parse(ran.stdout).sessionRole.role, 'triage-worker');
+  assert.equal(existsSync(sentinel), false, 'the path was pasted as DATA — nothing in it was expanded');
+
+  // And the root is load-bearing: the same command without it asks this
+  // machine's default root, where none of this exists.
+  const rootless = runInShell(executable.replace(/ --sessions .*$/, ''), { home, store, path, orca });
+  assert.equal(rootless.status, 1, 'dropping the scoped root would have repaired a different question');
 });
 
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
