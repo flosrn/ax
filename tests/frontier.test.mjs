@@ -491,6 +491,22 @@ test('a DECLARED provenance mapping of the wrong shape is exit 3, never a silent
   }
 });
 
+test('every declared class is validated, the findings one included — one vocabulary, not a two-class list', () => {
+  // #179: the supported classes are one shared rule (`src/triage/provenance.mjs`),
+  // so a project that declares `findings` of the wrong shape is the same
+  // cannot-establish as a malformed `spec` — never a class this verb forgot to
+  // check because it kept its own list.
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ triage: { provenance: { spec: ['source:spec'], findings: 'source:found' } } }));
+  try {
+    const { code, out } = runFrontier({ issues: [issueRow(111)], graph: { i111: issueNode() } });
+    assert.equal(code, 3);
+    assert.match(out, /CANNOT ESTABLISH — .*triage\.provenance\.findings is not a list of strings/);
+    assert.doesNotMatch(out, /takeable — /);
+  } finally {
+    rmSync(join(root, 'ax.config.json'), { force: true });
+  }
+});
+
 test('a candidate the batched read reports CLOSED is excluded no-longer-open', () => {
   const { code, out } = runFrontier({ issues: [issueRow(120)], graph: { i120: issueNode({ state: 'CLOSED' }) } });
   assert.equal(code, 0);

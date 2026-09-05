@@ -38,6 +38,7 @@ import { repoSlug } from '../gh.mjs';
 import { draftDirFor, draftPath, passesOf, readDraft, requestFor } from './draft.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
 import { passPlan } from './capacity.mjs';
+import { carriedClasses } from './provenance.mjs';
 import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
 const USAGE =
@@ -47,24 +48,11 @@ const USAGE =
 const LABEL_JOBS = new Set(['triage', 'brief']);
 
 /**
- * Does a DECLARED provenance label name the same tracker label as a carried one?
- *
- * GitHub label names are case-insensitively unique, so this comparison cannot
- * over-match — and byte-exact matching had a real cost: a config that wrote
- * `Source:Roadmap`, or left a trailing space, produced an empty intersection,
- * which `provenanceVerdict` cannot tell from "this project declared no
- * vocabulary". So the gate returned null and the wrong lane started. The
- * messages still print the DECLARED name that matched, because that is the
- * string an operator has to go and correct.
- *
- * Exported because `./publish.mjs` grades a draft's directives against the
- * labels an issue already carries, which is the same question about the same
- * vocabulary. A second comparator there would be a second grammar for label
- * identity, and the two would drift.
+ * Label identity and the declared class vocabulary both live in
+ * `./provenance.mjs` — one rule for the three verbs that judge provenance
+ * (this one, `./publish.mjs`, `../frontier.mjs`). A second list here is how a
+ * third class came to be read by two consumers out of three (#179).
  */
-export const sameLabel = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
-
-export const declaredCarried = (names, labels) => names.filter(name => labels.some(carried => sameLabel(name, carried)));
 
 /**
  * Whether a ticket's ORIGIN forbids the requested job, when the repository
@@ -113,22 +101,23 @@ export const declaredCarried = (names, labels) => names.filter(name => labels.so
  * no `findings` keeps the two-class behaviour to the byte.
  */
 export function provenanceVerdict({ job, issue, slug, labels = [], parent, parentCause, declared }) {
-  const spec = declaredCarried(declared?.spec ?? [], labels);
-  const inbound = declaredCarried(declared?.inbound ?? [], labels);
-  const findings = declaredCarried(declared?.findings ?? [], labels);
-  const carried = [
-    ['spec-born', spec],
-    ['inbound', inbound],
-    ['a finding', findings],
-  ].filter(([, names]) => names.length > 0);
+  // WHICH classes this ticket carries comes from the shared vocabulary; what
+  // FOLLOWS from carrying one is this verb's own decision, below.
+  const carried = carriedClasses(declared, labels);
   if (carried.length === 0) return null;
 
   if (carried.length > 1) {
     return {
-      bad: `^ carries ${carried.map(([, names]) => names.join(', ')).join(' and ')} — one ticket cannot be both ${carried.map(([kind]) => kind).join(' and ')}, and no pass follows from a contradiction`,
+      bad: `^ carries ${carried.map(({ names }) => names.join(', ')).join(' and ')} — one ticket cannot be both ${carried.map(({ kind }) => kind).join(' and ')}, and no pass follows from a contradiction`,
       fix: [`gh issue view ${issue} --repo ${slug} --json labels # remove whichever of the two is wrong, then re-dispatch`],
     };
   }
+
+  // Exactly one class is carried past here, so a class the ticket does not
+  // carry reads empty — the shape the clauses below were already written on.
+  const namesOf = key => carried.find(entry => entry.key === key)?.names ?? [];
+  const findings = namesOf('findings');
+  const spec = namesOf('spec');
 
   if (LABEL_JOBS.has(job) && findings.length > 0) {
     return {
