@@ -173,9 +173,12 @@ function describeRecord(dir, file) {
   // The runtime the pane's OWN phase dispatched onto (`worker-start --on`, empty
   // for a local dispatch). It decides whether an omitted REMOTE host can explain
   // that pane's absence, so it is PAIRED with the phase that named the handle,
-  // never carried forward: a `--replace` may move a child between hosts, and a
-  // host taken from one phase beside a handle from another is a wrong verdict in
-  // both directions.
+  // never carried forward: a `--replace` records a SECOND worker-start phase,
+  // and only the phase that named a handle can say where that handle lives. A
+  // host taken from one phase beside a handle from another is a wrong verdict
+  // in both directions. (A replace no longer moves a child between hosts —
+  // `start.mjs` inherits the recorded placement and refuses a contradicting
+  // one, #11 — but the pairing is what makes THIS phase's answer this phase's.)
   let latestHost;
   for (const ph of phases) {
     const result = ph !== null && typeof ph === 'object' && ph.receipt !== null && typeof ph.receipt === 'object' ? ph.receipt.result : undefined;
