@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { addWorktree } from '../src/git.mjs';
+import { defaultExec } from '../src/exec.mjs';
 import { createRunner } from '../src/orca-bin.mjs';
 // The canonical name, from the module that APPLIES it. Imported rather than
 // retyped: `ax triage publish` is what makes a ticket agent-grabbable, and a
@@ -256,6 +257,9 @@ const run = (argv, options = {}) => {
         return options.startCodes ? options.startCodes.shift() : 0;
       },
       setupFn: options.setupFn ?? (() => 0),
+      // The SHARED Spec-membership reader (`src/completion.mjs`), injected the
+      // way the verb takes it — this suite never asks a tracker for a member set.
+      ...(options.membership === undefined ? {} : { membership: options.membership }),
       sessionsRoot: sessions,
     }),
   );
@@ -1854,4 +1858,189 @@ test('a transport failure is never retried — ssh down is not a vocabulary prob
 
   assert.equal(got, null);
   assert.equal(exec.calls.length, 1);
+});
+
+// ── the notes a subsequent Dispatch consumes (#195) ──────────────────────────
+//
+// The landing → notes → Dispatch path, end to end, with the tracker injected
+// and REAL git artifacts: the surfaces of a landing are the changed paths of a
+// commit that either is in this checkout or is not, and a fixture that mocked
+// git could not tell those two apart. The Spec-membership reader is the shared
+// one (`src/completion.mjs`); it is injected here, exactly as the verb takes it.
+
+const GH_ISSUE = '195';
+const GH_REQUEST = '195-landed-notes';
+
+/** A second commit in the fixture checkout: the SHA a landing is claimed at. */
+function landedCommit(root, path) {
+  mkdirSync(join(root, path, '..'), { recursive: true });
+  writeFileSync(join(root, path), 'landed\n');
+  execFileSync('git', [...IDENTITY, 'add', '-A'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', [...IDENTITY, 'commit', '-qm', 'landed'], { cwd: root, stdio: 'ignore' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+}
+
+/**
+ * One GitHub-ticket dispatch whose tracker answers a parent Spec, that Spec's
+ * landings, and nothing else. `members` is what the shared reader returns.
+ */
+function dispatchWithLandings({ root, sha, notes, members = [190], closers, parent = { number: 174, repository: { nameWithOwner: 'acme/widgets' } }, ghFail = false } = {}) {
+  const queries = [];
+  const membership = [];
+  const exec = (bin, args, at) => {
+    if (bin === 'git') return defaultExec('git', args, at ?? root);
+    if (bin === 'gh' && args[0] === 'issue' && args[1] === 'view') {
+      return { status: 0, stdout: JSON.stringify({ title: 'Notes: carry landed PR, SHA and surfaces', url: `https://github.com/acme/widgets/issues/${GH_ISSUE}`, state: 'OPEN', body: 'a decision, written down', labels: [{ name: READY_LABEL }] }), stderr: '' };
+    }
+    if (bin === 'gh' && args[0] === 'api' && args[1] === 'graphql') {
+      const query = args[args.length - 1];
+      queries.push(query);
+      if (ghFail) return { status: 1, stdout: '', stderr: 'gh: HTTP 502\n' };
+      if (query.includes('parent {')) {
+        return { status: 0, stdout: JSON.stringify({ data: { repository: { issue: { parent } } } }), stderr: '' };
+      }
+      const landed = closers ?? { 190: { number: 196, sha } };
+      const issues = {};
+      for (const [, number] of query.matchAll(/i(\d+): issue\(/g)) {
+        const closer = landed[number];
+        issues[`i${number}`] = {
+          number: Number(number),
+          state: 'CLOSED',
+          closedByPullRequestsReferences: {
+            pageInfo: { hasNextPage: false },
+            // `mergedAt` is part of a landing: it is what orders two
+            // repositories against each other under the channel's cap.
+            nodes:
+              closer === undefined
+                ? []
+                : [
+                    {
+                      number: closer.number,
+                      state: 'MERGED',
+                      mergedAt: closer.mergedAt ?? '2026-09-01T00:00:00Z',
+                      mergeCommit: { oid: closer.sha },
+                      repository: { nameWithOwner: 'acme/widgets' },
+                    },
+                  ],
+          },
+        };
+      }
+      return { status: 0, stdout: JSON.stringify({ data: { r0: issues } }), stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  // A worktree to reuse and no proof wait: this fixture is about the notes the
+  // dispatch composes, and placement/verification have their own suites above.
+  if (!existsSync(join(root, '.worktrees', GH_REQUEST))) provisioned(root, GH_REQUEST);
+  const r = run(['--issue', GH_ISSUE, '--slug', 'landed-notes', '--wait', '0', ...(notes === undefined ? [] : ['--notes', notes])], {
+    root,
+    exec,
+    request: GH_REQUEST,
+    orca: { labels: [READY_LABEL] },
+    membership: (number, options) => {
+      membership.push({ number, ...options });
+      return { ok: true, spec: { number, ref: `acme/widgets#${number}` }, comments: { ok: true, nodes: [] }, members: { ok: true, total: members.length, nodes: members.map(n => ({ number: n, repo: 'acme/widgets', ref: `acme/widgets#${n}` })) } };
+    },
+  });
+  // THE PATH THE DISPATCH RECORDED, never one this fixture composes — the same
+  // read as the brief assertions above (`--spec-file`). A guessed path turns a
+  // dispatch that exited before writing the brief into a confusing ENOENT, and
+  // a renamed spec file into a silent pass.
+  assert.equal(r.started.length, 1, r.out);
+  const brief = readFileSync(r.started[0].match(/--spec-file (\S+)/)[1], 'utf8');
+  return { ...r, brief, queries, membership };
+}
+
+test('the notes a dispatch composes carry the Spec’s landed PR, SHA and surfaces — derived, above the operator’s own words', () => {
+  const root = repo();
+  const sha = landedCommit(root, 'src/frontier.mjs');
+  const notes = join(root, 'notes.txt');
+  const operator = '\tOverlap: #191 owns Completion.\n\n';
+  writeFileSync(notes, operator);
+
+  const r = dispatchWithLandings({ root, sha, notes });
+  assert.equal(r.code, 0, r.out);
+
+  // The three facts the orchestrator no longer retypes, in the channel the
+  // child reads before it touches anything.
+  assert.match(r.brief, /LANDED IN THIS SPEC \(derived by ax/);
+  assert.match(r.brief, new RegExp(`#190 landed as PR #196, at ${sha.slice(0, 12)}`));
+  assert.match(r.brief, /surfaces: src\/frontier\.mjs/);
+
+  // The scope is the Spec the ticket names, read through the SHARED reader.
+  assert.deepEqual(r.membership.map(call => call.number), [174]);
+  assert.equal(r.membership[0].slug, 'acme/widgets');
+  assert.equal(r.membership[0].owner, 'acme');
+  assert.equal(typeof r.membership[0].run, 'function');
+
+  // Operator bytes survive underneath, verbatim and last.
+  assert.ok(r.brief.indexOf('LANDED IN THIS SPEC') < r.brief.indexOf('OPERATOR NOTES'));
+  assert.ok(r.brief.endsWith(operator), 'the operator’s own notes were altered on their way in');
+  assert.equal(r.brief.match(/#190 landed as PR #196/g).length, 1, 'one established landing, one line');
+
+  // Only the Spec's members were ever asked about: an unrelated landing in the
+  // same repository is not swept into this channel.
+  const landingQuery = r.queries.find(query => query.includes('closedByPullRequestsReferences'));
+  assert.match(landingQuery, /i190: issue\(number: 190\)/);
+  assert.doesNotMatch(landingQuery, /i9999/);
+
+  // And the dispatching session's own receipt accounts for the read.
+  assert.match(r.out, /landed facts {2}scoped by acme\/widgets#174/);
+  assert.match(r.out, /1 landing\(s\) established/);
+});
+
+test('a second dispatch of the same Spec re-derives the landing rather than accumulating it', () => {
+  const root = repo();
+  const sha = landedCommit(root, 'src/frontier.mjs');
+  const notes = join(root, 'notes.txt');
+  writeFileSync(notes, 'Wave note.\n');
+
+  const first = dispatchWithLandings({ root, sha, notes });
+  const second = dispatchWithLandings({ root, sha, notes });
+
+  // Derived fresh per dispatch, so re-reading an established landing cannot
+  // duplicate it — and the operator's file is never written to at all, which is
+  // what makes a resumed or repeated dispatch idempotent by construction.
+  assert.equal(second.brief.match(/#190 landed as PR #196/g).length, 1);
+  assert.equal(readFileSync(notes, 'utf8'), 'Wave note.\n', 'the operator’s notes file is read, never rewritten');
+  assert.equal(
+    first.brief.slice(first.brief.indexOf('LANDED IN THIS SPEC')),
+    second.brief.slice(second.brief.indexOf('LANDED IN THIS SPEC')),
+    'the same established landing says the same thing twice',
+  );
+});
+
+test('a landing the tracker could not establish reaches the child as NOT ESTABLISHED, and never blocks the dispatch', () => {
+  const root = repo();
+  const sha = landedCommit(root, 'src/frontier.mjs');
+  const r = dispatchWithLandings({ root, sha, ghFail: true });
+
+  assert.equal(r.code, 0, 'a tracker that cannot answer about a SIBLING never stops this dispatch');
+  assert.match(r.brief, /NOT ESTABLISHED/);
+  assert.match(r.brief, /HTTP 502/);
+  assert.doesNotMatch(r.brief, /landed as PR/, 'nothing is described as merged on a failed read');
+  assert.match(r.out, /landed facts {2}NOT ESTABLISHED/);
+});
+
+test('a merged sibling whose landed commit this checkout does not carry says NOT READ, with the fetch', () => {
+  const root = repo();
+  landedCommit(root, 'src/frontier.mjs');
+  const r = dispatchWithLandings({ root, sha: 'f'.repeat(40) });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.brief, /#190 landed as PR #196, at ffffffffffff/);
+  assert.match(r.brief, /surfaces: NOT READ — ffffffffffff is not in this checkout/);
+  assert.match(r.brief, /git fetch origin/);
+});
+
+test('a ticket in no Spec is dispatched with no derived section at all', () => {
+  const root = repo();
+  const sha = landedCommit(root, 'src/frontier.mjs');
+  const r = dispatchWithLandings({ root, sha, parent: null });
+
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.brief, /LANDED IN THIS SPEC/);
+  assert.match(r.out, /has no parent Spec/);
+  assert.equal(r.queries.filter(query => query.includes('closedByPullRequestsReferences')).length, 0, 'no member set, no landing read');
 });

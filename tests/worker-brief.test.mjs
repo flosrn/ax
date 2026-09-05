@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MECHANICS, MECHANICS_UNTRACKED, renderBrief } from '../src/worker/brief.mjs';
+import { LANDED_HEADING, MECHANICS, MECHANICS_UNTRACKED, renderBrief } from '../src/worker/brief.mjs';
 import { progressOnly } from '../src/worker/stall.mjs';
 
 const TICKET = { id: 'T-353', title: 'Loading states are missing on the dashboard', url: 'https://tracker.test/issue/T-353' };
@@ -340,4 +340,34 @@ test('the operator notes follow the remote addendum, not the other way round', (
   // instructions it is asked to apply.
   const text = brief({ host: 'other-host', operator: { name: 'notes.md', text: 'Ping me when CI is decided.' } });
   assert.ok(text.indexOf('OPERATOR NOTES') > text.indexOf('BOARD CARD'));
+});
+
+test('the derived landed facts sit in the notes channel, ABOVE the operator’s own words', () => {
+  // Two things share the notes channel and they are not the same authority: ax
+  // derives landed facts (#195), the operator writes wave memory. The derived
+  // block is announced as derived and placed FIRST, because the operator's words
+  // are verbatim and last — a rule the whole channel is built on. A brief with no
+  // derivation carries no heading for one: an empty section reads as "this wave
+  // landed nothing", which is a claim no read made.
+  const landed = '- #190 landed as PR #196, at 59cecca29fa9 — surfaces: src/frontier.mjs';
+  const text = brief({ landed, operator: { name: 'notes.txt', text: 'Do not touch the billing module.\n' } });
+
+  assert.ok(text.includes(LANDED_HEADING), 'the derived block names itself as derived');
+  assert.ok(text.includes(landed));
+  assert.ok(text.indexOf(LANDED_HEADING) > text.indexOf('PILOT CONTRACT'));
+  assert.ok(text.indexOf(LANDED_HEADING) < text.indexOf('OPERATOR NOTES'), 'the operator has the last word in this channel');
+  assert.ok(text.endsWith('Do not touch the billing module.\n'), 'the operator’s bytes survive the derived block above them');
+
+  assert.ok(!brief().includes(LANDED_HEADING));
+  assert.ok(!brief({ landed: '' }).includes(LANDED_HEADING));
+});
+
+test('derived landed facts reach a child that carries NO operator notes at all', () => {
+  // The two halves of the channel are independent: the facts are derived from
+  // the tracker, and a wave whose operator has written nothing yet is exactly
+  // the wave where a worker has nothing else to read.
+  const text = brief({ landed: '- #190 landed as PR #196, at 59cecca29fa9 — surfaces: src/frontier.mjs' });
+  assert.ok(text.includes(LANDED_HEADING));
+  assert.ok(!text.includes('OPERATOR NOTES'));
+  assert.ok(text.endsWith('surfaces: src/frontier.mjs\n'));
 });
