@@ -85,11 +85,32 @@ function completion(payload: Record<string, unknown> | null = null) {
   };
 }
 
+/**
+ * The host boundary, INJECTED, and refusing by default. No test in this file
+ * reaches a network: a remote disposition is reached through a retriever that
+ * names an inability, and the cases that need bytes hand over their own answer.
+ * `asks` is what proves WHICH host and WHICH path the receiver put the question
+ * to — the record's, never the completion's.
+ */
+function retriever(answer: unknown, asks: Array<Record<string, unknown>> = []) {
+  return (ask: Record<string, unknown>) => {
+    asks.push(ask);
+    return answer;
+  };
+}
+
+/** A transport that did not answer, worded as the real boundary words it. */
+const UNREACHABLE = {
+  reason: "the retrieval over ssh to 'orca@vps' failed (status 255: ssh: connect to host vps port 22: Operation timed out)",
+  repair: 'Repair: ssh orca@vps and read that path there — the transport, not the Report, is what failed here.',
+};
+
 /** The receiver's own wiring, with the record lookup and the host answer injected. */
-function deps(rec: unknown, environment = '') {
+function deps(rec: unknown, environment = '', retrieve: unknown = retriever(UNREACHABLE)) {
   return {
     record: (id: string) => (id === DISPATCH ? { request: '137-work', json: rec } : null),
     environmentOf: () => environment,
+    retrieve,
   };
 }
 
@@ -99,8 +120,8 @@ function deps(rec: unknown, environment = '') {
  * half — is exercised through the real receiver on a fixture small enough to
  * count by hand, instead of a 16 KB one nobody can read.
  */
-function capped(rec: unknown, cap: number, environment = '') {
-  return { ...deps(rec, environment), cap };
+function capped(rec: unknown, cap: number, environment = '', retrieve?: unknown) {
+  return { ...deps(rec, environment, retrieve), cap };
 }
 
 // ─── parity, which is the reason the twin is allowed to exist ────────────────
@@ -195,18 +216,161 @@ test('no reportPath with the file present is a note, and the Report is injected'
   expect(block).not.toContain('FINDING');
 });
 
-test('a worktree on another host is inaccessible, and no local file stands in for it', () => {
-  // The same path exists HERE, holding something else. A dispatch that ran on
-  // another execution host must never read it: same path, different machine,
-  // different file — that is the whole hazard of a host-blind read.
+// ─── the recorded host, which is where a remote worker's Report is ───────────
+//
+// A dispatch placed with `--on <env>` writes its Report into a worktree on that
+// host, and every worktree tree is laid out identically — so the same derived
+// path exists HERE, holding another slice's file. Until #193 the receiver
+// stopped at that hazard and named it. It now goes and gets the bytes from the
+// host the RECORD names, through a boundary that is injected here so no test
+// reaches a network, and the impostor at the identical local path is still never
+// opened.
+
+test('a remote dispatch retrieves its Report from the recorded host, and the local impostor is never opened', () => {
+  const wt = withReport('LOCAL-IMPOSTOR-3c7d\n');
+  const asks: Array<Record<string, unknown>> = [];
+  const answer = {
+    worktreeReal: '/srv/orca/workspaces/193-remote-report',
+    fileReal: '/srv/orca/workspaces/193-remote-report/.scratch/report/137-work.md',
+    buf: Buffer.from('## CRITERIA\n- Remote: MET, retrieved from the owning host.\n\n## LEARNINGS\n'),
+  };
+
+  const block = completionReport(completion(), deps(wt.rec, 'gapicore', retriever(answer, asks)));
+
+  // The established criteria arrive through the same channel local evidence does.
+  expect(block).toContain('## CRITERIA');
+  expect(block).toContain('- Remote: MET, retrieved from the owning host.');
+  expect(block).toContain('gapicore');
+  expect(block).not.toContain('FINDING');
+  // The proof, not the intention: the local file at the derived path is absent
+  // from the block.
+  expect(block).not.toContain('LOCAL-IMPOSTOR-3c7d');
+  // And the question was put with the RECORD's host, worktree and derived path —
+  // never a value the completion carried.
+  expect(asks).toHaveLength(1);
+  expect(asks[0]).toMatchObject({ env: 'gapicore', worktree: wt.path, path: wt.derived, cap: REPORT_CAP_BYTES });
+});
+
+test('bytes offered with a realpath outside the recorded worktree are refused, even though the host sent them', () => {
+  const wt = worktree();
+  const answer = {
+    worktreeReal: '/srv/orca/workspaces/193-remote-report',
+    fileReal: '/etc/ax-secrets/report.md',
+    buf: Buffer.from('## CRITERIA\n- REMOTE-ESCAPE-9d21\n'),
+  };
+
+  const block = completionReport(completion(), deps(wt.rec, 'gapicore', retriever(answer)));
+
+  expect(block).toContain('resolves outside the recorded worktree');
+  expect(block).toContain('/etc/ax-secrets/report.md');
+  expect(block).toContain('It was NOT read.');
+  expect(block).not.toContain('REMOTE-ESCAPE-9d21');
+});
+
+test('a retrieval that failed is the inaccessible-from-this-host finding, carrying the repair the boundary named', () => {
   const wt = withReport('LOCAL-IMPOSTOR-3c7d\n');
 
   const block = completionReport(completion(), deps(wt.rec, 'gapicore'));
 
   expect(block).toContain('Report inaccessible from this host');
-  expect(block).toContain(wt.derived);
   expect(block).toContain('gapicore');
+  expect(block).toContain(wt.derived);
+  expect(block).toContain('status 255');
+  expect(block).toContain('Repair: ssh orca@vps');
   expect(block).not.toContain('LOCAL-IMPOSTOR-3c7d');
+});
+
+test('a host that holds no Report at the derived path is an absence aimed at the worker, not at the transport', () => {
+  const wt = withReport('LOCAL-IMPOSTOR-3c7d\n');
+
+  const block = completionReport(completion(), deps(wt.rec, 'gapicore', retriever({ absent: true })));
+
+  expect(block).toContain('FINDING: no Report at this path');
+  expect(block).toContain('gapicore');
+  expect(block).toContain('never a second `worker_done`');
+  expect(block).not.toContain('LOCAL-IMPOSTOR-3c7d');
+});
+
+test('oversized remote evidence is bounded, disclosed and cut exactly as a local read is', () => {
+  // The sibling's byte-bound contract (#180) is not weakened by retrieval: the
+  // host reads cap + 1 bytes and no more, so the receiver holds a window and not
+  // a file, and the suffix behind it was NEVER READ rather than read and dropped.
+  const cap = 400;
+  const wt = worktree();
+  const head = '## CRITERIA\n- Bound: MET.\n\n## EVIDENCE\n';
+  const straddle = '- straddle-BEFORE dcap_LEAKMEPLEASE1234 AFTER-straddle\n';
+  const window = Buffer.from(`${head}${'- padding line\n'.repeat(23)}${straddle}`).subarray(0, cap + 1);
+  const answer = {
+    worktreeReal: '/srv/wt',
+    fileReal: '/srv/wt/.scratch/report/137-work.md',
+    buf: window,
+  };
+
+  const block = completionReport(completion(), capped(wt.rec, cap, 'gapicore', retriever(answer)));
+
+  expect(block).toContain('- Bound: MET.');
+  expect(block).toContain('- padding line');
+  expect(block).toContain(`input-truncated at the ${cap}-byte input bound`);
+  // The line the bound cut in half is dropped whole, with the token inside it.
+  expect(block).not.toContain('straddle');
+  expect(block).not.toContain('dcap_');
+});
+
+test('a retrieved buffer larger than the window is refused, and nothing from it is shown', () => {
+  // THE SAME PROTOCOL BREAK, at the receiver seam. An injected (or lying)
+  // boundary that returns the whole file is not a large Report to clip —
+  // clipping it would let an incomplete `## CRITERIA` look complete. The marker
+  // in the tail, and the criterion in the head, both stay out of the block.
+  const cap = 400;
+  const wt = worktree();
+  const buf = Buffer.concat([
+    Buffer.from('## CRITERIA\n- Bound: MET.\n\n## LEARNINGS\n'),
+    Buffer.alloc(cap, 0x0a),
+    Buffer.from('TAIL-MARKER-8c31\n'),
+  ]);
+  const answer = { worktreeReal: '/srv/wt', fileReal: '/srv/wt/.scratch/report/137-work.md', buf };
+
+  const block = completionReport(completion(), capped(wt.rec, cap, 'gapicore', retriever(answer)));
+
+  expect(block).toContain('Report inaccessible from this host');
+  expect(block).toContain('past the 400-byte bound');
+  expect(block).not.toContain('- Bound: MET.');
+  expect(block).not.toContain('TAIL-MARKER-8c31');
+});
+
+test('remote evidence whose CRITERIA runs past the bound is refused by name, never shown in part', () => {
+  const cap = 400;
+  const wt = worktree();
+  const buf = Buffer.from(`## CRITERIA\n${'- a criterion line, repeated past the cap\n'.repeat(40)}`).subarray(0, cap + 1);
+  const answer = { worktreeReal: '/srv/wt', fileReal: '/srv/wt/.scratch/report/137-work.md', buf };
+
+  const block = completionReport(completion(), capped(wt.rec, cap, 'gapicore', retriever(answer)));
+
+  expect(block).toContain("FINDING: the Report's `## CRITERIA` section runs past the");
+  expect(block).toContain('its end was never read');
+  expect(block).not.toContain('- a criterion line');
+});
+
+test('a reportPath the worker named is not opened on the recorded host either', () => {
+  // The reference chooses neither the file nor the HOST: the finding is made
+  // about the sender, and the question still goes to the record's own placement.
+  const wt = worktree();
+  const asks: Array<Record<string, unknown>> = [];
+  const answer = {
+    worktreeReal: '/srv/wt',
+    fileReal: '/srv/wt/.scratch/report/137-work.md',
+    buf: Buffer.from('## CRITERIA\n- Derived: MET.\n'),
+  };
+
+  const block = completionReport(
+    completion({ reportPath: '/home/orca/elsewhere/claimed.md' }),
+    deps(wt.rec, 'gapicore', retriever(answer, asks)),
+  );
+
+  expect(block).toContain('FINDING: the completion named');
+  expect(block).toContain('The named path was NOT opened.');
+  expect(block).toContain('- Derived: MET.');
+  expect(asks[0]).toMatchObject({ path: wt.derived });
 });
 
 // ─── the fences and the emitters ────────────────────────────────────────────
@@ -744,12 +908,17 @@ test('the wired defaults answer from a real dispatch store, with nothing injecte
   }
 });
 
-test('the wired defaults classify a remote dispatch from the recorded argv alone', () => {
-  // The `--on` half of the default. The disposition above is reached through the
-  // injected seam; this is `environmentOfDispatch` reading a record off disk, so
-  // the classification that decides whether a file is even touched is proven on
-  // the code path the receiver runs. A Report exists at the derived path HERE,
-  // holding something else, and must not be read.
+test('the wired defaults classify a remote dispatch from the recorded argv alone, and put the question to that host', () => {
+  // The `--on` half of the default. The dispositions above are reached through
+  // the injected seam; this is `environmentOfDispatch` reading a record off disk,
+  // so the classification that decides WHERE the file is even looked for is
+  // proven on the code path the receiver runs. A Report exists at the derived
+  // path HERE, holding something else, and must not be read.
+  //
+  // The host boundary is the one seam still injected, and it has to be: its
+  // default opens an ssh connection to whatever the project declared, and both
+  // suites run with no network by contract (`AGENTS.md`). What the retriever
+  // records is the classification's own output — the env it was asked about.
   const store = mkdtempSync(join(tmpdir(), 'ax-store-remote-'));
   const dispatch = 'ctx_defaults_remote';
   const wt = withReport('REMOTE-IMPOSTOR-71fc\n', 'remote-work');
@@ -781,13 +950,18 @@ test('the wired defaults classify a remote dispatch from the recorded argv alone
   process.env.ORCA_DISPATCH_STORE_DIR = store;
   resetDispatchNames();
   try {
-    const block = completionReport({
-      id: 'm1',
-      type: 'worker_done',
-      body: 'Opened PR #99.',
-      from_handle: `dispatch:${dispatch}`,
-    });
+    const asks: Array<Record<string, unknown>> = [];
+    const block = completionReport(
+      {
+        id: 'm1',
+        type: 'worker_done',
+        body: 'Opened PR #99.',
+        from_handle: `dispatch:${dispatch}`,
+      },
+      { retrieve: retriever(UNREACHABLE, asks) },
+    );
 
+    expect(asks[0]).toMatchObject({ env: 'gapicore', worktree: wt.path, path: wt.derived });
     expect(block).toContain('Report inaccessible from this host');
     expect(block).toContain('gapicore');
     expect(block).toContain(wt.derived);
