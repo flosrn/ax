@@ -424,7 +424,9 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // Only measured where the mapping is declared; an undeclared ground is
       // NOT measured (the repository is input). A finding that reached the
       // ready label on its own is takeable: the `findings` class routes PASSES
-      // away from a ticket, never its implementation.
+      // away from a ticket, never its implementation. Admission to a triage or
+      // brief pass (#188) is not this label and does not itself authorize
+      // implementation.
       const classes = carriedClasses(
         provenance,
         carriedLabels.map(carried => carried?.name ?? ''),

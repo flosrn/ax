@@ -47,17 +47,22 @@ already carries argv, raw output, expected state and cost, so the finder is the
 verifier and a pass re-measures what is measured. Route it to whoever owns what
 was found — the maintainer channel when the finding is in the instrument ("When
 ax itself is the problem"), where it comes back as a verdict comment (`fixed`,
-`refused`, `unreproducible`); the spec flow when it is in the product. The
-verb enforces it where the project opts in: a label the project declares under
-`triage.provenance.findings` makes `ax triage dispatch` refuse a triage or
-brief pass and name that route as the repair; a project that declares no such
+`refused`, `unreproducible`); the spec flow when it is in the product. The one
+admission is a finding whose issue names the approved Spec obligation it
+serves (`Necessary for: #<spec> — <obligation>`): `ax triage dispatch` then
+opens a triage or brief pass, and keeps the birth source. Admission is not
+the ready label — `ax frontier` remains the authority for implementation Dispatch.
+An unreadable justification is not treated as present. A discovery that
+changes the approved product result waits for a human; an adjacent improvement
+does not qualify merely because an agent recommends it. The verb enforces it
+where the project opts in: a label the project declares under
+`triage.provenance.findings` is this class; a project that declares no such
 class keeps its findings in the triage lane, and this paragraph is then the
-only thing that stops you. Measured
-once on the package's own checkout: two dozen agent-found frictions ran through
-a triage pass and a brief pass each, hours of sessions for a pile where a third
-were ten-line repairs a maintainer closes in an hour — and the passes minted
-carve-out tickets and a duplicate that a concept search before filing would
-have caught.
+only thing that stops you. Measured once on the package's own checkout: two
+dozen agent-found frictions ran through a triage pass and a brief pass each,
+hours of sessions for a pile where a third were ten-line repairs a maintainer
+closes in an hour — and the passes minted carve-out tickets and a duplicate
+that a concept search before filing would have caught.
 
 ## Before an implementation dispatch
 
@@ -332,10 +337,13 @@ instead of ruling is how a pass sits PENDING for hours.
   for orphans, never the decider, and an origin-less item is itself a finding to
   fix at the birth convention:
   - Findings your own agents filed against the instrument go to the maintainer
-    channel for a verdict comment. No triage pass, no brief pass. A finding
-    whose repair needs a product ruling is shaping: one grill session with the
-    operator over all of them, decisions into `CONTEXT.md`/ADRs, then
-    `to-tickets` publishes what survives as `ready-for-agent`.
+    channel for a verdict comment. No triage pass, no brief pass — unless the
+    issue names the approved Spec obligation that stays unsatisfied without the
+    work (`Necessary for: #<spec> — <obligation>`), which is the admission the
+    dispatch verb grades. A finding whose repair needs a product ruling is
+    shaping: one grill session with the operator over all of them, decisions
+    into `CONTEXT.md`/ADRs, then `to-tickets` publishes what survives as
+    `ready-for-agent`.
   - Spec debt is a spec-flow concern, so it goes back through the spec flow —
     `to-tickets` on the amended spec publishes it as `ready-for-agent` with its
     assignment in the body, and only then can it join a remaining wave.
@@ -344,8 +352,10 @@ instead of ruling is how a pass sits PENDING for hours.
   the backlog arrives triaged, not raw.
 - Before filing anything from a wave, search open issues by concept, not by the
   finder's wording — one `gh issue list --search` — and comment on the match
-  instead of minting a sibling. A pass never carves: a draft that finds scope
-  beyond its ticket names it, and the operator decides through `to-tickets`, not
+  instead of minting a sibling. When you file observed necessary work, the
+  issue records the approved obligation that makes it necessary, in that same
+  `Necessary for:` line. A pass never carves: a draft that finds scope beyond
+  its ticket names it, and the operator decides through `to-tickets`, not
   through a `gh issue create` mid-wave.
 - A wave's members come from the TRACKER, never from disk. Enumerate them with
   `gh issue list` and this repository's declared label and grouping. `.scratch/`

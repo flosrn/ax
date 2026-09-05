@@ -81,8 +81,20 @@ function fakeOrca({ panes = [], truncated = false, omitted = [], terminals = nul
   return { runner, calls };
 }
 
-/** A `gh` that answers per issue from a table, and records what it was asked. */
-function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }, { parentField = true, omitParent = false, malformedParent = false } = {}) {
+/**
+ * A `gh` that answers per issue from a table, and records what it was asked.
+ *
+ * `text` is the issue's own prose, keyed by issue number: `{ body, comments }`.
+ * It is answered because the admission rule READS it — a finding is admitted to
+ * a pass on a necessity justification written in the issue, so a fake that
+ * answered labels but no prose would let a test pass on a read that never
+ * happened. `omitBody` and `omitCommentBody` are the tracker answering with the
+ * key ABSENT, which is an unknown and not an empty string (F-028).
+ */
+function fakeGh(
+  issues = { 7: 'OPEN|0|Widget falls over' },
+  { parentField = true, omitParent = false, malformedParent = false, text = {}, omitBody = false, omitCommentBody = false } = {},
+) {
   const asked = [];
   return {
     asked,
@@ -98,7 +110,14 @@ function fakeGh(issues = { 7: 'OPEN|0|Widget falls over' }, { parentField = true
         const row = issues[args[2]];
         if (row === undefined) return { status: 1, stdout: '', stderr: 'not found' };
         const [state, count, title, labelNames = '', parent = ''] = row.split('|');
-        const body = { state, title, comments: Array.from({ length: Number(count) }, () => ({})) };
+        const prose = text[args[2]] ?? {};
+        const bodies = prose.comments ?? [];
+        const body = {
+          state,
+          title,
+          comments: Array.from({ length: Number(count) }, (unused, index) => (omitCommentBody ? {} : { body: bodies[index] ?? '' })),
+        };
+        if (!omitBody) body.body = prose.body ?? '';
         body.labels = labelNames === '' ? [] : labelNames.split(';').map(name => ({ name }));
         if (wantsParent && !omitParent) {
           body.parent = malformedParent
@@ -134,7 +153,7 @@ const run = (argv, options = {}) => {
   const home = options.home ?? realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const store = options.store ?? join(home, 'store');
   const { runner, calls } = fakeOrca(options.orca ?? {});
-  const gh = options.gh ?? fakeGh(options.issues);
+  const gh = options.gh ?? fakeGh(options.issues, options.tracker ?? {});
   const started = [];
 
   if (options.registry !== false) {
@@ -1417,8 +1436,23 @@ test('an INBOUND ticket is legitimate in the brief lane — a brief distils the 
 // carve-out tickets and a duplicate. The route is the channel that owns what was
 // found, and the verb names it instead of offering a pass. Opt-in: a project
 // that declares no `findings` keeps the two-class behaviour to the byte.
+//
+// ONE ADMISSION (#188). A blanket refusal has its own cost: a finding whose
+// repair an APPROVED spec cannot be satisfied without had no lane at all — the
+// maintainer channel answers the instrument's frictions and `to-tickets` needs a
+// human to amend a spec, so necessary work discovered mid-wave waited on a
+// person who was not in the room. So a finding is admitted when its own issue
+// names the approved obligation it serves, in the one line the necessity
+// vocabulary defines (`src/triage/necessity.mjs`). The tool grades the SHAPE —
+// an identified spec, a written obligation, read from the issue itself — and
+// never the merit: whether the work is genuinely necessary is the triage pass's
+// analysis and the orchestrator's ruling, which is why admission to a pass is
+// not authorization to implement.
 
 const PROVENANCE_FINDINGS = { spec: ['source:roadmap'], inbound: ['source:user-report'], findings: ['source:agent-found'] };
+
+/** The justification as the vocabulary defines it: an identified spec, then the obligation. */
+const NECESSITY = 'Necessary for: #174 — the Gate ground "every check-run page is read" stays unsatisfied while the reader pages once.';
 
 test('a finding your own agents filed is refused in the triage lane, and the repair is the channel that owns it', () => {
   const r = run(['--issue', '7', '--dry-run'], {
@@ -1443,6 +1477,144 @@ test('the brief lane refuses a finding for the same reason — it applies labels
   assert.equal(r.code, 1);
   assert.match(r.out, /source:agent-found/);
   assert.match(r.out, /a brief pass would re-measure/);
+});
+
+test('a finding whose issue names the approved obligation it serves is admitted to the triage lane', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|check-run reader pages once|source:agent-found|null' },
+    tracker: { text: { 7: { body: `argv: ax pr gate --pr 12\n\n${NECESSITY}\n` } } },
+  });
+  assert.equal(r.code, 0, `a justified finding gets its pass: ${r.out}`);
+  assert.match(r.out, /source:agent-found/, 'the class it keeps is named');
+  assert.match(r.out, /#174/, 'the approved obligation it serves is named in the receipt');
+  assert.match(r.out, /admitted/, 'the receipt says the lane was opened, not merely that nothing refused it');
+  assert.doesNotMatch(r.out, /finder is the verifier/, 'the blanket refusal is not printed over an admission');
+});
+
+// Admission is a PASS, and a pass decides nothing about implementation: the
+// frontier reads the ready label, which only the brief publication applies. A
+// receipt that said "admitted" and nothing else would be read as a green light.
+test('the admission says out loud that it is not readiness', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|check-run reader pages once|source:agent-found|null' },
+    tracker: { text: { 7: { body: NECESSITY } } },
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /frontier/, 'the authority for implementation dispatch is named');
+});
+
+// The justification is not required to be in the body: the obligation is
+// frequently established by the orchestrator's own ruling, which lands as a
+// comment. A reader that looked at the body alone would refuse the ticket its
+// own operator had just justified.
+test('a justification written in a comment is read too', () => {
+  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|2|check-run reader pages once|source:agent-found|null' },
+    tracker: { text: { 7: { body: 'argv: ax pr gate --pr 12\n', comments: ['a coordination note', NECESSITY] } } },
+  });
+  assert.equal(r.code, 0, `the brief lane admits the same justified finding: ${r.out}`);
+  assert.match(r.out, /#174/);
+});
+
+// The read is the proof. A gate that judged admission from labels alone would
+// pass this test suite and admit every finding on the tracker.
+test('the issue content admission is judged on is actually asked for', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+    tracker: { text: { 7: { body: NECESSITY } } },
+  });
+  const view = r.asked.find(line => line.includes('issue view 7'));
+  assert.ok(view, 'the issue was read');
+  assert.match(view, /--json [^ ]*\bbody\b/, `the body is in the read: ${view}`);
+  assert.match(view, /--json [^ ]*\bcomments\b/, `so are the comments: ${view}`);
+});
+
+test('a bare spec reference names no obligation, so it is not a justification', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+    tracker: { text: { 7: { body: 'Necessary for: #174\n' } } },
+  });
+  assert.equal(r.code, 1, 'a number is an identification, not a written necessity');
+  assert.match(r.out, /finder is the verifier/);
+});
+
+test('a justification that identifies no approved spec is refused', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+    tracker: { text: { 7: { body: 'Necessary for: the gate — it would be much nicer if this paged properly.\n' } } },
+  });
+  assert.equal(r.code, 1, 'necessity is measured against an identified approved spec, never against a preference');
+  assert.match(r.out, /finder is the verifier/);
+});
+
+// The refusal has to name what would make the ticket admissible, WITH the bound
+// on it: an improvement an agent recommends is not necessary work, and a repair
+// line that read "write the line" without that bound is a recipe for minting one.
+test('the refusal names the admission route and the bound on it', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /Necessary for: #/, 'the line the vocabulary defines is quoted');
+  assert.match(r.out, /recommend/, 'and the bound: an agent recommending it is not necessity');
+});
+
+// F-028 in the admission's own shape. An issue whose text the tracker did not
+// answer is not an issue that carries no justification, and the two have
+// different repairs: read the issue, versus route the finding.
+test('an unanswered issue body makes the justification unknown, never absent', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+    tracker: { omitBody: true },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /F-028|unknown/i, 'the state is named as an unknown');
+  assert.match(r.out, /--json body/, 'and the repair is the read that failed');
+  assert.doesNotMatch(r.out, /admitted/, 'an unknown never admits');
+});
+
+test('a comment whose body the tracker did not answer is an unknown too', () => {
+  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|2|a|source:agent-found|null' },
+    tracker: { omitCommentBody: true, text: { 7: { body: 'argv: ax pr gate --pr 12\n' } } },
+  });
+  assert.equal(r.code, 1, 'a justification could be in the comment nobody could read');
+  assert.match(r.out, /F-028|unknown/i);
+});
+
+// The admission is the findings class's own, and it does not travel: a spec-born
+// ticket writing the line would be the spec flow's own work re-entering the
+// on-ramp, which is the thing the class above exists to refuse.
+test('a spec-born ticket carrying a necessity justification is still refused', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|spec 2 — ingestion|source:roadmap|11' },
+    tracker: { text: { 7: { body: NECESSITY } } },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /published ready-for-agent by construction/);
+  assert.doesNotMatch(r.out, /admitted/);
+});
+
+// A justified finding is still one ticket with one origin. Admission decides
+// which LANE it may enter, never which class it is.
+test('a justified finding that also carries an inbound label stays a contradiction', () => {
+  const r = run(['--issue', '7', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|0|a|source:agent-found;source:user-report|null' },
+    tracker: { text: { 7: { body: NECESSITY } } },
+  });
+  assert.equal(r.code, 1, 'no pass follows from a contradiction, justified or not');
+  assert.match(r.out, /remove whichever/);
 });
 
 test('a custom pass applies no label, so a finding is not refused there', () => {
@@ -1492,6 +1664,23 @@ test('a project that declares no findings class keeps admitting the same ticket'
     issues: { 7: 'OPEN|0|a|source:agent-found|null' },
   });
   assert.equal(r.code, 0, 'an undeclared class is not an inferred one');
+});
+
+// The admission is the third class's rule, so a project that never declared the
+// class has nothing to admit and nothing to refuse: an unreadable body, a
+// missing justification and a written one all behave the way they did before
+// this rule existed. An absent declaration is not a rule (F-028).
+test('a project that declares no findings class is untouched by the admission rule', () => {
+  const undeclared = repo({ provenance: PROVENANCE });
+  for (const tracker of [{}, { omitBody: true }, { text: { 7: { body: NECESSITY } } }]) {
+    const r = run(['--issue', '7', '--dry-run'], {
+      root: undeclared,
+      issues: { 7: 'OPEN|0|a|source:agent-found|null' },
+      tracker,
+    });
+    assert.equal(r.code, 0, `an undeclared class judges nothing: ${r.out}`);
+    assert.doesNotMatch(r.out, /admitted/, 'and says nothing about an admission it never ran');
+  }
 });
 
 // A tracker label name is case-insensitively unique on GitHub, so comparing the
