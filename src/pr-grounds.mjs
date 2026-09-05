@@ -675,9 +675,10 @@ export function threadsGround({ run, owner, name, pr, sha, ciDecided, invocation
 /**
  * A branch resolved to the ref this checkout can actually read: the fetched
  * `origin/<name>` when it exists, the local branch otherwise, '' when neither
- * answers. Shared by the git-backed grounds and the declaration guard — the
- * two resolved the same question with byte-identical loops once, which is one
- * drift away from resolving it differently.
+ * answers. ONE caller now — `gitGrounds` — because the base commit it resolves
+ * is what every other git-backed ground stands on (#177): the two callers that
+ * resolved this question for themselves are how a ground came to speak about a
+ * ref while the verdict spoke about a SHA.
  */
 const resolveRef = (gitRun, branch) => {
   for (const candidate of [`origin/${branch}`, branch]) {
@@ -687,14 +688,60 @@ const resolveRef = (gitRun, branch) => {
 };
 
 /**
+ * THE COMMIT A REF NAMES, not the name. A ref is a moving target — a fetch, a
+ * push or a local commit moves it between two reads — so every git-backed
+ * ground below is computed against the commit id this run OBSERVED, and the
+ * receipt prints that id. '' when this checkout cannot resolve it, which is an
+ * unread, never a fallback (F-028).
+ */
+const commitOf = (gitRun, ref) => {
+  const read = gitRun(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  const value = firstLine(read.stdout);
+  return succeeded(read) && /^[0-9a-f]{40}$/.test(value) ? value : '';
+};
+
+/** The 12 characters a commit is printed as, everywhere in this file. */
+const short = value => String(value).slice(0, 12);
+
+/**
  * Grounds 3, 4 and 5 — git-backed, one function because they stand on ONE
  * shared measurement: the git-dir check, the ref refresh and the base/head
  * resolution. A prelude failure feeds all three accounts at once (a fetch that
  * fails makes staleness unreadable, the residual file unreadable AND
  * landed-by-content undecidable), so splitting them would re-create that
  * cross-accounting in the orchestrator.
+ *
+ * THE HEAD IS THE SHA THE GATE VALIDATED, AND THE BASE IS A COMMIT (#177).
+ * These grounds resolved BOTH sides by branch name, which measures whatever
+ * the refs hold at the moment of the read rather than the pull request under
+ * judgement. Measured locally on a checkout with no `origin`: a PR announcing
+ * the pre-merge head, a base that had advanced, and a `feature` tip that had
+ * merged that base — ancestry answered against the TIP, the gate printed
+ * "the branch is current" and merged the announced old head, which carried
+ * none of the base. The symmetric hazard is #1939's, one ref further along.
+ *
+ * So the head side is `sha`, and this checkout must hold it; the base side is
+ * resolved ONCE, after the refresh, to the commit id the comparison then uses.
+ * Both travel out (`baseCommit`, `headCommit`) for the grounds that consume
+ * them, because a consumer that re-resolves a name is the same defect one
+ * function away.
+ *
+ * WITHOUT A REMOTE THE ANNOUNCED HEAD MUST BE THIS BRANCH'S OWN TIP. A
+ * repository built with `git init` publishes nothing: the local branch is the
+ * only thing that can carry what the PR announces, so a tip that is not the
+ * validated head leaves currency UNESTABLISHED — the ancestry against the
+ * announced head is still read and still refuses, but a divergent tip is never
+ * silently accepted as the head's evidence. Remote-tracking refs are not
+ * consulted for that comparison here: with no remote they are fossils, and the
+ * branch is the branch.
+ *
+ * WHAT THIS DOES NOT BUY. One head and one base for every git-backed ground is
+ * not an atomic snapshot of the pull request: the head SHA, the base commit,
+ * the body, the title and the review threads are read at different moments, and
+ * anything a human edits in between is outside this binding. The head-match on
+ * the merge is what closes the push race; this closes the evidence race.
  */
-export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, residualDir }) {
+export function gitGrounds({ git, root, baseBranch, headBranch, sha, mergeState, residualDir }) {
   const out = account();
 
   // Declared, never assumed: absent means the residual ground is NOT RUN, and
@@ -752,31 +799,71 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
   }
   const fetchState = out.fetchState;
 
-  const baseRef = fetchState === 'failed' ? '' : resolveRef(gitRun, baseBranch);
-  const headRef = fetchState === 'failed' ? '' : resolveRef(gitRun, headBranch);
+  // ── The two commits every ground below is computed against, resolved ONCE.
+  // '' until each is observed, and carried out for the grounds that consume
+  // them: a consumer resolving a name for itself is how this defect was born.
+  out.baseCommit = '';
+  out.headCommit = '';
 
   if (fetchState === 'failed') {
     // Already reported above; the comparison is deliberately not attempted.
     return out;
   }
-  if (baseRef === '' || headRef === '') {
-    out.unknown(`staleness: '${baseBranch}' or '${headBranch}' is absent from this checkout`, `git fetch origin ${baseBranch} ${headBranch}`);
-    residualUnknown(`residual findings: '${headBranch}' is absent from this checkout`, `git fetch origin ${headBranch}`);
-    out.note('landed-by-content: not decided — a ref is missing from this checkout');
+
+  const baseRef = resolveRef(gitRun, baseBranch);
+  const baseCommit = baseRef === '' ? '' : commitOf(gitRun, baseRef);
+  // The head is the SHA the gate validated. This checkout has to HOLD it: a
+  // commit nobody here has is an unread, and reading the branch that shadows
+  // its name instead is the whole of #177.
+  const headCommit = /^[0-9a-f]{40}$/.test(String(sha)) ? commitOf(gitRun, String(sha)) : '';
+  if (baseCommit === '' || headCommit === '') {
+    const missing =
+      baseCommit === ''
+        ? `'${baseBranch}' is absent from this checkout, so ancestry has no base commit to be read against`
+        : `the validated head ${short(sha)} is absent from this checkout, so ancestry would be read for a commit nobody here holds`;
+    out.unknown(`staleness: ${missing}`, `git fetch origin ${baseBranch} ${headBranch}`);
+    residualUnknown(
+      `residual findings: the ${baseCommit === '' ? `base '${baseBranch}'` : `validated head ${short(sha)}`} is absent from this checkout, so this branch's files cannot be read at the state under judgement`,
+      `git fetch origin ${baseBranch} ${headBranch}`,
+    );
+    out.note(`landed-by-content: not decided — the ${baseCommit === '' ? 'base commit' : 'validated head'} is missing from this checkout`);
     return out;
   }
+  out.baseCommit = baseCommit;
+  out.headCommit = headCommit;
+  out.note(
+    `git evidence: base ${short(baseCommit)} (${baseRef}) and the validated head ${short(headCommit)} — every git-backed ground below is computed against these two commits, never a branch tip that can move past either`,
+  );
 
-  if (fetchState === 'local-only') out.note("staleness: no 'origin' remote in this checkout, so ancestry is read from local refs");
+  if (fetchState === 'local-only') {
+    out.note(
+      `staleness: no 'origin' remote in this checkout, so the base is read from local refs and the head this verdict authorizes must be this branch's own tip`,
+    );
+    // Nothing publishes here, so the local branch is the only thing that can
+    // carry the announced head. A divergent tip leaves currency unestablished;
+    // the ancestry below is still read, against the announced head.
+    const tip = commitOf(gitRun, headBranch);
+    if (tip !== headCommit) {
+      out.unknown(
+        `staleness: this checkout has no 'origin' remote and its local '${headBranch}' ${
+          tip === '' ? 'branch is absent' : `tip is ${short(tip)}`
+        }, not the validated head ${short(headCommit)}, so nothing here publishes that head and a newer local branch would be standing in for it`,
+        `git log -1 --format=%H ${headBranch}   # gate from the checkout whose '${headBranch}' reads ${headCommit}, or re-run once it does`,
+      );
+    }
+  }
 
   // ── Ground 3. Staleness by ancestry, never by mergeStateStatus ────────────
   // `BEHIND` only appears where branch protection demands an up-to-date
   // branch, so on a repository that does not it never appears and `CLEAN`
-  // outlives a base that has advanced (F-033.2).
-  if (succeeded(gitRun(['merge-base', '--is-ancestor', baseRef, headRef]))) {
-    out.note(`staleness: ${headRef} carries ${baseRef} — the branch is current`);
+  // outlives a base that has advanced (F-033.2). The pair is the observed base
+  // commit and the validated head, so the sentence is about the commit this
+  // verdict authorizes and not about a name (#177).
+  if (succeeded(gitRun(['merge-base', '--is-ancestor', baseCommit, headCommit]))) {
+    out.note(`staleness: the validated head ${short(headCommit)} carries ${short(baseCommit)} (${baseRef}) — the head this verdict authorizes is current`);
   } else {
     out.refuse(
-      `staleness: ${baseRef} is not an ancestor of ${headRef} — the branch is behind its base (mergeStateStatus reads ${mergeState}, which is not the question)`,
+      `staleness: ${short(baseCommit)} (${baseRef}) is not an ancestor of the validated head ${short(headCommit)} — the head this verdict would authorize is behind its base (mergeStateStatus reads ${mergeState}, which is not the question)`,
       `git fetch origin ${baseBranch} && git merge origin/${baseBranch}   # then push`,
     );
   }
@@ -786,17 +873,17 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
   // every branch on a squashing repository, including the one just merged
   // (F-033.1). REPORTED, NEVER A REFUSAL: this ground answers the
   // worktree-may-go question, not the mergeability one.
-  const diff = gitRun(['diff', '--name-only', baseRef, headRef]);
+  const diff = gitRun(['diff', '--name-only', baseCommit, headCommit]);
   if (succeeded(diff)) {
-    const ancestry = succeeded(gitRun(['merge-base', '--is-ancestor', headRef, baseRef])) ? 'yes' : 'no';
+    const ancestry = succeeded(gitRun(['merge-base', '--is-ancestor', headCommit, baseCommit])) ? 'yes' : 'no';
     const differing = String(diff.stdout ?? '')
       .split('\n')
       .filter(line => line !== '');
     if (differing.length > 0) {
-      out.note(`landed-by-content: NO — ${differing.length} file(s) still differ from ${baseRef} (ancestry says ${ancestry})`);
+      out.note(`landed-by-content: NO — ${differing.length} file(s) still differ from ${short(baseCommit)} (${baseRef}) (ancestry says ${ancestry})`);
     } else {
       out.note(
-        `landed-by-content: YES — content equal to ${baseRef}, so the work landed and the worktree may go (ancestry says ${ancestry}; after a squash it always says no)`,
+        `landed-by-content: YES — content equal to ${short(baseCommit)} (${baseRef}), so the work landed and the worktree may go (ancestry says ${ancestry}; after a squash it always says no)`,
       );
     }
   } else {
@@ -812,9 +899,12 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
   // finding, on a PR that had filed nothing and had ticketed everything
   // (F-039).
   if (residualDir !== '') {
-    const touched = gitRun(['diff', '--name-only', `${baseRef}...${headRef}`, '--', residualDir]);
+    const touched = gitRun(['diff', '--name-only', `${baseCommit}...${headCommit}`, '--', residualDir]);
     if (!succeeded(touched)) {
-      out.unknown(`residual findings: 'git diff' could not answer against ${baseRef}`, `git diff --name-only ${baseRef}...${headRef} -- ${residualDir}`);
+      out.unknown(
+        `residual findings: 'git diff' could not answer against ${short(baseCommit)} (${baseRef})`,
+        `git diff --name-only ${baseCommit}...${headCommit} -- ${residualDir}`,
+      );
     } else if (String(touched.stdout ?? '').trim() === '') {
       // F-011: the two readings of an untouched directory are not separable
       // by any git measurement, so this ground names both instead of picking
@@ -823,25 +913,25 @@ export function gitGrounds({ git, root, baseBranch, headBranch, mergeState, resi
         `residual findings: [DETECTOR] this branch wrote nothing under ${residualDir}. That is either 'every finding was ticketed' or 'nothing was traced', and no git measurement separates them — read the PR's linked issues (F-011)`,
       );
     } else {
-      const last = gitRun(['log', '-1', '--format=%H', `${baseRef}..${headRef}`, '--', residualDir]);
+      const last = gitRun(['log', '-1', '--format=%H', `${baseCommit}..${headCommit}`, '--', residualDir]);
       const resCommit = succeeded(last) ? String(last.stdout ?? '').trim() : '';
       if (resCommit === '') {
         out.unknown(
-          `residual findings: ${residualDir} differs from ${baseRef} but no commit on this branch touched it`,
-          `git log ${baseRef}..${headRef} -- ${residualDir}`,
+          `residual findings: ${residualDir} differs from ${short(baseCommit)} (${baseRef}) but no commit on this branch touched it`,
+          `git log ${baseCommit}..${headCommit} -- ${residualDir}`,
         );
       } else {
-        const later = gitRun(['rev-list', '--count', `${resCommit}..${headRef}`]);
+        const later = gitRun(['rev-list', '--count', `${resCommit}..${headCommit}`]);
         const count = succeeded(later) ? String(later.stdout ?? '').trim() : '';
         if (!/^[0-9]+$/.test(count)) {
-          out.unknown("residual findings: 'git rev-list --count' could not answer", `git rev-list --count ${resCommit}..${headRef}`);
+          out.unknown("residual findings: 'git rev-list --count' could not answer", `git rev-list --count ${resCommit}..${headCommit}`);
         } else if (Number(count) > 0) {
           out.refuse(
-            `residual findings: this branch wrote ${residualDir} at ${resCommit.slice(0, 12)} and ${count} of its own commit(s) landed after it`,
-            `git log ${baseRef}..${headRef}   # re-read the file against these commits, then commit it again`,
+            `residual findings: this branch wrote ${residualDir} at ${short(resCommit)} and ${count} of its own commit(s) landed after it`,
+            `git log ${baseCommit}..${headCommit}   # re-read the file against these commits, then commit it again`,
           );
         } else {
-          out.note(`residual findings: written by this branch at ${resCommit.slice(0, 12)}, the newest commit on ${headRef}`);
+          out.note(`residual findings: written by this branch at ${short(resCommit)}, the newest commit on the validated head ${short(headCommit)}`);
         }
       }
     }
@@ -1070,8 +1160,13 @@ export function mergePolicy({ run, slug }) {
  * Every other post-open commit on a release branch refuses without
  * `--ack-body`: a hand edit pushed to the release branch is work no body
  * written before it describes, exactly as it is anywhere else.
+ *
+ * THE BASE IS THE COMMIT `gitGrounds` OBSERVED (#177), passed in rather than
+ * resolved again here: this ground asks whether a merge's second parent is
+ * base movement, and answering it against a base ref that has moved since the
+ * staleness ground read it would exempt a merge of a base nobody judged.
  */
-export function commitsGround({ commits, git, root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation, release }) {
+export function commitsGround({ commits, git, root, baseBranch, headBranch, baseCommit, refsRefreshed, slug, pr, openedAt, ackBody, invocation, release }) {
   const out = account();
   if (!commits.ok) {
     out.unknown(`commits since open: ${commits.reason}`, commits.repair);
@@ -1081,7 +1176,6 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
   // graph, which a 12-character prefix cannot address — and the prefix is
   // derived where it is printed.
   const late = commits.commits.filter(entry => entry.when > openedAt);
-  const short = sha => String(sha).slice(0, 12);
   const ackRepair = `gh pr view ${pr} --repo ${slug} --json body   # re-read the body against them, then: ${invocation('--ack-body')}`;
   if (late.length === 0) {
     out.note('commits since open: none — the body describes every commit on the branch');
@@ -1105,10 +1199,11 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
   const authored = bumps.length === 0 ? late : late.filter(entry => !isBump(entry));
 
   const gitRun = args => git(args, root);
-  // Resolved ONCE, and only because a two-parent commit is asking: a PR with no
-  // post-open merge costs this ground no git read at all.
+  // Taken ONCE from the shared measurement, and only consulted because a
+  // two-parent commit is asking: a PR with no post-open merge costs this ground
+  // no git read at all.
   const merges = authored.filter(entry => entry.parents.length === 2);
-  const baseRef = merges.length === 0 || !refsRefreshed ? '' : resolveRef(gitRun, baseBranch);
+  const base = merges.length === 0 ? '' : (/^[0-9a-f]{40}$/.test(String(baseCommit)) ? String(baseCommit) : '');
   // An undecided shape carries its OWN repair. Most of them are a read to
   // retry, so the fetch is the default; a git that does not have the read at
   // all is a different repair, and handing it a fetch would loop forever on a
@@ -1116,21 +1211,24 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
   const fetchRepair = `git fetch origin ${baseBranch} ${headBranch}   # then: ${invocation()}`;
   const undecided = (reason, repair = fetchRepair) => ({ kind: 'undecided', reason, repair });
   const shapeOf = entry => {
-    if (baseRef === '') {
-      return undecided(
-        refsRefreshed
-          ? `'${baseBranch}' cannot be read here, so whether its second parent is base movement is unmeasurable`
-          : `the refs could not be refreshed, so '${baseBranch}' cannot be read here and whether its second parent is base movement is unmeasurable`,
-      );
+    // The refresh reading first, because it is the more specific answer: an
+    // unrefreshed base is the F-033/#1939 hazard, and the base commit is unread
+    // for that reason rather than for a missing ref.
+    if (!refsRefreshed) {
+      return undecided(`the refs could not be refreshed, so '${baseBranch}' resolved to no observed commit and whether its second parent is base movement is unmeasurable`);
+    }
+    if (base === '') {
+      return undecided(`the base commit this run observed for '${baseBranch}' is unread, so whether its second parent is base movement is unmeasurable`);
     }
     const second = entry.parents[1];
-    const reaches = gitRun(['merge-base', '--is-ancestor', second, baseRef]);
+    const reaches = gitRun(['merge-base', '--is-ancestor', second, base]);
     // git answers this question with 1, and everything else — a missing object
     // above all — with a failure that is not an answer.
     if (!succeeded(reaches) && reaches.status !== 1) {
-      return undecided(`'git merge-base --is-ancestor ${short(second)} ${baseRef}' could not answer (${clean(firstLine(reaches.stderr)) || `exit ${reaches.status}`})`);
+      return undecided(`'git merge-base --is-ancestor ${short(second)} ${short(base)}' could not answer (${clean(firstLine(reaches.stderr)) || `exit ${reaches.status}`})`);
     }
-    if (!succeeded(reaches)) return { kind: 'work', why: `is a merge of ${short(second)}, which ${baseRef} does not reach — another branch merged in is work, not base movement` };
+    if (!succeeded(reaches))
+      return { kind: 'work', why: `is a merge of ${short(second)}, which the observed base ${short(base)} does not reach — another branch merged in is work, not base movement` };
     // THE MERGE IS RECOMPUTED AND THE TREES COMPARED, never inspected for
     // "interesting" hunks. `git diff-tree --cc` was the first predicate here
     // and it is not one: `--cc` drops hunks where the result matches a parent
@@ -1162,14 +1260,17 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
       return undecided(`'git merge-tree --write-tree ${short(entry.parents[0])} ${short(second)}' could not answer (${clean(firstLine(recomputed.stderr)) || `exit ${recomputed.status}`})`);
     }
     if (!succeeded(recomputed)) {
-      return { kind: 'work', why: `merges ${baseRef} and an ordinary merge of its parents CONFLICTS, so the content it carries is a resolution someone authored, not base movement` };
+      return {
+        kind: 'work',
+        why: `merges the observed base ${short(base)} and an ordinary merge of its parents CONFLICTS, so the content it carries is a resolution someone authored, not base movement`,
+      };
     }
     const tree = gitRun(['rev-parse', `${entry.sha}^{tree}`]);
     if (!succeeded(tree)) return undecided(`'git rev-parse ${short(entry.sha)}^{tree}' could not answer (${clean(firstLine(tree.stderr)) || `exit ${tree.status}`})`);
     if (firstLine(tree.stdout) !== wrote) {
       return {
         kind: 'work',
-        why: `merges ${baseRef} but its tree is not the one an ordinary merge of its parents produces (${short(firstLine(tree.stdout))} against ${short(wrote)}), so it carries a decision someone made — dropped, restored or added content — not base movement`,
+        why: `merges the observed base ${short(base)} but its tree is not the one an ordinary merge of its parents produces (${short(firstLine(tree.stdout))} against ${short(wrote)}), so it carries a decision someone made — dropped, restored or added content — not base movement`,
       };
     }
     return { kind: 'exempt' };
@@ -1208,7 +1309,7 @@ export function commitsGround({ commits, git, root, baseBranch, headBranch, refs
   if (exempt.length > 0) {
     out.note(
       `commits since open: ${exempt.length} base merge${exempt.length === 1 ? '' : 's'} — exempt: ${exempt.map(entry => short(entry.sha)).join(' ')} ` +
-        `(clean merge of ${baseRef}: two parents, the second one the base reaches, and a tree identical to the one an ordinary merge of those parents produces — base movement, which no body written before it could describe)`,
+        `(clean merge of the observed base ${short(base)}: two parents, the second one that base reaches, and a tree identical to the one an ordinary merge of those parents produces — base movement, which no body written before it could describe)`,
     );
   }
   if (plain.length > 0) {
@@ -1743,11 +1844,13 @@ export function ticketGround({ binding, closes, channels, pr, slug, release }) {
  * guard compare a tree nobody is merging, and a PR that weakens `prGate`
  * reads clean. The gate resolves the head SHA once; this ground takes THAT.
  *
- * The base side has no SHA to stand on, so it stands on the refresh instead:
- * `refsRefreshed` is the gate's reading of gitGrounds' own fetch. An
- * unrefreshed base ref is exactly the F-033/#1939 hazard applied to the
- * declaration — the before side would be read from whatever the disk holds —
- * so it is an unknown here, never a clean note.
+ * THE BASE SIDE IS THE COMMIT `gitGrounds` OBSERVED (#177). It used to resolve
+ * the base NAME here — a second resolution of the same question, one drift away
+ * from comparing against a base the staleness ground never judged — and stood
+ * on `refsRefreshed`, the gate's reading of that same prelude's fetch. Both now
+ * arrive: the refresh reading still names the unrefreshed case in its own
+ * words, and the commit is what the comparison runs on. An unobserved base is
+ * an unknown here, never a clean note.
  */
 export const canonical = value =>
   JSON.stringify(value, (key, inner) =>
@@ -1756,7 +1859,7 @@ export const canonical = value =>
       : inner,
   );
 
-export function declarationGround({ git, root, baseBranch, sha, refsRefreshed, pr, slug }) {
+export function declarationGround({ git, root, baseBranch, baseCommit, sha, refsRefreshed, pr, slug }) {
   const out = account();
   const gitRun = args => git(args, root);
   if (!refsRefreshed) {
@@ -1766,20 +1869,20 @@ export function declarationGround({ git, root, baseBranch, sha, refsRefreshed, p
     );
     return out;
   }
-  const baseRef = resolveRef(gitRun, baseBranch);
+  const baseAt = /^[0-9a-f]{40}$/.test(String(baseCommit)) ? String(baseCommit) : '';
   const headRef = sha;
-  if (baseRef === '' || !/^[0-9a-f]{40}$/.test(String(headRef))) {
+  if (baseAt === '' || !/^[0-9a-f]{40}$/.test(String(headRef))) {
     out.unknown(
-      `declaration guard: '${baseBranch}' is absent from this checkout, or the validated head SHA is not one, so whether this PR edits prGate is unreadable`,
+      `declaration guard: the base commit this run observed for '${baseBranch}' is unread, or the validated head SHA is not a commit id, so whether this PR edits prGate is unreadable`,
       `git fetch origin ${baseBranch}`,
     );
     return out;
   }
-  const mergeBase = gitRun(['merge-base', baseRef, headRef]);
+  const mergeBase = gitRun(['merge-base', baseAt, headRef]);
   if (!succeeded(mergeBase)) {
     out.unknown(
-      `declaration guard: no merge base between ${baseRef} and ${headRef}, so the prGate diff has no before side`,
-      `git merge-base ${baseRef} ${headRef}`,
+      `declaration guard: no merge base between ${short(baseAt)} and ${short(headRef)}, so the prGate diff has no before side`,
+      `git merge-base ${baseAt} ${headRef}`,
     );
     return out;
   }

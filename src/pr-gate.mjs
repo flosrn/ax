@@ -56,7 +56,27 @@
 // layout living in a tool, and this package runs in other people's repos.
 //
 // The git-backed grounds (staleness, landed-by-content, residual findings) run
-// against the current checkout, which must hold the PR branch.
+// against the current checkout, which must hold the PR branch — and must hold
+// THE VALIDATED HEAD ITSELF (#177). They resolved head and base by branch NAME,
+// which measures whatever the refs hold at the moment of each read: measured
+// locally on a checkout with no `origin`, a PR announcing its pre-merge head
+// while `feature` had merged an advanced base read as "the branch is current"
+// and this verb merged the announced head, which carried none of that base. So
+// the head side of every git-backed ground is the SHA resolved above, and the
+// base side is the commit `gitGrounds` observed after its own refresh; both
+// travel to the grounds that consume them (the declaration guard, the post-open
+// commit shapes) instead of being resolved a second time. The receipt prints
+// both, and a commit this checkout does not hold is an inability to establish.
+//
+// WHAT THAT BINDING DOES NOT BUY, said here because a guarantee nobody bounded
+// is read as the larger one: it is not an atomic snapshot of the pull request.
+// The head SHA, the base commit, the body, the title, the labels and the review
+// threads are separate reads at separate moments, and an edit landing between
+// two of them is outside it — `--match-head-commit` closes the push race on the
+// mutation, and this closes the evidence race between the grounds. Nor does the
+// post-merge closure verification below PREVENT an unclosed ticket: it detects
+// one after the merge and escalates. Neither gap is repaired by a base guard at
+// dispatch time or by a new review ground; both were considered and refused.
 //
 // THE MERGE IS RECORDED BEFORE IT MUTATES (KTD4). Every live mutation in ax
 // goes through `record.mjs`'s write-ahead protocol; this verb was the one
@@ -871,24 +891,32 @@ export function gate(
   const channel = channelOnce(title);
   const channels = channelsFor(body, title);
   const ci = ciGround({ run, slug, sha, declared, pr });
-  const gitOut = gitGrounds({ git, root: paths.root, baseBranch, headBranch, mergeState, residualDir });
+  const gitOut = gitGrounds({ git, root: paths.root, baseBranch, headBranch, sha, mergeState, residualDir });
   // gitGrounds' OWN refresh, read once and shared: `ok` and `local-only` are as
   // fresh as this checkout can be, a failed or unattempted fetch is not, and a
   // ground that re-probed origin here would answer about a different moment
   // than the grounds above.
   const refsRefreshed = ['ok', 'local-only'].includes(gitOut.fetchState);
+  // THE BASE COMMIT THAT RUN OBSERVED (#177), travelling to every ground whose
+  // question is about base contents. A ground resolving the base NAME for
+  // itself is the defect this binding closes, one function away: it would
+  // answer about whatever the ref holds at ITS read rather than about the
+  // commit this verdict was computed against.
+  const baseCommit = gitOut.baseCommit ?? '';
   const grounds = [
     ci,
     threadsGround({ run, owner, name, pr, sha, ciDecided: ci.ciDecided, invocation }),
     gitOut,
     // The guard stands on the head SHA this run resolved — never on a branch
-    // name a stale `origin/<head>` shadows — and on the shared refresh reading.
-    declarationGround({ git, root: paths.root, baseBranch, sha, refsRefreshed, pr, slug }),
+    // name a stale `origin/<head>` shadows — and on the base commit the shared
+    // measurement observed, with the same refresh reading.
+    declarationGround({ git, root: paths.root, baseBranch, baseCommit, sha, refsRefreshed, pr, slug }),
     // Ground 6 measures the SHAPE of each post-open commit against the commit
-    // graph (#90), so it takes the same git reader and the same refresh
-    // reading: a clean merge from the base is base movement, not work the body
-    // was meant to describe, and an unreadable shape is not exempt.
-    commitsGround({ commits: commitsRead, git, root: paths.root, baseBranch, headBranch, refsRefreshed, slug, pr, openedAt, ackBody, invocation, release }),
+    // graph (#90), so it takes the same git reader, the same base commit and
+    // the same refresh reading: a clean merge from the base is base movement,
+    // not work the body was meant to describe, and an unreadable shape is not
+    // exempt.
+    commitsGround({ commits: commitsRead, git, root: paths.root, baseBranch, headBranch, baseCommit, refsRefreshed, slug, pr, openedAt, ackBody, invocation, release }),
     // The channel read answers before the two grounds that consume it, so its
     // own inability to establish is a named reason in this same verdict rather
     // than a silent narrowing to the body (#86).
@@ -918,12 +946,15 @@ export function gate(
 
   section('what this run prevents and what it merely detects (R21)');
   note(
-    `prevents  the declared checks — every page of the check-run list, reconciled against the total the endpoint announces for this SHA, never the first hundred rows (#176) — the review threads, read to an OBSERVED final page rather than to a successful response, staleness, the residual file and the closing keyword: each read against live state on ${sha}`,
+    `prevents  the declared checks — every page of the check-run list, reconciled against the total the endpoint announces for this SHA, never the first hundred rows (#176) — the review threads, read to an OBSERVED final page rather than to a successful response, staleness, the residual file and the closing keyword: each read against live state on ${sha}${baseCommit === '' ? '' : `, with every git-backed ground computed against that head and the base commit ${baseCommit.slice(0, 12)} this run observed (#177)`}`,
   );
   note(
     "detects   the commits landed since the PR opened: a body's staleness is not mechanically decidable, so that ground lists and refuses, it does not verify — except a clean merge from the base, which is movement no body written before it could describe (#90)",
   );
   note('reports   landed-by-content, which answers the post-merge cleanup question, not this one');
+  note(
+    'limits    one head and one base for the git evidence is NOT an atomic snapshot of this pull request: the head SHA, the base commit, the body, the title and the review threads are read at different moments, and an edit between two of those reads is outside this binding — the head-match on the merge closes the push race, not the read race. And the closure read after a merge DETECTS a ticket that did not close; it cannot prevent one (#177)',
+  );
 
   section(
     code === 0
