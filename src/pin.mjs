@@ -28,7 +28,7 @@ import { run as execRun } from './exec.mjs';
 import { bad, fix, note, ok, raw } from './log.mjs';
 import { planProject } from './plan.mjs';
 
-const USAGE = 'ax pin <X.Y.Z|vX.Y.Z> [--dry-run]';
+const USAGE = 'ax pin <X.Y.Z|vX.Y.Z> [--init] [--dry-run]';
 
 /** A release, however it was typed: `0.9.0` or the tag `v0.9.0`. */
 const RELEASE = /^v?([0-9]+\.[0-9]+\.[0-9]+)$/;
@@ -54,6 +54,7 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
 
   let asked = '';
   let dry = false;
+  let doInit = false;
   // No `--help` branch: `runCli` answers the flag from the registry before this
   // verb is reached, anywhere in its argv (../src/cli.mjs). This loop used to
   // scan the whole argv for it — the precedent the central read generalised —
@@ -61,6 +62,7 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   // to answer it five different ways (#89, #93).
   for (const arg of argv) {
     if (arg === '--dry-run') dry = true;
+    else if (arg === '--init') doInit = true;
     else if (arg.startsWith('-')) return usageError(`unknown argument "${arg}"`);
     else if (asked !== '') return usageError(`one version only, got "${asked}" and "${arg}"`);
     else asked = arg;
@@ -164,6 +166,27 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   }
   ok(`installed ${PACKAGE_NAME} ${target}, proven from node_modules`);
 
+  // `--init` REGENERATES BEFORE IT GRADES, and only when asked. A release may
+  // add a line to a managed block — 0.23.0 added `.env.local` to the ignore
+  // block — and `ax doctor` then refuses the checkout for state only `ax init`
+  // writes, so every automatic bump in every consumer went red until a human
+  // committed init's output (#170: ofmchat 49cb36e0, gapila PR #2043). This
+  // flag is what a receiving workflow can ask for; a plain `ax pin` still
+  // rewrites nothing but the manifest, because rewriting a project's managed
+  // files is a mutation nobody asked for. It runs AFTER the install proof —
+  // init must be the version being pinned — and before the grading it exists
+  // to satisfy.
+  if (doInit) {
+    const written = exec(join(root, 'bin', 'ax'), ['init'], root);
+    if (written.error || written.status !== 0) {
+      const reason = String(written.error?.message ?? written.stderr ?? '').trim();
+      bad(`ax init could not run under ${target}, so the managed state this pin needs was never written${reason ? `: ${reason}` : ''}`);
+      fix(`pnpm exec ax init   # by hand, then re-run: pnpm exec ax pin ${asked}`);
+      return 1;
+    }
+    ok('managed state regenerated under the new pin (--init)');
+  }
+
   // THE FINDINGS ARE THE REFUSAL. Measured 2026-08-28: 0.14.4 was announced to
   // goodluckagency/ofmchat, its bump workflow ran this verb, and the only artefact
   // of a blocked deployment was `ax doctor refuses this checkout under 0.14.4` —
@@ -191,14 +214,26 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     return 1;
   }
   if (doctor.status !== 0) {
-    const findings = `${String(doctor.stdout ?? '')}${String(doctor.stderr ?? '')}`
+    const output = `${String(doctor.stdout ?? '')}${String(doctor.stderr ?? '')}`;
+    const findings = output
       .split('\n')
       .map(line => line.trimEnd())
       .filter(line => line.trim() !== '');
     bad(`ax doctor refuses this checkout under ${target} — do not commit a pin the doctor rejects`);
     for (const line of findings) raw(line);
     if (findings.length === 0) note(`ax doctor exited ${doctor.status} and printed nothing — run it by hand to see why`);
-    fix('ax doctor   # repair the findings above, then re-run this verb');
+    // THE REPAIR IS THE ONE THE FINDINGS NAME. `ax doctor` was printed here
+    // until 2026-09-05 (#170) — a read, which grades and repairs nothing, and
+    // the one line a CI runner would have to type. Every finding already carries
+    // its own `→ <command>` (`../log.mjs`: a `bad` without a `fix` is a finding
+    // nobody can act on), so those are lifted, deduped in the order they were
+    // printed, and `pnpm exec` prefixes the ax ones because the consumer's ax is
+    // the installed package, not a global. A finding that named no repair is
+    // said out loud rather than given an invented one.
+    const named = [...new Set(findings.filter(line => line.trim().startsWith('→')).map(line => line.replace(/^\s*→\s*/, '')))];
+    for (const repair of named) fix(repair.startsWith('ax ') ? `pnpm exec ${repair}` : repair);
+    if (named.length === 0) note('the findings above named no repair — read them by hand, then re-run this verb');
+    else fix(`pnpm exec ax pin ${asked}   # re-prove the pin once those are done`);
     return 1;
   }
   ok('doctor coherent under the new pin');

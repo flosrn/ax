@@ -54,7 +54,7 @@ const capture = fn => {
 };
 
 /** Real git answers for real; pnpm is scripted per-verb. */
-function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, onInstall = null, frozen = false } = {}) {
+function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, initRun = { status: 0 }, onInstall = null, frozen = false } = {}) {
   const calls = [];
   return {
     calls,
@@ -77,6 +77,7 @@ function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, onInstall =
         return { stdout: '', stderr: '', ...install };
       }
       if (bin.endsWith('/bin/ax') && args[0] === 'doctor') return { stdout: '', stderr: '', ...doctor };
+      if (bin.endsWith('/bin/ax') && args[0] === 'init') return { stdout: '', stderr: '', ...initRun };
       return { status: 1, stdout: '', stderr: `unexpected: ${bin} ${args.join(' ')}` };
     },
   };
@@ -159,6 +160,69 @@ test('a doctor that refuses the new pin blocks the commit line AND prints what i
   assert.match(r.out, /do not commit a pin the doctor rejects/);
   assert.match(r.out, /AGENTS\.md carries no BEGIN:ax block/, 'the finding travels with the refusal');
   assert.doesNotMatch(r.out, /git add/);
+});
+
+test("the refusal names the repair the FINDINGS name, never `ax doctor` — a read is not a repair", () => {
+  // Measured 2026-09-05 rolling 0.23.0 out to ofmchat and gapila (#170): the
+  // only finding was `.gitignore: the managed block does not list .env.local`,
+  // a line 0.23.0's own plan introduced, whose repair is `ax init`. This verb
+  // printed the finding (since 2026-08-28) and then `→ ax doctor`, which grades
+  // and repairs nothing: both bump runs went red and a human had to read the
+  // doctor's own arrow to know what to type.
+  const exec = fakeExec({
+    onInstall: at => installAs(at, '0.6.6'),
+    doctor: {
+      status: 1,
+      stdout: '  ✗ .gitignore: the managed block does not list .env.local\n      → ax init\n  ✗ AGENTS.md carries no BEGIN:ax block\n      → ax init\n',
+      stderr: '',
+    },
+  });
+  const r = run(['v0.6.6'], { exec });
+
+  assert.equal(r.code, 1);
+  assert.doesNotMatch(r.out, /→ ax doctor\b/, 'a read is never printed as this verb\u2019s repair');
+  // One arrow per distinct repair the findings named, then the re-run.
+  assert.equal(r.out.match(/→ pnpm exec ax init\b/g)?.length, 1, `one deduped repair: ${r.out}`);
+  assert.match(r.out, /→ pnpm exec ax pin v?0\.6\.6\b/, 'and the verb that re-proves it');
+});
+
+test('a refusal whose findings name no repair says so, rather than inventing one', () => {
+  const exec = fakeExec({
+    onInstall: at => installAs(at, '0.6.6'),
+    doctor: { status: 1, stdout: '  ✗ something nobody wrote a repair for\n', stderr: '' },
+  });
+  const r = run(['v0.6.6'], { exec });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /named no repair/);
+  assert.doesNotMatch(r.out, /→ pnpm exec ax init\b/, 'no repair is invented for a finding that named none');
+});
+
+test('--init regenerates the managed state the new version introduced, then grades it', () => {
+  // What an AUTOMATIC bump needs: the managed blocks a release adds are written
+  // by `ax init`, so a workflow that may not commit by hand has to be able to
+  // ask for them. Opt-in, because rewriting managed files is a mutation nobody
+  // asked for on a plain `ax pin` (#170).
+  const exec = fakeExec({
+    onInstall: at => installAs(at, '0.6.6'),
+    doctor: { status: 0, stdout: '  ✓ checkout is coherent\n', stderr: '' },
+  });
+  const r = run(['v0.6.6', '--init'], { exec });
+
+  assert.equal(r.code, 0, r.out);
+  const init = r.calls.findIndex(line => /bin\/ax init$/.test(line));
+  const doctor = r.calls.findIndex(line => /bin\/ax doctor$/.test(line));
+  assert.ok(init !== -1, `ax init was never run: ${r.calls.join(' | ')}`);
+  assert.ok(init < doctor, 'init must run BEFORE the grading it exists to satisfy');
+  assert.match(r.out, /git add/, 'the commit line now includes what init wrote');
+});
+
+test('a plain pin never runs ax init — managed files are not rewritten by a bump', () => {
+  const exec = fakeExec({ onInstall: at => installAs(at, '0.6.6') });
+  const r = run(['v0.6.6'], { exec });
+
+  assert.equal(r.code, 0);
+  assert.ok(r.calls.every(line => !/bin\/ax init$/.test(line)), `init ran unasked: ${r.calls.join(' | ')}`);
 });
 
 test('a doctor that could not RUN is not reported as a checkout it refused', () => {

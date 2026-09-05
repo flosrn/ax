@@ -238,6 +238,22 @@ test('init registers the installed package root with OMP and preserves project s
   assert.equal(existsSync(join(dir, '.omp', 'extensions', 'ax.ts')), false);
 });
 
+test('an equivalent settings file keeps its own formatting — init compares content, not bytes', () => {
+  // Measured 2026-09-05 rolling 0.23.0 out to gapila (#171): the committed file
+  // carried `"extensions": ["./node_modules/@flosrn/ax"]` on one line; `ax init`
+  // rewrote it as a three-line array with identical content, and the consumer's
+  // `oxfmt --check` then refused the file ax had just written. Two green checks
+  // that cannot both hold is a defect in the one that had no reason to write.
+  const settingsPath = join(dir, '.omp', 'settings.json');
+  const parsed = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  const oneLine = `${JSON.stringify(parsed).replace('{', '{\n  ').replace('}', '\n}')}\n`;
+  writeFileSync(settingsPath, oneLine);
+
+  assert.equal(init(dir), 0);
+  assert.equal(readFileSync(settingsPath, 'utf8'), oneLine, 'nothing about this file needed to change, so nothing was written');
+  assert.equal(doctor(dir), 0, 'and the checkout it leaves is still coherent');
+});
+
 test('doctor passes on the repo init just prepared', () => {
   assert.equal(doctor(dir), 0);
 });

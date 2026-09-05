@@ -294,6 +294,7 @@ the session file:
     summary: 'move this project onto an ax release — edit, install, prove, doctor',
     options: [
       ['<version>', 'the release to pin, e.g. 0.6.6 or v0.6.6 — the git gesture stays yours'],
+      ['--init', 'run ax init before grading: a release\u2019s new managed lines land too'],
       ['--dry-run', 'say what would move without touching anything'],
     ],
   },

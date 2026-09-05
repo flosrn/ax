@@ -190,8 +190,16 @@ function wireOmp(root, { dryRun, plan }) {
   }
   if (!found) normalized.push(expected);
   const changed = normalized.length !== extensions.length || normalized.some((entry, index) => entry !== extensions[index]);
-  const next = changed ? { ...settings, extensions: normalized } : settings;
-  const state = writeFile(path, `${JSON.stringify(next, null, 2)}\n`, { dryRun, root });
+  // NOTHING TO CHANGE MEANS NOTHING IS WRITTEN, and the byte comparison in
+  // `writeFile` is not enough for that: this file is SHARED with the project, so
+  // re-serializing it moves formatting ax does not own. Measured 2026-09-05 on
+  // gapila (#171): a committed one-line `extensions` array came back as three
+  // lines with identical content, and the consumer's `oxfmt --check` refused the
+  // file `ax init` had just written — two green checks that cannot both hold.
+  // Doctor grades the one array entry (`../doctor.mjs`), never the document, so
+  // an equivalent file is coherent and needs no write at all.
+  if (!changed) return { state: 'unchanged', legacy };
+  const state = writeFile(path, `${JSON.stringify({ ...settings, extensions: normalized }, null, 2)}\n`, { dryRun, root });
   return { state, legacy };
 }
 
