@@ -10,7 +10,8 @@
 //
 // THE RECEIPT IS A TRIAD, and the lists are structurally distinct:
 //   takeable          every blocker closed, no exclusion — dispatchable now
-//   excluded          one NAMED reason each: blocked-by:<refs>, is-spec-parent,
+//   excluded          one NAMED reason each: blocked-by:<refs>,
+//                     blocked-by-cycle:<repo#n→…>, is-spec-parent,
 //                     provenance-refused, already-dispatched,
 //                     attempt-ended-unmerged, untrusted-labeler,
 //                     no-longer-open, label-removed,
@@ -21,10 +22,16 @@
 //
 // `already-dispatched` keys on an UNSETTLED record only. A settled record whose
 // ticket is still open classifies `attempt-ended-unmerged` — a dead or
-// abandoned attempt stays VISIBLE instead of vanishing from the loop, which is
-// what lets the AFK cycle's termination condition ("takeable, attempt-ended-
-// unmerged and cannot-establish all empty") mean finished rather than stalled.
+// abandoned attempt stays VISIBLE instead of vanishing from the loop.
 //
+// An empty takeable list does not establish Completion. Two observed tickets
+// blocking each other classify `blocked-by-cycle:` in excluded — an established
+// stuck graph, not quiet waiting — so they cannot masquerade as finished work.
+// Cycle detection names a repair and never removes, reverses or invents a
+// blocking edge. A truncated or malformed blocker page stays unestablished; a
+// node outside the corpus stays outside it. The receipt never infers global
+// acyclicity from the candidates it happened to read.
+
 // `untrusted-labeler`: the ready label is the tracker's assertion that a ticket
 // is a complete assignment, and on a public repository anyone can apply it. A
 // label applied by an actor without repository write permission is excluded —
@@ -148,7 +155,7 @@ function frontierQuery(owner, name, numbers) {
         `i${n}: issue(number: ${n}) { number state lastEditedAt ` +
         `labels(first: 100) { nodes { name } } ` +
         `subIssues(first: 1) { totalCount } ` +
-        `blockedBy(first: 50) { nodes { number state } pageInfo { hasNextPage } } ` +
+        `blockedBy(first: 50) { nodes { number state repository { nameWithOwner } } pageInfo { hasNextPage } } ` +
         `timelineItems(itemTypes: [LABELED_EVENT], last: 100) { nodes { ... on LabeledEvent { createdAt label { name } actor { login } } } } }`,
     )
     .join(' ');
@@ -210,6 +217,78 @@ function readyLabelOf(timelineNodes, label) {
   }
   return event;
 }
+
+/**
+ * A blocker's identity is repository + number. A missing repository cannot
+ * alias a candidate: two issues numbered 10 in different repositories are
+ * different nodes, and an unstated repository is outside the corpus.
+ */
+function blockerKey(node) {
+  const number = Number(node?.number);
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+  const repo = typeof node?.repository?.nameWithOwner === 'string' ? node.repository.nameWithOwner.trim() : '';
+  if (repo === '') return null;
+  return `${repo.toLowerCase()}#${number}`;
+}
+
+const candidateKey = (slug, number) => `${String(slug).trim().toLowerCase()}#${number}`;
+const candidateRef = (slug, number) => `${slug}#${number}`;
+
+/** Ordinary blocked-by display: qualify only when the blocker is not this checkout. */
+function blockerDisplay(node, slug) {
+  const number = node?.number;
+  const repo = typeof node?.repository?.nameWithOwner === 'string' ? node.repository.nameWithOwner.trim() : '';
+  if (repo !== '' && repo.toLowerCase() !== String(slug).trim().toLowerCase()) return `${repo}#${number}`;
+  return `#${number}`;
+}
+
+const isOpenBlocker = node => String(node?.state ?? '').toUpperCase() !== 'CLOSED';
+
+/**
+ * Three-color DFS over the established candidate subgraph. Returns a map of
+ * node key → cycle path starting at that node (repo-qualified refs joined by →).
+ * Restricted to `adj`; a node outside it cannot close a cycle.
+ */
+function cyclePathsOf(adj, refs) {
+  const WHITE = 0;
+  const GRAY = 1;
+  const BLACK = 2;
+  const color = new Map();
+  for (const key of adj.keys()) color.set(key, WHITE);
+  const found = [];
+
+  const dfs = (u, stack) => {
+    color.set(u, GRAY);
+    stack.push(u);
+    for (const v of adj.get(u) ?? []) {
+      if (!adj.has(v)) continue;
+      if (color.get(v) === GRAY) {
+        const start = stack.indexOf(v);
+        found.push([...stack.slice(start), v]);
+      } else if (color.get(v) === WHITE) {
+        dfs(v, stack);
+      }
+    }
+    stack.pop();
+    color.set(u, BLACK);
+  };
+
+  for (const key of adj.keys()) {
+    if (color.get(key) === WHITE) dfs(key, []);
+  }
+
+  const membership = new Map();
+  for (const cycle of found) {
+    const nodes = cycle.slice(0, -1);
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (membership.has(nodes[i])) continue;
+      const rotated = [...nodes.slice(i), ...nodes.slice(0, i), nodes[i]];
+      membership.set(nodes[i], rotated.map(key => refs.get(key)).join('→'));
+    }
+  }
+  return membership;
+}
+
 
 export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args, at), env = process.env, cwd = process.cwd() } = {}) {
   const usageError = message => {
@@ -324,6 +403,8 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   const takeable = [];
   const excluded = [];
   const unestablished = [];
+  const pending = [];
+
 
   if (candidates.length > 0) {
     // ── One batched round-trip: state, sub-issues, blockers and the labeled
@@ -516,7 +597,8 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       }
 
       // Blockers, last: a truncated page proves the set is UNKNOWN, and fifty
-      // read blockers say nothing about the fifty-first.
+      // read blockers say nothing about the fifty-first. Cycle detection runs
+      // after every established page is in, over that corpus only.
       let blockerPage;
       try {
         blockerPage = must(issue, 'blockedBy', `issue #${candidate.number}`);
@@ -546,14 +628,48 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         unestablished.push({ ...candidate, read: `the blocker read answered no nodes for #${candidate.number}`, repair: `gh issue view ${candidate.number} --repo ${slug} --json blockedBy` });
         continue;
       }
-      const open = blockers.filter(blocker => String(blocker?.state ?? '').toUpperCase() !== 'CLOSED').map(blocker => `#${blocker?.number}`);
-      if (open.length > 0) {
-        excluded.push({ ...candidate, reason: `blocked-by:${open.join(',')}` });
+      pending.push({ candidate, blockers });
+    }
+
+    const corpus = new Set(pending.map(entry => candidateKey(slug, entry.candidate.number)));
+    const adj = new Map();
+    const refs = new Map();
+    for (const entry of pending) {
+      const key = candidateKey(slug, entry.candidate.number);
+      refs.set(key, candidateRef(slug, entry.candidate.number));
+      const next = [];
+      for (const blocker of entry.blockers) {
+        if (!isOpenBlocker(blocker)) continue;
+        const target = blockerKey(blocker);
+        if (target !== null && corpus.has(target)) next.push(target);
+      }
+      adj.set(key, next);
+    }
+    const cycles = cyclePathsOf(adj, refs);
+
+    for (const entry of pending) {
+      const key = candidateKey(slug, entry.candidate.number);
+      const cycle = cycles.get(key);
+      if (cycle !== undefined) {
+        excluded.push({
+          ...entry.candidate,
+          reason: `blocked-by-cycle:${cycle}`,
+          repair: `gh api repos/${slug}/issues/${entry.candidate.number}/dependencies/blocked_by   # DELETE one blocked_by edge; this verb never rewrites the to-tickets graph`,
+        });
         continue;
       }
-      const closedRefs = blockers.map(blocker => `#${blocker?.number}`);
-      takeable.push({ ...candidate, proof: closedRefs.length === 0 ? 'no blockers declared' : `blockers ${closedRefs.join(',')} all closed` });
+      const open = entry.blockers.filter(isOpenBlocker).map(blocker => blockerDisplay(blocker, slug));
+      if (open.length > 0) {
+        excluded.push({ ...entry.candidate, reason: `blocked-by:${open.join(',')}` });
+        continue;
+      }
+      const closedRefs = entry.blockers.map(blocker => blockerDisplay(blocker, slug));
+      takeable.push({
+        ...entry.candidate,
+        proof: closedRefs.length === 0 ? 'no blockers declared' : `blockers ${closedRefs.join(',')} all closed`,
+      });
     }
+
   }
 
   // ── The receipt. Three lists, all printed, none folded into another.
@@ -561,7 +677,11 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   for (const entry of takeable) ok(`#${entry.number} ${entry.title} — ${entry.proof}`);
 
   section(`excluded — ${excluded.length}`);
-  for (const entry of excluded) note(`#${entry.number} ${entry.title} — ${entry.reason}`);
+  for (const entry of excluded) {
+    note(`#${entry.number} ${entry.title} — ${entry.reason}`);
+    if (entry.repair) fix(entry.repair);
+  }
+
 
   section(`cannot establish — ${unestablished.length}`);
   for (const entry of unestablished) {

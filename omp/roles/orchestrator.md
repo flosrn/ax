@@ -79,7 +79,12 @@ that a concept search before filing would have caught.
   siblings are doing. `excluded` names one reason per ticket; respect it.
   `cannot establish` names the read that failed — repair that read; an
   unobtainable read is never an empty frontier, and dispatching around one is
-  guessing.
+  guessing. An empty `takeable` list does not establish Completion.
+  `blocked-by-cycle:` is an established stuck graph, not waiting: name the
+  repair it prints, and never rewrite the approved to-tickets edges from this
+  receipt. A node the receipt did not establish stays outside it — do not infer
+  that the rest of the graph is acyclic.
+
 - Dispatch only a ticket that is `ready-for-agent` and carries a complete
   assignment: what to build, independently observable acceptance criteria, and
   its blocking edges. Where that assignment lives follows provenance — the spec

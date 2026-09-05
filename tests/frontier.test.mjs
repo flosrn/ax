@@ -84,7 +84,11 @@ const issueNode = ({
   labels: { nodes: labels.map(name => ({ name })) },
   subIssues: { totalCount: subIssues },
   blockedBy: {
-    nodes: blockers.map(([number, state]) => ({ number, state })),
+    nodes: blockers.map(([number, state, repository]) => {
+      const node = { number, state };
+      if (repository !== undefined && repository !== null) node.repository = { nameWithOwner: repository };
+      return node;
+    }),
     pageInfo: { hasNextPage: false },
   },
   timelineItems: {
@@ -631,4 +635,115 @@ test('an unattributable ready label is cannot-establish, not a trusted one', () 
   assert.match(out, /CANNOT ESTABLISH — #163: no labeled event attributes ready-for-agent on #163/);
   assert.match(out, /takeable — 0/);
   assert.match(out, /excluded — 0/);
+});
+
+// ── Established cycles (#190) ───────────────────────────────────────────────
+//
+// Two ready tickets blocking each other used to look like ordinary waiting, so
+// an empty takeable list could masquerade as finished work. The receipt now
+// names an established cycle in excluded, with repository-qualified identities,
+// and still never rewrites an edge.
+
+test('two observed tickets blocking each other are excluded as an established cycle', () => {
+  const { code, out, calls } = runFrontier({
+    issues: [issueRow(200), issueRow(201)],
+    graph: {
+      i200: issueNode({ blockers: [[201, 'OPEN', SLUG]] }),
+      i201: issueNode({ blockers: [[200, 'OPEN', SLUG]] }),
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /takeable — 0/);
+  assert.match(out, /excluded — 2/);
+  assert.match(out, /cannot establish — 0/);
+  assert.match(out, /#200 T200 — blocked-by-cycle:gapilabs\/gapila#200→gapilabs\/gapila#201→gapilabs\/gapila#200/);
+  assert.match(out, /#201 T201 — blocked-by-cycle:gapilabs\/gapila#201→gapilabs\/gapila#200→gapilabs\/gapila#201/);
+  assert.match(out, /→ gh api repos\/gapilabs\/gapila\/issues\/200\/dependencies\/blocked_by/);
+  assert.match(out, /→ gh api repos\/gapilabs\/gapila\/issues\/201\/dependencies\/blocked_by/);
+  assert.doesNotMatch(out, /blocked-by:#20[01]/);
+  for (const args of calls) {
+    const joined = args.join(' ');
+    assert.doesNotMatch(joined, /-X (POST|PUT|PATCH|DELETE)/);
+    assert.ok(args[0] !== 'issue' || args[1] === 'list', `cycle detection issued a tracker write: gh ${joined}`);
+  }
+});
+
+test('same-number blockers in a different repository are not a cycle', () => {
+  const { code, out } = runFrontier({
+    issues: [issueRow(210)],
+    graph: { i210: issueNode({ blockers: [[210, 'OPEN', 'other/repo']] }) },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /takeable — 0/);
+  assert.match(out, /#210 T210 — blocked-by:other\/repo#210/);
+  assert.doesNotMatch(out, /blocked-by-cycle/);
+});
+
+test('an observed open blocker without an established cycle remains ordinary blocked-by', () => {
+  const { code, out } = runFrontier({
+    issues: [issueRow(220)],
+    graph: { i220: issueNode({ blockers: [[6, 'OPEN', SLUG]] }) },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /#220 T220 — blocked-by:#6/);
+  assert.doesNotMatch(out, /blocked-by-cycle/);
+  assert.match(out, /takeable — 0/);
+  assert.doesNotMatch(out, /acyclic/);
+});
+
+test('a truncated blocker page stays unestablished even when the visible nodes look cyclic', () => {
+  const truncated = issueNode({ blockers: [[231, 'OPEN', SLUG]] });
+  truncated.blockedBy.pageInfo.hasNextPage = true;
+  const { code, out } = runFrontier({
+    issues: [issueRow(230), issueRow(231)],
+    graph: {
+      i230: truncated,
+      i231: issueNode({ blockers: [[230, 'OPEN', SLUG]] }),
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /CANNOT ESTABLISH — #230: the blocker read for #230 truncated at 50/);
+  assert.match(out, /#231 T231 — blocked-by:#230/);
+  assert.doesNotMatch(out, /blocked-by-cycle/);
+  assert.match(out, /takeable — 0/);
+});
+
+test('a malformed blocker page stays unestablished and does not invent a cycle', () => {
+  const malformed = issueNode({ blockers: [[241, 'OPEN', SLUG]] });
+  malformed.blockedBy.pageInfo = { hasNextPage: 'false' };
+  const { code, out } = runFrontier({
+    issues: [issueRow(240), issueRow(241)],
+    graph: {
+      i240: malformed,
+      i241: issueNode({ blockers: [[240, 'OPEN', SLUG]] }),
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /CANNOT ESTABLISH — #240: .*pagination/);
+  assert.match(out, /#241 T241 — blocked-by:#240/);
+  assert.doesNotMatch(out, /blocked-by-cycle/);
+  assert.match(out, /takeable — 0/);
+});
+
+test('an earlier exclusion still wins over a would-be cycle', () => {
+  const id = requestIdFor('250', '');
+  writeFileSync(join(store, `${id}.json`), JSON.stringify({
+    request: id,
+    host: 'h',
+    orca: 'orca',
+    createdAt: 'now',
+    attempts: [{ n: 1, settled: false, phases: [] }],
+  }));
+  const { code, out } = runFrontier({
+    issues: [issueRow(250), issueRow(251)],
+    graph: {
+      i250: issueNode({ blockers: [[251, 'OPEN', SLUG]] }),
+      i251: issueNode({ blockers: [[250, 'OPEN', SLUG]] }),
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /#250 T250 — already-dispatched/);
+  assert.match(out, /#251 T251 — blocked-by:#250/);
+  assert.doesNotMatch(out, /blocked-by-cycle/);
+  assert.match(out, /takeable — 0/);
 });
