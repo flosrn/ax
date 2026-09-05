@@ -133,6 +133,16 @@ test('an ack that landed resolves the waiting record it landed on, and only that
   expect(text).not.toMatch(/WAITING[\s\S]*del_1/);
 });
 
+test('a fresh reader reports no unresolved work after the only wait is settled', () => {
+  put({ reason: 'ack-pending', deliveryId: 'del_1', detail: 'an injection failed' }, '2026-09-06T00:00:01.000Z');
+  put({ reason: 'ack-settled', deliveryId: 'del_1' }, '2026-09-06T00:00:03.000Z');
+
+  const text = renderDelivery(readDelivery());
+  expect(text).toContain('0 still open');
+  expect(text).not.toContain('WAITING');
+  expect(text).not.toContain('REFUSED INJECTION');
+});
+
 test('an ack proves every injection in its delivery landed, so a refusal it covers is resolved', () => {
   put(
     { reason: 'injection-refused', peer: 'beta', messageId: 'msg_2', deliveryId: 'del_1', detail: 'inject failed' },

@@ -321,8 +321,8 @@ export function renderDelivery(read: DeliveryRead): string {
       COVERAGE,
     ].join('\n');
 
-  const open = read.records.filter((r) => r.resolvedAt === undefined);
-  const resolved = read.records.length - open.length;
+  const open = read.records.filter((r) => r.reason !== 'ack-settled' && r.resolvedAt === undefined);
+  const resolved = read.records.filter((r) => r.resolvedAt !== undefined).length;
   const at = (r: DeliveryDiagnostic): string => String(r.at ?? '?');
   const who = (r: DeliveryDiagnostic): string =>
     `${r.peer ? `${r.peer}` : 'unestablished sender'}${r.messageId ? ` ${r.messageId}` : ''}`;

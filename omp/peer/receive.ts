@@ -291,6 +291,15 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
    * ignore the real one.
    */
   const lastSeq = new Map<string, number>();
+  /**
+   * The lowest sequence that failed to inject for this sender and has not yet
+   * landed. A later success in the same delivery must not advance `lastSeq`
+   * past it: that would make the replay classify the unseen message as a
+   * duplicate and ack it without the model ever seeing it.
+   */
+  const failedSeq = new Map<string, number>();
+  /** Highest seq injected while a failed gap is still open, so filling the gap can catch the watermark up. */
+  const deferredSeq = new Map<string, number>();
 
   /**
    * Persist one observation. Swallowed: a store that will not write must not
@@ -311,7 +320,27 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
   }
 
   function acceptSequence(sender: string, seq: number | null): void {
-    if (seq !== null) lastSeq.set(sender, seq);
+    if (seq === null) return;
+    const failed = failedSeq.get(sender);
+    if (failed !== undefined && seq > failed) {
+      const prev = deferredSeq.get(sender);
+      if (prev === undefined || seq > prev) deferredSeq.set(sender, seq);
+      return;
+    }
+    if (failed === seq) failedSeq.delete(sender);
+    let watermark = seq;
+    const deferred = deferredSeq.get(sender);
+    if (deferred !== undefined && deferred > watermark) {
+      watermark = deferred;
+      deferredSeq.delete(sender);
+    }
+    lastSeq.set(sender, watermark);
+  }
+
+  function noteFailedSeq(sender: string, seq: number | null): void {
+    if (seq === null || sender === '') return;
+    const prev = failedSeq.get(sender);
+    if (prev === undefined || seq < prev) failedSeq.set(sender, seq);
   }
 
   function scheduleRetry(pi: unknown): void {
@@ -426,14 +455,6 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 }
               } catch {}
               const who = deps.senderIdentity(msg);
-              diagnose({
-                reason: 'filtered',
-                filter: 'heartbeat',
-                peer: who.name,
-                messageId: hbId || undefined,
-                deliveryId: deliveryId || undefined,
-                detail: phase ? `phase: ${phase}` : undefined,
-              });
               deps.note(
                 `heartbeat from ${who.name}${phase ? ` — phase: ${phase}` : ''} (consumed, not injected)`,
               );
@@ -813,6 +834,10 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               deliveryId: deliveryId || undefined,
               detail: String(err),
             });
+            const whoFail = deps.senderIdentity(msg);
+            const rawFail = msg.payload;
+            const bagFail = typeof rawFail === 'string' ? deps.parse(rawFail) : rawFail;
+            noteFailedSeq(whoFail.name, sequenceOf(bagFail));
           }
         }
 

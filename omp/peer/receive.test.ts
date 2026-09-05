@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { completionReport } from './completion.ts';
-import { readDelivery, recordDelivery, renderDelivery } from './diagnostics.ts';
+import { DELIVERY_RECORD_CAP, readDelivery, recordDelivery, renderDelivery } from './diagnostics.ts';
 import {
   RETRY_MAX_MS,
   RETRY_MIN_MS,
@@ -1167,7 +1167,7 @@ test('a sequence gap is still named after a process that did not write it is gon
   });
 });
 
-test('an observed heartbeat filter is not misreported as an injection failure', async () => {
+test('an observed heartbeat is consumed as liveness, not filed as a diagnostic', async () => {
   await withStore(async () => {
     let attempt = 0;
     const h = harness({
@@ -1194,11 +1194,10 @@ test('an observed heartbeat filter is not misreported as an injection failure', 
     r.stop();
 
     expect(h.sent).toEqual([]);
+    expect(h.notes.join('\n')).toContain('heartbeat from');
     const fresh = readDelivery();
-    expect(fresh.records.map((x) => x.reason)).toEqual(['filtered']);
-    expect(fresh.records[0].filter).toBe('heartbeat');
-    expect(renderDelivery(fresh)).toContain('WITHHELD');
-    expect(renderDelivery(fresh)).not.toContain('injection-refused');
+    expect(fresh.records).toEqual([]);
+    expect(fresh.recorded).toBe(false);
   });
 });
 
@@ -1370,5 +1369,116 @@ test('a successful delivery writes no ack-settled, so the store is not a success
     expect(h.sent).toHaveLength(1);
     const fresh = readDelivery();
     expect(fresh.records.map((x) => x.reason)).toEqual(['no-reply-route']);
+  });
+});
+
+test('a later success in the same delivery does not consume an earlier failed sequence', async () => {
+  await withStore(async () => {
+    const seen = new Set<string>();
+    const throwIds = new Set<string>(['m1']);
+    let attempt = 0;
+    const h = harness({
+      recordDelivery,
+      wasInjected: (id) => seen.has(id),
+      rememberInjected: (id) => seen.add(id),
+      peerContent: (msg) => `content of ${String(msg.id)}`,
+      sh: () => '{"ok":true}',
+      spawn: () => {
+        attempt += 1;
+        if (attempt === 1 || attempt === 2) {
+          return fakeChild(
+            JSON.stringify({
+              ok: true,
+              result: {
+                deliveryId: 'd-batch',
+                messages: [
+                  { id: 'm1', type: 'status', payload: JSON.stringify({ seq: 1 }) },
+                  { id: 'm2', type: 'status', payload: JSON.stringify({ seq: 2 }) },
+                ],
+              },
+            }),
+          );
+        }
+        if (attempt === 3) {
+          return fakeChild(
+            JSON.stringify({
+              ok: true,
+              result: {
+                deliveryId: 'd-next',
+                messages: [{ id: 'm3', type: 'status', payload: JSON.stringify({ seq: 3 }) }],
+              },
+            }),
+          );
+        }
+        return fakeChild(WAIT_FAILED);
+      },
+    });
+    const originalSend = h.pi.sendMessage;
+    h.pi.sendMessage = (msg: Record<string, unknown>, opts?: Record<string, unknown>) => {
+      const details = msg.details;
+      const id =
+        details !== null && typeof details === 'object' && 'messageId' in details
+          ? String(details.messageId)
+          : '';
+      if (throwIds.has(id)) throw new Error('inject exploded');
+      return originalSend(msg, opts);
+    };
+
+    const r = createReceiver(h.deps);
+    r.useTimers(h.timers);
+    r.start(h.pi);
+    await settle();
+
+    expect(h.sent.filter((s) => String(s.content).includes('content of m2'))).toHaveLength(1);
+    expect(h.sent.filter((s) => String(s.content).includes('content of m1'))).toHaveLength(0);
+    expect([...seen]).toEqual(['m2']);
+
+    throwIds.clear();
+    h.retries[0].fn();
+    await settle();
+    await settle();
+    r.stop();
+
+    expect(h.sent.filter((s) => String(s.content).includes('content of m1'))).toHaveLength(1);
+    expect(h.sent.filter((s) => String(s.content).includes('content of m2'))).toHaveLength(1);
+    expect(h.sent.filter((s) => String(s.content).includes('content of m3'))).toHaveLength(1);
+    expect(h.notes.join('\n')).not.toContain('PEER MESSAGE LOST');
+  });
+});
+
+test('heartbeat traffic cannot erase an unresolved failure from the bounded store', async () => {
+  await withStore(async () => {
+    recordDelivery({
+      reason: 'injection-refused',
+      peer: 'child',
+      messageId: 'm-keep',
+      deliveryId: 'd-keep',
+      detail: 'inject failed',
+    });
+    const beats = Array.from({ length: DELIVERY_RECORD_CAP + 5 }, (_, i) => ({
+      id: `hb${i}`,
+      type: 'heartbeat',
+      payload: JSON.stringify({ phase: 'implementing' }),
+    }));
+    let attempt = 0;
+    const h = harness({
+      recordDelivery,
+      sh: () => '{"ok":true}',
+      spawn: () => {
+        attempt += 1;
+        if (attempt > 1) return fakeChild(WAIT_FAILED);
+        return fakeChild(JSON.stringify({ ok: true, result: { deliveryId: 'd-hb-flood', messages: beats } }));
+      },
+    });
+    const r = createReceiver(h.deps);
+    r.useTimers(h.timers);
+    r.start(h.pi);
+    await settle();
+    r.stop();
+
+    expect(h.sent).toEqual([]);
+    const fresh = readDelivery();
+    expect(fresh.records.some((x) => x.reason === 'injection-refused' && x.messageId === 'm-keep')).toBe(true);
+    expect(fresh.records.some((x) => x.filter === 'heartbeat')).toBe(false);
   });
 });
