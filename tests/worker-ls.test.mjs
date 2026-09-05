@@ -49,15 +49,28 @@ function repo(hosts = {}, caps = {}) {
  * receipt. `on` is the placement the phase recorded — `''` is a local dispatch,
  * which is what decides whether an omitted REMOTE host can explain its pane's
  * absence.
+ *
+ * `worktree` is the rest of that placement, recorded the way `ax worker
+ * dispatch` composes it (`--worktree path:<abs> --agent <name>`): the only
+ * thing that lets a reader name the branch a dead row's continuation is asked
+ * about (#165). A record without it names no placement at all, which is the
+ * shape every test written before #165 uses.
  */
-function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets' } = {}) {
+function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets', worktree = '' } = {}) {
   const { path } = claimRecord(dir, request);
   initRecord(path, { request, orca: 'orca', repo: named });
   for (const phase of phases) {
     phaseBegin(path, {
       name: phase.name,
       identity: `id-${phase.name}`,
-      argv: ['orca', 'orchestration', phase.name, ...(on === '' ? [] : ['--on', on]), '--json'],
+      argv: [
+        'orca',
+        'orchestration',
+        phase.name,
+        ...(on === '' ? [] : ['--on', on]),
+        ...(worktree === '' ? [] : ['--worktree', `path:${worktree}`, '--agent', 'omp']),
+        '--json',
+      ],
     });
     if ('receipt' in phase) phaseEnd(path, 'last', { exit: phase.exit ?? 0, receiptText: JSON.stringify(phase.receipt) });
   }
@@ -981,4 +994,177 @@ test('#88: (c) a record whose placement no phase named is NOT "could not be aske
   assert.match(lineWith('unplaced-1'), /pane INCONNU/);
   assert.doesNotMatch(out, /could not be asked/, 'no host was named, so none could fail to answer');
   assert.match(out, /name no placement, and this list omits/, 'the residue keeps the disclosure it always had');
+});
+
+// ── #165: the continuation a dead row still names ────────────────────────────
+// A worker's pane is gone and its work is NOT finished: the record reads MORT
+// and its pull request is still open. Until now neither reader printed the verb
+// that continues it, so an operator holding a dead row with an open PR had to
+// know `--replace` exists. The line is advertised only now that it is safe to
+// type: `inheritPlacement` (../src/worker/start.mjs, #164) reinstates the
+// recorded placement or refuses, so the continuation carries NO placement flag
+// and nothing here derives one.
+//
+// The proof of "open PR" is the read `release` already makes — `gh pr list
+// --head <branch>` — and an answer it cannot get is never an open PR (F-028).
+
+const prList = rows => ({ status: 0, stdout: JSON.stringify(rows), stderr: '' });
+
+/**
+ * The two machine answers this verb's continuation read needs, stubbed: `gh`
+ * (the checkout's slug, and the pull requests of a branch) and `git` (which
+ * branch the recorded worktree is on). Answers are keyed by the first two argv
+ * words — the same convention as tests/worker-release.test.mjs, where for git
+ * the subcommand sits after `-C <path>`.
+ */
+function fakeExec({ slug = 'acme/widgets', answers = {} } = {}) {
+  const calls = [];
+  const exec = (bin, args) => {
+    calls.push([bin, ...args].join(' '));
+    if (bin === 'gh' && args[0] === 'repo') {
+      return slug === '' ? { status: 1, stdout: '', stderr: 'gh: no auth token\n' } : { status: 0, stdout: `${slug}\n`, stderr: '' };
+    }
+    const sub = bin === 'git' ? args[args.indexOf('-C') + 2] ?? args[0] : `${args[0]} ${args[1]}`;
+    const key = `${bin} ${sub}`;
+    return answers[key] ?? { status: 1, stdout: '', stderr: `stub has no answer for ${key}\n` };
+  };
+  return { exec, calls };
+}
+
+/**
+ * A store holding ONE record whose pane the runtime cannot see — the MORT row
+ * every case below reads — with a worktree that exists on disk, because a
+ * branch nobody can name is a branch nothing can be asked about.
+ */
+function deadRow(request = 'dead-1', { answers = {}, terminals = [], on = '' } = {}) {
+  const dir = store();
+  const worktree = realpathSync(mkdtempSync(join(tmpdir(), `ax-ls-${request}-`)));
+  writeRecord(dir, request, [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_dead', handle: 'term_dead' }) }], { worktree, on });
+  const run = fakeRunner({ terminals, workers: [], ...(on === '' ? {} : { omittedHostIds: ['runtime:7930a317'], hosts: { [on]: { fail: 'ssh_unreachable' } } }) });
+  const { exec, calls } = fakeExec({ answers });
+  return { dir, worktree, run, exec, calls };
+}
+
+test('#165: a MORT pane whose branch has an OPEN pull request carries the replace continuation', () => {
+  const { dir, run, exec, calls } = deadRow('dead-1', {
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/dead-1\n', stderr: '' },
+      'gh pr list': prList([{ number: 71, state: 'OPEN', headRefName: 'feat/dead-1' }]),
+    },
+  });
+
+  // The DEFAULT view: a MORT row that names a repair carries a decision, which
+  // is the whole predicate #70 hid the others behind.
+  const { code, out, lineWith } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.equal(code, 0);
+  assert.match(lineWith('dead-1'), /pane MORT/, 'the disposition is unchanged: this verb relabels no verdict');
+  assert.match(out, /→ ax worker start --replace --request dead-1/, 'the continuation, exactly as it is typed');
+  assert.doesNotMatch(out, /--replace.*--worktree|--replace.*--on /, 'placement is inherited from the record, never printed here');
+  assert.match(out, /#71/, 'and the open PR that makes it the right verb is named');
+  assert.ok(
+    calls.some(line => line.includes('gh pr list') && line.includes('--head feat/dead-1')),
+    `the open-PR proof is the --head read release already makes: ${calls.join(' | ')}`,
+  );
+});
+
+test('#165: a MORT pane whose PR is MERGED gets the release route, never the replace one', () => {
+  const { dir, run, exec } = deadRow('landed-1', {
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/landed-1\n', stderr: '' },
+      'gh pr list': prList([{ number: 66, state: 'MERGED', headRefName: 'feat/landed-1' }]),
+    },
+  });
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(out, /→ ax worker release --dispatch ctx_dead/, "a landed row is release's, and release reads that proof for itself");
+  assert.doesNotMatch(out, /--replace/, 'nothing is left to continue on a merged pull request');
+});
+
+test('#165: a MORT pane with no pull request at all gets the settle route', () => {
+  const { dir, run, exec } = deadRow('unshipped-1', {
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/unshipped-1\n', stderr: '' },
+      'gh pr list': prList([]),
+    },
+  });
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(out, /→ ax worker settle unshipped-1/, "an attempt that shipped nothing owes an ending, which is settle's write");
+  assert.doesNotMatch(out, /--replace/);
+});
+
+test('#165: a gh that cannot answer prints NEITHER continuation and says the read failed', () => {
+  // An absent answer is not an absent pull request (F-028). The row keeps its
+  // verdict, the failure is named, and the repair is the exact call that failed.
+  const { dir, run, exec } = deadRow('flaky-1', {
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/flaky-1\n', stderr: '' },
+      'gh pr list': { status: 1, stdout: '', stderr: 'API rate limit exceeded\n' },
+    },
+  });
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(out, /API rate limit exceeded/, 'the refusal is quoted, never summarised');
+  assert.doesNotMatch(out, /--replace|ax worker settle|ax worker release/, 'no route is offered on a read that failed');
+  assert.match(out, /→ gh pr list .*--head feat\/flaky-1/, 'and the failed read is the repair');
+});
+
+test('#165: a VIVANT pane never carries the replace line, and is never asked about', () => {
+  // The continuation is for a pane that is GONE. A live child's branch has an
+  // open PR by construction, so a predicate on the PR alone would advertise a
+  // replace over a working session — and pay a gh call per row to do it.
+  const { dir, run, exec, calls } = deadRow('alive-1', {
+    terminals: [pane('term_dead')],
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/alive-1\n', stderr: '' },
+      'gh pr list': prList([{ number: 72, state: 'OPEN', headRefName: 'feat/alive-1' }]),
+    },
+  });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(lineWith('alive-1'), /pane VIVANT/);
+  assert.doesNotMatch(out, /--replace/);
+  assert.ok(!calls.some(line => line.includes('gh pr list')), `a live row asks nothing: ${calls.join(' | ')}`);
+});
+
+test('#165: an INCONNU pane never carries the replace line either', () => {
+  // Its host could not be asked, so the pane may be alive right now: replacing
+  // a child that is working is the mutation this verdict exists to prevent.
+  const { dir, run, exec, calls } = deadRow('far-1', {
+    on: 'gapicore',
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/far-1\n', stderr: '' },
+      'gh pr list': prList([{ number: 73, state: 'OPEN', headRefName: 'feat/far-1' }]),
+    },
+  });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+
+  assert.match(lineWith('far-1'), /pane INCONNU/);
+  assert.doesNotMatch(out, /--replace/);
+  assert.ok(!calls.some(line => line.includes('gh pr list')), `an unknown pane asks nothing: ${calls.join(' | ')}`);
+});
+
+test('#165: a MORT row that names no continuation stays out of the default view, and is counted', () => {
+  // The 222 rows measured on this machine 2026-09-05: no worktree left to name
+  // a branch with, so nothing can be asked and nothing can be typed. They keep
+  // the disclosed count they had — and cost no gh call.
+  const dir = store();
+  writeRecord(dir, 'archaeology-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_old', handle: 'term_old' }) }]);
+  const run = fakeRunner({ terminals: [], workers: [] });
+  const { exec, calls } = fakeExec();
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.doesNotMatch(out, /archaeology-1/, 'still withheld: it answers neither capacity nor overlap');
+  assert.match(out, /1 MORT record\(s\) not shown/);
+  assert.ok(!calls.some(line => line.includes('gh pr list')), `no branch to ask about, so no ask: ${calls.join(' | ')}`);
+
+  const every = capture(() => ls(['--all'], { runner: run, exec: fakeExec().exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+  assert.match(every.out, /archaeology-1/, '--all still shows every record');
 });

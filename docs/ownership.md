@@ -20,6 +20,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/worker/start.mjs`, `src/worker/dispatch.mjs`, `src/worker/repair.mjs`, `src/worker/release.mjs`, `src/worker/settle.mjs` | write-ahead plumbing, the one creation verb, repair, close, and the ending written for an attempt the gate proved dead |
 | `src/worker/placement.mjs`, `src/worker/verify.mjs` | where a ticket's worktree lands; the four proofs a DISPATCHED receipt carries |
 | `src/worker/pane.mjs`, `src/worker/ls.mjs`, `src/worker/tail.mjs`, `src/worker/gate.mjs`, `src/worker/stall.mjs`, `src/worker/transcript.mjs` | liveness and capacity, counted from panes — including the host-aware inventory a cap is counted against |
+| `src/worker/continuation.mjs` | which verb continues a record whose pane is gone — decided once from that branch's pull request, printed by both `ls` and `tail` |
 | `src/worker/capacity.mjs` | the two live-pane counts and the two caps: this repository's `dispatch.cap`, the opt-in `dispatch.machineCap`, and the one refusal both dispatch verbs print |
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |
