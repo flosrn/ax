@@ -100,6 +100,15 @@ const threadPage = (nodes, hasNextPage = false, endCursor = null) => ({
 });
 
 /**
+ * A `reviewThreads` payload built from the EXACT object the API answered, which
+ * `threadPage` cannot express: it always writes a well-formed page. The shapes
+ * measured on #175 are malformed ones — an absent, null or non-array `nodes`,
+ * a `pageInfo` that names no boolean `hasNextPage` — and each of them read as
+ * "zero threads, final page" through the old ground.
+ */
+const threadShape = reviewThreads => ({ data: { repository: { pullRequest: { reviewThreads } } } });
+
+/**
  * One row of the PR commits payload. `parents` is read by name like every other
  * field (F-028, #90): Ground 6's shape rule asks how many parents a post-open
  * commit has, so a fixture that omitted them would be an unread payload, not a
@@ -718,6 +727,109 @@ test('F-028: a GraphQL payload missing its containers raises rather than reading
   const { code, out } = run(['--pr', '1845'], { threads: [{ data: { repository: null } }] });
   assert.equal(code, 3);
   assert.match(out, /'repository' is absent from the payload/);
+});
+
+// ── #175: the read has to be ESTABLISHED, not merely successful ────────────
+//
+// Every shape below returned HTTP 200 through a payload whose containers are
+// all present, so `must` passes and the old ground read each one as an
+// observed empty list on a final page — a PASS, and on `--merge` a merge. The
+// receipt now says which field or page could not be established, and an
+// established read is the only one that can reach a pass.
+
+for (const [what, nodes] of [
+  ['absent', undefined],
+  ['null', null],
+  ['not a list', { edges: [] }],
+]) {
+  test(`#175: a page whose 'nodes' is ${what} is an unread page, never zero threads`, () => {
+    const { code, out } = run(['--pr', '1845'], {
+      threads: [threadShape({ pageInfo: { hasNextPage: false, endCursor: null }, ...(nodes === undefined ? {} : { nodes }) })],
+    });
+    assert.equal(code, 3, out);
+    assert.match(out, /CANNOT ESTABLISH — threads: page 1 answered with no readable 'nodes' list/);
+    assert.doesNotMatch(out, /PASS —/);
+    // The distinction the receipt has to carry: nothing here claims an
+    // established read, and no page line claims 0 threads were observed.
+    assert.doesNotMatch(out, /threads: read established/);
+  });
+}
+
+test("#175: a pageInfo that names no boolean 'hasNextPage' leaves the end of the list unestablished", () => {
+  const { code, out } = run(['--pr', '1845'], { threads: [threadShape({ pageInfo: { endCursor: null }, nodes: [thread('T1', true)] })] });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — threads: page 1 names no boolean 'hasNextPage' \('hasNextPage' is absent\)/);
+  // The threads it DID observe stay in the same receipt.
+  assert.match(out, /threads: page 1 — 1 thread\(s\), 0 unresolved/);
+});
+
+test("#175: a non-boolean 'hasNextPage' is not a final page — a truthy string cannot end the read", () => {
+  const { code, out } = run(['--pr', '1845'], { threads: [threadShape({ pageInfo: { hasNextPage: 'false', endCursor: null }, nodes: [] })] });
+  assert.equal(code, 3, out);
+  assert.match(out, /'hasNextPage' is string/);
+});
+
+test('#175: an absent pageInfo leaves whether a further page exists unread', () => {
+  const { code, out } = run(['--pr', '1845'], { threads: [threadShape({ nodes: [] })] });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — threads: page 1 answered with no readable 'pageInfo'/);
+});
+
+test('#175: a successor named with the cursor already read would repeat the page, so it is unread', () => {
+  // The stub repeats its last page once the list is exhausted, which is
+  // exactly the API shape this refuses: page 2 would be page 1 again.
+  const { code, out, calls } = run(['--pr', '1845'], { threads: [threadPage([thread('T1', true)], true, 'CURSOR_2')] });
+  assert.equal(code, 3, out);
+  assert.match(out, /CANNOT ESTABLISH — threads: page 2 claims a next one and repeats the cursor it was read with/);
+  // Two reads, then a stop: never a 50-page loop over one page.
+  assert.equal(calls.filter(call => call.startsWith('api graphql')).length, 2);
+});
+
+test("#175: a successor whose 'endCursor' is not a usable string leaves the rest unread", () => {
+  const { code, out } = run(['--pr', '1845'], { threads: [threadPage([thread('T1', true)], true, '')] });
+  assert.equal(code, 3, out);
+  assert.match(out, /claims a next one and names no cursor to advance on \('endCursor' is an empty string\)/);
+});
+
+test('#175: the complete-empty control — an observed final page with no threads does not block a passing PR', () => {
+  const { code, out } = run(['--pr', '1845'], { threads: [threadPage([])] });
+  assert.equal(code, 0, out);
+  assert.match(out, /threads: page 1 — 0 thread\(s\), 0 unresolved/);
+  assert.match(out, /threads: read established — 0 thread\(s\) over 1 page\(s\), the final page was observed/);
+});
+
+test('#175: all-resolved over two complete pages is an established read, and passes', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    threads: [threadPage([thread('T1', true)], true, 'CURSOR_2'), threadPage([thread('T2', true)])],
+  });
+  assert.equal(code, 0, out);
+  assert.match(out, /threads: read established — 2 thread\(s\) over 2 page\(s\), the final page was observed/);
+});
+
+test('#175: an unresolved thread on a later page refuses even though every earlier page was clean', () => {
+  const { code, out } = run(['--pr', '1845'], {
+    threads: [threadPage([thread('T_ok', true)], true, 'CURSOR_2'), threadPage([thread('T_late', false)])],
+  });
+  assert.equal(code, 1, out);
+  assert.match(out, /REFUSE — threads: unresolved thread T_late/);
+  assert.match(out, /threads: read established — 2 thread\(s\) over 2 page\(s\)/);
+});
+
+test('#175: an unestablished read on --merge mutates nothing — no merge call is issued', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge'], { threads: [threadShape({ pageInfo: { hasNextPage: false, endCursor: null } })] });
+  assert.equal(code, 3, out);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), `a merge was issued over an unestablished thread read: ${calls.join(' | ')}`);
+  assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
+});
+
+test('#175: an incomplete read still names an actionable repair, and the other grounds keep reporting', () => {
+  const { code, out } = run(['--pr', '1845'], { threads: [threadShape({ pageInfo: { hasNextPage: false, endCursor: null } })], shape: 'stale' });
+  assert.equal(code, 1, out);
+  // The thread finding names its repair...
+  assert.match(out, /gh api graphql .*reviewThreads/);
+  // ...and does not suppress the staleness ground beside it.
+  assert.match(out, /REFUSE — staleness: main is not an ancestor of feature/);
+  assert.match(out, /CANNOT ESTABLISH — threads: page 1 answered with no readable 'nodes' list/);
 });
 
 test('threads read before CI is decided are no observation at all', () => {
