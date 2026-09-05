@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
+import { quote } from '../src/worker/hosts.mjs';
 import { dispatchProof, slugOf, stampOf, transcript } from '../src/worker/transcript.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-transcript-'));
@@ -776,10 +777,13 @@ const repairIn = text =>
     .replace(/\s{3,}#.*$/, '');
 
 test('#204 the printed repair survives a hostile checkout path and keeps its --sessions root', () => {
-  // A sessions root under a directory whose name word-splits, globs, and would
-  // RUN if it reached a shell unquoted. `$(touch …)` is the assertion: if the
-  // quoting is wrong, the sentinel appears.
-  const home = mkdtempSync(join(tmpdir(), 'ax-shell-'));
+  // A sessions root under a directory whose name word-splits, globs, carries an
+  // apostrophe, and would RUN if it reached a shell unquoted. `$(touch …)` is
+  // the assertion: if the quoting is wrong, the sentinel appears. The
+  // apostrophe is what a `'${path}'` wrap cannot survive (review of #210).
+  const parent = mkdtempSync(join(tmpdir(), 'ax-shell-'));
+  const home = join(parent, "flo's-home");
+  mkdirSync(home);
   const sentinel = join(home, 'expanded');
   const hostile = join(home, `sessions dir; $(touch ${sentinel}) *`);
   const store = join(home, 'store');
@@ -817,9 +821,15 @@ test('#204 the printed repair survives a hostile checkout path and keeps its --s
   // could be satisfied by any ax on the machine and would prove nothing about
   // this one. The named stderr refusal exists only here (#204): an older ax
   // exits 1 with two empty streams and fails this line.
-  const reached = runInShell(`ax worker transcript --dispatch-proof ax --sessions '${hostile}'`, { home, store, path, orca });
+  //
+  // `quote(hostile)`, never `'${hostile}'`: the latter closes at the first
+  // apostrophe in TMPDIR (review of #210, `flo's-home` above) and is the same
+  // class of defect as an unquoted printed repair. The helper is the one
+  // production already uses, reused rather than re-decided.
+  const reached = runInShell(`ax worker transcript --dispatch-proof ax --sessions ${quote(hostile)}`, { home, store, path, orca });
   assert.equal(reached.status, 1);
   assert.match(reached.stderr, /2 session directories/, 'the ax the shell reached is the one under test');
+  assert.equal(existsSync(sentinel), false, 'the identity probe quoted the root as DATA too — nothing in it ran');
 });
 
 test('a worker proof ignores newer advisor sidecars and chooses the newest session', () => {
