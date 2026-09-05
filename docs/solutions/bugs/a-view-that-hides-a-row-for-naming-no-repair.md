@@ -53,9 +53,19 @@ on this machine, 2026-09-05: 255 records, 222 MORT, and **10 naming a worktree
 that still exists** — because a branch can only be named from a recorded
 worktree, and a landed worktree is removed. That bound is what makes the read
 affordable at all; without it the same feature is 222 forge calls on the verb an
-orchestrator runs before every dispatch. Even bounded it is not free:
-`ax worker ls` went from **3.7s to 10.3s** on that store, all of it in ~7 `gh`
-calls. A repository-wide `gh pr list --limit 200` would collapse them into one
+orchestrator runs before every dispatch.
+
+Even bounded it is not free, and the numbers are the shim's, not an estimate. A
+`gh` on `PATH` that logs its argv before exec'ing the real one recorded, for one
+`ax worker ls` over that store: **8 `gh pr list` invocations plus one `gh repo
+view`** — and one branch (`feat/157-xapikey`) asked TWICE, because
+`157-xapikey` and `157-partner-key` name the same worktree. One answer per
+branch per invocation fixed that: **7 `pr list` calls, one per distinct
+candidate branch**, re-measured the same way. Wall time on the same store,
+un-shimmed, `time node bin/ax.mjs worker ls`: **3.66s before this feature,
+10.32s after**.
+
+A repository-wide `gh pr list --limit 200` would collapse those seven into one
 call and was rejected: a PR older than the window reads as *no pull request*,
 which routes an unfinished slice to `settle`.
 
@@ -83,5 +93,9 @@ NAMES — never left on the disposition it had when the view was shortened.
 
 And a per-row artifact read belongs in a hot reader only with a bound that comes
 from the record itself. Here it is "a branch nobody can name is a branch nothing
-can be asked about": state the bound, measure it, and print the cost's own count
-so the next reader can check it is still true.
+can be asked about": state the bound, then MEASURE the calls rather than
+deriving them from the bound. The first write-up of this page said "~7 gh
+calls", inferred from the 10 candidate records; a `gh` shim on `PATH` counted 8
+`pr list` invocations, and the extra one was a real duplicate nobody had
+noticed — two records naming one worktree. An estimate that looks like a
+measurement hides exactly the defect a measurement finds.

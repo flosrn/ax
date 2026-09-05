@@ -484,6 +484,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     return 3;
   }
 
+  // ONE pull-request answer per branch, for this invocation (#165). Two records
+  // naming one worktree is ordinary — a re-dispatch under a fresh request id
+  // reuses the tree — and measured here 2026-09-05 it asked `feat/157-xapikey`
+  // twice out of 8 reads. The map is the listing's, so both rows read the same
+  // answer and neither pays for it twice.
+  const branchAnswers = new Map();
+
   const views = files.map(file => {
     const row = describeRecord(dir, file);
     // EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first list
@@ -564,7 +571,10 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // VIVANT row is never asked: a working child's branch has an open PR by
     // construction, and replacing that child is the mutation this verdict
     // exists to prevent.
-    const continuation = pane === 'MORT' ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec }) : NO_CONTINUATION;
+    const continuation =
+      pane === 'MORT'
+        ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers })
+        : NO_CONTINUATION;
 
     return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation };
   });

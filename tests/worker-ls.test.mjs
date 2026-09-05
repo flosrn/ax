@@ -1169,3 +1169,33 @@ test('#165: a MORT row that names no continuation stays out of the default view,
   const every = capture(() => ls(['--all'], { runner: run, exec: fakeExec().exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
   assert.match(every.out, /archaeology-1/, '--all still shows every record');
 });
+
+test('#165: two records naming one worktree ask about that branch ONCE', () => {
+  // Measured on this machine 2026-09-05: `feat/157-xapikey` was read twice out
+  // of 8 pull-request reads, because a re-dispatch under a fresh request id
+  // reuses the tree — 157-xapikey and 157-partner-key name the same worktree.
+  // Both rows must still carry the continuation, and the branch must cost one
+  // call for the listing.
+  const dir = store();
+  const worktree = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ls-shared-')));
+  for (const request of ['157-xapikey', '157-partner-key']) {
+    writeRecord(dir, request, [{ name: 'worker-start', receipt: started({ dispatchId: `ctx_${request}`, handle: `term_${request}` }) }], { worktree });
+  }
+  const run = fakeRunner({ terminals: [], workers: [] });
+  const { exec, calls } = fakeExec({
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/157-xapikey\n', stderr: '' },
+      'gh pr list': prList([{ number: 88, state: 'OPEN', headRefName: 'feat/157-xapikey' }]),
+    },
+  });
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(out, /→ ax worker start --replace --request 157-xapikey/);
+  assert.match(out, /→ ax worker start --replace --request 157-partner-key/);
+  assert.equal(
+    calls.filter(line => line.includes('gh pr list')).length,
+    1,
+    `one branch, one read for the listing: ${calls.join(' | ')}`,
+  );
+});

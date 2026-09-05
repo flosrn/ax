@@ -81,8 +81,17 @@ const failedRead = (detail, argv) => ({
  * `request` is the id the continuation is typed with, `dispatchId` the one
  * `release` scopes to (absent on a record that never named one). `exec` is the
  * caller's own seam, so every suite stays offline.
+ *
+ * `memo` is ONE invocation's answers, keyed by repository and branch. Two
+ * records naming one worktree is an ordinary shape — a re-dispatch under a
+ * fresh request id reuses the tree — and measured on this machine 2026-09-05 it
+ * made `ax worker ls` ask `feat/157-xapikey` twice out of 8 pull-request reads.
+ * A caller listing many rows passes a map and pays each branch once; a caller
+ * with one row passes none. Scoped to the call, like every other read here: a
+ * listing is a point-in-time answer, and two different answers inside one
+ * receipt would be worse than a stale one.
  */
-export function continuationFor(recordPath, { request, dispatchId = null, exec = defaultExec } = {}) {
+export function continuationFor(recordPath, { request, dispatchId = null, exec = defaultExec, memo = null } = {}) {
   let recorded;
   let repo;
   try {
@@ -121,7 +130,9 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
   }
 
   const prArgs = ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json', 'number,state,headRefName'];
-  const prOut = exec('gh', prArgs);
+  const key = `${repo}\t${branch}`;
+  const prOut = memo !== null && memo.has(key) ? memo.get(key) : exec('gh', prArgs);
+  if (memo !== null) memo.set(key, prOut);
   if (prOut?.error) return failedRead(`the pull request of ${branch} is unread: gh could not run — ${String(prOut.error.message ?? prOut.error)}`, ['gh', ...prArgs]);
   if (prOut?.status !== 0) {
     return failedRead(`the pull request of ${branch} is unread: gh refused — ${firstLine(prOut?.stderr) || `exit ${prOut?.status}`}`, ['gh', ...prArgs]);
