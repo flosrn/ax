@@ -1508,16 +1508,47 @@ test('the admission says out loud that it is not readiness', () => {
 // The justification is not required to be in the body: the obligation is
 // frequently established by the orchestrator's own ruling, which lands as a
 // comment. A reader that looked at the body alone would refuse the ticket its
-// own operator had just justified.
+// own operator had just justified. Triage still hits F-030 on any comment, so
+// --force is the documented repair once those comments have been read.
 test('a justification written in a comment is read too', () => {
-  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
+  const r = run(['--issue', '7', '--force', '--dry-run'], {
     root: repo({ provenance: PROVENANCE_FINDINGS }),
-    issues: { 7: 'OPEN|2|check-run reader pages once|source:agent-found|null' },
-    tracker: { text: { 7: { body: 'argv: ax pr gate --pr 12\n', comments: ['a coordination note', NECESSITY] } } },
+    issues: { 7: 'OPEN|1|check-run reader pages once|source:agent-found|null' },
+    tracker: { text: { 7: { body: 'argv: ax pr gate --pr 12\n', comments: [NECESSITY] } } },
   });
-  assert.equal(r.code, 0, `the brief lane admits the same justified finding: ${r.out}`);
+  assert.equal(r.code, 0, `the triage lane reads a comment justification: ${r.out}`);
   assert.match(r.out, /#174/);
 });
+
+// A Necessary for: comment is not a completed triage pass. The brief precheck
+// used to treat any nonzero comment count as something to distil, so a
+// justification comment admitted --job brief and the child was told not to
+// analyse. Brief distils a recorded draft or a published triage artifact.
+test('a Necessary for: comment does not admit the brief lane', () => {
+  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
+    root: repo({ provenance: PROVENANCE_FINDINGS }),
+    issues: { 7: 'OPEN|1|check-run reader pages once|source:agent-found|null' },
+    tracker: { text: { 7: { body: 'argv: ax pr gate --pr 12\n', comments: [NECESSITY] } } },
+  });
+  assert.equal(r.code, 1, `a justification comment is not a triage pass: ${r.out}`);
+  assert.match(r.out, /not a brief/);
+  assert.match(r.out, /ax triage dispatch --issue 7/);
+  assert.ok(r.calls.every(line => !line.includes('worker-start')), 'nothing was dispatched');
+});
+
+test('the brief lane admits a justified finding once a triage draft exists to distil', () => {
+  const root = repo({ provenance: PROVENANCE_FINDINGS });
+  mkdirSync(join(root, '.scratch', 'triage'), { recursive: true });
+  writeFileSync(join(root, '.scratch', 'triage', 'triage-acme-widgets-7.md'), 'Verdict: page every check-run.\n');
+  const r = run(['--issue', '7', '--job', 'brief', '--dry-run'], {
+    root,
+    issues: { 7: 'OPEN|0|check-run reader pages once|source:agent-found|null' },
+    tracker: { text: { 7: { body: NECESSITY } } },
+  });
+  assert.equal(r.code, 0, `brief distils the recorded draft: ${r.out}`);
+  assert.match(r.out, /admitted/);
+});
+
 
 // The read is the proof. A gate that judged admission from labels alone would
 // pass this test suite and admit every finding on the tracker.

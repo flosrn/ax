@@ -40,6 +40,7 @@ import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacit
 import { passPlan } from './capacity.mjs';
 import { carriedClasses } from './provenance.mjs';
 import { necessityOf } from './necessity.mjs';
+import { publicationIn } from './publication.mjs';
 import { READY_LABEL, REFINE_REMOVED, ROLE_BY_JOB, renderSpec } from './spec.mjs';
 
 const USAGE =
@@ -211,6 +212,31 @@ export function provenanceVerdict({ job, issue, slug, labels = [], parent, paren
 
   return null;
 }
+
+/**
+ * Has a triage pass already produced something a brief can distil?
+ *
+ * A comment count cannot answer: a `Necessary for:` ruling is a comment, and
+ * treating it as a completed pass lets `--job brief` skip the necessity
+ * assessment the triage child is assigned. The evidence is a recorded dispatch,
+ * an unpublished draft, or a comment that carries this package's own triage
+ * publication stamp — never "there is at least one comment".
+ */
+function triagePassEvidence({ store, root, slug, issue, comments = [] }) {
+  const triageBase = { job: 'triage', repo: slug, issue };
+  const passes = passesOf(store, draftDirFor(root), triageBase);
+  if (passes.length > 0) return { kind: 'record', pass: passes[passes.length - 1] };
+  const draft = readDraft(root, { ...triageBase, pass: 1 });
+  if (existsSync(draft.path)) return { kind: 'draft', path: draft.path };
+  for (const body of comments) {
+    const found = publicationIn(body);
+    if (found !== null && found.ok === true && String(found.job).trim().toLowerCase() === 'triage' && found.issue === String(issue)) {
+      return { kind: 'publication', pass: found.pass };
+    }
+  }
+  return null;
+}
+
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -647,6 +673,21 @@ export function dispatch(
     });
     if (routing !== null) {
       if (routing.admit) {
+        if (job === 'brief') {
+          const evidence = triagePassEvidence({
+            store,
+            root: paths.root,
+            slug,
+            issue,
+            comments: meta.text?.comments ?? [],
+          });
+          if (evidence === null) {
+            bad('^ a Necessary for: line admits a triage pass, not a brief — a comment is not a recorded draft or a published triage artifact');
+            fix(`ax triage dispatch --issue ${issue} # run the triage pass first; brief distils that, it does not replace it`);
+            blocked = true;
+            continue;
+          }
+        }
         for (const line of routing.notes) note(line);
       } else {
         bad(routing.bad);
