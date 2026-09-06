@@ -901,16 +901,24 @@ export function reclaimRequestFor({ owner, repoName, path }) {
 }
 
 /**
- * What a record on disk SAYS it belongs to: `{ request, repo, host, targets }`,
- * or `{ unreadable }`. `targets` is every worktree path its stages name, read
- * from the recorded argv — the only place a reclaim record states its subject.
+ * What a record on disk SAYS it belongs to:
+ * `{ request, repo, host, targets, stages }`, or `{ unreadable }`.
+ *
+ * `targets` is every worktree path its stages name, read from the recorded argv
+ * — the only place a reclaim record states its subject — and `stages` is how
+ * many phases it carries, so the caller can tell "nothing recorded yet" from
+ * "stages that name no target". Those are different facts: the first is a
+ * record with nothing to trust, the second is a record whose stages cannot be
+ * attributed to this tree.
  */
 function recordIdentity(recordPath) {
   try {
     const rec = JSON.parse(readFileSync(recordPath, 'utf8'));
     const targets = new Set();
+    let stages = 0;
     for (const attempt of Array.isArray(rec.attempts) ? rec.attempts : []) {
       for (const phase of Array.isArray(attempt.phases) ? attempt.phases : []) {
+        stages += 1;
         for (const word of Array.isArray(phase.argv) ? phase.argv : []) {
           if (typeof word === 'string' && word.startsWith('path:')) targets.add(word.slice('path:'.length));
           if (typeof word === 'string' && word.startsWith('--worktree=path:')) targets.add(word.slice('--worktree=path:'.length));
@@ -927,6 +935,7 @@ function recordIdentity(recordPath) {
       repo: typeof rec.repo === 'string' ? rec.repo.trim() : '',
       host: typeof rec.host === 'string' ? rec.host.trim() : '',
       targets: [...targets],
+      stages,
     };
   } catch (error) {
     return { unreadable: String(error.message ?? error) };
@@ -934,18 +943,45 @@ function recordIdentity(recordPath) {
 }
 
 /**
- * Why an adopted record is NOT this target's, or `''` when it binds.
+ * Why an adopted record may NOT be consumed for this target, or `''` when it
+ * POSITIVELY binds to it.
  *
- * Absence is not a mismatch — a record written before a field existed names
- * nothing and is bound by the fields it does carry — but a field that DISAGREES
- * is decisive: its stages describe work done somewhere else.
+ * BINDING IS POSITIVE, NOT MERELY NON-CONTRADICTORY, and the first cut of this
+ * had it the weak way ("absence is not a mismatch"). A partial record —
+ * request-shaped filename, no `repo`, no `host`, a settled cleanup stage whose
+ * argv names nothing — contradicts nothing at all, and would therefore have
+ * been adopted: its stages then decide that a cleanup need not run, or that a
+ * removal already happened. That is an unproven identity authorising a
+ * destructive skip, which is the F-001 shape.
+ *
+ * There is no legacy to accommodate here: this record kind is introduced by
+ * this verb, and `initRecord` writes `request`, `repo` and `host` on the first
+ * write of every one of them. So all three are REQUIRED, and an absent one is a
+ * KEEP rather than a permissive pass.
+ *
+ * THE FILENAME IS NOT THE IDENTITY. The store path is caller-supplied
+ * (`--store`) and the key embeds a path digest, so a collision or a hand-placed
+ * file could put anything at this name — the record has to say what it is.
+ *
+ * TARGET BINDING IS DERIVED FROM THE RECORDED ARGV, positively: every stage
+ * this verb writes names its worktree in its own argv (`path:<p>` for the
+ * removal, `--worktree <p>` for the archive), so a record WITH stages must name
+ * this target and nothing else. A record with NO stages binds on the three
+ * fields alone — there is no stage to trust, so nothing destructive can be
+ * skipped by adopting it.
  */
 function identityMismatch(adopted, { request, slug, path, host }) {
-  if (adopted.request !== '' && adopted.request !== request) return `names the request ${JSON.stringify(adopted.request)}, not ${JSON.stringify(request)}`;
-  if (adopted.repo !== '' && adopted.repo.toLowerCase() !== String(slug).toLowerCase()) return `belongs to another repository (${adopted.repo})`;
-  if (adopted.host !== '' && adopted.host !== host) return `was written on another host (${adopted.host})`;
+  if (adopted.request === '') return 'records no request of its own, so what it belongs to is unproven and its filename cannot stand in for it';
+  if (adopted.request !== request) return `names the request ${JSON.stringify(adopted.request)}, not ${JSON.stringify(request)}`;
+  if (adopted.repo === '') return 'names no repository, so that it belongs to this one is unproven';
+  if (adopted.repo.toLowerCase() !== String(slug).toLowerCase()) return `belongs to another repository (${adopted.repo})`;
+  if (adopted.host === '') return 'names no host, so that its recorded stages ran on this machine is unproven';
+  if (adopted.host !== host) return `was written on another host (${adopted.host})`;
   const foreign = adopted.targets.filter(named => physical(named) !== physical(path));
   if (foreign.length > 0) return `records stages against another target (${foreign.slice(0, NAMED).join(', ')})`;
+  if (adopted.stages > 0 && adopted.targets.length === 0) {
+    return `records ${adopted.stages} stage(s) whose argv names no worktree, so that they were performed on THIS target is unproven`;
+  }
   return '';
 }
 

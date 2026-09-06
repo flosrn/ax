@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
@@ -30,7 +30,7 @@ import { COMMANDS, subcommandNames } from '../src/commands.mjs';
 import { run } from '../src/exec.mjs';
 import { gitBlobSha } from '../src/hash.mjs';
 import { readWorktrees } from '../src/git.mjs';
-import { CREDENTIAL_GUARD_CONFIG, archiveScriptIn, cleanupStage, hookEnvironment, hookGuardEstablished, reclaim } from '../src/worktree/reclaim.mjs';
+import { CREDENTIAL_GUARD_CONFIG, archiveScriptIn, cleanupStage, hookEnvironment, hookGuardEstablished, reclaim, reclaimRequestFor } from '../src/worktree/reclaim.mjs';
 import { SUBCOMMANDS } from '../src/worktree/index.mjs';
 import { attemptNew, claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
 
@@ -1105,9 +1105,8 @@ test('a reclaim record naming another target is never adopted for this one', () 
   // its stages would let one tree's settled cleanup authorise another's removal.
   const dir = join(s.store, 'reclaim');
   mkdirSync(dir, { recursive: true });
-  const [file0] = [join(dir, `${reclaimRequest(s)}.json`)];
   writeFileSync(
-    file0,
+    join(dir, `${reclaimRequest(s)}.json`),
     `${JSON.stringify({
       request: reclaimRequest(s),
       host: 'somewhere-else',
@@ -1126,7 +1125,77 @@ test('a reclaim record naming another target is never adopted for this one', () 
   assert.equal(registered(s.main, s.path), true);
 });
 
-const reclaimRequest = s => `reclaim-flosrn-ax-${basename(s.path)}-${gitBlobSha(s.path).slice(0, 12)}`;
+const reclaimRequest = s => reclaimRequestFor({ owner: 'flosrn', repoName: 'ax', path: s.path });
+
+test('a PARTIAL reclaim record proves nothing and is never consumed, however little it contradicts', () => {
+  // The gap review round 2 named: "absence is not a mismatch" was weaker than a
+  // positive identity. This record contradicts NOTHING — its request matches the
+  // filename and it names no repository, no host and no target — yet it carries a
+  // settled cleanup stage. Adopting it would decide that a cleanup need not run.
+  // There is no legacy to accommodate: `initRecord` writes request, repo and host
+  // on the first write of every record of this kind.
+  const s = stage();
+  const dir = join(s.store, 'reclaim');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `${reclaimRequest(s)}.json`),
+    `${JSON.stringify({
+      request: reclaimRequest(s),
+      orca: 'orca',
+      createdAt: new Date().toISOString(),
+      attempts: [{ n: 1, settled: false, phases: [{ name: 'cleanup-ax-clean', identity: 'p', argv: ['ax', 'worktree', 'clean'], receipt: {}, exit: 0, beganAt: new Date().toISOString() }] }],
+    }, null, 1)}\n`,
+  );
+
+  const { deps, calls } = host(s);
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /names no repository|names no host|names no worktree/i);
+  assertRepair(out);
+  // No stage of it was trusted and nothing destructive was issued.
+  assert.deepEqual(calls.clean, []);
+  assert.deepEqual(calls.hook, []);
+  assert.equal(calls.orca.some(args => args.slice(0, 2).join(' ') === 'worktree rm'), false);
+  assert.equal(registered(s.main, s.path), true);
+  assert.doesNotMatch(out, /already reclaimed/i);
+});
+
+test('a record whose stages name no worktree cannot attribute them to this target', () => {
+  const s = stage();
+  const dir = join(s.store, 'reclaim');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `${reclaimRequest(s)}.json`),
+    `${JSON.stringify({
+      request: reclaimRequest(s),
+      repo: SLUG,
+      host: hostname(),
+      orca: 'orca',
+      createdAt: new Date().toISOString(),
+      attempts: [{ n: 1, settled: false, phases: [{ name: 'worktree-rm', identity: 'p', argv: ['worktree', 'rm', '--json'], receipt: { ok: true, result: { removed: true } }, exit: 0, beganAt: new Date().toISOString() }] }],
+    }, null, 1)}\n`,
+  );
+
+  const { deps, calls } = host(s);
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /names no worktree/i);
+  assert.doesNotMatch(out, /already reclaimed/i);
+  assertRepair(out);
+  assert.deepEqual(calls.clean, []);
+  assert.equal(registered(s.main, s.path), true);
+});
+
+test('a keep-chomping block header is deliberately refused, not accidentally dropped', () => {
+  // `|+` keeps trailing newlines, which this reader's join would silently drop —
+  // so it is refused rather than folded into a command that differs from what
+  // the project wrote. Named here so the choice cannot be mistaken for an
+  // oversight alongside the digit variants.
+  assert.equal('unknown' in archiveScriptIn('scripts:\n  archive: |+\n    echo one\n'), true);
+  assert.equal('unknown' in archiveScriptIn('scripts:\n  archive: >+\n    echo one\n'), true);
+});
 
 test('an empty pane list whose scope omits the target’s own host authorizes nothing', () => {
   // P1. `terminals: []` is only a real zero when the host that owns the target
