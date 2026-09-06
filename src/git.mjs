@@ -106,8 +106,14 @@ export function currentBranch(cwd) {
 }
 
 /**
- * Every registered worktree: `[{ path, head, branch, bare, detached, locked }]`.
+ * Every registered worktree:
+ * `[{ path, head, branch, bare, detached, locked, lockReason }]`.
  *
+ * `lockReason` is the sentence `git worktree lock --reason` recorded, `''` when
+ * the lock carries none. It is read because a retention claim an operator made
+ * is only actionable if the verb honouring it can QUOTE it: `ax worktree
+ * reclaim` refuses a locked target, and "it is locked" without the reason
+ * leaves the next move a guess (#213).
  * The porcelain form is not an optimisation, it is the only parseable one: the
  * human-readable output packs path, head and branch onto one space-separated
  * line, so a worktree at `~/Code/my project` cannot be read back from it.
@@ -153,7 +159,7 @@ function parseWorktrees(text, separator) {
 
     if (key === 'worktree') {
       flush();
-      current = { path: value, head: undefined, branch: undefined, bare: false, detached: false, locked: false };
+      current = { path: value, head: undefined, branch: undefined, bare: false, detached: false, locked: false, lockReason: '' };
       continue;
     }
     if (!current) continue;
@@ -161,7 +167,12 @@ function parseWorktrees(text, separator) {
     else if (key === 'branch') current.branch = value.replace(/^refs\/heads\//, '');
     else if (key === 'bare') current.bare = true;
     else if (key === 'detached') current.detached = true;
-    else if (key === 'locked') current.locked = true;
+    else if (key === 'locked') {
+      current.locked = true;
+      // `locked` alone, or `locked <reason>` — the reason is the rest of the
+      // line, and a reason spanning lines is not a shape git emits here.
+      current.lockReason = value;
+    }
   }
   flush();
   return entries;

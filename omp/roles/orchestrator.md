@@ -251,6 +251,25 @@ Release a pane only after its artifact has provably landed:
 ax worker release
 ```
 
+Then reclaim that slice's worktree, in the same per-slice pass — not at wave end
+and not as a note to the operator. `ax worker release` closes the recorded pane
+and, by its own contract, never removes a worktree, deletes a branch or touches
+git state, so without this step a finished slice leaves its whole workspace on
+disk, in `ax worktree ls` and in Orca's sidebar:
+
+```bash
+ax worktree reclaim <worktree-name-or-path>
+```
+
+It answers RECLAIMED, or KEEP with the reason and the repair beside it, and a
+KEEP is a finding to carry rather than a step to retry: a landed branch whose
+HEAD moved past what merged is retained work whose repair is DELIVERY (that is
+the #204 near-loss), and a git lock, an Orca pin, a live pane, a dependent
+workspace or an unreadable probe are each a retention this verb honours. Do not
+reach for `ax worktree rm` to force past one, and never pass `--force`: the
+refusal is the protection. Exit 1 is that KEEP, exit 3 is a machine that could
+not be asked.
+
 ## Get bearings
 
 A fresh session resumes a wave from authority, never from memory or a file it

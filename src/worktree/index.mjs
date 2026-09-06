@@ -8,9 +8,10 @@
 import { setup } from './setup.mjs';
 import { list } from './list.mjs';
 import { clean } from './clean.mjs';
+import { reclaim } from './reclaim.mjs';
 import { remove } from './remove.mjs';
 
-export const SUBCOMMANDS = { setup, ls: list, clean, rm: remove };
+export const SUBCOMMANDS = { setup, ls: list, clean, rm: remove, reclaim };
 
 /**
  * `ax worktree <verb> [args]`.

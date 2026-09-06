@@ -349,6 +349,35 @@ export const phaseArgv = (path, index) => [...must(phaseAt(load(path), index), '
 export const phaseCount = path => must(lastAttempt(load(path)), 'phases', 'last attempt').length;
 
 /**
+ * The request a record NAMES, strictly. `scanStore` already refuses a record
+ * whose name disagrees with its filename, and a reader that resolves a record
+ * BY PATH — `src/worktree/reclaim.mjs` binding a Gate merge record to the pull
+ * request it validated — needs the same fact without re-deriving it from the
+ * stem: a filename substituted for an absent name would let any path decide
+ * which mutation a caller believes it is holding.
+ */
+export const recordedRequest = path => must(load(path), 'request', 'record root');
+
+/**
+ * The last attempt's phases as `{ name, exit, transport }` — what a multi-stage
+ * recovery reads to know which of ITS stages already settled.
+ *
+ * `phaseVerdict` answers a different question and cannot answer this one: it
+ * classifies an ORCA receipt, and a stage that is not an Orca call (an evidence
+ * copy, a project's own cleanup command) has no `ok` for it to read, so every
+ * one of them would come back `unknown`. What a resumed gesture needs is the
+ * recorded fact: which named stage ran, and whether its outcome was written.
+ * `exit: null` with or without a `transport` is a stage NOBODY KNOWS the
+ * outcome of — never a stage to re-run (F-001).
+ */
+export const phaseStages = path =>
+  must(lastAttempt(load(path)), 'phases', 'last attempt').map(ph => ({
+    name: ph.name ?? null,
+    exit: ph.exit ?? null,
+    transport: ph.transport ?? null,
+  }));
+
+/**
  * The recorded exit status of one phase, or null when the call never reported
  * one. It is a SEPARATE question from `phaseVerdict`: a receipt can read `ok`
  * while the exit carries the outcome, and `worker-release` is exactly that shape
