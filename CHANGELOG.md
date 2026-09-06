@@ -8,6 +8,36 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.0](https://github.com/flosrn/ax/compare/v0.23.0...v0.24.0) (2026-09-06)
+
+
+### Features
+
+* **frontier:** derive Completion from the Spec and its mandate ([#202](https://github.com/flosrn/ax/issues/202)) ([20bd93d](https://github.com/flosrn/ax/commit/20bd93de4c3993b79d9be73c99a559f838f590f3))
+* **frontier:** name established dependency cycles without rewriting edges ([#196](https://github.com/flosrn/ax/issues/196)) ([59cecca](https://github.com/flosrn/ax/commit/59cecca29fa9f76d7d6b5714402e0c409dbb6de8))
+* **peer:** persist diagnostic reasons across session restart ([#201](https://github.com/flosrn/ax/issues/201)) ([f446f22](https://github.com/flosrn/ax/commit/f446f2297a110a77cfba33927a0bba78f3b9b9d6))
+* **worker:** derive a Spec's landed PR, SHA and surfaces into the next dispatch's notes ([#203](https://github.com/flosrn/ax/issues/203)) ([4dd7e47](https://github.com/flosrn/ax/commit/4dd7e47fa78e89ef001070b5b82db0a61e779109))
+* **worktree:** reclaim a landed slice's worktree, or KEEP it with a named reason ([#214](https://github.com/flosrn/ax/issues/214)) ([2339a50](https://github.com/flosrn/ax/commit/2339a50a205469ca8e0d2d7a4dc5bed0d8c3891a))
+
+
+### Bug Fixes
+
+* **orchestrator:** keep technical repair with agents after a second refusal ([#199](https://github.com/flosrn/ax/issues/199)) ([c1e44fa](https://github.com/flosrn/ax/commit/c1e44fa4ae9fccfd528c4f113d81cbbb6d5b4da2))
+* **peer:** a custom Pass keeps its Draft identity ([#207](https://github.com/flosrn/ax/issues/207)) ([#211](https://github.com/flosrn/ax/issues/211)) ([46d08d7](https://github.com/flosrn/ax/commit/46d08d7364e1f2c8bc1e386c2b305151df966fba))
+* **peer:** bound the Report's input before decoding it ([#183](https://github.com/flosrn/ax/issues/183)) ([792da16](https://github.com/flosrn/ax/commit/792da163c6a45f31e5ad2588d04010af82edbc00)), closes [#180](https://github.com/flosrn/ax/issues/180)
+* **peer:** retrieve a remote worker's Report from the host its record names ([#198](https://github.com/flosrn/ax/issues/198)) ([3fcd85e](https://github.com/flosrn/ax/commit/3fcd85ec9b61c83876d6346f5cd302165c54bdb8))
+* **pin:** --dry-run withholds the init write, and the header says a flag here is parsed by the version being left ([9ade53c](https://github.com/flosrn/ax/commit/9ade53cdf1340cbecc25f1bc115b59467cfd64ec)), closes [#170](https://github.com/flosrn/ax/issues/170)
+* **pin,init:** a refused pin names the findings' own repair, and --init lands managed state a release adds ([b622119](https://github.com/flosrn/ax/commit/b622119850d2550b7275ef0b84e091392c1ea827)), closes [#170](https://github.com/flosrn/ax/issues/170) [#171](https://github.com/flosrn/ax/issues/171)
+* **pr-gate:** bind every git-backed ground to the validated head and the observed base ([#187](https://github.com/flosrn/ax/issues/187)) ([a18c98d](https://github.com/flosrn/ax/commit/a18c98d7af5cbbad0d52a2e17a9a6fa579a4bf11))
+* **pr-gate:** read every check-run page before authorizing merge ([#186](https://github.com/flosrn/ax/issues/186)) ([7fc1417](https://github.com/flosrn/ax/commit/7fc1417c8040034d979b8a620d32d00a3f82ed03))
+* **pr-gate:** refuse a review-thread read with no observed final page ([#181](https://github.com/flosrn/ax/issues/181)) ([d4421a9](https://github.com/flosrn/ax/commit/d4421a95fae4ad17e8cdd4350cea6cc74d0b9f35))
+* **triage:** admit a finding that names the approved obligation it serves ([#197](https://github.com/flosrn/ax/issues/197)) ([da13f0b](https://github.com/flosrn/ax/commit/da13f0be47916f8074bfcda15a9bc0722f276f4b))
+* **triage:** prove each job and Pass by its own published artifact ([#184](https://github.com/flosrn/ax/issues/184)) ([06cdb6e](https://github.com/flosrn/ax/commit/06cdb6ea991a6ae596840135c0e400ecd4c5936f))
+* **triage:** publish grades provenance on the proposed result, from one class vocabulary ([#182](https://github.com/flosrn/ax/issues/182)) ([e7c2552](https://github.com/flosrn/ax/commit/e7c2552c922d43f7d930bc5cdcc1fdafbf09591c)), closes [#179](https://github.com/flosrn/ax/issues/179)
+* **worker:** a record that created no task blocks no recovery ([#205](https://github.com/flosrn/ax/issues/205)) ([#209](https://github.com/flosrn/ax/issues/209)) ([9c21d49](https://github.com/flosrn/ax/commit/9c21d49f94af0d6866d75120cb3a676f6f926a23))
+* **worker:** never authorize re-dispatch from unknown liveness ([#200](https://github.com/flosrn/ax/issues/200)) ([6e24537](https://github.com/flosrn/ax/commit/6e245378f35c977e11a18ff126626ff6c2532123))
+* **worker:** resolve session proof by the checkout the caller holds ([#204](https://github.com/flosrn/ax/issues/204)) ([#208](https://github.com/flosrn/ax/issues/208)) ([08377a4](https://github.com/flosrn/ax/commit/08377a4f5a93008b7ad0092543a6fdb9e889cf31))
+
 ## [0.23.0](https://github.com/flosrn/ax/compare/v0.22.0...v0.23.0) (2026-09-05)
 
 
