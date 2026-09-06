@@ -22,13 +22,14 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
 import { COMMANDS, subcommandNames } from '../src/commands.mjs';
 import { run } from '../src/exec.mjs';
 import { gitBlobSha } from '../src/hash.mjs';
+import { readWorktrees } from '../src/git.mjs';
 import { CREDENTIAL_GUARD_CONFIG, archiveScriptIn, cleanupStage, hookEnvironment, hookGuardEstablished, reclaim } from '../src/worktree/reclaim.mjs';
 import { SUBCOMMANDS } from '../src/worktree/index.mjs';
 import { attemptNew, claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
@@ -180,6 +181,8 @@ function host(s, options = {}) {
     gitOverride = null,
     beforeMutation = null,
     platform = 'darwin',
+    hostScope = { hostIds: ['local'], omittedHostIds: [] },
+    targetHost = 'local',
   } = options;
 
   const calls = { orca: [], gh: [], clean: [], hook: [] };
@@ -204,7 +207,13 @@ function host(s, options = {}) {
   });
 
   const target = () => {
-    const row = rowFor(s.path, s.branch, { isPinned: pinned, isArchived: archived, childWorktreeIds: children });
+    const row = rowFor(s.path, s.branch, {
+      isPinned: pinned,
+      isArchived: archived,
+      childWorktreeIds: children,
+      hostId: targetHost,
+      identity: { key: `wt2:${targetHost}:${gitBlobSha(s.path).slice(0, 8)}`, executionHostId: targetHost },
+    });
     if (dropIsPinned) delete row.isPinned;
     return row;
   };
@@ -226,10 +235,12 @@ function host(s, options = {}) {
     }
     if (key === 'worktree list') return receiptOf({ ok: true, result: { worktrees: rows() } });
     if (key === 'terminal list') {
-      return receiptOf({
-        ok: true,
-        result: { terminals: removed ? [] : terminals, hostScope: { hostIds: ['local'], omittedHostIds: [] } },
-      });
+      // The real receipt carries every pane of the queried scope, each naming
+      // its own worktree — the shared reader filters, so the stub must not.
+      const rowsForPanes = removed
+        ? []
+        : terminals.map(pane => ({ worktreeId: `repo::${s.path}`, worktreePath: s.path, orphaned: false, ...pane }));
+      return receiptOf({ ok: true, result: { terminals: rowsForPanes, hostScope } });
     }
     if (key === 'repo show') {
       if (repoShow === 'refused') return { status: 1, stdout: '', stderr: 'runtime refused', error: undefined, receipt: {} };
@@ -287,6 +298,9 @@ function host(s, options = {}) {
         return gitOverride ? gitOverride(at, args) : realGit(at, args);
       },
       clean: argv => (calls.clean.push(argv), cleanExit),
+      // The registry reader is a NAMED dependency: a suite that injects every
+      // other probe must not leave the verb asking the host's own git.
+      worktrees: at => readWorktrees(at),
       hook: opts => (calls.hook.push(opts), hookResult ?? { status: 0, stdout: '', stderr: '', error: undefined, timedOut: false }),
     },
   };
@@ -864,7 +878,9 @@ test('re-entry after a removal nobody observed replays the recorded identity, mi
   const one = capture(() => reclaim([s.path, '--store', s.store], stranded.deps));
   assert.equal(one.code, 1, one.out);
   assert.match(one.out, /STRANDED|nobody knows|never concluded/i);
-  const recordPath = join(s.store, 'reclaim', `reclaim-flosrn-ax-${s.request}.json`);
+  // The identity carries the TARGET, not just its basename — two worktrees of
+  // one repository may share a name and must never share a record.
+  const recordPath = join(s.store, 'reclaim', `${reclaimRequest(s)}.json`);
   assert.equal(existsSync(recordPath), true, `no reclaim record at ${recordPath}`);
   const first = JSON.parse(readFileSync(recordPath, 'utf8'));
   const identities = phasesIn(first).map(phase => phase.identity);
@@ -1045,6 +1061,194 @@ test('a declared cleanup command that warns and exits zero is reported as the pr
   assert.match(out, /portless prune overran its budget/);
   assert.match(out, /reported success/);
   assert.doesNotMatch(out, /every resource/);
+});
+// ── review round 2: five destructive-safety regressions ─────────────────────
+
+test('two same-basename targets never share a reclaim record, and neither borrows the other’s settled stages', () => {
+  // P1. `reclaim-<owner>-<repo>-<basename>` collided: /a/slice and /b/slice are
+  // one key, so the second target adopted the first's record and could read
+  // ALREADY RECLAIMED — or skip a cleanup — from work done on another tree.
+  const s = stage();
+  const twinDir = join(s.fixture, 'b');
+  mkdirSync(twinDir, { recursive: true });
+  const twin = join(twinDir, basename(s.path));
+  git(s.main, 'worktree', 'add', '-q', '-b', 'feat/twin-slice', twin);
+  file(join(twin, 'src', 'app.txt'), 'twin work\n');
+  git(twin, 'add', '-A');
+  git(twin, 'commit', '-qm', 'twin work');
+  const twinHead = gitOut(twin, 'rev-parse', 'HEAD');
+  file(join(twin, '.scratch', 'report', 'twin.md'), '# twin\n');
+  dispatchRecord({ store: s.store, request: 'twin', worktrees: [twin] });
+  mergeRecord({ store: s.store, pr: 300, sha: twinHead });
+
+  const first = host(s);
+  const one = capture(() => reclaim([s.path, '--store', s.store], first.deps));
+  assert.equal(one.code, 0, one.out);
+
+  const twinStage = { ...s, path: twin, branch: 'feat/twin-slice', head: twinHead, request: 'twin', report: join(twin, '.scratch', 'report', 'twin.md'), pr: 300 };
+  const second = host(twinStage, { prNumber: 300 });
+  const two = capture(() => reclaim([twin, '--store', s.store], second.deps));
+
+  // The second target does its OWN work: it is not reported as already
+  // reclaimed, and its cleanup stage runs rather than being read as settled.
+  assert.equal(two.code, 0, two.out);
+  assert.doesNotMatch(two.out, /already reclaimed/i);
+  assert.deepEqual(second.calls.clean, [[twin]], two.out);
+  const records = readdirSync(join(s.store, 'reclaim')).sort();
+  assert.equal(records.length, 2, `one record served two targets: ${records.join(', ')}`);
+});
+
+test('a reclaim record naming another target is never adopted for this one', () => {
+  const s = stage();
+  const { deps } = host(s);
+  // A record sitting at this target's key that names a different tree: adopting
+  // its stages would let one tree's settled cleanup authorise another's removal.
+  const dir = join(s.store, 'reclaim');
+  mkdirSync(dir, { recursive: true });
+  const [file0] = [join(dir, `${reclaimRequest(s)}.json`)];
+  writeFileSync(
+    file0,
+    `${JSON.stringify({
+      request: reclaimRequest(s),
+      host: 'somewhere-else',
+      orca: 'orca',
+      repo: 'someone/else',
+      createdAt: new Date().toISOString(),
+      attempts: [{ n: 1, settled: false, phases: [{ name: 'worktree-rm', identity: 'x', argv: ['worktree', 'rm', '--worktree', 'path:/elsewhere/slice', '--json'], receipt: { ok: true, result: { removed: true } }, exit: 0, beganAt: new Date().toISOString() }] }],
+    }, null, 1)}\n`,
+  );
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /another target|another repository|another host/i);
+  assertRepair(out);
+  assert.equal(registered(s.main, s.path), true);
+});
+
+const reclaimRequest = s => `reclaim-flosrn-ax-${basename(s.path)}-${gitBlobSha(s.path).slice(0, 12)}`;
+
+test('an empty pane list whose scope omits the target’s own host authorizes nothing', () => {
+  // P1. `terminals: []` is only a real zero when the host that owns the target
+  // was actually queried. An omitted scope made an unread machine look empty.
+  const s = stage();
+  const { deps, calls } = host(s, { hostScope: { hostIds: ['local'], omittedHostIds: ['runtime:7930a317'] }, targetHost: 'runtime:7930a317' });
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /runtime:7930a317/);
+  assertRepair(out);
+  assert.deepEqual(calls.clean, []);
+  assert.equal(registered(s.main, s.path), true);
+});
+
+test('an unrelated omitted host does not refuse a target whose own host was queried', () => {
+  // The other direction: a sleeping remote runtime must not make a local
+  // worktree unreclaimable — that is the #83 cost, paid again.
+  const s = stage();
+  const { deps } = host(s, { hostScope: { hostIds: ['local'], omittedHostIds: ['runtime:unrelated'] }, targetHost: 'local' });
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 0, out);
+});
+
+test('an unknown block-scalar header fails closed and is never run as a command', () => {
+  // P1. `>+` fell through to the plain-scalar branch, so the archive command
+  // became the literal string '>+', which bash exits 0 on — the worktree was
+  // deleted with no cleanup having run at all.
+  for (const header of ['>+', '|2', '>-2', '|+2', '>3', '|~', '>>']) {
+    const read = archiveScriptIn(`scripts:\n  archive: ${header}\n    echo one\n`);
+    assert.equal(read.archive, undefined, `${header} produced a command: ${JSON.stringify(read.archive)}`);
+    assert.equal('unknown' in read, true, `${header} was not refused`);
+  }
+  // The folded and chomped forms this reader DOES read keep working.
+  assert.deepEqual(archiveScriptIn('scripts:\n  archive: |\n    echo one\n    echo two\n'), { archive: 'echo one\necho two' });
+  assert.deepEqual(archiveScriptIn('scripts:\n  archive: |-\n    echo one\n'), { archive: 'echo one' });
+  assert.deepEqual(archiveScriptIn('scripts:\n  archive: >\n    echo one\n    echo two\n'), { archive: 'echo one echo two' });
+  // A plain scalar can never begin with a block indicator.
+  for (const value of ['>+ echo one', '| echo two']) {
+    assert.equal('unknown' in archiveScriptIn(`scripts:\n  archive: ${value}\n`), true, `${value} was read as a command`);
+  }
+});
+
+test('a declared chain is never composed from an unreadable block header', () => {
+  const s = stage();
+  const { deps, calls } = host(s, {
+    hookSettings: { mode: 'auto', scripts: { setup: '', archive: '' }, commandSourcePolicy: 'shared-only' },
+  });
+  file(join(s.main, 'orca.yaml'), 'scripts:\n  archive: >+\n    bash scripts/archive.sh\n');
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.deepEqual(calls.hook, [], 'a literal block header was executed');
+  assert.deepEqual(calls.clean, []);
+  assert.equal(calls.orca.some(args => args.slice(0, 2).join(' ') === 'worktree rm'), false);
+  assert.equal(registered(s.main, s.path), true);
+  assertRepair(out);
+});
+
+test('an unreadable archive reference KEEPs and preserves the mappings it could not parse', () => {
+  // P2. A malformed reference.json was reset to `{files:[]}` and rewritten,
+  // destroying the source→archive mappings of every earlier run.
+  const s = stage();
+  const first = host(s, { removal: { refused: true } });
+  const one = capture(() => reclaim([s.path, '--store', s.store], first.deps));
+  assert.equal(one.code, 1, one.out);
+
+  const reference = readdirSync(join(s.main, '.scratch', 'reclaim'), { recursive: true })
+    .map(String)
+    .filter(entry => entry.endsWith('reference.json'))
+    .map(entry => join(s.main, '.scratch', 'reclaim', entry))[0];
+  assert.ok(reference !== undefined, 'no reference was written by the first run');
+  // An interrupted write: valid JSON prefix, truncated mid-object.
+  const whole = readFileSync(reference, 'utf8');
+  writeFileSync(reference, whole.slice(0, Math.floor(whole.length / 2)));
+  const damaged = readFileSync(reference, 'utf8');
+
+  const { deps, calls } = host(s);
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /reference/i);
+  assertRepair(out);
+  // The bytes it could not read are still there, untouched.
+  assert.equal(readFileSync(reference, 'utf8'), damaged);
+  assert.deepEqual(calls.clean, []);
+  assert.equal(calls.orca.some(args => args.slice(0, 2).join(' ') === 'worktree rm'), false);
+});
+
+test('an absent archive reference is not an unreadable one', () => {
+  const s = stage();
+  const { deps } = host(s);
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+  assert.equal(code, 0, out);
+  assert.doesNotMatch(out, /reference.*could not/i);
+});
+
+test('every registry read goes through the injected reader, at all three boundaries', () => {
+  // P1. Two of the three reads called `readWorktrees` directly, so a suite that
+  // injected every other probe still let the verb ask the HOST's git — and a
+  // registry that changed or refused mid-run was never observed.
+  const s = stage();
+  for (const failAt of [1, 2, 3]) {
+    const { deps, calls } = host(s);
+    let seen = 0;
+    const real = deps.worktrees;
+    assert.equal(typeof real, 'function', 'the registry reader is not an injected dependency');
+    deps.worktrees = at => {
+      seen += 1;
+      return seen === failAt ? { known: false, trees: [] } : real(at);
+    };
+
+    const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+    assert.notEqual(code, 0, `boundary ${failAt} was not observed: ${out}`);
+    assert.equal(seen >= failAt, true, `boundary ${failAt} was never reached (${seen} reads)`);
+    if (failAt < 3) assert.deepEqual(calls.clean, [], `boundary ${failAt} refused after cleanup ran`);
+  }
 });
 // ── the execution boundary a declared chain runs under ──────────────────────
 

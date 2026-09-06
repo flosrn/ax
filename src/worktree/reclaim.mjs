@@ -132,7 +132,8 @@
 //      unreadable worktree registry, or no repository for `gh` to be asked about
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { basename, join, resolve as resolvePath } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
@@ -140,6 +141,7 @@ import { defaultExec, run as execRun } from '../exec.mjs';
 import { repoView } from '../gh.mjs';
 import { gitBlobSha } from '../hash.mjs';
 import { readWorktrees } from '../git.mjs';
+import { terminalInventory } from '../worker/pane.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import {
@@ -196,6 +198,15 @@ const shq = value => {
 };
 
 // ── the declaration ─────────────────────────────────────────────────────────
+
+/**
+ * The only block-scalar headers this reader reproduces: literal and folded,
+ * each with clip (default) or strip (`-`) chomping. A keep-chomping `+` retains
+ * trailing newlines this reader's join would silently drop, and an explicit
+ * indent indicator (`|2`) changes where the body starts — both are UNKNOWN
+ * rather than approximated, because the value becomes a command line.
+ */
+const BLOCK_HEADERS = new Set(['|', '|-', '>', '>-']);
 
 /**
  * `orca.yaml`'s `scripts.archive`, or a named inability — never a guess.
@@ -260,7 +271,19 @@ export function archiveScriptIn(text) {
     if (entry[2] !== 'archive') continue;
 
     const value = entry[3].trim();
-    if (value === '|' || value === '|-' || value === '|+' || value === '>' || value === '>-') {
+    // A BLOCK INDICATOR IS NEVER A COMMAND. Measured on review: `>+` fell past
+    // the recognized set into the plain-scalar branch below, so the archive
+    // command became the literal string '>+' — which `bash -c` exits 0 on. The
+    // cleanup stage then "succeeded" having run nothing, and the worktree was
+    // removed. So anything opening with `|` or `>` is a block scalar by
+    // definition, and only the four headers whose folding this reader
+    // reproduces exactly are read; every other one — a keep-chomping `+`, an
+    // explicit indent indicator, a malformed repetition — is UNKNOWN, which is
+    // a KEEP. Never a fallback, and never a command.
+    if (/^[|>]/.test(value) && !BLOCK_HEADERS.has(value)) {
+      return { unknown: `orca.yaml writes 'scripts.archive' with the block header ${JSON.stringify(value)}, whose folding this reader does not reproduce — it is never read as a command` };
+    }
+    if (BLOCK_HEADERS.has(value)) {
       const body = [];
       let block = null;
       for (let next = index + 1; next < rows.length; next += 1) {
@@ -475,6 +498,11 @@ export function reclaim(
     exec = defaultExec,
     gh = args => exec('gh', args, cwd),
     git = (at, args) => exec('git', args, at),
+    // NAMED, with a real default. Two of the three registry reads used to call
+    // `readWorktrees` directly, so a caller that injected every other probe
+    // still let this verb ask the HOST's git — and a registry that changed or
+    // refused between the boundaries was never observed by any test.
+    worktrees = readWorktrees,
     clean: cleanup = clean,
     hook = declaredHook,
     store,
@@ -538,7 +566,7 @@ export function reclaim(
   const slug = named.slug;
   const [owner, repoName] = slug.split('/');
 
-  const registry = readWorktrees(checkout);
+  const registry = worktrees(checkout);
   if (!registry.known) {
     return cannot('git cannot enumerate this repository’s worktrees, and an unreadable registry proves nothing about a target', `git -C ${shq(checkout)} worktree list --porcelain`);
   }
@@ -549,7 +577,7 @@ export function reclaim(
     // A target that no longer resolves may be one this host already reclaimed.
     // Reading that from the record is the difference between reporting a removal
     // it OBSERVED and going off to re-create a worktree nobody asked for.
-    const prior = priorRemoval({ storeRoot, owner, repoName, target, cwd });
+    const prior = priorRemoval({ storeRoot, owner, repoName, target, cwd, slug, host: hostname() });
     if (prior !== null) {
       section(`reclaim ${prior.path}`);
       note(`the record ${prior.record} observed this removal at ${prior.at}`);
@@ -587,7 +615,7 @@ export function reclaim(
   const branch = entry.branch;
 
   // ── the terms, cheapest and most conservative first ───────────────────────
-  const state = measure({ run, git, path, branch, checkout });
+  const state = measure({ run, git, worktrees, path, branch, checkout });
   if (state.keep !== undefined) return deny('KEEP', state.keep.reason, state.keep.repair);
 
   note(`retention: no git lock, and Orca reports isPinned=false`);
@@ -641,13 +669,23 @@ export function reclaim(
   note(`cleanup owner: ${stage.source}${stage.owner === 'declared' ? ` — ${firstLine(stage.command)}` : ' (this checkout declares no archive command)'}`);
 
   // ── recorded before it mutates ────────────────────────────────────────────
-  const request = `${RECLAIM_NS}-${owner}-${repoName}-${basename(path)}`;
+  //
+  // THE KEY CARRIES THE TARGET, NOT ITS BASENAME. `git worktree add` accepts any
+  // path, so `/a/slice` and `/b/slice` are two registered worktrees of one
+  // repository with one basename — and keyed on the basename they were ONE
+  // record. The second target then adopted the first's stages: a settled
+  // cleanup it never ran, or a recorded removal read back as ALREADY RECLAIMED
+  // for a tree still on disk. The digest is the same deterministic naming the
+  // archive scope uses (../hash.mjs), so the identity is stable across runs and
+  // distinct per target.
+  const request = reclaimRequestFor({ owner, repoName, path });
   if (!requestIdOk(request)) {
     return deny('KEEP', `the recorded identity this reclaim would need ("${request}") violates the request-id grammar, so no mutation may be issued from it`, 'ax worktree ls   # rename or remove this checkout by hand');
   }
   const dir = join(storeRoot, RECLAIM_NS);
   const claim = claimRecord(dir, request);
-  if (claim.claimed || statSync(claim.path).size === 0) {
+  const fresh = claim.claimed || statSync(claim.path).size === 0;
+  if (fresh) {
     initRecord(claim.path, { request, orca: bin, repo: slug, kind: RECLAIM_NS });
   }
 
@@ -657,6 +695,26 @@ export function reclaim(
   }
 
   try {
+    // AN ADOPTED RECORD IS PROVEN TO BE THIS TARGET'S BEFORE ANY STAGE OF IT IS
+    // READ. The key alone is not that proof: a record can be hand-edited,
+    // restored from another machine, or left by a run in another repository, and
+    // every stage below decides whether something destructive is skipped or
+    // repeated. So the identity is checked against what this run established.
+    if (!fresh) {
+      const adopted = recordIdentity(claim.path);
+      if (adopted.unreadable !== undefined) {
+        return deny('KEEP', `the reclaim record ${claim.path} cannot be read: ${adopted.unreadable}`, `cat ${shq(claim.path)}   # repair or move it aside, then re-run`);
+      }
+      const mismatch = identityMismatch(adopted, { request, slug, path, host: hostname() });
+      if (mismatch !== '') {
+        return deny(
+          'KEEP',
+          `the reclaim record ${claim.path} ${mismatch}, so its recorded stages say nothing about this target and adopting them could skip a cleanup or claim a removal that happened elsewhere`,
+          `cat ${shq(claim.path)}   # establish which target it belongs to, then move it aside and re-run`,
+        );
+      }
+    }
+
     // What THIS record already settled. A stage nobody knows the outcome of is
     // never re-run: an arbitrary project command re-executed on an uncertain
     // result is a second reclamation reported as one.
@@ -698,7 +756,7 @@ export function reclaim(
     for (const line of kept.notes) note(line);
 
     // ── the mutation boundary: the checks and the mutation are not one instant
-    const again = measure({ run, git, path, branch, checkout });
+    const again = measure({ run, git, worktrees, path, branch, checkout });
     if (again.keep !== undefined) {
       return deny('KEEP', `the target changed between the eligibility checks and the mutation: ${again.keep.reason}`, again.keep.repair);
     }
@@ -785,7 +843,7 @@ export function reclaim(
 
     // Both views, or a half-state named. A removal that convinced git and left
     // Orca holding the row is exactly the state this verb exists to end.
-    const after = readWorktrees(checkout);
+    const after = worktrees(checkout);
     if (!after.known) {
       return deny(
         'KEEP',
@@ -829,18 +887,86 @@ export function reclaim(
 const STAGE = { archive: 'evidence-archive', declared: 'cleanup-declared', axClean: 'cleanup-ax-clean', removal: 'worktree-rm' };
 
 /**
+ * THIS TARGET'S RECLAIM IDENTITY: the repository, the checkout's own name, and a
+ * deterministic digest of its absolute path.
+ *
+ * The digest is what makes it a TARGET identity rather than a name: two
+ * worktrees of one repository may share a basename (`git worktree add` accepts
+ * any path), and keyed on the name alone they shared one record — so the second
+ * one adopted the first's settled stages. `gitBlobSha` is the same deterministic
+ * naming the archive scope uses, so the key is stable across runs.
+ */
+export function reclaimRequestFor({ owner, repoName, path }) {
+  return `${RECLAIM_NS}-${owner}-${repoName}-${basename(path)}-${gitBlobSha(path).slice(0, 12)}`;
+}
+
+/**
+ * What a record on disk SAYS it belongs to: `{ request, repo, host, targets }`,
+ * or `{ unreadable }`. `targets` is every worktree path its stages name, read
+ * from the recorded argv — the only place a reclaim record states its subject.
+ */
+function recordIdentity(recordPath) {
+  try {
+    const rec = JSON.parse(readFileSync(recordPath, 'utf8'));
+    const targets = new Set();
+    for (const attempt of Array.isArray(rec.attempts) ? rec.attempts : []) {
+      for (const phase of Array.isArray(attempt.phases) ? attempt.phases : []) {
+        for (const word of Array.isArray(phase.argv) ? phase.argv : []) {
+          if (typeof word === 'string' && word.startsWith('path:')) targets.add(word.slice('path:'.length));
+          if (typeof word === 'string' && word.startsWith('--worktree=path:')) targets.add(word.slice('--worktree=path:'.length));
+        }
+        // The archive stage names its worktree as a bare argument.
+        if (Array.isArray(phase.argv) && phase.argv[0] === STAGE.archive) {
+          const at = phase.argv.indexOf('--worktree');
+          if (at !== -1 && typeof phase.argv[at + 1] === 'string') targets.add(phase.argv[at + 1]);
+        }
+      }
+    }
+    return {
+      request: typeof rec.request === 'string' ? rec.request : '',
+      repo: typeof rec.repo === 'string' ? rec.repo.trim() : '',
+      host: typeof rec.host === 'string' ? rec.host.trim() : '',
+      targets: [...targets],
+    };
+  } catch (error) {
+    return { unreadable: String(error.message ?? error) };
+  }
+}
+
+/**
+ * Why an adopted record is NOT this target's, or `''` when it binds.
+ *
+ * Absence is not a mismatch — a record written before a field existed names
+ * nothing and is bound by the fields it does carry — but a field that DISAGREES
+ * is decisive: its stages describe work done somewhere else.
+ */
+function identityMismatch(adopted, { request, slug, path, host }) {
+  if (adopted.request !== '' && adopted.request !== request) return `names the request ${JSON.stringify(adopted.request)}, not ${JSON.stringify(request)}`;
+  if (adopted.repo !== '' && adopted.repo.toLowerCase() !== String(slug).toLowerCase()) return `belongs to another repository (${adopted.repo})`;
+  if (adopted.host !== '' && adopted.host !== host) return `was written on another host (${adopted.host})`;
+  const foreign = adopted.targets.filter(named => physical(named) !== physical(path));
+  if (foreign.length > 0) return `records stages against another target (${foreign.slice(0, NAMED).join(', ')})`;
+  return '';
+}
+
+/**
  * A removal THIS HOST recorded for a target that no longer resolves.
  *
  * Only for a path-shaped target, and only when the recorded removal argv names
  * that exact path: a bare name cannot be resolved once its worktree is gone, and
  * a record that names another path is another target's.
  */
-function priorRemoval({ storeRoot, owner, repoName, target, cwd }) {
+function priorRemoval({ storeRoot, owner, repoName, target, cwd, slug, host }) {
   const candidate = physical(resolvePath(cwd, target));
-  const request = `${RECLAIM_NS}-${owner}-${repoName}-${basename(candidate)}`;
+  const request = reclaimRequestFor({ owner, repoName, path: candidate });
   if (!requestIdOk(request)) return null;
   const record = join(storeRoot, RECLAIM_NS, `${request}.json`);
   if (!existsSync(record)) return null;
+  const adopted = recordIdentity(record);
+  // The same binding the mutation path makes: a record that is not provably
+  // this target's reports no removal for it.
+  if (adopted.unreadable !== undefined) return null;
+  if (identityMismatch(adopted, { request, slug, path: candidate, host }) !== '') return null;
   try {
     if (recordedRequest(record) !== request) return null;
     const rec = JSON.parse(readFileSync(record, 'utf8'));
@@ -864,8 +990,8 @@ function priorRemoval({ storeRoot, owner, repoName, target, cwd }) {
  * status and the head. `{ head }` when every one of them holds, `{ keep }` on
  * the first that does not — including every one that could not be READ.
  */
-function measure({ run, git, path, branch, checkout }) {
-  const registry = readWorktrees(checkout);
+function measure({ run, git, worktrees, path, branch, checkout }) {
+  const registry = worktrees(checkout);
   if (!registry.known) {
     return { keep: { reason: 'git cannot enumerate this repository’s worktrees, so the target cannot be accounted for', repair: `git -C ${shq(checkout)} worktree list --porcelain` } };
   }
@@ -928,27 +1054,52 @@ function measure({ run, git, path, branch, checkout }) {
     };
   }
 
-  const panes = run(['terminal', 'list', '--worktree', `path:${path}`, '--json']);
-  const paneReceipt = panes.receipt ?? {};
-  const paneResult = paneReceipt.result ?? {};
-  if (paneReceipt.ok !== true || !Array.isArray(paneResult.terminals)) {
-    const detail = (paneReceipt.error ?? {}).message ?? paneReceipt.unparseable ?? firstLine(panes.stderr) ?? '';
+  // PANES COME THROUGH THE SHARED READER, WITH ITS COVERAGE RULE.
+  //
+  // `terminalInventory` (../worker/pane.mjs) is the one reader of "which panes
+  // does this runtime still own": it refuses an absent container and a
+  // TRUNCATED list, and it carries the scope — `hostIds` covered,
+  // `omittedHostIds` not asked. Reading a scoped `terminal list` here instead
+  // reproduced none of that: an EMPTY `terminals` array from a reply whose scope
+  // omitted the host that owns this target read as "nobody is there", which is
+  // an unread machine authorising a deletion (F-028).
+  //
+  // Coverage is judged for THIS TARGET'S OWN HOST and nothing else. An
+  // unrelated sleeping runtime must not make a local worktree unreclaimable —
+  // that is the #83 cost, and `paneVerdict` states the same rule: a reply that
+  // read `local` covers the runtime that answered it.
+  const inventory = terminalInventory(run);
+  if (!inventory.ok) {
     return {
       keep: {
-        reason: `orca terminal list could not answer for ${path}: ${String(detail).slice(0, 200) || `exit ${panes.status}`} — an absent list is not an empty machine (F-028)`,
-        repair: `orca terminal list --worktree path:${shq(path)} --json   # then re-run`,
+        reason: `${inventory.reason} — an absent or partial pane list cannot prove nobody is still in ${path}`,
+        repair: `orca terminal list --json   # then re-run`,
       },
     };
   }
-  if (paneResult.truncated === true) {
+  const host = String(worktree.hostId ?? (worktree.identity ?? {}).executionHostId ?? '');
+  if (host === '') {
     return {
       keep: {
-        reason: `orca terminal list is TRUNCATED for ${path}, and a partial list cannot prove nobody is still there`,
-        repair: `orca terminal list --worktree path:${shq(path)} --json   # read it whole, then re-run`,
+        reason: `the Orca receipt for ${path} names no execution host, so which runtime had to be asked about its panes is unread`,
+        repair: `orca worktree show --worktree path:${shq(path)} --json   # establish hostId, then re-run`,
       },
     };
   }
-  const live = paneResult.terminals.filter(pane => pane !== null && typeof pane === 'object' && typeof pane.handle === 'string' && pane.orphaned !== true);
+  const covered = Array.isArray(inventory.hosts) && (inventory.hosts.includes(host) || (host === 'local' && inventory.hosts.includes('local')));
+  if (!covered) {
+    const omitted = Array.isArray(inventory.omittedHosts) ? inventory.omittedHosts : [];
+    return {
+      keep: {
+        reason: `${path} is owned by execution host '${host}', which this pane list did not read (it covered ${(inventory.hosts ?? []).join(', ') || 'nothing it named'}${omitted.length > 0 ? `, omitting ${omitted.slice(0, NAMED).join(', ')}` : ''}) — an unqueried host is not an empty one`,
+        repair: `orca terminal list --environment ${shq(host)} --json   # ask the host that owns it, then re-run`,
+      },
+    };
+  }
+  const mine = pane =>
+    (typeof pane.worktreeId === 'string' && worktree.id !== undefined && pane.worktreeId === worktree.id) ||
+    (typeof pane.worktreePath === 'string' && physical(pane.worktreePath) === physical(path));
+  const live = [...inventory.byHandle.values()].filter(pane => pane !== null && typeof pane === 'object' && mine(pane) && pane.orphaned !== true);
   if (live.length > 0) {
     return {
       keep: {
@@ -1345,25 +1496,66 @@ function preserve({ checkout, path, owner, repoName, files }) {
     kept.push({ source: entry.source, archive: destination, sha256: sha, bytes: bytes.length, request: entry.request });
   }
 
-  // The reference stays discoverable after the worktree is gone, and it MERGES:
-  // an earlier run's entries are never dropped by a later one.
+  // THE REFERENCE IS THE INDEX OF EVERYTHING PRESERVED, so an unreadable one is
+  // a KEEP and never a reset. It used to be caught and replaced with
+  // `{ files: [] }`: a half-written or hand-damaged file then lost the
+  // source→archive mapping of every EARLIER run — the one record that says
+  // where a deleted worktree's Report went. Absent and malformed are different
+  // facts and route differently (F-028), and the malformed one keeps its bytes.
   const reference = join(dir, 'reference.json');
   let existing = { files: [] };
   if (existsSync(reference)) {
+    let raw;
     try {
-      existing = JSON.parse(readFileSync(reference, 'utf8'));
-    } catch {
-      existing = { files: [] };
+      raw = readFileSync(reference, 'utf8');
+    } catch (error) {
+      return {
+        keep: {
+          reason: `the archive reference ${reference} exists and cannot be read (${String(error.message ?? error)}), so the mappings it holds for earlier runs cannot be preserved`,
+          repair: `cat ${shq(reference)}   # recover or move it aside, then re-run`,
+        },
+      };
+    }
+    try {
+      existing = JSON.parse(raw);
+    } catch (error) {
+      return {
+        keep: {
+          reason: `the archive reference ${reference} is not readable JSON (${String(error.message ?? error)}) — an interrupted write, and rewriting it would destroy the source→archive mappings of every earlier run`,
+          repair: `cat ${shq(reference)}   # recover the mappings or move the file aside, then re-run`,
+        },
+      };
+    }
+    if (existing === null || typeof existing !== 'object' || !Array.isArray(existing.files)) {
+      return {
+        keep: {
+          reason: `the archive reference ${reference} parses but names no files list, so what it recorded for earlier runs cannot be established`,
+          repair: `cat ${shq(reference)}   # recover the mappings or move the file aside, then re-run`,
+        },
+      };
     }
   }
-  const merged = new Map((Array.isArray(existing.files) ? existing.files : []).map(row => [String((row ?? {}).archive ?? ''), row]));
+  const merged = new Map(existing.files.map(row => [String((row ?? {}).archive ?? ''), row]));
   for (const row of kept) merged.set(row.archive, row);
   const payload = { worktree: path, repository: `${owner}/${repoName}`, files: [...merged.values()] };
+  const body = `${JSON.stringify(payload, null, 2)}\n`;
+  // ATOMIC, then READ BACK. A crash mid-write is what produced the damaged file
+  // above, and a rename is the only way this index is never observed partial.
+  const temporary = `${reference}.${process.pid}.tmp`;
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(reference, `${JSON.stringify(payload, null, 2)}\n`);
+    writeFileSync(temporary, body);
+    renameSync(temporary, reference);
   } catch (error) {
     return { keep: { reason: `the archive reference ${reference} could not be written: ${String(error.message ?? error)}`, repair: `mkdir -p ${shq(dir)}   # then re-run` } };
+  }
+  if (readFileSync(reference, 'utf8') !== body) {
+    return {
+      keep: {
+        reason: `the archive reference ${reference} does not read back as it was written, so the index of what survives this worktree is unverified`,
+        repair: `cat ${shq(reference)}   # then re-run`,
+      },
+    };
   }
   notes.push(`evidence: the source→archive reference is ${reference}`);
   return { notes, receipt: payload };
