@@ -319,7 +319,7 @@ function promoteCurrent({ root, config, branch = currentBranch(root) }) {
 
   return result.started
     ? { promoted: true, projectId: result.projectId, offset: result.offset, warnings }
-    : { promoted: false, reason: `the stack for ${result.projectId} did not start`, warnings };
+    : { promoted: false, reason: `the stack for ${result.projectId} did not start successfully\n${result.failure}`, warnings };
 }
 
 /** Run the real CLI and report its own exit status. */

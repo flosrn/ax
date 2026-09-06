@@ -141,7 +141,7 @@ function apply({ plan, config, root, main }) {
   ok(changed === 0 ? 'env files already match the plan' : `updated ${changed} env block(s)`);
 
   if (plan.supabase.mode === 'isolated') {
-    const started = promoteFromPlan({
+    const result = promoteFromPlan({
       plan,
       config,
       root,
@@ -149,18 +149,20 @@ function apply({ plan, config, root, main }) {
       start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'], cwd: root },
       write: writeBlock,
     });
-    // `promote` reports whether the stack actually came up, and announcing
-    // success without reading that is how a worktree ends up with endpoints
-    // recorded for ports nothing answers on — while the doctor confirms the
-    // block, because it does not ask either. The database guard already refuses
-    // on this; the two callers of one function have to agree.
-    if (started.started === false) {
-      bad(`the database stack for ${started.projectId} did not start — its endpoints are recorded but nothing is listening there`);
-      fix('start the container runtime, then re-run ax worktree setup');
+    // `promote` reports whether the start command succeeded. Announcing
+    // isolation without reading that leaves endpoints recorded for a stack
+    // whose start failed — while the doctor confirms the block, because it
+    // does not ask either. The database guard already refuses on this; the
+    // two callers of one function have to agree. A failed start is not proof
+    // that nothing is listening, so the repair is the captured diagnostic.
+    if (result.started === false) {
+      bad(`the database stack for ${result.projectId} did not start successfully — its endpoints are recorded, but startup is not confirmed`);
+      note(result.failure);
+      fix('resolve the startup failure above, then re-run ax worktree setup --database');
       return 1;
     }
 
-    ok(`isolated stack ${started.projectId} on block +${started.offset}`);
+    ok(`isolated stack ${result.projectId} on block +${result.offset}`);
 
     // A promotion moves the database endpoint, and a dev server already running
     // here has the old one baked into its loaded environment. It keeps serving

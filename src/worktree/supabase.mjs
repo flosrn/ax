@@ -22,6 +22,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { run as execRun } from '../exec.mjs';
+import { redactSecrets } from '../redact.mjs';
 import { gitBlobSha } from '../hash.mjs';
 import { isPortBound } from './ports.mjs';
 
@@ -639,6 +640,10 @@ export function resolveProjectId({ identity, prefix = '', recorded, cwd, relativ
  * which is why the decided values now arrive through `promoteFromPlan`, read
  * off the plan structurally instead of remembered ninth at every call site.
  *
+ * A failed start is not proof of a dead daemon or absent listeners: services
+ * can start partially before a health check fails. Keep the command's captured
+ * diagnostic for both callers, rather than reducing that evidence to a boolean.
+ *
  * `run` and `write` are injected so that order is testable without Docker.
  */
 export function promote({
@@ -675,10 +680,17 @@ export function promote({
     steps.push(`env:${file}`);
   }
 
-  const started = run(start.command, start.args ?? [], { cwd: start.cwd ?? cwd });
+  const startResult = run(start.command, start.args ?? [], { cwd: start.cwd ?? cwd });
   steps.push('start');
 
-  return { projectId: id, offset, ports, config, steps, started: started.status === 0 };
+  const ok = startResult.status === 0;
+  const failure = ok ? undefined : redactSecrets([
+    `${start.command} ${(start.args ?? []).join(' ')} failed (${startResult.status == null ? 'no exit status' : `exit ${startResult.status}`})`,
+    startResult.error?.message,
+    startResult.stdout?.trim(),
+    startResult.stderr?.trim(),
+  ].filter(Boolean).join('\n'));
+  return { projectId: id, offset, ports, config, steps, started: ok, failure };
 }
 
 /**
