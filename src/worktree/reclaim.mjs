@@ -359,26 +359,27 @@ export function cleanupStage({ yaml = null, hookSettings = null, unreadable = ''
 }
 
 /**
- * The environment Orca's own hook runner exports, reproduced as far as this
- * checkout can establish it: the two path variables a declared chain reads, the
- * workspace name it labels output with, the two conductor-compatible aliases
- * Orca keeps, and the scalar credential guards that keep an unattended git call
- * inside that chain from hanging on a prompt with no terminal to answer it. The
- * cwd is the worktree and the shell is `/bin/bash`, both as Orca spawns them.
+ * The environment Orca's own hook runner exports, reproduced: the two path
+ * variables a declared chain reads, the workspace name it labels output with,
+ * the two conductor-compatible aliases Orca keeps, and the whole credential
+ * guard that keeps an unattended git call inside that chain from hanging on a
+ * prompt with no terminal to answer it. The cwd is the worktree and the shell
+ * is `/bin/bash`, both as Orca spawns them.
  *
- * ONE PART IS DELIBERATELY NOT REPRODUCED. Orca's guard also appends two
- * `credential.*=false` entries through git's indexed-config protocol
- * (`shared/git-credential-prompt-env.ts`). Their key names are not readable
- * from this checkout through the tooling available here — the source renders
- * them redacted — so they are NOT written: a guessed git config key is a config
- * this project never set, and inventing one to look faithful is worse than
- * naming the gap. The cost is bounded and one-directional: those two entries
- * only ever DISABLE a credential helper's interactive fallback, every scalar
- * guard that prevents the hang is reproduced above, and their absence can never
- * make a declared chain do something the project did not write.
+ * THE GUARD IS THE WHOLE GUARD, scalars AND the indexed-config protocol, and
+ * the two option identifiers below were EXTRACTED from Orca's own helper rather
+ * than retyped: `scripts/extract-hook-guard-keys.mjs` copies the two static
+ * literals out of `shared/git-credential-prompt-env.ts` byte for byte and
+ * rewrites them here, once, at authoring time. They are public git option
+ * identifiers set to `false`, never credential values, and nothing reads that
+ * checkout at runtime — this file carries the bytes.
+ *
+ * `tests/worktree-reclaim.test.mjs` pins the composition offline: the scalars,
+ * the append position, the non-clobbering of a caller's own indices, and the
+ * refusal to append into a malformed protocol.
  */
 export function hookEnvironment({ env, main, worktree }) {
-  return {
+  const base = {
     ...env,
     ORCA_ROOT_PATH: main,
     ORCA_WORKTREE_PATH: worktree,
@@ -390,6 +391,61 @@ export function hookEnvironment({ env, main, worktree }) {
     SSH_ASKPASS: env.SSH_ASKPASS ?? '',
     GCM_INTERACTIVE: 'never',
   };
+  // An UNEXTRACTED checkout appends nothing. A placeholder written into
+  // `GIT_CONFIG_KEY_n` would be a git option nobody declared, which is worse
+  // than the gap it stands in for — and the caller refuses to run a declared
+  // chain in that state anyway (`hookGuardEstablished`).
+  return hookGuardEstablished() ? appendGitConfig(base, CREDENTIAL_GUARD_CONFIG) : base;
+}
+
+/**
+ * The two git option identifiers Orca's guard appends, each `false`. Written by
+ * the extraction script named above; the placeholders below are what an
+ * un-extracted checkout would carry, and `hookGuardEstablished` refuses to run
+ * a declared chain while either is still in place.
+ */
+export const CREDENTIAL_GUARD_CONFIG = [
+  ["credential.interactive", 'false'],
+  ["credential.guiPrompt", 'false'],
+];
+
+/** Is the guard the real one? A placeholder key never authorises a declared chain. */
+export const hookGuardEstablished = (entries = CREDENTIAL_GUARD_CONFIG) =>
+  Array.isArray(entries) && entries.length === 2 && entries.every(([key]) => typeof key === 'string' && key.startsWith('credential.') && !key.includes('__'));
+
+const INDEXED_CONFIG = /^GIT_CONFIG_(?:KEY|VALUE)_(\d+)$/;
+
+/**
+ * The append position for git's indexed-config protocol, or `null` when the
+ * inherited protocol is AMBIGUOUS — a count that disagrees with its indices, a
+ * dangling pair, a non-numeric count. Orca's own rule, and the reason it is a
+ * rule: an ambiguous protocol may carry the CALLER's data at any index, so
+ * appending into it would overwrite a git config somebody else set.
+ */
+function validGitConfigCount(env) {
+  const raw = env.GIT_CONFIG_COUNT;
+  const indexed = Object.keys(env).filter(key => INDEXED_CONFIG.test(key));
+  if (raw === undefined) return indexed.length === 0 ? 0 : null;
+  if (!/^(?:0|[1-9]\d*)$/.test(String(raw))) return null;
+  const count = Number(raw);
+  if (!Number.isSafeInteger(count) || indexed.length !== count * 2) return null;
+  for (let index = 0; index < count; index += 1) {
+    if (env[`GIT_CONFIG_KEY_${index}`] === undefined || env[`GIT_CONFIG_VALUE_${index}`] === undefined) return null;
+  }
+  return indexed.some(key => Number(key.match(INDEXED_CONFIG)[1]) >= count) ? null : count;
+}
+
+/** Append, never clobber, and skip the append entirely when the protocol is ambiguous. */
+function appendGitConfig(env, entries) {
+  const next = { ...env };
+  const base = validGitConfigCount(env);
+  if (base === null) return next;
+  entries.forEach(([key, value], index) => {
+    next[`GIT_CONFIG_KEY_${base + index}`] = key;
+    next[`GIT_CONFIG_VALUE_${base + index}`] = value;
+  });
+  next.GIT_CONFIG_COUNT = String(base + entries.length);
+  return next;
 }
 
 /**
@@ -559,6 +615,20 @@ export function reclaim(
       'KEEP',
       `the project's archive declaration could not be read, and unknown is not absent: ${stage.unknown}`,
       `orca repo show --repo path:${shq(checkout)} --json   # and read ${shq(join(checkout, 'orca.yaml'))}; then re-run`,
+    );
+  }
+  // A DECLARED CHAIN RUNS UNDER ORCA'S BOUNDARY OR NOT AT ALL. The credential
+  // guard's two option identifiers are extracted from Orca's own helper into
+  // this module (`scripts/extract-hook-guard-keys.mjs`); a checkout where that
+  // extraction never ran carries placeholders, and running a project's chain
+  // under a weaker boundary than the project's own tooling gives it is a
+  // different command with the project's name on it. So it is a KEEP, and the
+  // repair is the extraction rather than a flag.
+  if (stage.owner === 'declared' && !hookGuardEstablished()) {
+    return deny(
+      'KEEP',
+      `${stage.source} declares an archive command, and this checkout cannot reproduce the execution boundary Orca runs it under — its credential-guard option identifiers were never extracted, so the chain would run under a weaker guard than the project's own tooling gives it`,
+      `node scripts/extract-hook-guard-keys.mjs --source <orca-checkout>   # then re-run; ax carries the bytes afterwards and reads no checkout at runtime`,
     );
   }
   if (stage.owner === 'declared' && platform === 'win32') {
@@ -883,7 +953,17 @@ function measure({ run, git, path, branch, checkout }) {
     return {
       keep: {
         reason: `${live.length} live pane(s) in ${path}: ${live.slice(0, NAMED).map(pane => pane.handle).join(', ')} — a released worker does not make every pane in its tree disposable`,
-        repair: `orca terminal close --worktree path:${shq(path)} --all --json   # once whoever is in there is done, then re-run`,
+        // NEVER `--worktree … --all`. That sweeps whatever is registered at the
+        // moment it runs — including a shell a human opened after this reason
+        // was printed — and a title is not ownership: measured on a freshly
+        // created workspace, `kind`, `command`, `agentType`, `cliProvenance`
+        // and `createdAt` are all null, so nothing in the list distinguishes a
+        // generated Setup pane from somebody's own terminal. The repair names
+        // the INSPECTION first, then the exact handles it was printed for.
+        repair: `orca terminal show --terminal ${live[0].handle} --json   # inspect each, then close only the ones you own, by handle: ${live
+          .slice(0, NAMED)
+          .map(pane => `orca terminal close --terminal ${pane.handle} --json`)
+          .join(' ; ')}`,
       },
     };
   }
@@ -940,7 +1020,15 @@ function dependencyClaims({ run, checkout, path, branch }) {
     };
   }
   const others = rows.filter(row => row !== null && typeof row === 'object' && typeof row.path === 'string' && physical(row.path) !== physical(path));
-  const unread = others.filter(row => !('baseRef' in row));
+  // THE PRIMARY CHECKOUT CARRIES NO baseRef, AND THAT IS NOT AN UNREAD CLAIM.
+  // Measured 2026-09-06 on this repository: the main worktree's row omits the
+  // key entirely (it was not created FROM a base ref — it is the repository),
+  // while every linked workspace carries it. Reading that absence as "unknown"
+  // refused every target on the repository forever, which is a false KEEP and
+  // exactly as useless as a false RECLAIM. A row that does not ESTABLISH itself
+  // as the main worktree stays in the unread set, so the exemption cannot be
+  // inherited by a row that simply failed to answer.
+  const unread = others.filter(row => !('baseRef' in row) && row.isMainWorktree !== true);
   if (unread.length > 0) {
     return {
       keep: {

@@ -29,7 +29,7 @@ import { after, test } from 'node:test';
 import { COMMANDS, subcommandNames } from '../src/commands.mjs';
 import { run } from '../src/exec.mjs';
 import { gitBlobSha } from '../src/hash.mjs';
-import { archiveScriptIn, cleanupStage, reclaim } from '../src/worktree/reclaim.mjs';
+import { CREDENTIAL_GUARD_CONFIG, archiveScriptIn, cleanupStage, hookEnvironment, hookGuardEstablished, reclaim } from '../src/worktree/reclaim.mjs';
 import { SUBCOMMANDS } from '../src/worktree/index.mjs';
 import { attemptNew, claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
 
@@ -1045,6 +1045,129 @@ test('a declared cleanup command that warns and exits zero is reported as the pr
   assert.match(out, /portless prune overran its budget/);
   assert.match(out, /reported success/);
   assert.doesNotMatch(out, /every resource/);
+});
+// ── the execution boundary a declared chain runs under ──────────────────────
+
+test('the hook environment carries Orca’s whole credential guard, appended without clobbering a caller’s own config', () => {
+  // The two option identifiers are extracted from Orca's helper into the module
+  // (`scripts/extract-hook-guard-keys.mjs`), so this suite asserts the SHAPE and
+  // the protocol rather than spelling them: an equivalence run against Orca's own
+  // helper belongs to a throwaway comparison, never to a suite that must pass
+  // offline on a machine with no Orca checkout.
+  assert.equal(hookGuardEstablished(), true, 'the guard identifiers were never extracted into this checkout');
+  assert.equal(CREDENTIAL_GUARD_CONFIG.length, 2);
+  for (const [key, value] of CREDENTIAL_GUARD_CONFIG) {
+    assert.match(key, /^credential\.[A-Za-z][A-Za-z0-9.-]*$/, 'a guard entry is not a git option identifier');
+    assert.equal(value, 'false');
+  }
+
+  const clean = hookEnvironment({ env: { PATH: '/usr/bin' }, main: '/main', worktree: '/tree/slice' });
+  assert.equal(clean.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(clean.GCM_INTERACTIVE, 'never');
+  assert.equal(clean.GIT_ASKPASS, '');
+  assert.equal(clean.SSH_ASKPASS, '');
+  assert.equal(clean.ORCA_WORKTREE_PATH, '/tree/slice');
+  assert.equal(clean.GIT_CONFIG_COUNT, '2');
+  assert.equal(clean.GIT_CONFIG_KEY_0, CREDENTIAL_GUARD_CONFIG[0][0]);
+  assert.equal(clean.GIT_CONFIG_VALUE_1, 'false');
+
+  // A caller's askpass is PRESERVED, never emptied.
+  const mine = hookEnvironment({ env: { GIT_ASKPASS: '/opt/askpass', SSH_ASKPASS: '/opt/ssh' }, main: '/main', worktree: '/tree/slice' });
+  assert.equal(mine.GIT_ASKPASS, '/opt/askpass');
+  assert.equal(mine.SSH_ASKPASS, '/opt/ssh');
+
+  // A caller's own indexed config survives, and the guard appends after it.
+  const shared = hookEnvironment({
+    env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.pager', GIT_CONFIG_VALUE_0: 'cat' },
+    main: '/main',
+    worktree: '/tree/slice',
+  });
+  assert.equal(shared.GIT_CONFIG_KEY_0, 'core.pager');
+  assert.equal(shared.GIT_CONFIG_VALUE_0, 'cat');
+  assert.equal(shared.GIT_CONFIG_COUNT, '3');
+  assert.equal(shared.GIT_CONFIG_KEY_1, CREDENTIAL_GUARD_CONFIG[0][0]);
+
+  // An AMBIGUOUS protocol is never appended into: the caller's data may sit at
+  // any index, so the guard is skipped rather than overwriting it.
+  for (const broken of [
+    { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.pager', GIT_CONFIG_VALUE_0: 'cat' },
+    { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'a.b', GIT_CONFIG_VALUE_0: 'x', GIT_CONFIG_KEY_7: 'c.d', GIT_CONFIG_VALUE_7: 'y' },
+    { GIT_CONFIG_COUNT: 'many' },
+  ]) {
+    const out = hookEnvironment({ env: { ...broken }, main: '/main', worktree: '/tree/slice' });
+    assert.deepEqual(out.GIT_CONFIG_COUNT, broken.GIT_CONFIG_COUNT, 'an ambiguous protocol was rewritten');
+    assert.equal(out.GIT_CONFIG_KEY_1, broken.GIT_CONFIG_KEY_1, 'the guard appended into an ambiguous protocol');
+    // The scalar guards still apply — they are not part of the protocol.
+    assert.equal(out.GIT_TERMINAL_PROMPT, '0');
+  }
+});
+
+test('a placeholder guard identifier authorises nothing', () => {
+  // What an unextracted clone carries. `hookGuardEstablished` is the predicate
+  // the cleanup stage refuses on, so a weaker boundary can never run a
+  // project's chain silently.
+  assert.equal(hookGuardEstablished([['__GUARD_KEY_0__', 'false'], ['__GUARD_KEY_1__', 'false']]), false);
+  assert.equal(hookGuardEstablished([['credential.one', 'false']]), false, 'a one-entry guard is not the guard');
+  assert.equal(hookGuardEstablished([]), false);
+});
+
+test('the primary checkout carrying no baseRef is not an unread branch claim', () => {
+  // Measured on the real repository: the main worktree's row omits `baseRef`
+  // entirely, and reading that as unknown refused every target forever.
+  const s = stage();
+  const { deps } = host(s);
+  const inner = deps.runner;
+  deps.runner = args => {
+    const out = inner(args);
+    if (args.slice(0, 2).join(' ') !== 'worktree list') return out;
+    const rows = out.receipt.result.worktrees.map(row => {
+      if (row.path !== s.main) return row;
+      const bare = { ...row, isMainWorktree: true };
+      delete bare.baseRef;
+      return bare;
+    });
+    return receiptOf({ ok: true, result: { worktrees: rows } });
+  };
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 0, out);
+  assert.doesNotMatch(out, /baseRef/);
+});
+
+test('a linked workspace that cannot answer its baseRef is still an unread claim', () => {
+  const s = stage();
+  const sibling = join(s.fixture, 'sibling');
+  const { deps } = host(s, {
+    siblings: [{ id: `repo::${sibling}`, path: sibling, head: s.head, branch: 'refs/heads/feat/sibling', isBare: false, isMainWorktree: false, isArchived: false, isPinned: false, workspaceStatus: 'in-progress', parentWorktreeId: `repo::${s.main}`, childWorktreeIds: [], linkedPR: null }],
+  });
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /baseRef/);
+  assert.match(out, new RegExp(sibling.replace(/[/\\]/g, '\\$&')));
+  assertRepair(out);
+});
+
+test('the live-pane KEEP names per-handle closes, never a bulk sweep of the worktree', () => {
+  const s = stage();
+  const { deps } = host(s, {
+    terminals: [
+      { handle: 'term_shell', worktreePath: s.path, orphaned: false },
+      { handle: 'term_setup', title: 'Setup', worktreePath: s.path, orphaned: false },
+    ],
+  });
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  // Inspection first, then the exact handles — and never `--all`, which would
+  // sweep a shell somebody opened after this line was printed.
+  assert.match(out, /orca terminal show --terminal term_shell/);
+  assert.match(out, /orca terminal close --terminal term_shell --json/);
+  assert.match(out, /orca terminal close --terminal term_setup --json/);
+  assert.doesNotMatch(out, /--all/);
 });
 
 // ── the declaration reader ──────────────────────────────────────────────────
