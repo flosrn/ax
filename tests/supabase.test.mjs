@@ -390,6 +390,30 @@ test('a failed start keeps the captured diagnostic rather than inventing a daemo
   assert.doesNotMatch(result.failure, /container runtime|nothing is listening/);
 });
 
+test('a failed start keeps the tail of a large diagnostic, not the whole buffer', () => {
+  const { dir } = fixture();
+  const noise = Array.from({ length: 40 }, (_, i) => `pulling image ${i}`).join('\n');
+  const result = promote({
+    cwd: dir,
+    projectId: 'testapp-x',
+    offset: 1200,
+    base: BASE,
+    relativePath: 'config.toml',
+    envFiles: ['.env.local'],
+    envLabel: 'ax-supabase',
+    start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'] },
+    run: (_command, args) => args.includes('supabase:start')
+      ? { status: 1, stdout: `${noise}\nLegacyHealthCheckTimeoutError: vector failed\n`, stderr: '', error: undefined }
+      : { status: 0, stdout: '', stderr: '', error: undefined },
+    write: () => true,
+  });
+
+  assert.equal(result.started, false);
+  assert.match(result.failure, /LegacyHealthCheckTimeoutError: vector failed/);
+  assert.doesNotMatch(result.failure, /pulling image 0/);
+  assert.match(result.failure, /pulling image 39/);
+});
+
 test('teardown addresses the stack by project id, not by directory', () => {
   const calls = [];
   const result = teardown({

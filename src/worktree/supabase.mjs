@@ -646,6 +646,17 @@ export function resolveProjectId({ identity, prefix = '', recorded, cwd, relativ
  *
  * `run` and `write` are injected so that order is testable without Docker.
  */
+const START_DIAGNOSTIC_LINES = 20;
+
+/** Last non-empty lines of a captured stream — a failed start can fill exec's 64 MiB buffer. */
+function startDiagnostic(text) {
+  return String(text ?? '')
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .slice(-START_DIAGNOSTIC_LINES)
+    .join('\n');
+}
+
 export function promote({
   cwd,
   projectId: id,
@@ -687,8 +698,8 @@ export function promote({
   const failure = ok ? undefined : redactSecrets([
     `${start.command} ${(start.args ?? []).join(' ')} failed (${startResult.status == null ? 'no exit status' : `exit ${startResult.status}`})`,
     startResult.error?.message,
-    startResult.stdout?.trim(),
-    startResult.stderr?.trim(),
+    startDiagnostic(startResult.stdout),
+    startDiagnostic(startResult.stderr),
   ].filter(Boolean).join('\n'));
   return { projectId: id, offset, ports, config, steps, started: ok, failure };
 }
