@@ -82,8 +82,16 @@ test('every advertised command answers for real, verb included', () => {
   // passed while `ax worktree setup` did not exist.
   for (const advertised of advertisedCommands()) {
     const result = run([...advertised.split(' '), '--dry-run']);
-    assert.notEqual(result.status, 2, `${advertised} is advertised but reports an unknown command or verb`);
     assert.doesNotMatch(result.out, /unknown (command|verb)/);
+    // Exit 2 is the usage code, and a verb that REFUSES an unknown flag rather
+    // than ignoring it IS answering. `ax worktree reclaim` is destructive, so
+    // quietly ignoring `--dry-run` would perform a real removal for an operator
+    // who typed a rehearsal — the strictness is the safety property. It fails
+    // here only when the refusal is about the command or the verb, never when
+    // it names the flag this probe itself injected.
+    if (result.status === 2) {
+      assert.match(result.out, /unknown flag --dry-run/, `${advertised} is advertised but its usage error is not about the probe's own flag`);
+    }
   }
 });
 
@@ -185,7 +193,11 @@ test('only commands meant for agents reach the AGENTS block', () => {
   // mid-task. Adding a command here is a decision, so it belongs in a diff.
   // `frontier` is that decision (U1): the orchestrator reads its receipt at
   // every wake, so the block is exactly where the verb must be learned from.
-  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'frontier', 'worktree ls', 'worktree setup']);
+  // `worktree reclaim` is the other such decision (#213): the orchestrator
+  // contract runs it on the ordinary per-slice path right after the pane
+  // release, so an agent that never learns it leaves every finished slice's
+  // whole workspace on disk — which is the report that opened that ticket.
+  assert.deepEqual(advertisedCommands().sort(), ['doctor', 'frontier', 'worktree ls', 'worktree reclaim', 'worktree setup']);
   assert.doesNotMatch(agentsBody(), /`ax init/);
 });
 

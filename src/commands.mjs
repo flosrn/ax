@@ -88,8 +88,52 @@ export const COMMANDS = [
       ['ls', 'every worktree, with the port and stack each one holds'],
       ['clean [path]', 'reclaim processes, containers and caches; keep the tree'],
       ['rm <name> [--force]', 'reclaim, then remove the tree'],
+      ['reclaim <name>', 'a landed slice’s whole workspace, or a named KEEP'],
     ],
-    agentLine: '`ax worktree setup` — make a fresh worktree runnable, and `ax worktree ls` to see the port and database each one holds.',
+    // What `ax worktree reclaim --help` prints under the block. Three verbs of
+    // one noun now touch a checkout's life, and which one an operator wants is
+    // a JUDGEMENT they make before typing: `clean` keeps the tree, `rm` is
+    // their own decision at a target they chose, and this one refuses unless
+    // every term of its conjunction holds. A module header cannot answer that
+    // — a header is for whoever patches the verb (./worktree/reclaim.mjs).
+    helpBody: {
+      reclaim: `The guarded post-merge lifecycle of ONE worktree: decide eligibility, preserve
+evidence, run the cleanup the project declares, then remove the tree through Orca
+so the git and Orca views converge. One exact target, never a pattern.
+
+  clean    give back what a checkout holds, and KEEP the tree
+  rm       your own decision, at a target you chose
+  reclaim  this: RECLAIMED, or KEEP with the reason and the repair beside it
+
+Every term must hold, and a term that cannot be READ is a KEEP, never a pass:
+
+  landed        a MERGED pull request for this branch AND its merge commit
+  landed head   HEAD equals the head the Gate merge record validated. Never a
+                commit count, never diff emptiness, never a mutable headRefOid
+  clean tree    porcelain status, untracked included
+  nobody there  the panes of that worktree, counted from the pane list
+  unclaimed     git's worktree \`locked\` flag (with its reason), Orca's
+                \`isPinned\`, a lineage child, any workspace based on this branch
+  evidence      every Report the dispatch records require, copied under the
+                primary checkout, verified byte-identical, and referenced
+
+A landed branch whose HEAD moved past what merged is RETAINED WORK: the repair is
+delivery in a follow-up pull request. There is no --force, no auto-stash and no
+delete-by-name — a retention claim an operator made is honoured, not overridden.
+
+The cleanup stage belongs to whoever the repository says: where orca.yaml (or
+Orca's repository settings) declares an archive command, that declaration owns
+it and runs exactly once; where absence is PROVEN, \`ax worktree clean\` owns it.
+A declared chain that fails KEEPS the worktree, and the removal is never
+attempted. The removal itself passes no --run-hooks, so nothing runs twice.
+
+  --store <dir>   the dispatch store the proofs and the record live in
+
+Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
+      2 usage - 3 cannot establish (no Orca CLI, silent runtime, no gh)`,
+    },
+    agentLine:
+      '`ax worktree setup` — make a fresh worktree runnable, `ax worktree ls` to see the port and database each one holds, and `ax worktree reclaim <name>` once a slice has landed.',
   },
   {
     name: 'supabase',

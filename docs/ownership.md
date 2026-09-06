@@ -15,6 +15,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/worktree/setup.mjs`, `src/worktree/list.mjs`, `src/worktree/clean.mjs`, `src/worktree/remove.mjs`, `src/worktree/doctor.mjs` | the worktree verbs; render and write, never decide |
 | `src/worktree/context.mjs` | `.agent/worktree-context.local.md`, read by a cold agent |
 | `src/worktree/locate.mjs` | proof that a destructive worktree target belongs to ax |
+| `src/worktree/reclaim.mjs` | the guarded post-merge lifecycle of one worktree: which terms authorize a removal, what evidence survives it first, and whose cleanup owns the stage |
 | `src/worker/record.mjs` | write-ahead dispatch/release identity and exact replay |
 | `src/worker/report.mjs` | the Report's path — one rule crossed by both the brief a dispatch composes and the reader of the completion that arrives, never a path the worker named |
 | `src/worker/landed.mjs` | the landed facts a next dispatch's notes carry: which pair of tracker answers may be called merged, and which surfaces this checkout may name for that SHA — never Spec membership, never a Report |
