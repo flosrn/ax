@@ -246,7 +246,7 @@ function protect(argv, { env, root, config, deps }) {
     // database, or against an isolated config whose stack never came up — is
     // the loss this command exists to prevent, and it is silent.
     fatal(`cannot isolate this checkout — refusing to run \`${CLI_NAME} ${argv.join(' ')}\`.`);
-    warn(result.reason ?? 'promotion did not complete');
+    for (const line of String(result.reason ?? 'promotion did not complete').split('\n')) warn(line);
     warn(`fix that and retry, or set ${GUARD_ENV}=0 if you are certain this command is harmless.`);
     return 1;
   }

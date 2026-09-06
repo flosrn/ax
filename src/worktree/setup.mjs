@@ -157,7 +157,7 @@ function apply({ plan, config, root, main }) {
     // that nothing is listening, so the repair is the captured diagnostic.
     if (result.started === false) {
       bad(`the database stack for ${result.projectId} did not start successfully — its endpoints are recorded, but startup is not confirmed`);
-      note(result.failure);
+      for (const line of String(result.failure).split('\n')) note(line);
       fix('resolve the startup failure above, then re-run ax worktree setup --database');
       return 1;
     }

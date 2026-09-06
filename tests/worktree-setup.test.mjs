@@ -144,8 +144,8 @@ test('a failed database start preserves its diagnostic without blaming a healthy
     const result = spawnSync(process.execPath, [new URL('../bin/ax.mjs', import.meta.url).pathname, 'worktree', 'setup', '--database'], { cwd: tree, env, encoding: 'utf8' });
     const output = `${result.stdout}${result.stderr}`;
     assert.equal(result.status, 1, output);
-    assert.match(output, /LegacyHealthCheckTimeoutError: vector failed/, 'the startup stderr reaches the operator');
-    assert.match(output, /analytics: unhealthy/, 'startup stdout can also carry the failure');
+    assert.match(output, /· analytics: unhealthy/, 'startup stdout can also carry the failure');
+    assert.match(output, /· LegacyHealthCheckTimeoutError: vector failed/, 'each diagnostic line is a note, not a raw wrap');
     assert.match(output, /pnpm --filter web supabase:start/, 'the failed command is identified');
     assert.doesNotMatch(output, /start the container runtime|nothing is listening/, 'a failed start proves neither a dead daemon nor absent listeners');
   } finally {
