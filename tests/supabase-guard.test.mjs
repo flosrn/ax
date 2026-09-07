@@ -102,6 +102,57 @@ test('a read-only command runs with no promotion at all', () => {
   assert.deepEqual(calls, ['run status', 'cwd /repo/apps/web']);
 });
 
+test('an environment workdir cannot redirect the CLI or the promotion subprocess', () => {
+  const { deps, calls } = harness({ env: { SUPABASE_WORKDIR: '../other' } });
+  const result = capture(() => supabase(['db', 'reset'], deps));
+  assert.equal(result.code, 1);
+  assert.deepEqual(calls, []);
+  assert.match(result.err, /SUPABASE_WORKDIR/);
+});
+
+test('an explicit app workdir is resolved from the caller without doubling apps/web', () => {
+  const { deps } = harness();
+  deps.cwd = '/repo';
+  deps.runCli = (_cli, args, { cwd }) => {
+    assert.equal(cwd, '/repo/apps/web');
+    assert.deepEqual(args, ['start']);
+    return 7;
+  };
+  assert.equal(capture(() => supabase(['start', '--workdir', 'apps/web'], deps)).code, 7);
+});
+
+test('a leading workdir cannot hide db reset from isolation', () => {
+  const { deps, calls } = harness();
+  deps.cwd = '/repo/apps/web';
+  assert.equal(capture(() => supabase(['--workdir=.', 'db', 'reset'], deps)).code, 0);
+  assert.deepEqual(calls, ['promote', 'run db reset', 'cwd /repo/apps/web']);
+});
+
+test('an absolute workdir keeps promotion and execution on the configured app', () => {
+  const { deps, calls } = harness();
+  deps.cwd = '/elsewhere';
+  assert.equal(capture(() => supabase(['db', '--workdir', '/repo/apps/web', 'reset'], deps)).code, 0);
+  assert.deepEqual(calls, ['promote', 'run db reset', 'cwd /repo/apps/web']);
+});
+
+test('an outside workdir is refused before promotion or CLI execution', () => {
+  const { deps, calls } = harness();
+  deps.cwd = '/repo';
+  const result = capture(() => supabase(['db', 'reset', '--workdir', '../other'], deps));
+  assert.equal(result.code, 1);
+  assert.deepEqual(calls, []);
+  assert.match(result.err, /configured app/);
+});
+
+test('missing or repeated workdir values never run the CLI', () => {
+  for (const args of [['start', '--workdir'], ['start', '--workdir='], ['start', '--workdir', '--debug'], ['start', '--workdir=apps/web', '--workdir=apps/web']]) {
+    const { deps, calls } = harness();
+    deps.cwd = '/repo';
+    assert.equal(capture(() => supabase(args, deps)).code, 1);
+    assert.deepEqual(calls, []);
+  }
+});
+
 test('the Supabase CLI’s own help flag is forwarded, wherever it sits in the argv', () => {
   // ax widened its help read to a command's whole argv (#89), and this argv is
   // not ax's: `db push --help` is a question for the CLI, whose answer ax has

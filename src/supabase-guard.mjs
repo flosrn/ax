@@ -21,13 +21,14 @@
 
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 
 import { loadCheckoutConfig, repoPaths } from './config.mjs';
 import { removeBlock, writeBlock } from './dotenv.mjs';
 import { currentBranch, isMainCheckout } from './git.mjs';
 import { fatal, warn } from './log.mjs';
 import { identify } from './worktree/identity.mjs';
+import { physical } from './worktree/locate.mjs';
 import { PREFIX, planWorktree } from './worktree/plan.mjs';
 import { probeAll, readWorktreeRecord } from './worktree/probes.mjs';
 import { commandNeedsIsolation, isIsolatedConfig, promoteFromPlan } from './worktree/supabase.mjs';
@@ -150,31 +151,56 @@ export function resolveCli({ appDir, root, env = process.env, isExecutable = exe
   return { error: `no ${CLI_NAME} CLI found — install this workspace's dependencies, or set ${CLI_ENV} to one` };
 }
 
+/** Resolve explicit workdir against the caller, never against the rebased CLI cwd. */
+function appArguments(argv, cwd, appDir) {
+  const args = [];
+  let seen = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--') {
+      args.push(...argv.slice(i));
+      break;
+    }
+    if (arg !== '--workdir' && !arg.startsWith('--workdir=')) {
+      args.push(arg);
+      continue;
+    }
+    if (seen) return { error: '--workdir must be specified only once' };
+    seen = true;
+    const value = arg === '--workdir' ? argv[++i] : arg.slice('--workdir='.length);
+    if (!value || value.startsWith('-')) return { error: '--workdir requires a project directory' };
+    if (physical(resolve(cwd, value)) !== physical(appDir)) {
+      return { error: '--workdir must name the configured app; ax cannot isolate a different Supabase project' };
+    }
+  }
+  return { args };
+}
+
 /**
  * Run the Supabase CLI, promoting this checkout first when the command would
  * otherwise write to a database other checkouts are reading.
  *
- * Every argument here belongs to the CLI, with exactly one exception ax claims:
- * `--help` (or `-h`) in the FIRST slot, answered by `runCli` before this
- * function is reached, because asking a verb what it does must never run it
- * (#71, ./cli.mjs). Nothing further is claimed — a flag past that slot would
- * mean two things depending on who typed it — and the Supabase CLI's own help
- * stays one gesture away as `ax supabase help`, which `commandNeedsIsolation`
- * answers false for and this wrapper forwards untouched. The two knobs are
- * environment variables.
+ * CLI arguments are forwarded, except that an explicit `--workdir` is resolved
+ * from the caller and must name the configured app. It is consumed before both
+ * isolation and execution: protecting one app while the CLI targets another
+ * would allow a destructive command to bypass isolation (#222).
+ * `--help` (or `-h`) in the FIRST slot is answered by `runCli`; the Supabase
+ * CLI's own help remains available as `ax supabase help`.
+ * SUPABASE_WORKDIR is refused: promotion invokes a package script that would
+ * inherit that override independently of the explicit target checked here.
  *
- * That exception is now DECLARED rather than incidental. #89 widened the help
+ * The help exception is DECLARED rather than incidental. #89 widened the help
  * read to a command's whole argv, which would have swallowed `supabase db push
  * --help` — a question for the Supabase CLI, whose answer ax has no business
  * composing. The registry entry carries `passthrough: true` for exactly this
- * boundary (./commands.mjs), so the one gesture ax claims here is stated where
- * the read is decided instead of resting on the shape of an argv scan.
+ * boundary (./commands.mjs), so help ownership stays separate from the guard's
+ * workdir validation.
  *
  * Everything that touches the machine arrives through `deps`, so the sequencing
  * can be tested without a container, a port or a real CLI.
  */
 export function supabase(argv = [], deps = {}) {
-  const { env = process.env, paths = repoPaths(), runCli = execCli, findCli = resolveCli } = deps;
+  const { env = process.env, cwd = process.cwd(), paths = repoPaths(cwd), runCli = execCli, findCli = resolveCli } = deps;
   const { root, main } = paths;
 
   if (!root) {
@@ -190,10 +216,20 @@ export function supabase(argv = [], deps = {}) {
   }
 
   const config = loaded.config;
-  // The CLI finds `supabase/config.toml` by working directory and by nothing
-  // else, so the app directory is where it has to run from — whatever directory
-  // the human or the package script was standing in.
+  // Without --workdir, preserve the configured app default. With it, verify
+  // the caller's target before moving cwd, so apps/web is never applied twice.
   const appDir = join(root, config.apps.web);
+  if (env.SUPABASE_WORKDIR) {
+    fatal('SUPABASE_WORKDIR can redirect the CLI away from the configured app');
+    warn('unset SUPABASE_WORKDIR; use --workdir to explicitly select the configured app');
+    return 1;
+  }
+  const target = appArguments(argv, cwd, appDir);
+  if (target.error) {
+    fatal(target.error);
+    warn('run ax supabase from the intended checkout without --workdir to use its configured app');
+    return 1;
+  }
 
   const cli = findCli({ appDir, root, env });
   if (cli.error) {
@@ -201,10 +237,10 @@ export function supabase(argv = [], deps = {}) {
     return 1;
   }
 
-  const refusal = protect(argv, { env, root, config, deps });
+  const refusal = protect(target.args, { env, root, config, deps });
   if (refusal !== 0) return refusal;
 
-  return runCli(cli.path, argv, { cwd: appDir, env });
+  return runCli(cli.path, target.args, { cwd: appDir, env });
 }
 
 /** `0` to proceed, a non-zero exit code to refuse. */
