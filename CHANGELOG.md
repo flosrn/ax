@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.1](https://github.com/flosrn/ax/compare/v0.24.0...v0.24.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **supabase:** preserve startup diagnostics and bind workdir ([#224](https://github.com/flosrn/ax/issues/224)) ([e62e6b4](https://github.com/flosrn/ax/commit/e62e6b46c168fd4a8e03995b45d7314fd6bb939f))
+
 ## [0.24.0](https://github.com/flosrn/ax/compare/v0.23.0...v0.24.0) (2026-09-06)
 
 
