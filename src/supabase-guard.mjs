@@ -152,7 +152,7 @@ export function resolveCli({ appDir, root, env = process.env, isExecutable = exe
 }
 
 /** Resolve explicit workdir against the caller, never against the rebased CLI cwd. */
-function appArguments(argv, cwd, appDir) {
+function appArguments(argv, cwd, appDir, canonicalize = physical) {
   const args = [];
   let seen = false;
   for (let i = 0; i < argv.length; i += 1) {
@@ -169,7 +169,7 @@ function appArguments(argv, cwd, appDir) {
     seen = true;
     const value = arg === '--workdir' ? argv[++i] : arg.slice('--workdir='.length);
     if (!value || value.startsWith('-')) return { error: '--workdir requires a project directory' };
-    if (physical(resolve(cwd, value)) !== physical(appDir)) {
+    if (canonicalize(resolve(cwd, value)) !== canonicalize(appDir)) {
       return { error: '--workdir must name the configured app; ax cannot isolate a different Supabase project' };
     }
   }
@@ -184,6 +184,8 @@ function appArguments(argv, cwd, appDir) {
  * from the caller and must name the configured app. It is consumed before both
  * isolation and execution: protecting one app while the CLI targets another
  * would allow a destructive command to bypass isolation (#222).
+ * The comparison is `deps.canonicalize`, defaulting to `physical`, so a test
+ * can exercise the production equality without a host filesystem.
  * `--help` (or `-h`) in the FIRST slot is answered by `runCli`; the Supabase
  * CLI's own help remains available as `ax supabase help`.
  * SUPABASE_WORKDIR is refused: promotion invokes a package script that would
@@ -200,7 +202,7 @@ function appArguments(argv, cwd, appDir) {
  * can be tested without a container, a port or a real CLI.
  */
 export function supabase(argv = [], deps = {}) {
-  const { env = process.env, cwd = process.cwd(), paths = repoPaths(cwd), runCli = execCli, findCli = resolveCli } = deps;
+  const { env = process.env, cwd = process.cwd(), paths = repoPaths(cwd), runCli = execCli, findCli = resolveCli, canonicalize = physical } = deps;
   const { root, main } = paths;
 
   if (!root) {
@@ -224,7 +226,7 @@ export function supabase(argv = [], deps = {}) {
     warn('unset SUPABASE_WORKDIR; use --workdir to explicitly select the configured app');
     return 1;
   }
-  const target = appArguments(argv, cwd, appDir);
+  const target = appArguments(argv, cwd, appDir, canonicalize);
   if (target.error) {
     fatal(target.error);
     warn('run ax supabase from the intended checkout without --workdir to use its configured app');

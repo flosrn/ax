@@ -153,6 +153,18 @@ test('missing or repeated workdir values never run the CLI', () => {
   }
 });
 
+test('workdir comparison uses the injected canonicalizer, not a host realpath', () => {
+  const { deps } = harness();
+  deps.cwd = '/repo';
+  const seen = [];
+  deps.canonicalize = path => {
+    seen.push(path);
+    return path;
+  };
+  assert.equal(capture(() => supabase(['start', '--workdir', 'apps/web'], deps)).code, 0);
+  assert.deepEqual(seen, ['/repo/apps/web', '/repo/apps/web']);
+});
+
 test('the Supabase CLI’s own help flag is forwarded, wherever it sits in the argv', () => {
   // ax widened its help read to a command's whole argv (#89), and this argv is
   // not ax's: `db push --help` is a question for the CLI, whose answer ax has
