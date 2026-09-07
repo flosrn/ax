@@ -139,10 +139,8 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     name: 'supabase',
     section: 'WORKTREE',
     summary: 'run the Supabase CLI against THIS checkout’s database',
-    // Environment, not flags: every argument after the command name belongs to
-    // the Supabase CLI, so `ax` claims none of them. They are listed here all
-    // the same, because an escape hatch nobody can find is an escape hatch
-    // nobody uses — they delete the guard instead.
+    // Guard controls remain environment variables. The guard also validates
+    // Supabase's --workdir against the configured app before rebasing cwd.
     //
     // And that ownership is DECLARED, because the help read is otherwise
     // whole-argv: `supabase db push --help` is a question for the Supabase CLI
@@ -153,6 +151,8 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     options: [
       ['AX_SUPABASE_CLI=<path>', 'the CLI to run when the workspace and PATH have none'],
       ['AX_SUPABASE_GUARD=0', 'skip the guard and run against the shared database'],
+      ['--workdir <path>', 'configured app path, relative to caller or absolute'],
+      ['SUPABASE_WORKDIR=<path>', 'refused; unset it and use --workdir instead'],
     ],
   },
   {

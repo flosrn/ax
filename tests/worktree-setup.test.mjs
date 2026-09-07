@@ -7,8 +7,8 @@
 // otherwise sends an operator looking for dirt on a checkout they never touched
 // (#99), so the sentence and the write are asserted together here.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -113,4 +113,42 @@ test('a config refusal in a checkout carrying another ax than the one running sa
   assert.equal(plain.code, 1);
   assert.match(plain.out, /problem\(s\) in ax\.config\.json/);
   assert.doesNotMatch(plain.out, /own ax/);
+});
+
+test('a failed database start preserves its diagnostic without blaming a healthy daemon', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-start-failure-')));
+  try {
+    const root = join(dir, 'main');
+    const tree = join(dir, 'child');
+    const bin = join(dir, 'bin');
+    mkdirSync(join(root, 'apps/web/supabase'), { recursive: true });
+    mkdirSync(bin);
+    git(root, 'init', '-q');
+    writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'demo' }, apps: { web: 'apps/web' } }));
+    writeFileSync(join(root, 'apps/web/supabase/config.toml'), 'project_id = "demo"\n[api]\nport = 54321\n[db]\nport = 54322\n');
+    git(root, 'add', '.');
+    execFileSync('git', [...IDENTITY, 'commit', '-qm', 'fixture'], { cwd: root, stdio: 'ignore' });
+    assert.equal(addWorktree({ cwd: root, path: tree, branch: 'feature/start-failure' }).ok, true);
+    for (const [name, body] of Object.entries({
+      docker: 'exit 0',
+      pnpm: 'echo "analytics: unhealthy"; echo "LegacyHealthCheckTimeoutError: vector failed" >&2; exit 1',
+      portless: 'exit 1',
+      tailscale: 'exit 1',
+    })) {
+      const path = join(bin, name);
+      writeFileSync(path, `#!/bin/sh\n${body}\n`);
+      chmodSync(path, 0o755);
+    }
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: dir, NO_COLOR: '1' };
+    delete env.AX_MAIN_CHECKOUT;
+    const result = spawnSync(process.execPath, [new URL('../bin/ax.mjs', import.meta.url).pathname, 'worktree', 'setup', '--database'], { cwd: tree, env, encoding: 'utf8' });
+    const output = `${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 1, output);
+    assert.match(output, /· analytics: unhealthy/, 'startup stdout can also carry the failure');
+    assert.match(output, /· LegacyHealthCheckTimeoutError: vector failed/, 'each diagnostic line is a note, not a raw wrap');
+    assert.match(output, /pnpm --filter web supabase:start/, 'the failed command is identified');
+    assert.doesNotMatch(output, /start the container runtime|nothing is listening/, 'a failed start proves neither a dead daemon nor absent listeners');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

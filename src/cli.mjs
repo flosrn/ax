@@ -40,8 +40,8 @@ const runners = argv => ({
   // Verbs of one noun get the remaining argv, unparsed: `rm <name> --force`
   // needs its own positional, and the flag helpers below are whole-command.
   worktree: () => worktree(argv.slice(1)),
-  // Same reason, and stronger: every argument after `supabase` is the Supabase
-  // CLI's own, so ax must not parse, reorder or consume a single one of them.
+  // Hand argv to the guard intact: it owns target validation, while this
+  // dispatcher must not interpret the Supabase CLI's flags.
   supabase: () => supabase(argv.slice(1)),
   // Fail-open hook writer — its own module owns the always-zero exit contract.
   board: () => board(argv.slice(1)),
