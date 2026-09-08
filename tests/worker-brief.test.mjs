@@ -182,6 +182,35 @@ test('the brief states the Report shape, and that a failed outcome writes one to
   assert.match(text, /--outcome failed/, 'the outcome that needs the Report most is the one a worker skips');
 });
 
+test('the brief says where a REQUIRED artifact goes, because the Report directory is not a delivery channel', () => {
+  // Measured 2026-09-08 across three slices of one wave (goodluckagency/ofmchat
+  // PRD #208): every worker left artifacts beside its Report that no dispatch
+  // record accounts for — a diff and a file list, regenerable; a `/rls-review`
+  // report their AGENTS.md REQUIRES for a SQL mutation; and a browser-journey
+  // screenshot required by a ticket's own AC14. The last two are evidence and
+  // are not regenerable, and both were gitignored in a worktree about to be
+  // deleted. `ax worktree reclaim` KEEPs on each of them, correctly — it will
+  // not delete an only copy it cannot classify (flosrn/ax#232) — so the
+  // coordinator moved them by hand, once per slice, and carried the rule in its
+  // own wave notes. That is a local workaround for an instruction defect: what
+  // a repository requires as PROOF of a change belongs where the change is
+  // reviewed.
+  const text = brief();
+  assert.match(text, /require[sd]? as evidence/i);
+  assert.match(text, /pull request/);
+  // Not by file type: a rule written about markdown would have missed the
+  // screenshot, which is exactly what the third report was.
+  assert.doesNotMatch(text, /\*\.md|markdown file/i);
+  // And STILL no path knowledge: the Report's location is data this renderer is
+  // handed, so naming the directory here would be a second copy of one rule.
+  // Asserted on a report path that carries no such directory of its own, the
+  // way the path-ignorance test above does — the default fixture path contains
+  // one, which would make this pass or fail for the wrong reason.
+  const elsewhere = brief({ report: { path: '/tmp/elsewhere/anything.md' } });
+  assert.match(elsewhere, /require[sd]? as evidence/i);
+  assert.ok(!elsewhere.includes('.scratch'), 'the brief must not know how the path is built');
+});
+
 test('the brief says what the completion carries, where a question goes, and what a late refusal is', () => {
   const text = brief();
   // The two contracts nest instead of competing: the preamble's body stays the
