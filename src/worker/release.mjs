@@ -177,7 +177,7 @@ import { parseRequest } from '../triage/draft.mjs';
 import { publicationIn, publicationName, samePublication } from '../triage/publication.mjs';
 
 const USAGE =
-  'ax worker release [--all] [--close] [--dispatch <id>] [--no-proof] [--base <ref>] [--gap <s>] [--store <dir>]';
+  'ax worker release [--all] [--close] [--dispatch <id|request>] [--no-proof] [--base <ref>] [--gap <s>] [--store <dir>]';
 
 /**
  * The command names that may be replayed as a program. `resolveOrca` produces
@@ -1053,6 +1053,42 @@ export function release(
   const seen = new Set(workers.rows.map(row => row.dispatchId));
   const rows = [...workers.rows, ...unaccounted(index, seen)];
 
+  // A REQUEST SLUG IS ACCEPTED WHERE A DISPATCH ID IS, AND THE SUBSTITUTION IS
+  // STATED (reported 2026-09-08 from a consumer on 0.24.2).
+  //
+  // `ls`, `tail`, `gate` and `settle` all take the request; this verb took only
+  // the `ctx_` id, which appears in the output of the dispatch that minted it
+  // and nowhere a later session can read. So closing a landed pane cost two
+  // calls: one refused as an unknown argument, one refused as an unknown
+  // dispatch — while `ax worker ls` was listing that very slug.
+  //
+  // The substitution is STATED for the same reason the gate states its own
+  // (./gate.mjs): the whole value of a verb that closes someone's pane is that
+  // its subject is identifiable, and an operator who typed one id must see
+  // which one was acted on. It fires ONLY when the typed value names no
+  // dispatch: a `ctx_` id Orca knows and this store does not is still the
+  // caller's own target, not a slug to resolve.
+  //
+  // AND TWO DISPATCHES FOR ONE REQUEST IS A REFUSAL, never the newest by
+  // default: a `--replace` leaves two panes, a release closes ONE, and picking
+  // for the operator is how the wrong child gets closed on the right slug
+  // (F-028 — the ambiguity is the answer, not something to round off).
+  if (only !== '' && !index.byDispatch.has(only)) {
+    const named = [...index.byDispatch]
+      .filter(([, entry]) => entry.request === only)
+      .sort(([, a], [, b]) => (Number(a.issuedAt) || 0) - (Number(b.issuedAt) || 0));
+    if (named.length > 1) {
+      return cannot(
+        `request ${only} left ${named.length} dispatches on this host (${named.map(([id]) => id).join(', ')}) — a release closes ONE pane, and which of those attempts to close is a judgement this verb does not make for you`,
+        `ax worker release --close --dispatch ${named[named.length - 1][0]}   # the newest of them; ax worker ls --all names what each attempt left behind`,
+      );
+    }
+    if (named.length === 1) {
+      note(`${only} names a request; the dispatch this host recorded for it is ${named[0][0]}`);
+      only = named[0][0];
+    }
+  }
+
   const selfHandle = env.ORCA_TERMINAL_HANDLE ?? '';
   const tally = { released: 0, pending: 0, noTerminal: 0, gone: 0, unprovable: 0, foreign: 0, unplaced: 0 };
   const lines = [];
@@ -1405,7 +1441,7 @@ export function release(
   if (only !== '' && matched === 0) {
     return cannot(
       `no worker and no local record names dispatch ${only} — nothing can be established about it`,
-      'ax worker ls   # the dispatches this host recorded, counted by live pane',
+      'ax worker ls   # the dispatches this host recorded, counted by live pane — either id it prints is a target here: the request slug, or the ctx_ dispatch',
     );
   }
 

@@ -1199,6 +1199,91 @@ test('a dispatch nothing knows about cannot be established', () => {
   assert.match(r.out, /no worker and no local record names dispatch ctx_ghost/);
 });
 
+// ── the id a caller HOLDS, not the one a dispatch printed once ──────────────
+//
+// Reported 2026-09-08 from a consumer on 0.24.2: `ax worker ls`, `tail`, `gate`
+// and `settle` all take the request slug, this verb took neither it as a
+// positional (`unknown argument`, exit 2) nor as `--dispatch` (exit 3, "no
+// worker and no local record names dispatch 209-…") — while `ax worker ls` was
+// listing that very slug. Only `--dispatch ctx_d07493265e6e` worked, and a
+// `ctx_` id appears in the output of the DISPATCH that minted it and nowhere a
+// later session can read. Two calls to close one landed pane.
+
+test('--dispatch takes a request slug, and states which dispatch it resolved to', () => {
+  const dir = store();
+  record(dir, '209-repetition-bound', 'ctx_209');
+  const r = run(['--dispatch', '209-repetition-bound'], {
+    dir,
+    orca: { workers: [worker('ctx_209')], terminals: [terminal('term_ctx_209')] },
+  });
+
+  assert.notEqual(r.code, 3, `a slug this host recorded must not be cannot-establish: ${r.out}`);
+  // STATED, exactly as the gate states its own substitution: an operator who
+  // typed one id has to be able to see which one was acted on.
+  assert.match(r.out, /209-repetition-bound names a request/);
+  assert.match(r.out, /ctx_209/);
+});
+
+test('a request whose attempts left TWO dispatches is refused, both named', () => {
+  // The `--replace` shape: one record, two worker-start phases, two panes. A
+  // release acts on one pane, so choosing between them is the operator's
+  // judgement and this verb does not make it for them.
+  const dir = store();
+  writeFileSync(
+    join(dir, '210-two-attempts.json'),
+    JSON.stringify({
+      request: '210-two-attempts',
+      host: 'test',
+      orca: 'stub-orca',
+      createdAt: '2026-08-20T10:00:00.000Z',
+      repo: 'owner/repo',
+      attempts: [
+        {
+          n: 1,
+          settled: true,
+          phases: [
+            {
+              name: 'worker-start',
+              identity: 'id-1',
+              argv: ['stub-orca', 'orchestration', 'worker-start'],
+              beganAt: '2026-08-20T10:00:00.000Z',
+              exit: 0,
+              receipt: { ok: true, result: { dispatchId: 'ctx_first', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_ctx_first' }] } },
+            },
+          ],
+        },
+        {
+          n: 2,
+          settled: false,
+          phases: [
+            {
+              name: 'worker-start',
+              identity: 'id-2',
+              argv: ['stub-orca', 'orchestration', 'worker-start'],
+              beganAt: '2026-08-20T11:00:00.000Z',
+              exit: 0,
+              receipt: { ok: true, result: { dispatchId: 'ctx_second', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_ctx_second' }] } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const r = run(['--dispatch', '210-two-attempts', '--close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_first'), worker('ctx_second')],
+      terminals: [terminal('term_ctx_first'), terminal('term_ctx_second')],
+    },
+  });
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /ctx_first/);
+  assert.match(r.out, /ctx_second/);
+  assert.ok(r.calls.every(argv => !argv.includes('worker-release')), 'an ambiguous target releases nothing');
+});
+
 // ── the write-ahead protocol of the close itself ────────────────────────────
 
 test('a close is recorded BEFORE it is issued, in its own namespace', () => {
