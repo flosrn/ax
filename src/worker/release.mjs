@@ -784,7 +784,7 @@ function releaseBinding(path, dispatchId, argv, index, bin) {
  * false for every outcome an operator still owns — a refusal, and above all an
  * outcome nobody knows.
  */
-function releaseOne(dir, dispatchId, { bin, execute }) {
+function releaseOne(dir, dispatchId, { bin, execute, handle = '', stillThere }) {
   const attempt = (path, index, argv) => {
     const out = execute(argv);
     phaseEnd(path, index, { exit: out.status, receiptText: out.stdout, stderr: out.stderr, error: out.error });
@@ -899,7 +899,7 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
   const state = result.state ?? 'unnamed state';
   const action = result.processAction ?? 'none';
   const archive = (result.archive ?? {}).status ?? '-';
-  const detail = `${dispatchId}  ${state} · ${action} · archive=${archive}${action === 'none' ? '   (nothing was open)' : ''}`;
+  const detail = `${dispatchId}  ${state} · ${action} · archive=${archive}`;
   // And the receipt has to be ABOUT this dispatch. `ok:true` with an object
   // result is what `phaseVerdict` calls a run; that is a statement about the
   // record's shape, not about which pane was closed.
@@ -916,6 +916,41 @@ function releaseOne(dir, dispatchId, { bin, execute }) {
       line: `${detail}  — exit ${outcome.exit}: Orca cannot account for this release: ${receiptReason(result)}`,
       repair: releaseRepair(dispatchId),
     };
+  }
+
+  // `processAction: none` IS ORCA SAYING IT CLOSED NOTHING. It is not Orca
+  // saying there was nothing to close, and this rendered it as
+  // `(nothing was open)` — a claim about the world assembled out of an action
+  // word. Measured 2026-09-08 on slice #213 of one wave (ax 0.24.3): this verb
+  // announced `1 closeable`, read the pane QUIET, printed
+  // `retained · none · archive=-   (nothing was open)`, exited 0 — and
+  // `ax worktree reclaim` refused seconds later because that exact handle was
+  // alive, carrying `agentIdentity: omp` and the worker's own title. Neither a
+  // Setup pane nor a human's shell: the handle the dispatch itself returned.
+  //
+  // Every ownership state other than `owned` answers `none` too (see the KEEP
+  // rows below: `transferred`, `external`, `released`, `user_owned`), so the
+  // word alone cannot tell "already shut" from "refused to shut". The pane list
+  // can, and this verb already reads it — so the answer is asked for rather
+  // than inferred, and an inventory that cannot be read is UNKNOWN, never a
+  // pass (F-028).
+  if (action === 'none') {
+    const live = typeof stillThere === 'function' ? stillThere() : false;
+    if (live === null) {
+      return {
+        settled: false,
+        line: `${detail}  — Orca closed nothing, and whether pane ${handle || 'this dispatch'} is still there could not be established`,
+        repair: `orca terminal list --json   # establish whether that pane is open, then close it by handle if it is`,
+      };
+    }
+    if (live) {
+      return {
+        settled: false,
+        line: `${detail}  — Orca closed nothing and pane ${handle} is still in the terminal list, so this release is NOT established`,
+        repair: `orca terminal close --terminal ${handle}   # the pane this dispatch opened is still open; a release that closed nothing settles nothing`,
+      };
+    }
+    return { settled: true, line: `${detail}   (nothing was open)`, repair: '' };
   }
   return { settled: true, line: detail, repair: '' };
 }
@@ -1577,6 +1612,28 @@ export function release(
   for (const candidate of toClose) {
     const outcome = releaseOne(dir, candidate.dispatchId, {
       bin,
+      handle: candidate.handle,
+      // ASKED AFTER THE CALL, not before: the question a `processAction: none`
+      // raises is whether the pane is open NOW, and the inventory read at the
+      // top of this run predates the mutation. Lazy, so the ordinary close pays
+      // for no extra runtime call. A row with no handle recorded has no pane to
+      // still be there; an unreadable inventory is `null`, which is unknown.
+      //
+      // AND AN ABSENT HANDLE ONLY PROVES CLOSURE IF THE READ COVERED THE HOST
+      // (F-028, the rule `../worktree/reclaim.mjs` states as "an unqueried host
+      // is not an empty one"). Every candidate here is LOCAL by construction —
+      // a pane whose `executionHostId` is anything else is kept above, because
+      // `worker-release` answers `federation_unsupported` for it (measured
+      // 2026-08-14) — so the host to check for is `local`, and a refreshed read
+      // that does not name it establishes nothing rather than an empty machine.
+      stillThere: () => {
+        if (!candidate.handle) return false;
+        const now = terminalInventory(run);
+        if (!now.ok) return null;
+        if (!Array.isArray(now.hosts) || !now.hosts.includes('local')) return null;
+        const row = now.byHandle.get(candidate.handle);
+        return row !== undefined && row !== null && row.orphaned !== true;
+      },
       // The replay speaks to the runtime the record NAMES, not to whatever this
       // process resolved today: on a host carrying both `orca` and `orca-ide`
       // those are two different runtimes, and the pane lives in one of them.

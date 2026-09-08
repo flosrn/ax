@@ -953,8 +953,22 @@ test('an idempotent repeat is reported as what it is, not as work done', () => {
     stdout: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_again', state: 'already_released', processAction: 'none', archive: { status: 'captured' } } }),
     stderr: '',
   };
+  // AND THE PANE IS GONE, which is what `already_released` MEANS. The stub used
+  // to keep it in the terminal list for the whole run, and nothing read that
+  // list after the call, so the fixture could claim a released pane and carry a
+  // live one at the same time. It cannot now: a `processAction: none` over a
+  // handle still in the list is an unestablished release (#213, measured
+  // 2026-09-08), so the disappearance has to be modelled rather than assumed.
+  const terminals = [terminal('term_ctx_again')];
   const r = run(['--close', '--dispatch', 'ctx_again', '--no-proof'], {
-    orca: { workers: [worker('ctx_again')], terminals: [terminal('term_ctx_again')], releaseReceipts: { ctx_again: repeat } },
+    orca: {
+      workers: [worker('ctx_again')],
+      terminals,
+      releaseReceipts: { ctx_again: repeat },
+      onRelease: () => {
+        terminals.length = 0;
+      },
+    },
   });
 
   assert.equal(r.code, 0);
@@ -1282,6 +1296,81 @@ test('a request whose attempts left TWO dispatches is refused, both named', () =
   assert.match(r.out, /ctx_first/);
   assert.match(r.out, /ctx_second/);
   assert.ok(r.calls.every(argv => !argv.includes('worker-release')), 'an ambiguous target releases nothing');
+});
+
+test('a processAction none over a pane STILL in the terminal list is not a settled release', () => {
+  // Measured 2026-09-08 on slice #213 of one wave (ax 0.24.3, goodluckagency/
+  // ofmchat): `--dispatch ctx_b98cff20d08f --close` announced `1 closeable`,
+  // read the pane QUIET, printed `retained · none · archive=-   (nothing was
+  // open)` and exited 0 — and `ax worktree reclaim` refused immediately
+  // afterwards because THAT EXACT pane was alive: same handle, right
+  // worktreePath, `agentIdentity: omp`, the worker's own title. Not a Setup
+  // pane, not a human's shell — the handle the dispatch itself returned.
+  //
+  // `processAction: none` is Orca saying it closed nothing. It is NOT Orca
+  // saying there was nothing to close: `user_owned`, `transferred`, `external`
+  // and a stale incarnation all answer `none` too. Deriving "nothing was open"
+  // from that word is a claim about the world made out of an action word, and
+  // the pane list is right there to check it against.
+  const dir = store();
+  record(dir, '213-baseline', 'ctx_none');
+  const receipt = {
+    status: 0,
+    stdout: JSON.stringify({
+      ok: true,
+      result: { dispatchId: 'ctx_none', state: 'retained', processAction: 'none', archive: {}, mutation: { requestId: 'id-1', replayed: false } },
+    }),
+    stderr: '',
+  };
+  const r = run(['--close', '--dispatch', 'ctx_none', '--no-proof'], {
+    dir,
+    orca: { workers: [worker('ctx_none')], terminals: [terminal('term_ctx_none')], releaseReceipts: { ctx_none: receipt } },
+  });
+
+  assert.equal(r.code, 1, `a release that closed nothing over a live pane must not exit 0: ${r.out}`);
+  assert.doesNotMatch(r.out, /nothing was open/, 'the pane was open — that sentence is the defect');
+  assert.match(r.out, /still in the terminal list/);
+  assert.match(r.out, /orca terminal close --terminal term_ctx_none/);
+});
+
+test('a none whose refreshed pane list did not cover the host establishes nothing', () => {
+  // The other half of the same rule, and the one an inventory can fail silently:
+  // an absent handle proves closure only if the read COVERED that pane's host.
+  // `ax worktree reclaim` states it as "an unqueried host is not an empty one"
+  // (F-028); a release deriving `(nothing was open)` from a scope that named no
+  // host would settle on the strength of a question nobody asked.
+  const dir = store();
+  record(dir, '213-scope', 'ctx_scope');
+  const hostScope = { hostIds: ['local'], omittedHostIds: [] };
+  const receipt = {
+    status: 0,
+    stdout: JSON.stringify({
+      ok: true,
+      result: { dispatchId: 'ctx_scope', state: 'retained', processAction: 'none', archive: {}, mutation: { requestId: 'id-1', replayed: false } },
+    }),
+    stderr: '',
+  };
+  const terminals = [terminal('term_ctx_scope')];
+  const r = run(['--close', '--dispatch', 'ctx_scope', '--no-proof'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_scope')],
+      terminals,
+      hostScope,
+      releaseReceipts: { ctx_scope: receipt },
+      // The pane goes, AND the refreshed read stops covering the host it was
+      // on: the handle is absent for a reason that is not closure.
+      onRelease: () => {
+        terminals.length = 0;
+        hostScope.hostIds = [];
+        hostScope.omittedHostIds = ['local'];
+      },
+    },
+  });
+
+  assert.equal(r.code, 1, `an uncovered host is not an empty machine: ${r.out}`);
+  assert.doesNotMatch(r.out, /nothing was open/);
+  assert.match(r.out, /could not be established/);
 });
 
 // ── the write-ahead protocol of the close itself ────────────────────────────
