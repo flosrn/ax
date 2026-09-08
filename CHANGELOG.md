@@ -8,6 +8,14 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.3](https://github.com/flosrn/ax/compare/v0.24.2...v0.24.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* **deploy:** attribute the release verdict to the merge commit's own run ([3a18f80](https://github.com/flosrn/ax/commit/3a18f8068f1331368050a5a5328888a803b5ebd4))
+* **peer:** a pane-less parent Run is a queue, not a dead letter ([#234](https://github.com/flosrn/ax/issues/234)) ([4a3735a](https://github.com/flosrn/ax/commit/4a3735aeca100ff55cfe13625f50b857ec61d95e))
+
 ## [0.24.2](https://github.com/flosrn/ax/compare/v0.24.1...v0.24.2) (2026-09-08)
 
 
