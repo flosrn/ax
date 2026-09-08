@@ -5,6 +5,7 @@
 //   node scripts/deploy.mjs             # merge, wait for npm, pin consumers, pull this tree + the VPS adapter
 //   node scripts/deploy.mjs --check     # drift report across every surface; needs no release, mutates nothing
 //   node scripts/deploy.mjs --dry-run   # print the plan and the discovered consumers, mutate nothing
+//   node scripts/deploy.mjs --pins-only # propagation only: pin consumers + the VPS adapter, no merge
 //   node scripts/deploy.mjs --skip-pins # release to npm only; leave consumers where they are
 //   node scripts/deploy.mjs --skip-remote # skip the VPS adapter checkout
 //
@@ -80,13 +81,17 @@ const dry = argv.includes('--dry-run');
 const check = argv.includes('--check');
 const skipPins = argv.includes('--skip-pins');
 const skipRemote = argv.includes('--skip-remote');
+// The propagation half alone: no merge, no publish, version read from npm. It is
+// how a release that aborted AFTER its merge is finished, since the discovery
+// below refuses once release-please's PR is gone (see the block that reads it).
+const pinsOnly = argv.includes('--pins-only');
 const rootsArg = argv.find((a) => a.startsWith('--roots='));
 const roots = rootsArg ? rootsArg.slice('--roots='.length).split(',') : DEFAULT_ROOTS;
-const FLAGS = ['--dry-run', '--check', '--skip-pins', '--skip-remote'];
+const FLAGS = ['--dry-run', '--check', '--skip-pins', '--skip-remote', '--pins-only'];
 const unknown = argv.filter((a) => !FLAGS.includes(a) && !a.startsWith('--roots='));
 if (unknown.length > 0) {
   bad(`unknown argument(s): ${unknown.join(' ')}`);
-  fix('node scripts/deploy.mjs [--check] [--dry-run] [--skip-pins] [--skip-remote] [--roots=/a,/b]');
+  fix('node scripts/deploy.mjs [--check] [--dry-run] [--pins-only] [--skip-pins] [--skip-remote] [--roots=/a,/b]');
   process.exit(2);
 }
 
@@ -359,6 +364,32 @@ if (check) {
   process.exit(drifted === 0 ? 0 : 1);
 }
 
+// ── --pins-only: the propagation half, with no release to make ───────────────
+//
+// What a post-merge abort leaves behind. release-please's PR is merged, so the
+// discovery below refuses ("nothing to release") and every remaining step — the
+// consumer pins and the remote adapter — has no command. On 0.24.2 they were run
+// by hand. The version comes from the REGISTRY here, not from a PR title: what a
+// consumer may pin is what npm can serve, and nothing else.
+if (pinsOnly) {
+  section('pins only');
+  const served = run('npm', ['view', PKG, 'version'], { cwd: ROOT, timeout: 60_000 });
+  if (!succeeded(served) || served.stdout.trim() === '') {
+    bad('the registry did not answer a version, so there is nothing a consumer may be pinned to');
+    fix(`npm view ${PKG} version   # then re-run`);
+    process.exit(3);
+  }
+  const registry = served.stdout.trim();
+  const found = consumers();
+  note(`version      ${registry}   (from the registry — this mode makes no release)`);
+  note(`consumers    ${found.length === 0 ? 'none found under ' + roots.join(', ') : found.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
+  if (dry) {
+    note('dry run — nothing pinned, nothing pulled');
+    process.exit(0);
+  }
+  process.exit(propagate(registry, found));
+}
+
 const found = releasePr();
 if (found.error) {
   bad(`CANNOT ESTABLISH — ${found.error}`);
@@ -437,37 +468,52 @@ else {
   fix('git pull --ff-only origin main   # the release bumped package.json on origin, not here');
 }
 
-const verdicts = [];
+/**
+ * The propagation half: every discovered consumer pinned, then the remote
+ * adapter converged, then one summary whose count IS the exit code.
+ *
+ * A FUNCTION BECAUSE TWO PATHS REACH IT. A release runs it after publishing;
+ * `--pins-only` runs it alone, which is the only way to finish a release that
+ * aborted after its merge — release-please's PR is gone by then, so the top of
+ * this script refuses ("nothing to release") and these steps get run by hand,
+ * which is what happened on 0.24.2. The version is a parameter for the same
+ * reason: the registry can name it when no release PR does.
+ */
+function propagate(version, list) {
+  const verdicts = [];
 
-if (skipPins) note('--skip-pins: consumers left as they are');
-else {
-  section('consumers');
-  for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
-}
-
-section('remote adapter');
-if (skipRemote) note(`--skip-remote: ${REMOTE_HOST}:${REMOTE_ADAPTER} left as it is`);
-else {
-  const out = remote(
-    `cd ${REMOTE_ADAPTER} && git pull --ff-only -q origin main && git log --oneline -1 && node bin/ax.mjs help 2>&1 | head -1`,
-  );
-  if (!succeeded(out)) {
-    // A host that cannot be reached is UNKNOWN, not converged and not broken —
-    // and it does not fail the release that already published.
-    bad(`${REMOTE_HOST} did not converge: ${(out.stderr || out.error || '').toString().split('\n').filter((l) => !l.includes('Address already in use'))[0] || `exit ${out.status}`}`);
-    fix(`ssh ${REMOTE_HOST} 'sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} pull --ff-only origin main'   # as ${REMOTE_USER}, never root`);
-    verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'unreached' });
-  } else {
-    for (const line of out.stdout.trim().split('\n')) note(`  ${line.trim()}`);
-    ok(`${REMOTE_HOST} adapter checkout fast-forwarded — every session there is equipped from it`);
-    verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'pulled' });
+  if (skipPins) note('--skip-pins: consumers left as they are');
+  else {
+    section('consumers');
+    for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
   }
+
+  section('remote adapter');
+  if (skipRemote) note(`--skip-remote: ${REMOTE_HOST}:${REMOTE_ADAPTER} left as it is`);
+  else {
+    const out = remote(
+      `cd ${REMOTE_ADAPTER} && git pull --ff-only -q origin main && git log --oneline -1 && node bin/ax.mjs help 2>&1 | head -1`,
+    );
+    if (!succeeded(out)) {
+      // A host that cannot be reached is UNKNOWN, not converged and not broken —
+      // and it does not fail the release that already published.
+      bad(`${REMOTE_HOST} did not converge: ${(out.stderr || out.error || '').toString().split('\n').filter((l) => !l.includes('Address already in use'))[0] || `exit ${out.status}`}`);
+      fix(`ssh ${REMOTE_HOST} 'sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} pull --ff-only origin main'   # as ${REMOTE_USER}, never root`);
+      verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'unreached' });
+    } else {
+      for (const line of out.stdout.trim().split('\n')) note(`  ${line.trim()}`);
+      ok(`${REMOTE_HOST} adapter checkout fast-forwarded — every session there is equipped from it`);
+      verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'pulled' });
+    }
+  }
+
+  section('summary');
+  let failed = 0;
+  for (const { dir, verdict } of verdicts) {
+    note(`${dir}  ${verdict}`);
+    if (!['pinned', 'current', 'pulled'].includes(verdict)) failed = 1;
+  }
+  return failed;
 }
 
-section('summary');
-let failed = 0;
-for (const { dir, verdict } of verdicts) {
-  note(`${dir}  ${verdict}`);
-  if (!['pinned', 'current', 'pulled'].includes(verdict)) failed = 1;
-}
-process.exit(failed);
+process.exit(propagate(version, list));
