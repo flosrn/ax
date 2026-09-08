@@ -45,6 +45,13 @@ import { bad, fix, note, ok, section } from '../src/log.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = '@flosrn/ax';
+/**
+ * The workflow that owns a release, by the `name:` its file declares
+ * (`.github/workflows/publish.yml`). Named here because a run is selected by it:
+ * the newest run on this repository is routinely a DIFFERENT workflow on a
+ * different ref.
+ */
+const RELEASE_WORKFLOW = 'Release';
 /** Where consumer checkouts live on this machine. Override: --roots a,b */
 const DEFAULT_ROOTS = [join(homedir(), 'Code'), join(homedir(), 'orca', 'workspaces')];
 /** Directories a manifest walk never enters. */
@@ -177,17 +184,56 @@ function releasePr() {
   return { pr, version };
 }
 
-async function waitForWorkflow() {
-  const deadline = Date.now() + 10 * 60_000;
+/**
+ * The commit the merge produced, read from the PR itself. GitHub fills
+ * `mergeCommit` a moment after the merge call returns, so it is polled — and an
+ * absence is named rather than replaced by a guess about which commit main
+ * happens to point at.
+ */
+async function mergeCommitOf(number) {
+  const deadline = Date.now() + 60_000;
   for (;;) {
-    const out = gh(['run', 'list', '--limit', '1', '--json', 'status,conclusion']);
+    const out = gh(['pr', 'view', String(number), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid // ""']);
+    if (succeeded(out) && out.stdout.trim() !== '') return out.stdout.trim();
+    if (Date.now() >= deadline) return '';
+    await sleep(5_000);
+  }
+}
+
+/**
+ * The RELEASE workflow's run FOR ONE COMMIT — never "the latest run".
+ *
+ * This read `gh run list --limit 1`, the single most recent run of any workflow
+ * on any ref. Measured 2026-09-08 releasing 0.24.2: the newest row was the
+ * `Test` run of the release-please PR itself, which GitHub concludes
+ * `failure` at startup on every release branch (bot-pushed heads; test.yml's own
+ * header carries that history and the manual dispatch that works around it). So
+ * this returned false 6 seconds after a merge that had in fact tagged, released
+ * and published — and the line it printed claimed a ten-minute wait that never
+ * happened. Everything after it was skipped: the npm wait, this checkout's
+ * fast-forward, the consumer pins and the remote adapter.
+ *
+ * `--workflow` plus `--commit` names exactly one run, and the verdict says which
+ * of the two failures happened, because their repairs are different.
+ */
+async function waitForWorkflow(sha) {
+  const deadline = Date.now() + 10 * 60_000;
+  const short = sha.slice(0, 7);
+  for (;;) {
+    const out = gh(['run', 'list', '--workflow', RELEASE_WORKFLOW, '--commit', sha, '--limit', '1', '--json', 'status,conclusion,databaseId']);
     if (succeeded(out)) {
       try {
         const row = JSON.parse(out.stdout)[0];
-        if (row?.status === 'completed') return row.conclusion === 'success';
+        if (row?.status === 'completed') {
+          return row.conclusion === 'success'
+            ? { ok: true }
+            : { ok: false, reason: `the ${RELEASE_WORKFLOW} workflow for ${short} concluded ${row.conclusion}`, id: row.databaseId };
+        }
       } catch {}
     }
-    if (Date.now() >= deadline) return false;
+    if (Date.now() >= deadline) {
+      return { ok: false, reason: `the ${RELEASE_WORKFLOW} workflow for ${short} had not completed within 10 minutes` };
+    }
     await sleep(15_000);
   }
 }
@@ -353,12 +399,29 @@ if (!succeeded(merged)) {
 }
 ok(`merged release PR #${found.pr.number}`);
 
-if (!(await waitForWorkflow())) {
-  bad('the Release workflow did not complete successfully within 10 minutes');
-  fix('gh run list --limit 3   # read the failing run, repair, then re-run this script');
+// THE COMMIT, THEN ITS RUN. Everything below this point is skipped when the
+// release workflow is judged failed, so judging the wrong run costs the whole
+// tail of a release (measured on 0.24.2 — see `waitForWorkflow`).
+const mergeSha = await mergeCommitOf(found.pr.number);
+if (mergeSha === '') {
+  bad(`GitHub did not name the merge commit of #${found.pr.number} within a minute, so no run can be attributed to it`);
+  fix(`gh pr view ${found.pr.number} --json mergeCommit   # then: node scripts/deploy.mjs --check`);
+  process.exit(3);
+}
+
+const workflow = await waitForWorkflow(mergeSha);
+if (!workflow.ok) {
+  bad(workflow.reason);
+  // A POST-MERGE FAILURE IS NOT RE-RUNNABLE FROM THE TOP: the release PR is
+  // merged, so a second `node scripts/deploy.mjs` refuses on "no open
+  // release-please PR". `--check` is the mode that answers what still needs
+  // converging without one.
+  if (workflow.id) fix(`gh run view ${workflow.id} --log-failed   # what failed, on the merge commit itself`);
+  else fix(`gh run list --workflow ${RELEASE_WORKFLOW} --commit ${mergeSha}   # what that commit's release run is doing`);
+  fix('node scripts/deploy.mjs --check   # the drift report: what the registry serves, and which surfaces lag it');
   process.exit(1);
 }
-ok('Release workflow completed');
+ok(`${RELEASE_WORKFLOW} workflow completed for ${mergeSha.slice(0, 7)}`);
 
 if (!(await waitForNpm(version))) {
   bad(`npm still does not serve ${version} after 5 minutes — the registry may be lagging`);
