@@ -390,6 +390,45 @@ test('a failed start keeps the captured diagnostic rather than inventing a daemo
   assert.doesNotMatch(result.failure, /container runtime|nothing is listening/);
 });
 
+test('an exhausted Docker address pool names the stacks THIS tooling owns, never a global prune', () => {
+  // Reported 2026-09-08 from slice #215 of one wave: `ax worktree setup
+  // --database` failed `LegacyNetworkCreateError: all predefined address pools
+  // have been fully subnetted`, the worker counted 32 Docker networks, ran
+  // `docker network prune -f`, removed 27, and the setup then worked. The
+  // diagnostic was preserved (#224) and named no cause, so the repair was
+  // improvised — and a global prune deletes networks belonging to every other
+  // project on the machine, which is a far worse outcome than a refused setup.
+  //
+  // Each promoted worktree's stack holds one network, so the exhaustion is a
+  // count of stacks nobody stopped. That is a fact this tooling knows how to
+  // enumerate and how to free, one worktree at a time.
+  const { dir } = fixture();
+  const result = promote({
+    cwd: dir,
+    projectId: 'testapp-x',
+    offset: 1200,
+    base: BASE,
+    relativePath: 'config.toml',
+    envFiles: ['.env.local'],
+    envLabel: 'ax-supabase',
+    start: { command: 'pnpm', args: ['--filter', 'web', 'supabase:start'] },
+    run: (_command, args) => args.includes('supabase:start')
+      ? { status: 1, stdout: '', stderr: 'failed to create network: LegacyNetworkCreateError: all predefined address pools have been fully subnetted\n', error: undefined }
+      : { status: 0, stdout: '', stderr: '', error: undefined },
+    write: () => true,
+  });
+
+  assert.equal(result.started, false);
+  // The captured diagnostic still travels whole.
+  assert.match(result.failure, /all predefined address pools have been fully subnetted/);
+  // And the cause is named, with the two verbs that free a stack this tooling
+  // placed — plus the refusal of the sweep a worker will otherwise reach for.
+  assert.match(result.failure, /one Docker network per promoted worktree/);
+  assert.match(result.failure, /ax worktree ls/);
+  assert.match(result.failure, /ax worktree clean/);
+  assert.match(result.failure, /never `docker network prune`/);
+});
+
 test('a failed start keeps the tail of a large diagnostic, not the whole buffer', () => {
   const { dir } = fixture();
   const noise = Array.from({ length: 40 }, (_, i) => `pulling image ${i}`).join('\n');

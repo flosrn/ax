@@ -657,6 +657,42 @@ function startDiagnostic(text) {
     .join('\n');
 }
 
+/**
+ * THE ONE START FAILURE WHOSE REPAIR A WORKER WILL OTHERWISE IMPROVISE, and the
+ * improvisation is worse than the failure.
+ *
+ * Reported 2026-09-08 from a wave's slice #215: `ax worktree setup --database`
+ * failed with Docker's `LegacyNetworkCreateError: all predefined address pools
+ * have been fully subnetted`. The captured diagnostic travelled whole (#224) and
+ * named no cause, so the worker counted 32 Docker networks, ran
+ * `docker network prune -f`, removed 27 of them, and the setup then worked. That
+ * sweep deletes networks belonging to every other project on the machine — a
+ * far worse outcome than a refused setup, and it was reached for because nothing
+ * here said what the exhaustion MEANT.
+ *
+ * It means stacks nobody stopped: each promoted worktree holds one network for
+ * the life of its stack, so the pool empties as a wave accumulates worktrees.
+ * That is enumerable (`ax worktree ls` prints every worktree with the project id
+ * and port block it holds) and freeable one at a time (`ax worktree clean` stops
+ * the stack a checkout owns, by project id — `ownsStack` above is what keeps it
+ * from stopping somebody else's).
+ *
+ * Docker's own wording is matched, not a paraphrase: the signature is the string
+ * the daemon emits, and it is checked on both streams because a package script
+ * may put it on either.
+ */
+const POOL_EXHAUSTED = /all predefined address pools have been fully subnetted/i;
+
+const poolExhausted = result => {
+  const text = `${result.stdout ?? ''}\n${result.stderr ?? ''}\n${result.error?.message ?? ''}`;
+  if (!POOL_EXHAUSTED.test(text)) return '';
+  return [
+    "Docker has no address pool left for a new network, and that is one Docker network per promoted worktree — stacks nobody stopped, not a broken daemon.",
+    'Free the ones whose work is done, one at a time: `ax worktree ls` names every worktree with the stack it holds, and `ax worktree clean <path>` stops that stack by project id.',
+    'Do this and never `docker network prune`: that sweep removes networks every other project on this machine owns, and it cannot tell them from ours.',
+  ].join('\n');
+};
+
 export function promote({
   cwd,
   projectId: id,
@@ -700,6 +736,7 @@ export function promote({
     startResult.error?.message,
     startDiagnostic(startResult.stdout),
     startDiagnostic(startResult.stderr),
+    poolExhausted(startResult),
   ].filter(Boolean).join('\n'));
   return { projectId: id, offset, ports, config, steps, started: ok, failure };
 }
