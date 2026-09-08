@@ -8,6 +8,16 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.2](https://github.com/flosrn/ax/compare/v0.24.1...v0.24.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **board:** name the consequence of every refusal, and never send a fieldless set ([cbf6b24](https://github.com/flosrn/ax/commit/cbf6b24a2527c20d75622ee21c46b55a2c3e5cb4))
+* **init:** seed a manifest instead of refusing a repository without one ([76ab7fd](https://github.com/flosrn/ax/commit/76ab7fd4f1cf249317a1071ed994f8a12178f372))
+* **worker:** resolve the stall entry through realpath, and declare `worker stall` ([1718912](https://github.com/flosrn/ax/commit/171891201f66a7723b247865fe221f458cba8247))
+* **worktree:** install what a fresh worktree declares, from the plan ([b53ccb3](https://github.com/flosrn/ax/commit/b53ccb3afad9061864a7958212b5df193a6287ac))
+
 ## [0.24.1](https://github.com/flosrn/ax/compare/v0.24.0...v0.24.1) (2026-09-07)
 
 
