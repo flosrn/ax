@@ -9,6 +9,9 @@
 // exit-status contract and the SUPABASE_DB_PASSWORD scrub are proved rather
 // than asserted.
 import assert from 'node:assert/strict';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { CLI_ENV, GUARD_ENV, invokesSupabaseCli, reachesGuard, resolveCli, supabase } from '../src/supabase-guard.mjs';
@@ -26,6 +29,12 @@ function harness({ primary = false, isolated = false, promotes = true, status = 
 
   const deps = {
     env,
+    // A CALLER DIRECTORY THAT IS NOT THE APP, so every case below states where
+    // the CLI is run FROM as well as which project it is told to read. The two
+    // are separate facts since the app is named rather than moved into: a
+    // default of `process.cwd()` would have made that difference invisible
+    // here and unstable across machines.
+    cwd: '/repo',
     paths: { root: '/repo', main: '/repo' },
     config: { project: { name: 'demo' }, apps: { web: 'apps/web' }, ports: {} },
     findCli: () => ({ path: '/somewhere/supabase' }),
@@ -73,7 +82,7 @@ test('a writing command on a shared, non-primary checkout promotes BEFORE it run
   const { code, err } = capture(() => supabase(['db', 'reset'], deps));
 
   assert.equal(code, 0);
-  assert.deepEqual(calls, ['promote', 'run db reset', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web db reset', 'cwd /repo']);
   assert.match(err, /would write to the SHARED local database/);
   assert.match(err, /RESTART the dev server/);
 });
@@ -99,7 +108,33 @@ test('a read-only command runs with no promotion at all', () => {
   const { calls, deps } = harness();
 
   assert.equal(capture(() => supabase(['status'], deps)).code, 0);
-  assert.deepEqual(calls, ['run status', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['run --workdir /repo/apps/web status', 'cwd /repo']);
+});
+
+test('the CLI runs where the CALLER stood, and the app is NAMED rather than moved into', () => {
+  // Reported 2026-09-08 by a worker in `.worktrees/209-…`: `ax supabase test db
+  // apps/web/supabase/tests/database/chatting-engine.test.sql` could not be made
+  // to name one file. The guard ran the CLI with `cwd` rebased to the configured
+  // app, so every relative path past the first slot was re-based with it — the
+  // caller's `apps/web/…` became `apps/web/apps/web/…` and vanished. A
+  // passthrough command's argv belongs to the foreign CLI (`passthrough: true`,
+  // ../src/commands.mjs), and moving the directory those arguments are resolved
+  // from is changing their meaning.
+  //
+  // So the app is named with the CLI's own global flag instead. Measured against
+  // Supabase CLI 2.109.1: `--workdir` is honoured for both project resolution
+  // (`status --workdir apps/web` from the repo root prints `Using workdir
+  // apps/web` and the project's endpoints) and path arguments (which resolve
+  // against the PROCESS cwd, never against the workdir).
+  const { deps, calls } = harness();
+  deps.cwd = '/repo/.worktrees/209-slice';
+
+  assert.equal(capture(() => supabase(['test', 'db', 'apps/web/supabase/tests/database/engine.test.sql'], deps)).code, 0);
+  assert.deepEqual(calls, [
+    'promote',
+    'run --workdir /repo/apps/web test db apps/web/supabase/tests/database/engine.test.sql',
+    'cwd /repo/.worktrees/209-slice',
+  ]);
 });
 
 test('an environment workdir cannot redirect the CLI or the promotion subprocess', () => {
@@ -110,12 +145,15 @@ test('an environment workdir cannot redirect the CLI or the promotion subprocess
   assert.match(result.err, /SUPABASE_WORKDIR/);
 });
 
-test('an explicit app workdir is resolved from the caller without doubling apps/web', () => {
+test('an explicit app workdir is consumed, and reappears as the ONE named app', () => {
+  // The caller's own `--workdir` is validated against the configured app and
+  // dropped (`appArguments`); the flag the CLI receives is the one ax injects.
+  // So a caller who names the app gets exactly the same argv as one who does
+  // not, and `apps/web` can never be applied twice.
   const { deps } = harness();
-  deps.cwd = '/repo';
   deps.runCli = (_cli, args, { cwd }) => {
-    assert.equal(cwd, '/repo/apps/web');
-    assert.deepEqual(args, ['start']);
+    assert.equal(cwd, '/repo');
+    assert.deepEqual(args, ['--workdir', '/repo/apps/web', 'start']);
     return 7;
   };
   assert.equal(capture(() => supabase(['start', '--workdir', 'apps/web'], deps)).code, 7);
@@ -125,14 +163,14 @@ test('a leading workdir cannot hide db reset from isolation', () => {
   const { deps, calls } = harness();
   deps.cwd = '/repo/apps/web';
   assert.equal(capture(() => supabase(['--workdir=.', 'db', 'reset'], deps)).code, 0);
-  assert.deepEqual(calls, ['promote', 'run db reset', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web db reset', 'cwd /repo/apps/web']);
 });
 
 test('an absolute workdir keeps promotion and execution on the configured app', () => {
   const { deps, calls } = harness();
   deps.cwd = '/elsewhere';
   assert.equal(capture(() => supabase(['db', '--workdir', '/repo/apps/web', 'reset'], deps)).code, 0);
-  assert.deepEqual(calls, ['promote', 'run db reset', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web db reset', 'cwd /elsewhere']);
 });
 
 test('an outside workdir is refused before promotion or CLI execution', () => {
@@ -174,21 +212,21 @@ test('the Supabase CLI’s own help flag is forwarded, wherever it sits in the a
   const { calls, deps } = harness({ isolated: true });
 
   assert.equal(capture(() => supabase(['db', 'push', '--help'], deps)).code, 0);
-  assert.deepEqual(calls, ['run db push --help', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['run --workdir /repo/apps/web db push --help', 'cwd /repo']);
 });
 
 test('the primary checkout never promotes — it owns the shared stack', () => {
   const { calls, deps } = harness({ primary: true });
 
   assert.equal(capture(() => supabase(['db', 'reset'], deps)).code, 0);
-  assert.deepEqual(calls, ['run db reset', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['run --workdir /repo/apps/web db reset', 'cwd /repo']);
 });
 
 test('an already-isolated checkout runs without promoting a second time', () => {
   const { calls, deps } = harness({ isolated: true });
 
   assert.equal(capture(() => supabase(['migration', 'up'], deps)).code, 0);
-  assert.deepEqual(calls, ['run migration up', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['run --workdir /repo/apps/web migration up', 'cwd /repo']);
 });
 
 test('a refused promotion exits non-zero and does NOT run the command', () => {
@@ -207,7 +245,7 @@ test('the escape hatch runs the command with no promotion', () => {
   const { code, err } = capture(() => supabase(['db', 'reset'], deps));
 
   assert.equal(code, 0);
-  assert.deepEqual(calls, ['run db reset', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['run --workdir /repo/apps/web db reset', 'cwd /repo']);
   assert.match(err, /SHARED local database/, 'opting out is loud: the cost lands on other sessions');
 });
 
@@ -215,7 +253,7 @@ test('GUARD=1 is the guard ON, not another way to spell the escape hatch', () =>
   const { calls, deps } = harness({ env: { [GUARD_ENV]: '1' } });
 
   assert.equal(capture(() => supabase(['db', 'reset'], deps)).code, 0);
-  assert.deepEqual(calls, ['promote', 'run db reset', 'cwd /repo/apps/web']);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web db reset', 'cwd /repo']);
 });
 
 test('a missing CLI is a clear refusal, not a crash and not a run', () => {
@@ -295,13 +333,35 @@ test('a package script is recognised as guarded only when it goes through ax', (
 
 // --- The real child process ------------------------------------------------
 //
-// `node` stands in for the CLI. These two are the only way to prove what the
-// wrapper does to a real process, and neither one touches Supabase or Docker.
+// A stand-in executable stands for the CLI. These are the only way to prove
+// what the wrapper does to a REAL process, and none of them touches Supabase or
+// Docker.
+//
+// The stand-in refuses anything but `--workdir <absolute dir>` in its first two
+// slots, which is what makes these three tests a proof of POSITION and not just
+// of exit status: `node -e` was the stand-in until the app became a named flag,
+// and it could not be — node rejects an argument it does not know, so the
+// injected flag had nowhere to land in a test that spawns node itself.
+const STAND_IN = `#!/usr/bin/env node
+const [flag, dir, mode, value] = process.argv.slice(2);
+if (flag !== '--workdir' || typeof dir !== 'string' || !dir.startsWith('/')) process.exit(9);
+if (mode === 'exit') process.exit(Number(value));
+if (mode === 'scrub') process.exit(process.env.SUPABASE_DB_PASSWORD === undefined ? 0 : 3);
+process.exit(8);
+`;
+
+function standIn() {
+  const dir = mkdtempSync(join(tmpdir(), 'ax-supabase-cli-'));
+  const path = join(dir, 'supabase');
+  writeFileSync(path, STAND_IN);
+  chmodSync(path, 0o755);
+  return path;
+}
 
 const spawning = extra => ({
   paths: { root: process.cwd(), main: process.cwd() },
   config: { project: { name: 'demo' }, apps: { web: '.' }, ports: {} },
-  findCli: () => ({ path: process.execPath }),
+  findCli: () => ({ path: standIn() }),
   isPrimary: () => true,
   ...extra,
 });
@@ -309,7 +369,7 @@ const spawning = extra => ({
 test('a non-zero status from the CLI survives the wrapper', () => {
   // A wrapper that swallowed this would turn every CI step routed through it
   // green.
-  const code = capture(() => supabase(['-e', 'process.exit(7)'], spawning({ env: process.env }))).code;
+  const code = capture(() => supabase(['exit', '7'], spawning({ env: process.env }))).code;
 
   assert.equal(code, 7);
 });
@@ -319,10 +379,17 @@ test('SUPABASE_DB_PASSWORD never reaches the local CLI', () => {
   // the REMOTE password against the local Postgres and dies on "password
   // authentication failed for user postgres".
   const env = { ...process.env, SUPABASE_DB_PASSWORD: 'remote-secret' };
-  const probe = '-e';
-  const code = capture(() =>
-    supabase([probe, 'process.exit(process.env.SUPABASE_DB_PASSWORD === undefined ? 0 : 3)'], spawning({ env })),
-  ).code;
+  const code = capture(() => supabase(['scrub'], spawning({ env }))).code;
 
   assert.equal(code, 0);
+});
+
+test('the named app reaches a real CLI in the first two slots', () => {
+  // Exit 9 is the stand-in's refusal: it saw something other than
+  // `--workdir <absolute dir>` where ax promises to put it. This is the whole
+  // repair of the reported friction, proved through a spawn rather than through
+  // an injected recorder — a stub can agree with a mistake, a process cannot.
+  const code = capture(() => supabase(['exit', '0'], spawning({ env: process.env }))).code;
+
+  assert.equal(code, 0, 'the stand-in exits 9 when the first two slots are not the named app');
 });

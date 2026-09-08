@@ -26,12 +26,12 @@ import { delimiter, join, resolve } from 'node:path';
 import { loadCheckoutConfig, repoPaths } from './config.mjs';
 import { removeBlock, writeBlock } from './dotenv.mjs';
 import { currentBranch, isMainCheckout } from './git.mjs';
-import { fatal, warn } from './log.mjs';
+import { fatal, note, warn } from './log.mjs';
 import { identify } from './worktree/identity.mjs';
 import { physical } from './worktree/locate.mjs';
 import { PREFIX, planWorktree } from './worktree/plan.mjs';
 import { probeAll, readWorktreeRecord } from './worktree/probes.mjs';
-import { commandNeedsIsolation, isIsolatedConfig, promoteFromPlan } from './worktree/supabase.mjs';
+import { commandNeedsIsolation, configProjectId, isIsolatedConfig, promoteFromPlan } from './worktree/supabase.mjs';
 
 /** Names the CLI to run when neither the workspace nor PATH has an acceptable one. */
 export const CLI_ENV = 'AX_SUPABASE_CLI';
@@ -218,8 +218,25 @@ export function supabase(argv = [], deps = {}) {
   }
 
   const config = loaded.config;
-  // Without --workdir, preserve the configured app default. With it, verify
-  // the caller's target before moving cwd, so apps/web is never applied twice.
+  // THE APP IS NAMED, NEVER MOVED INTO (reported 2026-09-08 from a worker in a
+  // `.worktrees/` slice). This ran the CLI with `cwd` rebased to the configured
+  // app, and that silently re-based every relative path in the caller's argv
+  // with it: `ax supabase test db apps/web/supabase/tests/database/x.test.sql`,
+  // typed from the worktree root, became `apps/web/apps/web/…` and named no
+  // file — so nothing could be pointed at one test, and the whole 73-file suite
+  // was the only usable gesture. A passthrough command's argv belongs to the
+  // foreign CLI (`passthrough: true`, ./commands.mjs); ax claims the first slot
+  // and not one argument past it, and the directory those arguments resolve
+  // from is part of their meaning.
+  //
+  // So the CLI is told which project to read with its own global flag, and left
+  // standing where the caller stood. Measured against Supabase CLI 2.109.1:
+  // `--workdir <dir>` is honoured for project resolution (`status --workdir
+  // apps/web` from a repo root prints `Using workdir apps/web` and that
+  // project's endpoints) while path arguments resolve against the PROCESS cwd,
+  // which is exactly the split this needs. An explicit caller `--workdir` is
+  // still validated and consumed by `appArguments`, so this one is never
+  // doubled.
   const appDir = join(root, config.apps.web);
   if (env.SUPABASE_WORKDIR) {
     fatal('SUPABASE_WORKDIR can redirect the CLI away from the configured app');
@@ -242,7 +259,20 @@ export function supabase(argv = [], deps = {}) {
   const refusal = protect(target.args, { env, root, config, deps });
   if (refusal !== 0) return refusal;
 
-  return runCli(cli.path, target.args, { cwd: appDir, env });
+  // WHICH STACK THIS RUN TOUCHES, IN AX'S OWN WORDS (reported 2026-09-08). On an
+  // isolated worktree, `db reset` ends with the Supabase CLI's own line
+  // `Finished supabase db reset on branch main` — the CLI's local database
+  // BRANCH LABEL, which has nothing to do with git and nothing to do with the
+  // shared stack. It was read as a broken isolation and cost a full verification
+  // detour (`ax worktree ls`, endpoint comparison) to disprove. ax cannot
+  // relabel another CLI's output, so it says what it routed BEFORE that output
+  // arrives, and only for the commands whose target is the question.
+  if (commandNeedsIsolation(target.args)) {
+    const stack = configProjectId(join(root, configTomlPath(config)));
+    if (stack !== undefined) note(`stack ${stack} — declared by ${configTomlPath(config)}; whatever branch label the CLI prints below is its own local database label`);
+  }
+
+  return runCli(cli.path, ['--workdir', appDir, ...target.args], { cwd, env });
 }
 
 /** `0` to proceed, a non-zero exit code to refuse. */
