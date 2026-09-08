@@ -64,7 +64,7 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
-import { checkoutSkew } from '../delegation.mjs';
+import { checkoutSkew, installCommand } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
 import { hostScopes, terminalInventory } from './pane.mjs';
@@ -666,10 +666,16 @@ export function dispatch(
   // the child is. Measured 2026-08-28 (ofmchat #101) — a dispatch five seconds
   // ahead of its worktree's install produced a child with no worker role, no
   // playbook and its boot model, which then implemented a ticket for real while
-  // `gate` and `tail` showed a healthy agent. `ax worktree setup` installs
-  // nothing (../worktree/setup.mjs only notes the absence), so the install is
-  // concurrent by construction and this ground WAITS for it rather than refusing
-  // a fresh worktree outright.
+  // `gate` and `tail` showed a healthy agent.
+  //
+  // `ax worktree setup` INSTALLS NOW (../worktree/setup.mjs), so the placement
+  // above leaves an equipped tree and this ground normally passes on its first
+  // read. It still WAITS rather than refusing: a tree placed by the repo's own
+  // tool or reused from an earlier dispatch can carry an install started
+  // elsewhere, and the measured window for one of those was five seconds. What
+  // it no longer waits for is an install nobody was ever asked to run — that was
+  // 180 seconds of budget followed by a refusal of a worktree ax had just
+  // provisioned (reported from a consumer at 0.21.1).
   if (worktree !== '' && !dry) {
     const equip = untilEquipped({
       worktree,
@@ -689,7 +695,7 @@ export function dispatch(
     } else if (!equip.ready) {
       return cannot(
         `this worktree registers an AX bundle it does not carry (${equip.missing.join(', ')}), so a child dispatched into it boots with no worker role, no playbook and its BOOT model — and implements the ticket anyway`,
-        `run your package manager's install in ${worktree}   # then re-run this dispatch`,
+        `${installCommand(worktree)}   # then re-run this dispatch`,
       );
     } else note('the AX bundle this worktree registers is loadable, so the child can apply its role marker');
   }

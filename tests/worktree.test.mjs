@@ -40,6 +40,22 @@ test('the same inputs always produce the same plan', () => {
   assert.deepEqual(plan(inputs), plan(inputs));
 });
 
+// The install used to be an `existsSync` inside `apply`, printing a note. A
+// dispatch then waited out its whole 180-second equipment budget for an install
+// nobody had been asked to run, and refused the worktree ax had just
+// provisioned. It is a plan value, so `--dry-run` names it and one step runs it.
+test('the plan installs where a manifest declares dependencies and none are on disk', () => {
+  const decide = dependencies => plan({ probes: { database: { touches: false }, dependencies } });
+
+  assert.equal(decide({ declared: true, present: false }).install, true);
+  const named = decide({ declared: true, present: false }).log.filter(line => line.includes('node_modules'));
+  assert.equal(named.length, 1, 'and the plan says so before anything is written');
+  assert.equal(decide({ declared: true, present: true }).install, false, 'an installed worktree is left alone');
+  assert.equal(decide({ declared: false, present: false }).install, false, 'no manifest is nothing to install, not a missing install');
+  assert.equal(decide({}).install, false, 'an unprobed answer authorizes no install');
+  assert.equal(plan({ probes: { database: { touches: false } } }).log.some(line => line.includes('node_modules')), false);
+});
+
 test('an issue number becomes a legible port', () => {
   const result = plan({ probes: { database: { touches: false } } });
 

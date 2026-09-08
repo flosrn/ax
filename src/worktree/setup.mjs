@@ -13,13 +13,14 @@
 // Only the third step is allowed to change anything, so a plan can be printed,
 // diffed or re-derived without provisioning a thing.
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { removeBlock, writeBlock } from '../dotenv.mjs';
 import { currentBranch, excludePaths, installHooks, isMainCheckout } from '../git.mjs';
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
-import { checkoutSkew } from '../delegation.mjs';
+import { checkoutSkew, installCommand } from '../delegation.mjs';
+import { run as execRun } from '../exec.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { CONTEXT_PATH, renderContext } from './context.mjs';
 import { identify } from './identity.mjs';
@@ -29,6 +30,24 @@ import { promoteFromPlan } from './supabase.mjs';
 
 /** Runtime paths that exist in every worktree and belong in none of its diffs. */
 export const RUNTIME_PATHS = ['.agent/', '.turbo/', 'node_modules/'];
+
+/**
+ * Installs take minutes, not the 30 seconds every other exec in this package
+ * budgets for — the same measurement `../pin.mjs` carries, on the same machine:
+ * a pnpm install over a MakerKit workspace ran near a minute warm.
+ */
+const INSTALL_TIMEOUT_MS = 600_000;
+
+/**
+ * The install this package assumes, injected so the suite stays offline.
+ *
+ * pnpm, and bare: `../delegation.mjs` already names `pnpm install` as the repair
+ * for a missing install, and a bare install is FROZEN by default there (pnpm 11,
+ * measured in `../pin.mjs`), which is what a worktree wants — the lockfile the
+ * branch committed, or a refusal naming the drift, never a silently different
+ * tree than the one the primary checkout resolved.
+ */
+export const setupInstall = at => execRun('pnpm', ['install'], { cwd: at, timeout: INSTALL_TIMEOUT_MS });
 
 /**
  * The receipt for paths this run newly excluded, and it names the scope git
@@ -51,7 +70,7 @@ export const excludeReceipt = added =>
  * then provisions it, and it may not chdir — a process that changed directory
  * mid-dispatch would leave every later step resolving against the child's tree.
  */
-export function setup(argv = [], { cwd } = {}) {
+export function setup(argv = [], { cwd, install = setupInstall } = {}) {
   const dryRun = argv.includes('--dry-run');
   const force = forcedDatabase(argv);
   const { root, main } = repoPaths(cwd);
@@ -109,20 +128,49 @@ export function setup(argv = [], { cwd } = {}) {
     return 0;
   }
 
-  return apply({ plan, config, root, main });
+  return apply({ plan, config, root, main, install });
 }
 
 /**
  * Write the plan down, in an order that survives being interrupted.
  *
- * The env files come first and the container last. A worktree whose env
+ * THE INSTALL COMES FIRST, and it is a write like any other. This step printed
+ * `node_modules missing — run your package manager's install in this worktree`
+ * and moved on, which left two costs downstream: the isolated-database branch
+ * below starts its stack through `pnpm --filter web supabase:start`, a command
+ * that cannot run in a tree with no install, and `ax worker dispatch` waited out
+ * its whole equipment budget — 180 seconds, reported 2026-09-08 from a consumer
+ * on 0.21.1 — for an install nobody had been asked to run, then refused the
+ * worktree it had just provisioned, with a repair the operator ran by hand in
+ * 1.6 seconds.
+ *
+ * A FAILED INSTALL ENDS THE RUN. Nothing after this point can succeed in a tree
+ * whose dependencies are not there, and starting seven containers for it would
+ * be the orphaned-stack state the ordering below exists to avoid. Re-running
+ * setup after the repair is the normal case.
+ *
+ * The env files come next and the container last. A worktree whose env
  * records a stack that was never started is repaired by re-running setup; a
  * running stack no env file names is seven orphaned containers nobody will
  * connect back to this directory.
  */
-function apply({ plan, config, root, main }) {
-  if (!existsSync(join(root, 'node_modules'))) {
-    note('node_modules missing — run your package manager’s install in this worktree');
+function apply({ plan, config, root, main, install }) {
+  if (plan.install) {
+    const installed = install(root);
+    if (installed.error || installed.status !== 0) {
+      const detail =
+        String(installed.error ?? '').trim() ||
+        String(installed.stderr ?? '')
+          .split('\n')
+          .filter(Boolean)
+          .slice(-3)
+          .join(' | ') ||
+        `exit ${installed.status}`;
+      bad(`the install failed in this worktree (${detail}) — nothing here can run, and a child dispatched into it would boot with no AX bundle`);
+      fix(`${installCommand(root)}   # resolve it there, then re-run ax worktree setup`);
+      return 1;
+    }
+    ok('dependencies installed — this worktree can run, and carries the AX bundle a child loads');
   }
 
   const added = excludePaths(root, RUNTIME_PATHS);

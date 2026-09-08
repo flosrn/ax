@@ -124,11 +124,20 @@ export function readRecorded(keys, read, readLegacy = read) {
  * @param identity  from `worktree/identity.mjs`
  * @param config    the loaded `ax.config.json`
  * @param recorded  values already written in this worktree's env files
- * @param probes    what the machine answered: `{ isBound, proxy, tailnet, database }`
+ * @param probes    what the machine answered: `{ isBound, proxy, tailnet, database, dependencies }`
  */
 export function planWorktree({ identity, worktreePath, config, recorded = {}, probes = {} }) {
   const log = [];
-  const { isBound = () => false, proxy = {}, tailnet = {}, database = {} } = probes;
+  const { isBound = () => false, proxy = {}, tailnet = {}, database = {}, dependencies = {} } = probes;
+
+  // THE INSTALL IS A PLAN VALUE, so `--dry-run` names it and `apply` is the only
+  // step that runs it. It was an `existsSync` inside `apply` printing a note —
+  // "run your package manager's install in this worktree" — which is how a
+  // dispatch came to WAIT 180 seconds for an install nobody had been asked to
+  // run, then refuse the worktree it had just provisioned (reported from a
+  // consumer on 0.21.1). Declared and absent is an install; no manifest is
+  // nothing to install, and a tree that already has one is left alone.
+  const install = dependencies.declared === true && dependencies.present !== true;
 
   const port = resolvePort({
     identity,
@@ -143,6 +152,7 @@ export function planWorktree({ identity, worktreePath, config, recorded = {}, pr
       ? `port ${port.port} kept — already recorded for this worktree`
       : `port ${port.port} allocated (${port.source})${identity.issue ? ` from issue #${identity.issue}` : ''}`,
   );
+  if (install) log.push('node_modules missing — installing this worktree’s dependencies');
 
   const urls = planUrls({
     worktreePath,
@@ -161,6 +171,7 @@ export function planWorktree({ identity, worktreePath, config, recorded = {}, pr
     port,
     urls,
     supabase,
+    install,
     env: envWrites({ config, port, urls, supabase, proxy }),
     log,
   };

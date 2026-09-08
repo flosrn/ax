@@ -181,6 +181,21 @@ export function portProbe(probe = isPortBound) {
   };
 }
 
+/**
+ * Can anything in this worktree run: what its manifest declares, and what is on
+ * disk. `git worktree add` copies neither — it hands you a tree with no
+ * `node_modules`, which is the gap `setup` exists to close.
+ *
+ * TWO FACTS, not one. A tree with no manifest declares no dependencies, so an
+ * install there would be a package manager refusing a directory rather than a
+ * missing install: the plan needs both answers to tell "not installed yet" from
+ * "nothing to install".
+ */
+export const probeDependencies = ({ worktreePath }) => ({
+  declared: existsSync(join(worktreePath, 'package.json')),
+  present: existsSync(join(worktreePath, 'node_modules')),
+});
+
 /** Every probe a full plan needs, in one call. */
 export function probeAll({ worktreePath, config, recorded, force }) {
   return {
@@ -188,5 +203,6 @@ export function probeAll({ worktreePath, config, recorded, force }) {
     proxy: probeProxy({ worktreePath, config, recorded }),
     tailnet: probeTailnet(),
     database: probeDatabase({ worktreePath, config, force }),
+    dependencies: probeDependencies({ worktreePath }),
   };
 }

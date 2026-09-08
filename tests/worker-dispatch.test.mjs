@@ -1433,7 +1433,9 @@ test('an unequipped child is named as the CAUSE, not left as two unexplained UNP
   assert.equal(r.code, 3);
   assert.match(r.out, /CAUSE: this worktree cannot load its AX bundle/);
   assert.match(r.out, /working UNEQUIPPED, not still booting/);
-  assert.match(r.out, /install in/);
+  // The repair is a command, not "use your package manager": the same one
+  // ../src/delegation.mjs names for a missing install, pointed at this tree.
+  assert.ok(r.out.includes(`pnpm install --dir '${tree}'`), r.out);
   assert.equal(r.started.length, 1, 'the dispatch happened once and is never repeated');
 });
 
@@ -1487,8 +1489,9 @@ test('a wiring fault discovered at verification names `ax init`, not an install'
 });
 
 test('an install that lands during the wait is dispatched into, not refused', () => {
-  // `ax worktree setup` installs nothing, so a concurrent install is the ORDINARY
-  // state of a fresh worktree. The measured window was five seconds.
+  // `ax worktree setup` installs now, so an equipped tree is the ordinary state;
+  // an install still in flight belongs to a tree provisioned elsewhere. The
+  // measured window was five seconds.
   const root = repo();
   const tree = equipped(provisioned(root, `${ISSUE}-${SLUG}`), { installed: false });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));

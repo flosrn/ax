@@ -194,9 +194,9 @@ export function pinIdentity(worktree, { exec = defaultExec } = {}) {
 /**
  * Is the AX bundle this worktree REGISTERS actually loadable in it?
  *
- * MEASURED 2026-08-28, ofmchat #101. `git worktree add` hands you a tree with no
- * node_modules (../worktree/setup.mjs says so and installs nothing), so the
- * install runs concurrently with the dispatch. That dispatch went out at 07:17:06
+ * MEASURED 2026-08-28, ofmchat #101, when `git worktree add` handed you a tree
+ * with no node_modules and `ax worktree setup` only said so, so the
+ * install ran concurrently with the dispatch. That dispatch went out at 07:17:06
  * and `node_modules/@flosrn/ax` was not created until 07:17:11: the child booted
  * with no AX bundle at all, so nothing consumed the `[omp role=worker
  * model=@default]` marker its own brief carried. Its transcript holds exactly one
@@ -310,12 +310,14 @@ export function equipment(worktree, { exists = existsSync, read = path => readFi
 }
 
 /**
- * The same probe, until the install in flight lands or the deadline passes.
+ * The same probe, until an install in flight lands or the deadline passes.
  *
  * Waiting is the right disposition rather than an immediate refusal: the measured
  * window was five seconds of a pnpm install nobody could have run earlier, and
- * the same install completed three minutes later. `../worktree/setup.mjs` does
- * not install, so a concurrent install is the ordinary state of a fresh worktree.
+ * the same install completed three minutes later. `../worktree/setup.mjs`
+ * installs now, so the ordinary fresh worktree arrives here already equipped —
+ * what remains waitable is a tree provisioned by the repo's own tool or reused
+ * from an earlier dispatch, where an install may still be running.
  *
  * A wiring fault ends the loop at once. `.omp/settings.json` is tracked, so no
  * wait can make it register a bundle it does not name.

@@ -7,6 +7,7 @@
 
 import { basename, join } from 'node:path';
 
+import { installCommand } from '../delegation.mjs';
 import { bad, fix, note, ok, section, warn } from '../log.mjs';
 import { defaultStore, workerPane } from './record.mjs';
 import { equipment } from './child.mjs';
@@ -163,7 +164,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
     const equip = equipmentProbe(worktree);
     if (equip.measured && !equip.ready) {
       bad(`CAUSE: this worktree cannot load its AX bundle (${equip.wiring ? equip.reason : equip.missing.join(', ')}), so nothing in that child ever consumed its role marker — it is working UNEQUIPPED, not still booting`);
-      fix(equip.wiring ? 'ax init   # then settle this dispatch and re-dispatch' : `run your package manager's install in ${worktree}   # then settle this dispatch and re-dispatch`);
+      fix(equip.wiring ? 'ax init   # then settle this dispatch and re-dispatch' : `${installCommand(worktree)}   # then settle this dispatch and re-dispatch`);
       note('Its work is real and its model is not the one you asked for: decide whether to keep it before anything else. A live pane is never dispatched over (F-001).');
     }
   }

@@ -152,3 +152,67 @@ test('a failed database start preserves its diagnostic without blaming a healthy
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** A repository whose worktrees declare dependencies, and one linked worktree. */
+function consumerWorktree(label) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `ax-${label}-`)));
+  const root = join(dir, 'main');
+  const tree = join(dir, 'child');
+  mkdirSync(root, { recursive: true });
+  git(root, 'init', '-q');
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'demo' }, apps: { web: '.' } }));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'demo', devDependencies: { '@flosrn/ax': '0.24.1' } }));
+  git(root, 'add', '.');
+  execFileSync('git', [...IDENTITY, 'commit', '-qm', 'fixture'], { cwd: root, stdio: 'ignore' });
+  assert.equal(addWorktree({ cwd: root, path: tree, branch: `feature/${label}` }).ok, true);
+  return { dir, root, tree };
+}
+
+// `git worktree add` copies no node_modules, and this step used to print
+// `run your package manager's install in this worktree` and move on. Reported
+// 2026-09-08 from a consumer on 0.21.1: `ax worker dispatch` then waited out its
+// 180-second equipment budget for an install nobody had been asked to run and
+// refused the worktree it had just provisioned — a repair the operator ran by
+// hand in 1.6 s.
+test('setup installs the worktree it provisions, once', () => {
+  const { dir, tree } = consumerWorktree('installs');
+  const calls = [];
+  const install = at => (calls.push(at), mkdirSync(join(at, 'node_modules'), { recursive: true }), { status: 0, stdout: '', stderr: '' });
+  try {
+    const planned = capture(() => setup(['--dry-run', '--no-database'], { cwd: tree, install }));
+    assert.equal(planned.code, 0);
+    assert.match(planned.out, /node_modules missing — installing/, 'the dry run names the install it would run');
+    assert.deepEqual(calls, [], 'and a dry run still runs nothing');
+
+    const provisioned = capture(() => setup(['--no-database'], { cwd: tree, install }));
+    assert.equal(provisioned.code, 0, provisioned.out);
+    assert.deepEqual(calls, [tree], 'the install ran in the worktree, not the primary checkout');
+    assert.match(provisioned.out, /dependencies installed/);
+
+    // Idempotent by contract: re-running setup on a live worktree is its normal
+    // case, and an installed tree is left alone.
+    const again = capture(() => setup(['--no-database'], { cwd: tree, install }));
+    assert.equal(again.code, 0, again.out);
+    assert.deepEqual(calls, [tree], 'a second run installs nothing');
+    assert.doesNotMatch(again.out, /node_modules/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a failed install ends the run with the command that repairs it', () => {
+  const { dir, tree } = consumerWorktree('install-fails');
+  const install = () => ({ status: 1, stdout: '', stderr: 'ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile"\n' });
+  try {
+    const refused = capture(() => setup(['--no-database'], { cwd: tree, install }));
+    assert.equal(refused.code, 1);
+    assert.match(refused.out, /the install failed in this worktree/);
+    assert.match(refused.out, /ERR_PNPM_OUTDATED_LOCKFILE/, 'the package manager’s own diagnostic is kept');
+    assert.match(refused.out, /pnpm install --dir/, 'and the repair is a command, not "use your package manager"');
+    // Nothing past the install ran: a tree that cannot run gets no container
+    // stack and no context file claiming it is ready.
+    assert.doesNotMatch(refused.out, /written — the file an agent reads first/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
