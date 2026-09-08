@@ -234,7 +234,17 @@ export function resolveTarget(want: string): Resolved {
       handle: hits[0].handle,
       worktree: hits[0].worktree,
     };
-  if (hits.length > 1) return { ambiguous: hits.map((p) => p.peer) };
+  // EVERY CANDIDATE WITH ITS SESSION ID, because this refusal is all the caller
+  // has left to act on — and an id prefix is a target this very function
+  // accepts (`byId` above), so the refusal hands back something that works
+  // rather than three names that do not. Reported 2026-09-08: a coordinator was
+  // told `peer 'ax' is ambiguous — matches ax·434a, ax·6c69, ax·988f` while
+  // holding the session id the operator had given it, and paid a `peer_list`
+  // plus a re-send to learn what this line already knew. A peer with no
+  // published session id keeps its bare name: an id that does not exist is not
+  // improved by an empty parenthesis.
+  if (hits.length > 1)
+    return { ambiguous: hits.map((p) => (p.sessionId === '' ? p.peer : `${p.peer} (${shortId(p.sessionId)})`)) };
   return {};
 }
 

@@ -214,19 +214,27 @@ test('a unique prefix resolves', async () => {
   expect(resolveTarget('t7').address).toBe('run:run_b');
 });
 
-test('an ambiguous prefix is an error, never a pick', async () => {
+test('an ambiguous prefix is an error, never a pick — and it hands back a selector that works', async () => {
   // `1657-spike` and `1657-styles` both up: resolving `1657` by sort order
   // sends worktree-specific detail to the wrong session.
+  //
+  // AND EVERY CANDIDATE CARRIES ITS SESSION ID, because the refusal is the only
+  // thing the caller has left to act on. Reported 2026-09-08: a coordinator was
+  // refused `peer 'ax' is ambiguous — matches ax·434a, ax·6c69, ax·988f` while
+  // holding the very id the operator had given it. A session-id prefix is
+  // already an accepted target (`SHORT_ID` below), so what the refusal owed it
+  // was the ids of the three — instead it cost a `peer_list` and a re-send.
   setTerminals([
     { handle: 'term_aaaa1111', worktreePath: '/tmp/fake/1657-spike' },
     { handle: 'term_bbbb2222', worktreePath: '/tmp/fake/1657-styles' },
   ]);
-  publishEntry('term_aaaa1111', 'run_a');
-  publishEntry('term_bbbb2222', 'run_b');
+  publishEntry('term_aaaa1111', 'run_a', '', '01a036ee-0719-7023-9ad5-f9336c8b96e6');
+  publishEntry('term_bbbb2222', 'run_b', '', '01a036eb-12c5-7237-8161-98431d69972c');
   const { resolveTarget } = await load();
+
   const r = resolveTarget('1657');
   expect(r.address).toBeUndefined();
-  expect(r.ambiguous?.sort()).toEqual(['1657-spike', '1657-styles']);
+  expect(r.ambiguous?.sort()).toEqual(['1657-spike (01a036ee)', '1657-styles (01a036eb)']);
 });
 
 test('the id Orca shows on a card resolves, because that is what an operator relays', async () => {
@@ -261,7 +269,7 @@ test('an ambiguous id is an error, and an id nobody has resolves to nothing', as
   publishEntry('term_bbbb2222', 'run_b', '', '01a036eebbbb');
   const { resolveTarget } = await load();
 
-  expect(resolveTarget('01a036ee').ambiguous?.sort()).toEqual(['t6-les-lots', 't7-canal-de-scene']);
+  expect(resolveTarget('01a036ee').ambiguous?.sort()).toEqual(['t6-les-lots (01a036ee)', 't7-canal-de-scene (01a036ee)']);
   expect(resolveTarget('deadbeef')).toEqual({});
 });
 
