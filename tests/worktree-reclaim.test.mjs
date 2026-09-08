@@ -1529,6 +1529,43 @@ test('the live-pane KEEP names per-handle closes, never a bulk sweep of the work
   assert.doesNotMatch(out, /--all/);
 });
 
+test('the live-pane KEEP names what it is keeping the tree FOR, not just a count', () => {
+  // Measured 2026-09-08 on two worktrees of one wave (goodluckagency/ofmchat
+  // PRD #208), after the worker's own pane had been released: `2 live pane(s)`
+  // over the Setup hook's finished pane and a bare placement shell. The count
+  // reads as "somebody is working in there", so the operator paid four commands
+  // per worktree — two `orca terminal show` to establish what they were, two
+  // closes — before reclaim could run.
+  //
+  // AND NO ATTRIBUTION IS AVAILABLE, measured exhaustively on the same wave:
+  // `orca terminal list --json` carries handle, ptyId, incarnationId, orphaned,
+  // worktreeId, worktreePath, branch, tabId, leafId, title, connected,
+  // writable, lastOutputAt, agentIdentity, executionHostId, preview — no
+  // dispatch id, no role marker, no ownership state. So the verb cannot claim a
+  // pane is the dispatch's own, and it must not: a human's shell in a worktree
+  // also carries `agentIdentity: null`, and `title` FILLS IN LATER — the same
+  // placement shell read `null` on one pass and `Terminal 1` on the next, so a
+  // title is not evidence of what a pane is either. What the verb CAN do is
+  // print the three signals that exist, which is the reading the operator was
+  // making by hand with two `orca terminal show` calls per worktree.
+  const s = stage();
+  const { deps } = host(s, {
+    terminals: [
+      { handle: 'term_worker', title: 'π - Orca worker task report - slice', agentIdentity: 'omp', worktreePath: s.path, orphaned: false, lastOutputAt: '2026-09-08T10:15:00.000Z' },
+      { handle: 'term_setup', title: 'Setup', agentIdentity: null, worktreePath: s.path, orphaned: false, lastOutputAt: '2026-09-08T09:41:00.000Z' },
+    ],
+  });
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /Setup/, 'the title is the only thing that tells a hook pane from a session');
+  assert.match(out, /omp/, 'agentIdentity is what says a pane is running an agent at all');
+  assert.match(out, /2026-09-08T09:41/, 'last output is what says whether anything is happening in there');
+  // Still no claim of ownership: the data cannot support one.
+  assert.doesNotMatch(out, /the dispatch's own|created by this dispatch/);
+});
+
 // ── the declaration reader ──────────────────────────────────────────────────
 
 test('the archive declaration is read from the supported shapes, and refuses to guess at anything else', () => {

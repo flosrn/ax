@@ -1148,16 +1148,47 @@ function measure({ run, git, worktrees, path, branch, checkout }) {
     (typeof pane.worktreePath === 'string' && physical(pane.worktreePath) === physical(path));
   const live = [...inventory.byHandle.values()].filter(pane => pane !== null && typeof pane === 'object' && mine(pane) && pane.orphaned !== true);
   if (live.length > 0) {
+    // WHAT IS BEING KEPT, PANE BY PANE — never a bare count. Measured
+    // 2026-09-08 across four worktrees of one wave (goodluckagency/ofmchat PRD
+    // #208): every dispatch-placed worktree carries exactly three panes — the
+    // worker's own (`agentIdentity: "omp"`, title prefixed with the runtime's
+    // spinner and suffixed with the request slug), the `orca-setup` hook's
+    // pane, and a bare placement shell. `ax worker release --close` removes the
+    // first and the other two survive, which is release claiming its own and
+    // nothing else. So this term fired on two panes no human had opened, and
+    // `2 live pane(s)` reads as "somebody is working in there": the operator
+    // paid two `orca terminal show` calls per worktree to learn otherwise.
+    //
+    // AND IT STILL CLAIMS NOTHING. The same wave measured the receipt's fields
+    // exhaustively — handle, ptyId, incarnationId, orphaned, worktreeId,
+    // worktreePath, branch, tabId, leafId, title, connected, writable,
+    // lastOutputAt, agentIdentity, executionHostId, preview — with no dispatch
+    // id, no role marker and no ownership state anywhere. A human's shell in a
+    // worktree carries `agentIdentity: null` exactly like the placement shell,
+    // and `title` FILLS IN LATER (the same pane read `null`, then
+    // `Terminal 1`), so it is not evidence of what a pane is either. Attributing
+    // a pane to the dispatch is therefore unavailable, and guessing it here
+    // would authorise closing somebody's terminal.
+    //
+    // What is available is the three signals the list does carry, printed so the
+    // reading the operator was making by hand is already made: a pane running an
+    // agent, a pane named by a hook, and when each last said anything.
+    const describe = pane => {
+      const title = typeof pane.title === 'string' && pane.title.trim() !== '' ? `"${pane.title.trim()}"` : 'untitled';
+      const agent = typeof pane.agentIdentity === 'string' && pane.agentIdentity !== '' ? pane.agentIdentity : 'no agent';
+      const spoke = typeof pane.lastOutputAt === 'string' && pane.lastOutputAt !== '' ? pane.lastOutputAt : 'never observed';
+      return `${pane.handle} ${title} · ${agent} · last output ${spoke}`;
+    };
     return {
       keep: {
-        reason: `${live.length} live pane(s) in ${path}: ${live.slice(0, NAMED).map(pane => pane.handle).join(', ')} — a released worker does not make every pane in its tree disposable`,
+        reason: `${live.length} live pane(s) in ${path} — a released worker does not make every pane in its tree disposable, and nothing in a pane list attributes one to the dispatch that placed it: ${live
+          .slice(0, NAMED)
+          .map(describe)
+          .join(' ; ')}`,
         // NEVER `--worktree … --all`. That sweeps whatever is registered at the
         // moment it runs — including a shell a human opened after this reason
-        // was printed — and a title is not ownership: measured on a freshly
-        // created workspace, `kind`, `command`, `agentType`, `cliProvenance`
-        // and `createdAt` are all null, so nothing in the list distinguishes a
-        // generated Setup pane from somebody's own terminal. The repair names
-        // the INSPECTION first, then the exact handles it was printed for.
+        // was printed. The repair names the INSPECTION first, then the exact
+        // handles it was printed for.
         repair: `orca terminal show --terminal ${live[0].handle} --json   # inspect each, then close only the ones you own, by handle: ${live
           .slice(0, NAMED)
           .map(pane => `orca terminal close --terminal ${pane.handle} --json`)
