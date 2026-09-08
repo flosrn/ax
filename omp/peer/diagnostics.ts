@@ -380,12 +380,18 @@ export function renderDelivery(read: DeliveryRead): string {
   const section = (title: string, lines: string[]): string[] =>
     lines.length === 0 ? [] : ['', title, ...lines.map((l) => `  ${l}`)];
 
+  // BOTH READINGS, exactly as the banner states them (`gapBanner`,
+  // ./receive.ts): the counter is minted per SENDER, not per sender→recipient
+  // pair, so a sender that wrote to other peers between two of ours leaves
+  // numbers this side never sees and cannot tell from a loss. Measured
+  // 2026-09-08. Three sites said "never arrived" as a fact; a readout that
+  // keeps saying it is the one an operator reads LAST and trusts MOST.
   const lost = open
     .filter((r) => r.reason === 'sequence-gap')
     .map(
       (r) =>
-        `${at(r)}  ${who(r)}: ${r.lost ?? '?'} message(s) never arrived (expected #${r.expected ?? '?'}, got #${r.sequence ?? '?'}). ` +
-        'Repair: their content is unrecoverable here — ask that sender to resend if it mattered.',
+        `${at(r)}  ${who(r)}: ${r.lost ?? '?'} message(s) numbered by that sender did not arrive here (expected #${r.expected ?? '?'}, got #${r.sequence ?? '?'}). ` +
+        'Repair: ask that sender whether they were lost — their content is unrecoverable here — or addressed to OTHER peers, which reads identically from this side (flosrn/ax#230).',
     );
   const withheld = open
     .filter((r) => r.reason === 'filtered')
@@ -463,7 +469,7 @@ export function renderDelivery(read: DeliveryRead): string {
     head,
     `${read.records.length} record(s), ${open.length} still open, ${resolved} resolved by a later observation` +
       (read.unreadable > 0 ? `, ${read.unreadable} unreadable line(s) skipped` : ''),
-    ...section('LOST — never arrived', lost),
+    ...section('SEQUENCE GAP — numbers this side never saw: lost, or sent to other peers', lost),
     ...section('WITHHELD — this side did not inject it, on purpose', withheld),
     ...section('REFUSED INJECTION — could not reach the model', refused),
     ...section('NO REPLY ROUTE — answerable only after you establish one', routeless),

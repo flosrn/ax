@@ -816,11 +816,19 @@ test('a gap in the sender sequence raises a named, visible alarm', async () => {
 
   expect(h.injected).toEqual(['m1', 'm3']);
   // The note: what the operator greps for.
-  expect(h.notes.join('\n')).toContain('PEER MESSAGE LOST: 1 message(s) from peer');
+  expect(h.notes.join('\n')).toContain('PEER MESSAGE LOST: 1 message(s) numbered by peer');
   // And the line the MODEL sees, because a note it never reads changes nothing.
   expect(String(h.sent[1].content)).toContain('[PEER MESSAGE LOST]');
   expect(String(h.sent[1].content)).toContain('expected #2, this is #3');
   expect(String(h.sent[1].content)).toContain('content of m3');
+  // BOTH READINGS, because only the sender can tell them apart: the counter is
+  // minted per sender, not per sender→recipient pair, so a sender that wrote to
+  // two other peers between two of ours leaves numbers we never see. Measured
+  // 2026-09-08 — this banner claimed a loss as fact and bought a resend for
+  // nothing (flosrn/ax#230, where the counter itself is filed).
+  for (const clause of ['addressed them to OTHER peers', 'per sender, not per pair', 'unrecoverable']) {
+    expect(String(h.sent[1].content)).toContain(clause);
+  }
   expect(h.sent[1].details.lostBefore).toBe(1);
   // The first message establishes the baseline and must not alarm on its own.
   expect(String(h.sent[0].content)).not.toContain('PEER MESSAGE LOST');
@@ -1162,7 +1170,11 @@ test('a sequence gap is still named after a process that did not write it is gon
     const fresh = readDelivery();
     const gap = fresh.records.find((r) => r.reason === 'sequence-gap');
     expect(gap).toMatchObject({ peer: 'peer', lost: 1, expected: 2, sequence: 3, messageId: 'm3' });
-    expect(renderDelivery(fresh)).toContain('LOST');
+    // The section header names what a gap ESTABLISHES, which is not a loss: the
+    // counter is per sender, so numbers addressed to other peers read the same
+    // from here (#230). What must survive a restart is the RECORD above; this
+    // asserts the readout still surfaces it.
+    expect(renderDelivery(fresh)).toContain('SEQUENCE GAP');
     expect(renderDelivery(fresh)).not.toMatch(/\d+%/);
   });
 });

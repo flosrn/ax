@@ -239,12 +239,27 @@ export function sequenceOf(payload: unknown): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-/** The visible half of the alarm: a line the model cannot skim past. */
+/**
+ * The visible half of the alarm: a line the model cannot skim past.
+ *
+ * IT NAMES BOTH READINGS OF A GAP, because only the sender can tell them apart.
+ * The counter this verdict is computed from is minted per SENDER, not per
+ * sender→recipient pair (`nextOutboundSequence`, ./store.ts), so a sender who
+ * wrote to two other peers between two of your messages leaves numbers you will
+ * never see. Measured 2026-09-08: a coordinator's #2 and #3 went to two workers
+ * and its #4 came here, this banner reported two messages lost and their content
+ * unrecoverable, and the resend it asked for was for nothing. Stating a loss as
+ * a fact when it is one of two readings is the expensive half of that; the
+ * counter is the other, and it is filed rather than changed under three live
+ * peers (flosrn/ax#230).
+ */
 export function gapBanner(sender: string, v: SequenceVerdict): string {
   return (
-    `[PEER MESSAGE LOST] ${v.lost} message(s) from ${sender} never arrived ` +
-    `(expected #${v.expected}, this is #${v.seq}). Their content is unrecoverable ` +
-    `from here — ask ${sender} to resend if it mattered.\n\n`
+    `[PEER MESSAGE LOST] ${v.lost} message(s) numbered by ${sender} did not arrive here ` +
+    `(expected #${v.expected}, this is #${v.seq}). Either they were lost — their content is ` +
+    `unrecoverable from here — or ${sender} addressed them to OTHER peers: the counter is per ` +
+    `sender, not per pair, so both read the same from this side. Ask ${sender} which, and to ` +
+    `resend if it mattered.\n\n`
   );
 }
 
@@ -752,8 +767,8 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             }
             if (verdict.lost > 0) {
               deps.note(
-                `PEER MESSAGE LOST: ${verdict.lost} message(s) from ${who.name} never arrived ` +
-                  `(expected #${verdict.expected}, got #${verdict.seq})`,
+                `PEER MESSAGE LOST: ${verdict.lost} message(s) numbered by ${who.name} did not arrive here ` +
+                  `(expected #${verdict.expected}, got #${verdict.seq}) — lost, or addressed to other peers`,
               );
             }
 
