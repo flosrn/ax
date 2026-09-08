@@ -172,6 +172,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['settle <task|request>', 'write a proven-dead attempt as settled — never a live one'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
+      ['stall --request <id>', 're-arm the detached watcher of one recorded dispatch'],
     ],
     // `launch` was this verb until 0.16: one gesture creates implementation
     // work, and everything that records it — the store record, the receipt, the
@@ -185,6 +186,15 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // gesture. Declared, dispatchable, unadvertised — plumbing, in git's sense.
     plumbing: {
       start: 'the write-ahead half of a dispatch — `worker dispatch` issues it, and replays it byte for byte on recovery',
+      // The watcher `worker start` spawns detached. It is DECLARED because its
+      // own alert names the way to re-arm it, and that instruction was
+      // `node src/worker/stall.mjs …` — a path that exists in no consumer, so
+      // the operator adapted it to `node_modules/@flosrn/ax/…`, which under
+      // pnpm is a symlink the entry guard did not recognise: no watcher, no
+      // output, exit 0 (reported 2026-09-08 from a consumer on 0.24.1). A verb
+      // resolves through the pinned copy from any cwd, and cannot be typed
+      // through a link.
+      stall: 'the detached stall watcher — `worker start` arms it, and its own alert is what re-arms it',
     },
     // What `ax worker release --help` prints under the block. A verb whose
     // contract is a JUDGEMENT the caller has to make before typing needs more

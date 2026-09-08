@@ -2,10 +2,12 @@
 // orca-stall-watch.test.ts. The loop uses a fake clock and injected Orca; real
 // files still prove the record and pidfile lifecycle.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { progressOnly, stall } from '../src/worker/stall.mjs';
 
@@ -777,4 +779,40 @@ test('a wake that fails to deliver changes nothing but the log', () => {
   for (const attempt of sent) assert.equal(typeOf(attempt), 'status');
   assert.match(r.log, /stall alert failed; will retry next tick/);
   assert.match(r.log, /ALERT sent to run:run_test123; exiting/);
+});
+
+// THE ONE FAILURE A WATCHER MUST NEVER HAVE IS NONE AT ALL. Reported 2026-09-08
+// from a consumer on 0.24.1: the stall alert's own Re-arm line named
+// `node src/worker/stall.mjs`, a path that exists in no consumer, so the
+// operator ran the installed copy instead (`node_modules/@flosrn/ax/…`). Under
+// pnpm that is a symlink into `node_modules/.pnpm/…`, and Node realpaths
+// `import.meta.url` while leaving `process.argv[1]` as typed — so the entry
+// guard compared two spellings of one file, the module loaded, armed nothing,
+// printed nothing and exited 0. Twice, while a blocked worker went unwatched.
+test('invoked through a symlink, the watcher runs instead of exiting silently', () => {
+  const dir = scratch();
+  const link = join(dir, 'stall.mjs');
+  symlinkSync(fileURLToPath(new URL('../src/worker/stall.mjs', import.meta.url)), link);
+
+  // A path-shaped request is refused before any Orca call, so this asserts the
+  // ENTRY and nothing about the machine: the defect was a run with no answer.
+  const r = spawnSync(process.execPath, [link, '--request', 'a/../../etc/passwd'], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: dir, NO_COLOR: '1' },
+  });
+  const out = `${r.stdout}${r.stderr}`;
+  assert.notEqual(r.status, 0, out);
+  assert.match(out, /invalid --request/, 'the module ran and answered');
+  assert.match(out, /ax worker stall --request/, 'and its repair is the verb, never a path');
+});
+
+test('the re-arm line an alert carries is a verb the reader can run', () => {
+  const r = invoke({ runner: fakeRunner({ cursors: [7, 7, 7, 7] }), env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } });
+  const sent = sends(r.calls)[0];
+  const body = sent[sent.indexOf('--body') + 1];
+  assert.match(body, /Re-arm: ax worker stall --request req-watch/);
+  // The alert is read in the consumer, where this repo's own layout does not
+  // exist. A repair that cannot come true is the dead end a finding with no fix
+  // already is.
+  assert.doesNotMatch(body, /src\/worker\/stall\.mjs/);
 });

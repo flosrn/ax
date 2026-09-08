@@ -7,7 +7,7 @@
 // deliberate worktree-card changes for remote children whose completion mail
 // may not cross hosts.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,9 +56,17 @@ function cannot(message) {
   return 3;
 }
 
+/**
+ * A bug in whoever invoked this watcher — and the repair is the VERB, never a
+ * path. `node src/worker/stall.mjs …` resolves in this checkout and in no
+ * consumer, and the path an operator reaches for instead
+ * (`node_modules/@flosrn/ax/…`) is a pnpm symlink the entry guard at the bottom
+ * of this file did not recognise: the module loaded, armed nothing, printed
+ * nothing, exited 0.
+ */
 function callerBug(message) {
   bad(redactSecrets(message));
-  fix('node src/worker/stall.mjs --request <id> [--orca <bin>]');
+  fix('ax worker stall --request <id> [--orca <bin>]');
   return 1;
 }
 
@@ -261,7 +269,7 @@ function alertStall(run, fields, request, silentSeconds, status, signal) {
     'Three explanations are indistinguishable here: the worker hung or was killed; it is in a legitimately quiet spinner phase; or it is waiting on the operator.',
     `Inspect: ${terminalRepair.join(' ')}`,
     `State: orca orchestration worker-show --dispatch ${fields.dispatchId} --json`,
-    `Re-arm: node src/worker/stall.mjs --request ${request}`,
+    `Re-arm: ax worker stall --request ${request}`,
   ].join('\n');
   return run([
     'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
@@ -592,5 +600,28 @@ export function stall(
   }
 }
 
+/**
+ * Is this file the process entry?
+ *
+ * REALPATH ON BOTH SIDES. `import.meta.url` is already resolved — Node
+ * realpaths a module's own path — while `process.argv[1]` is the path the
+ * caller typed. Under pnpm every install is a symlink into
+ * `node_modules/.pnpm/…`, so for a consumer the two never matched: typing this
+ * module's installed path loaded it and ran nothing, with no output and exit 0
+ * (reported 2026-09-08 from a consumer on 0.24.1, after a stall alert whose own
+ * Re-arm line was the command that did it). `ax worker stall` is the way in
+ * now; this guard stays because `worker start` still spawns this file by path,
+ * and a silent no-op is the one failure a watcher must never have.
+ */
 const self = fileURLToPath(import.meta.url);
-if (process.argv[1] === self) process.exitCode = stall(process.argv.slice(2));
+const entered = () => {
+  const invoked = process.argv[1];
+  if (typeof invoked !== 'string' || invoked === '') return false;
+  if (invoked === self) return true;
+  try {
+    return realpathSync(invoked) === realpathSync(self);
+  } catch {
+    return false;
+  }
+};
+if (entered()) process.exitCode = stall(process.argv.slice(2));

@@ -22,8 +22,9 @@ import { release } from './release.mjs';
 import { settle } from './settle.mjs';
 import { dispatch } from './dispatch.mjs';
 import { sweep } from './sweep.mjs';
+import { stall } from './stall.mjs';
 
-export const SUBCOMMANDS = { start, repair, dispatch, ls, tail, gate, transcript, release, settle, sweep };
+export const SUBCOMMANDS = { start, repair, dispatch, ls, tail, gate, transcript, release, settle, sweep, stall };
 
 /**
  * `ax worker <verb> [args]`.

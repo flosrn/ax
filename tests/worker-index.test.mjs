@@ -33,14 +33,21 @@ test('an unknown or missing verb is a usage error, never a default action', () =
   assert.equal(worker([]), 2);
 });
 
-// ── the verb that was demoted ────────────────────────────────────────────────
+// ── the verbs that are not offered ───────────────────────────────────────────
 // `start` is PLUMBING (`docs/adr/0001`): `worker dispatch` issues it and replays
 // it, and it is the only recovery there is, so it must keep dispatching. What it
 // must stop doing is offering itself as a second way to create a child — and
 // this noun's own verb list is as agent-facing as the help.
-test('the plumbing verb keeps its runner and leaves the verb list', () => {
+//
+// `stall` joined it from the other direction: the detached watcher `worker
+// start` spawns had no verb at all, so its own alert named a path to re-run it
+// — unrunnable in a consumer, and silently inert through the pnpm symlink an
+// operator reached for instead. Declaring it makes the re-arm a command; the
+// marker keeps it out of every surface an agent reads, since arming a watcher
+// is `worker start`'s job and never a gesture to pick from a list.
+test('the plumbing verbs keep their runners and leave the verb list', () => {
   const plumbing = plumbingSubcommands('worker');
-  assert.deepEqual(plumbing, ['start']);
+  assert.deepEqual(plumbing, ['start', 'stall']);
 
   for (const verb of plumbing) {
     // Declared, so the equality contract above still holds it to a runner.

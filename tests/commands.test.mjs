@@ -225,7 +225,12 @@ test('a plumbing verb is declared and dispatchable, and never advertised', () =>
     assert.doesNotMatch(plain(renderUsage('0.0.0', { orca: true })), new RegExp(`^ +${verb}\\b`, 'm'), `the help still lists the plumbing ${verb}`);
   }
 
-  assert.deepEqual(plumbingSubcommands('worker'), ['start']);
+  // The declared-but-unadvertised set of this noun. `stall` joined it because
+  // its own alert names the way to re-arm it, and a path-based instruction was
+  // unrunnable in a consumer (a pnpm symlink the module's entry guard refused,
+  // silently); a verb resolves through the pinned copy instead. It is hidden for
+  // the same reason as `start`: nothing an agent reads should offer it.
+  assert.deepEqual(plumbingSubcommands('worker'), ['start', 'stall']);
   assert.equal(plumbingSubcommand('worker', 'dispatch'), null, 'the one creation verb is not plumbing');
   assert.equal(plumbingSubcommand('worktree', 'setup'), null, 'the marker is per noun');
 });
