@@ -380,6 +380,92 @@ test('the #204 shape KEEPs, naming the undelivered commit and delivery as its re
   assert.deepEqual(calls.clean, []);
 });
 
+// The 2026-09-08 incident (goodluckagency/ofmchat#218, ax 0.24.2): the landed-head
+// term was an EQUALITY, and equality answers only one of the four ancestry
+// shapes. `ax pr gate --pr 218 --merge` self-repaired staleness with
+// `gh pr update-branch`, which minted the merge commit ON GITHUB; that head is
+// what the merge validated, and the worktree HEAD stayed an ANCESTOR of it.
+// Nothing had escaped the landing, and the printed arrow — "open a follow-up
+// pull request" — would have opened an empty duplicate.
+
+test('a HEAD that is an ANCESTOR of the validated head landed too: the checkout is merely behind', () => {
+  const s = stage();
+  // The commit `gh pr update-branch` created on GitHub, never pulled into the
+  // worktree. HEAD is one commit behind it, and every commit reachable from
+  // HEAD is reachable from the head that landed.
+  file(join(s.path, 'src', 'from-github.txt'), 'update-branch\n');
+  git(s.path, 'add', '-A');
+  git(s.path, 'commit', '-qm', "Merge branch 'main' into feat");
+  const validated = gitOut(s.path, 'rev-parse', 'HEAD');
+  git(s.path, 'branch', 'landed-head');
+  git(s.path, 'reset', '-q', '--hard', s.head);
+  assert.equal(gitOut(s.path, 'rev-parse', 'HEAD'), s.head);
+  rmSync(join(s.store, 'merge'), { recursive: true, force: true });
+  mergeRecord({ store: s.store, pr: s.pr, sha: validated });
+  const { deps } = host(s);
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 0, out);
+  assert.match(out, /RECLAIMED/);
+  // The pass states WHY it holds — containment, not equality — so the note
+  // cannot be true of one shape and silent on the other.
+  assert.match(out, new RegExp(`landed head: ${s.head.slice(0, 12)} is contained in the ${validated.slice(0, 12)}`));
+  assert.match(out, /merely behind that landing/);
+  // Being behind is not retained work, so no delivery is demanded — and no
+  // fast-forward of a tree that is about to be removed is advised either.
+  assert.doesNotMatch(out, /DELIVERY/);
+  assert.equal(registered(s.main, s.path), false, `still registered:\n${out}`);
+});
+
+test('a validated head that DIVERGED from HEAD KEEPs naming the divergence and both commits', () => {
+  const s = stage();
+  file(join(s.path, 'src', 'landed.txt'), 'landed\n');
+  git(s.path, 'add', '-A');
+  git(s.path, 'commit', '-qm', 'the head that landed');
+  const validated = gitOut(s.path, 'rev-parse', 'HEAD');
+  git(s.path, 'branch', 'landed-head');
+  git(s.path, 'reset', '-q', '--hard', s.head);
+  file(join(s.path, 'src', 'local.txt'), 'local\n');
+  git(s.path, 'add', '-A');
+  git(s.path, 'commit', '-qm', 'local-only work');
+  const local = gitOut(s.path, 'rev-parse', 'HEAD');
+  rmSync(join(s.store, 'merge'), { recursive: true, force: true });
+  mergeRecord({ store: s.store, pr: s.pr, sha: validated });
+  const { deps } = host(s);
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /KEEP/);
+  assert.match(out, /diverged/i);
+  assert.match(out, new RegExp(validated.slice(0, 12)));
+  assert.match(out, new RegExp(local.slice(0, 12)));
+  assertRepair(out);
+  assert.equal(registered(s.main, s.path), true);
+});
+
+test('a validated head this checkout does not HOLD KEEPs on the fetch that answers the question, never on delivery', () => {
+  const s = stage();
+  // The reported case: the head the merge validated exists on GitHub and is not
+  // an object here, so the direction of the ancestry is UNREAD. An unread term
+  // is a KEEP (F-028) whose repair makes it readable — never a follow-up PR.
+  rmSync(join(s.store, 'merge'), { recursive: true, force: true });
+  mergeRecord({ store: s.store, pr: s.pr, sha: 'a'.repeat(40) });
+  const { deps, calls } = host(s);
+
+  const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
+
+  assert.equal(code, 1, out);
+  assert.match(out, /KEEP/);
+  assert.match(out, new RegExp(`fetch origin refs/pull/${s.pr}/head`));
+  assert.doesNotMatch(out, /DELIVERY/);
+  assert.doesNotMatch(out, /follow-up pull request/);
+  assertRepair(out);
+  assert.equal(registered(s.main, s.path), true);
+  assert.deepEqual(calls.clean, []);
+});
+
 test('a target with no Gate merge record KEEPs naming the missing proof, even when the tracker head equals HEAD', () => {
   const s = stage();
   rmSync(join(s.store, 'merge'), { recursive: true, force: true });

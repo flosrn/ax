@@ -28,16 +28,24 @@
 //  1. IT LANDED — a MERGED pull request for this branch AND a named merge
 //     commit, the same pair ../worker/landed.mjs already calls a landing.
 //     Anything short of it is a NAMED inability, distinct from "not landed yet".
-//  2. NOTHING ESCAPED THE LANDING — the worktree HEAD equals the head the
-//     completed Gate merge record validated (`--match-head-commit`, bound to
-//     the record whose identity names that pull request). This is the safety
-//     property, and the measured near-loss is why it is not a commit count:
-//     #204's branch took test commit 2a0ba02 AFTER #208 merged at 40f8a10, with
-//     a CLEAN tree — work that had not landed and went out as follow-up #210.
-//     `git log origin/main..<branch>` is worthless here for the mirror reason:
-//     the wave squash-merges, so it is non-empty on every finished slice, and a
-//     rule keyed on it refuses all of them forever. A different HEAD is retained
-//     work whose repair is DELIVERY — never a force flag, never an auto-stash.
+//  2. NOTHING ESCAPED THE LANDING — the worktree HEAD is CONTAINED IN the head
+//     the completed Gate merge record validated (`--match-head-commit`, bound
+//     to the record whose identity names that pull request): equal to it, or an
+//     ancestor of it. This is the safety property, and the measured near-loss
+//     is why it is not a commit count: #204's branch took test commit 2a0ba02
+//     AFTER #208 merged at 40f8a10, with a CLEAN tree — work that had not
+//     landed and went out as follow-up #210. `git log origin/main..<branch>` is
+//     worthless here for the mirror reason: the wave squash-merges, so it is
+//     non-empty on every finished slice, and a rule keyed on it refuses all of
+//     them forever. The DIRECTION of the ancestry is the verdict, and folding
+//     the four shapes into an equality test cost a false finding on 2026-09-08
+//     (ofmchat#218): the gate's staleness self-repair merged a head created by
+//     `gh pr update-branch`, HEAD was an ancestor of it, and reclaim reported
+//     retained work whose repair was DELIVERY — an arrow at an EMPTY follow-up
+//     pull request. Only a HEAD BEYOND the validated head is retained work, and
+//     its repair is delivery — never a force flag, never an auto-stash.
+//     Divergence is a KEEP naming both commits, and a validated head this
+//     checkout does not HOLD is UNREAD: a KEEP whose repair is the fetch.
 //  3. NOTHING UNCOMMITTED — porcelain status, untracked included. One term of
 //     the conjunction and never an authorisation on its own.
 //  4. NOBODY IS STILL THERE — the panes of that worktree, counted from the pane
@@ -628,7 +636,10 @@ export function reclaim(
   const landing = provenLanding({ gh, git, slug, branch, path, head: state.head, storeRoot, owner, repoName });
   if (landing.keep !== undefined) return deny('KEEP', landing.keep.reason, landing.keep.repair);
   note(`landed: ${slug}#${landing.pr} merged, merge commit ${landing.mergeCommit.slice(0, 12)}`);
-  note(`landed head: ${state.head.slice(0, 12)} is the head ${landing.record} validated, so nothing on this branch escaped the landing`);
+  // The sentence is the one the landing term DECIDED: equality and containment
+  // are two different reasons for the same pass, and a note that stated only
+  // the first would be false on the second.
+  note(`landed head: ${landing.headNote}`);
 
   const evidence = requiredEvidence({ storeRoot, path });
   if (evidence.keep !== undefined) return deny('KEEP', evidence.keep.reason, evidence.keep.repair);
@@ -1360,19 +1371,84 @@ function provenLanding({ gh, git, slug, branch, path, head, storeRoot, owner, re
   if (recordedSha === '') {
     return { keep: { reason: `the merge record ${record} names no --match-head-commit, so the head that landed is unproven`, repair: `cat ${shq(record)}   # then re-run` } };
   }
+  // ANCESTRY, NOT EQUALITY — and its DIRECTION is the whole verdict.
+  //
+  // Measured 2026-09-08 (goodluckagency/ofmchat#218, ax 0.24.2): `ax pr gate
+  // --merge` refused on staleness, self-repaired with `gh pr update-branch`,
+  // and that created the merge commit f43a2714 ON GITHUB. The gate validated
+  // and merged THAT head; the worktree HEAD stayed at 56fe3257, an ANCESTOR of
+  // it, because the commit was never pulled down. An equality test read that as
+  // "HEAD never landed — retained work whose repair is DELIVERY", and its arrow
+  // pointed at a follow-up pull request that would have been EMPTY: every
+  // commit reachable from HEAD was already reachable from the head that landed.
+  // Ancestry is a fact about two immutable commit ids, exactly like the equality
+  // it replaces — never a commit count, never diff emptiness, never a mutable
+  // headRefOid — so the four shapes are decided, not collapsed into one.
   if (recordedSha !== head) {
-    const log = git(path, ['log', '--format=%H %s', '-n', String(NAMED), `${recordedSha}..HEAD`]);
-    const escaped = lines(log.stdout).map(line => `${line.slice(0, 12)}${line.slice(40)}`);
-    for (const line of escaped) note(`undelivered: ${line}`);
-    return {
-      keep: {
-        reason:
-          `${escaped.length === 0 ? 'HEAD' : `${escaped.length} commit(s)`} on ${branch} never landed: the merge of ${slug}#${pr.number} validated ${recordedSha.slice(0, 12)} and HEAD is ${head.slice(0, 12)} — retained work whose repair is DELIVERY`,
-        repair: `cd ${shq(path)} && ax pr gate --pr <n>   # open a follow-up pull request for those commits and land it; nothing here discards or stashes them`,
-      },
-    };
+    // ABSENCE IS NOT ZERO (F-028), and here it is not "not an ancestor"
+    // either. `merge-base --is-ancestor` answers 0 for ancestor, 1 for not,
+    // and non-zero-other when an argument is not an object this repository
+    // holds. The reported case is precisely the third: the validated head
+    // lives on GitHub and nowhere here, so HOLDING is established before any
+    // exit code is read as a direction, and its repair is the FETCH that makes
+    // the question answerable — never delivery of work that may not exist.
+    const held = git(path, ['cat-file', '-e', `${recordedSha}^{commit}`]);
+    if (held.error !== undefined || held.status !== 0) {
+      return {
+        keep: {
+          reason: `the merge of ${slug}#${pr.number} validated ${recordedSha.slice(0, 12)}, which is not a commit this checkout holds — so whether HEAD ${head.slice(0, 12)} is contained in it is UNREAD, and an unread term is a KEEP rather than a claim about retained work`,
+          repair: `git -C ${shq(path)} fetch origin refs/pull/${pr.number}/head   # then re-run: the ancestry is only readable once this checkout holds the head that landed`,
+        },
+      };
+    }
+    const settled = probe => probe.error === undefined && (probe.status === 0 || probe.status === 1);
+    const contained = git(path, ['merge-base', '--is-ancestor', head, recordedSha]);
+    const beyond = git(path, ['merge-base', '--is-ancestor', recordedSha, head]);
+    if (!settled(contained) || !settled(beyond)) {
+      const failed = settled(contained) ? beyond : contained;
+      const detail = failed.error !== undefined ? String(failed.error.message ?? failed.error) : firstLine(failed.stderr) || `exit ${failed.status}`;
+      return {
+        keep: {
+          reason: `git could not decide the ancestry between HEAD ${head.slice(0, 12)} and the ${recordedSha.slice(0, 12)} the merge of ${slug}#${pr.number} validated: ${detail}`,
+          repair: `git -C ${shq(path)} merge-base --is-ancestor ${head} ${recordedSha}   # establish that ancestry, then re-run`,
+        },
+      };
+    }
+    if (beyond.status === 0) {
+      // The head that landed is BEHIND HEAD: this branch carries commits the
+      // landing never saw. The #204 shape, and the only direction whose repair
+      // is delivery.
+      const log = git(path, ['log', '--format=%H %s', '-n', String(NAMED), `${recordedSha}..HEAD`]);
+      const escaped = lines(log.stdout).map(line => `${line.slice(0, 12)}${line.slice(40)}`);
+      for (const line of escaped) note(`undelivered: ${line}`);
+      return {
+        keep: {
+          reason:
+            `${escaped.length === 0 ? 'HEAD' : `${escaped.length} commit(s)`} on ${branch} never landed: the merge of ${slug}#${pr.number} validated ${recordedSha.slice(0, 12)} and HEAD is ${head.slice(0, 12)} — retained work whose repair is DELIVERY`,
+          repair: `cd ${shq(path)} && ax pr gate --pr <n>   # open a follow-up pull request for those commits and land it; nothing here discards or stashes them`,
+        },
+      };
+    }
+    if (contained.status !== 0) {
+      // Neither contains the other: something on this branch is not in the
+      // landing AND the landing carries something this branch never had. That
+      // is a history nothing here may reconcile on an operator's behalf.
+      return {
+        keep: {
+          reason: `HEAD ${head.slice(0, 12)} on ${branch} and the ${recordedSha.slice(0, 12)} the merge of ${slug}#${pr.number} validated have DIVERGED — neither is an ancestor of the other, so what landed and what is retained cannot be told apart from here`,
+          repair: `git -C ${shq(path)} log --oneline --left-right ${recordedSha}...HEAD   # read both sides of that divergence and decide by hand; nothing here rebases, resets or discards`,
+        },
+      };
+    }
   }
-  return { pr: pr.number, mergeCommit, record: `merge-${owner}-${repoName}-${pr.number}` };
+  // Either HEAD IS the validated head, or HEAD is contained in it. Both prove
+  // the same safety property, and being behind is irrelevant to a checkout that
+  // is about to be removed — so nothing here advises fast-forwarding it.
+  const headNote =
+    recordedSha === head
+      ? `${head.slice(0, 12)} is the head ${request} validated, so nothing on this branch escaped the landing`
+      : `${head.slice(0, 12)} is contained in the ${recordedSha.slice(0, 12)} that ${request} validated — this checkout is merely behind that landing, so nothing on this branch escaped it`;
+  return { pr: pr.number, mergeCommit, record: request, headNote };
 }
 
 /**
