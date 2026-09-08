@@ -75,11 +75,14 @@ own argv, so asking a verb what it does cannot run it. Two declarations bound th
 written `--flag <value>` in `options` owns the next slot, so `ax board --comment --help` stays a
 comment; and `passthrough: true` marks a command whose arguments are a foreign CLI's in full
 (`supabase`), where ax claims the first slot and nothing past it. A verb whose contract is a
-judgement the caller makes before typing declares a `helpBody`, printed by that same read. Never
-parse the flag in a runner: one place decides, and a second path answering it is how twenty
-subverbs came to answer one question five different ways (#89, #93). A future domain (automated
-checks, architecture rules, context rules) arrives as its own noun plus a help section — the `gh`
-shape, never a nesting prefix (`docs/adr/0001`).
+judgement the caller makes before typing declares a `helpBody`, and the flags a verb itself parses
+are declared as `verbOptions` — both printed by that same read. A flag a caller cannot discover
+from the terminal is a flag they will guess wrong: `worker dispatch` and `pr gate` printed their
+usage only on a usage error, so a consumer guessed `--slug`, `--notes`, `--on` and `--merge` off a
+role brief (2026-09-08). Never parse the flag in a runner: one place decides, and a second path
+answering it is how twenty subverbs came to answer one question five different ways (#89, #93). A
+future domain (automated checks, architecture rules, context rules) arrives as its own noun plus a
+help section — the `gh` shape, never a nesting prefix (`docs/adr/0001`).
 
 A new **session role** needs a file under `omp/roles/`, an internal playbook when the role has a
 procedure, a role-proof name, and integration coverage for its real activation path. Operator roles

@@ -5,7 +5,7 @@
 // `pnpm ax debug-as` before either existed.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -18,6 +18,7 @@ import {
   WIDTH,
   commandHelpBody,
   commandNames,
+  commandVerbOptions,
   helpAsked,
   plumbingSubcommand,
   plumbingSubcommands,
@@ -488,14 +489,18 @@ test('every declared verb answers --help as a read, and none of them runs', () =
           assert.equal(porcelain(), '', `${asked} wrote to the working tree`);
 
           // Composed once, from the registry: every line is either a line `ax
-          // help` already shows, or a line of the long body this verb DECLARES
-          // — so a verb still cannot pin a second description of itself, and
-          // the exception is registry data rather than a verb's own help path.
-          const body = new Set((commandHelpBody(command.name, verb) ?? '').split('\n').map(squeeze));
+          // help` already shows, or a line this verb DECLARES — its long body,
+          // or its own flags — so a verb still cannot pin a second description
+          // of itself, and each exception is registry data rather than a verb's
+          // own help path.
+          const declared = new Set([
+            ...(commandHelpBody(command.name, verb) ?? '').split('\n').map(squeeze),
+            ...(commandVerbOptions(command.name, verb) ?? []).map(([usage, text]) => squeeze(`${usage} ${text}`)),
+          ]);
           for (const line of plain(result.out).split('\n').filter(text => text.trim() !== '')) {
             assert.ok(
-              shown.has(squeeze(line)) || body.has(squeeze(line)),
-              `${asked} prints "${squeeze(line)}", which is neither in ax help nor in this verb's declared body`,
+              shown.has(squeeze(line)) || declared.has(squeeze(line)),
+              `${asked} prints "${squeeze(line)}", which is neither in ax help nor declared by this verb`,
             );
           }
           assert.deepEqual(sectionsOf(result.out), { [command.section]: [command.name] }, `${asked} answered for a command other than ${command.name}`);
@@ -536,6 +541,79 @@ test('a verb whose contract is a judgement prints it, and only from the registry
   assert.equal(commandHelpBody('worker', 'release').length > 0, true);
   assert.equal(commandHelpBody('worker', 'tail'), null);
   assert.equal(commandHelpBody('init', '--vendor'), null, 'a token that is not a declared verb must carry no body');
+});
+
+// ── a verb's OWN flags ───────────────────────────────────────────────────────
+// `ax worker dispatch --help` and `ax pr gate --help` printed the noun's block
+// and named not one of the verb's own flags. Reported 2026-09-08 from a
+// consumer on 0.24.1, which guessed `--slug`, `--notes`, `--on` and `--merge`
+// off a role brief because the terminal named none of them — and `--merge` is
+// the flag that performs the merge. A flag a caller cannot discover from the
+// terminal is a flag they will guess wrong, so a verb declares its flags in the
+// registry (`verbOptions`) and this is what holds that declaration to the
+// parser rather than to whoever wrote it.
+
+/**
+ * The flags ONE parser actually accepts, read off its source so a flag added
+ * there fails this test until it reaches the surface a caller reads.
+ *
+ * Three declaration shapes, and one deliberate exclusion: a named-value table
+ * maps a flag to the field it fills (`'--slug': 'slug'`), while a RETIRED table
+ * maps one flag NAME to another (`'--brief': '--notes'`) — that one is refused,
+ * never accepted, so a value beginning `--` is not a flag this verb has.
+ */
+const parsedFlags = file => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', file), 'utf8');
+  const flags = new Set([...source.matchAll(/arg === '(--[a-z][a-z-]*)'/g)].map(match => match[1]));
+  for (const [, flag] of source.matchAll(/^\s*'(--[a-z][a-z-]*)': '(?!--)/gm)) flags.add(flag);
+  for (const [, list] of source.matchAll(/ACK_FLAGS = \[([^\]]*)\]/g)) {
+    for (const [, flag] of list.matchAll(/'(--[a-z][a-z-]*)'/g)) flags.add(flag);
+  }
+  return [...flags];
+};
+
+test('a verb’s help names every flag its own parser accepts', () => {
+  for (const [name, verb, parser] of [
+    ['worker', 'dispatch', 'src/worker/dispatch.mjs'],
+    ['pr', 'gate', 'src/pr-gate.mjs'],
+  ]) {
+    const accepted = parsedFlags(parser);
+    assert.ok(accepted.length > 3, `${parser}: ${accepted.length} flags extracted, so this test would prove nothing`);
+
+    // The declaration, so a flag named only in passing by the noun's block or
+    // by a body cannot pass for one this verb documents.
+    const declared = (commandVerbOptions(name, verb) ?? []).map(([usage]) => usage.split(' ')[0]);
+    assert.deepEqual([...accepted].sort(), [...declared].sort(), `ax ${name} ${verb}: the declared flags are not the ones its parser accepts`);
+
+    const help = plain(run([name, verb, '--help'], HAS_ORCA).out);
+    for (const flag of accepted) {
+      assert.match(help, new RegExp(`(?:^|\\s)${flag}(?:\\s|$)`, 'm'), `ax ${name} ${verb} --help names no ${flag}, so a caller guesses it`);
+    }
+  }
+
+  // The one that mutates: `--merge` is what performs the merge the gate
+  // validated, and it was the flag the consumer had to guess.
+  assert.match(plain(run(['pr', 'gate', '--help']).out), /--merge/, 'the flag that performs the merge is undiscoverable from the terminal');
+});
+
+test('every declared verb option is a declared verb’s, states its arity, and fits the budget', () => {
+  // Same two rules the whole-command `options` are held to, one level down: the
+  // arity convention (`--flag`, `--flag <value>`) and the 96-column budget the
+  // read is printed in. A body is printed under the same block, so a flag line
+  // that wraps there reads as noise for exactly the same reason.
+  for (const command of COMMANDS) {
+    for (const [verb, options] of Object.entries(command.verbOptions ?? {})) {
+      assert.ok(subcommandNames(command.name).includes(verb), `${command.name} declares flags for "${verb}", which is not a declared verb`);
+      for (const [usage] of options) {
+        assert.match(usage, /^--[a-z-]+( <\S+>)?$/, `${command.name} ${verb} declares "${usage}", whose arity cannot be read`);
+      }
+      const width = Math.max(...options.map(([usage]) => usage.length));
+      for (const [usage, text] of options) {
+        const line = `  ${usage.padEnd(width)}  ${text}`;
+        assert.ok(line.length <= WIDTH, `${command.name} ${verb}: "${usage}" prints ${line.length} columns, past the ${WIDTH} budget`);
+      }
+    }
+  }
 });
 
 test('every declared help body fits the column budget it is printed in', () => {

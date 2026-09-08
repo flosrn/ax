@@ -53,6 +53,17 @@ import { orcaAvailable } from './orca-bin.mjs';
  * code means resume — and it is registry data precisely so that carrying it
  * costs no second help path in the verb. See `renderCommandHelp`.
  *
+ * `verbOptions` are the flags ONE VERB of a noun takes, keyed by verb name the
+ * way `helpBody` is, and printed by that same single help read. It exists
+ * because `options` describes a whole command and a verb had nowhere to
+ * declare its own: `ax worker dispatch --help` and `ax pr gate --help` printed
+ * the noun's block and named not one flag either verb accepts, so a consumer on
+ * 0.24.1 guessed `--slug`, `--notes`, `--on` and `--merge` off a role brief
+ * (reported 2026-09-08) — and `--merge` is the flag that performs the merge. A
+ * flag a caller cannot discover from the terminal is a flag they will guess
+ * wrong. `tests/commands.test.mjs` reads each verb's parser and refuses a flag
+ * the parser accepts and this field does not name. See `commandVerbOptions`.
+ *
  * `section` is the help heading the command is printed under, and every entry
  * declares one. See `SECTIONS`.
  */
@@ -195,6 +206,32 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       // resolves through the pinned copy from any cwd, and cannot be typed
       // through a link.
       stall: 'the detached stall watcher — `worker start` arms it, and its own alert is what re-arms it',
+    },
+    // What `ax worker dispatch --help` names, read off that verb's own argv
+    // loop (./worker/dispatch.mjs). The verb printed its usage only on a usage
+    // ERROR, so the way to learn its flags was to mistype it — which is how a
+    // consumer on 0.24.1 came to guess `--slug`, `--notes` and `--on` from a
+    // role brief instead (reported 2026-09-08). A flag a caller cannot discover
+    // from the terminal is a flag they will guess wrong.
+    verbOptions: {
+      dispatch: [
+        ['--issue <ref>', 'the ticket this work delivers — a Linear ref (ABC-123) or a GitHub number'],
+        ['--name <name>', 'work no tracker owns yet; the name IS the request id and the branch'],
+        ['--slug <text>', 'the branch name a Linear ref does not carry; refused with --name'],
+        ['--task <text>', 'the instruction, replacing the entry ax.config.json declares'],
+        ['--because <reason>', 'why this override, or why this ticket again — provenance on the record'],
+        ['--notes <file>', 'wave findings the child reads; an unreadable path refuses up front'],
+        ['--model <alias>', 'the model alias pinned into the child (default @default)'],
+        ['--agent <name>', 'the agent Orca starts in the pane (default omp)'],
+        ['--on <host>', 'a host declared in dispatch.hosts; `here` is this machine'],
+        ['--repo-id <id>', "the remote host's repo id, when the lookup for --on cannot answer"],
+        ['--worktree <abs>', 'place into THIS existing tree instead of creating one'],
+        ['--needs-ref <ref>', 'refuse unless origin carries this ref, so the child can reach it'],
+        ['--wait <s>', 'seconds the child gets to prove role and model; 0 asks for no proof'],
+        ['--probe', 'throwaway placement — setup is skipped, so the child gets no URLs'],
+        ['--dry-run', 'print the dispatch it would issue; nothing is created or recorded'],
+        ['--run <id>', "refused; the Run is this pane's receiver's — another reports into silence"],
+      ],
     },
     // What `ax worker release --help` prints under the block. A verb whose
     // contract is a JUDGEMENT the caller has to make before typing needs more
@@ -360,6 +397,22 @@ the session file:
     // `triage` this noun carries no `gated` key: it answers wherever ax is
     // installed, which is the whole point of porting the Bash into the package.
     subcommands: [['gate --pr <n> [--issue <n>]', 'every ground, executed on the head SHA — 0/1/2/3']],
+    // The flags this verb accepts, read off its own parse loop (./pr-gate.mjs).
+    // The body below said what a pass is evidence OF and named no flag, so the
+    // consumer that reported this on 2026-09-08 guessed `--merge` from a role
+    // brief — the one flag here that MUTATES. A flag a caller cannot discover
+    // from the terminal is a flag they will guess wrong.
+    verbOptions: {
+      gate: [
+        ['--pr <n>', 'the pull request every ground is executed against — required'],
+        ['--issue <n>', 'the ticket this merge delivers; outranks the record it would read'],
+        ['--repo <owner/repo>', 'assert this checkout is that repository; another one is refused'],
+        ['--merge', 'MUTATES — performs the merge; without it this run decides nothing'],
+        ['--method <squash|merge>', 'the method the verdict stands on (default squash)'],
+        ['--ack-body', "answer THIS run's post-open commit list; never persisted or widened"],
+        ['--stale-retried', "the staleness self-repair's marker on its one re-run — never typed"],
+      ],
+    },
     // A judgement the caller makes BEFORE typing: what a pass is evidence OF.
     // The verdict names one head and one base commit, and an operator who reads
     // that as "the pull request was snapshotted" trusts it past what it
@@ -508,11 +561,13 @@ const valueFlags = command =>
  *   first slot of `ax supabase …` and not one argument past it, so `supabase db
  *   push --help` reaches the CLI that owns the question (./supabase-guard.mjs).
  *
- * A verb's OWN flags are not registry data, so a help flag in one of their
- * value slots (`ax pr gate --pr --help`) reads as the question. That direction
- * is deliberate: the invocation is malformed either way, and a read never
- * mutates the repository it was asked about, which is the whole defect class
- * this predicate closes.
+ * A verb's own flags are DECLARED (`verbOptions`) but their arity is not read
+ * here, so a help flag in one of their value slots (`ax pr gate --pr --help`)
+ * reads as the question. That direction is deliberate: the invocation is
+ * malformed either way, and a read never mutates the repository it was asked
+ * about, which is the whole defect class this predicate closes. Widening the
+ * value-slot rule to a verb's flags would buy nothing and would put a mutation
+ * back inside a question.
  */
 export function helpAsked(name, args = []) {
   const command = COMMANDS.find(entry => entry.name === name);
@@ -647,10 +702,17 @@ function commandBlock(command, width) {
  * either — a header is for whoever patches the verb, and this is for whoever
  * is typing it.
  *
- * The body is REGISTRY DATA rendered by this one path, never a second help
- * path in the verb: `verb` is resolved against the declarations, so a token
- * that is not a declared verb (`ax init --vendor x --help`) simply carries no
- * body, and no verb parses a help flag to earn one.
+ * A verb's OWN FLAGS ride the same read, from `verbOptions`, printed above the
+ * body: `ax worker dispatch --help` and `ax pr gate --help` printed the noun's
+ * block and named not one flag either verb accepts, so both verbs' usage was
+ * learnable only by mistyping them — and what a consumer on 0.24.1 did instead
+ * was guess `--slug`, `--notes`, `--on` and `--merge` off a role brief
+ * (reported 2026-09-08).
+ *
+ * Both are REGISTRY DATA rendered by this one path, never a second help path in
+ * the verb: `verb` is resolved against the declarations, so a token that is not
+ * a declared verb (`ax init --vendor x --help`) simply carries neither, and no
+ * verb parses a help flag to earn one.
  *
  * The GATE stays the caller's. `runCli` decides whether a command exists on
  * this machine, and asks for this text only once it has. A name the registry
@@ -659,8 +721,29 @@ function commandBlock(command, width) {
 export function renderCommandHelp(name, verb = '') {
   const command = COMMANDS.find(entry => entry.name === name);
   if (!command) return null;
+  const options = commandVerbOptions(name, verb);
   const body = commandHelpBody(name, verb);
-  return [bold(command.section), ...commandBlock(command, command.name.length), ...(body === null ? [] : ['', body, '']), ''].join('\n');
+  const under = [...(options === null ? [] : ['', ...verbOptionLines(options)]), ...(body === null ? [] : ['', body])];
+  return [bold(command.section), ...commandBlock(command, command.name.length), ...under, ...(under.length === 0 ? [] : ['']), ''].join('\n');
+}
+
+/**
+ * One verb's declared flags as the help prints them: aligned among THEMSELVES,
+ * for the same reason each command's verbs are (`commandBlock`) — one column
+ * measured across the registry pushes short descriptions past the budget.
+ */
+const verbOptionLines = options => {
+  const width = Math.max(...options.map(([usage]) => usage.length));
+  return options.map(([usage, text]) => `  ${usage.padEnd(width)}  ${text}`);
+};
+
+/**
+ * The flags ONE verb declares, or null. Read by `renderCommandHelp` and by the
+ * test that holds the declaration to the verb's own parser.
+ */
+export function commandVerbOptions(name, verb = '') {
+  const declared = COMMANDS.find(entry => entry.name === name)?.verbOptions ?? {};
+  return declared[String(verb).split(' ')[0]] ?? null;
 }
 
 /**
