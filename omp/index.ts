@@ -55,6 +55,15 @@ export type { PlaybookLookup, RoleLookup } from './model/roles.ts';
 type Host = ModelHost & Record<string, unknown>;
 
 /**
+ * A loader normally calls one package factory once per host. Reloads and mixed
+ * project/user discovery can call it twice, and each child factory registers
+ * handlers with independent latches — producing two receive loops and two
+ * completion reports. Weak ownership keeps that boundary process-local without
+ * retaining dead host facades.
+ */
+const installed = new WeakSet<object>();
+
+/**
  * Install the ax adapter into an OMP session.
  *
  * `seams` reaches the model/role extension only, because it is the only one whose
@@ -62,6 +71,9 @@ type Host = ModelHost & Record<string, unknown>;
  * from their own module boundaries.
  */
 export default function ax(pi: Host, seams: FactorySeams = {}): void {
+  if (installed.has(pi)) return;
+  installed.add(pi);
+
   // Model and role FIRST. It is the only one that returns a system prompt, and
   // `before_agent_start` chains across handlers in registration order — a later
   // extension appending to the array must see the role block already in it, not
@@ -72,9 +84,11 @@ export default function ax(pi: Host, seams: FactorySeams = {}): void {
   // next one delivers through.
   peer(pi as never);
 
-  // Then the two observers, in the order their silence costs the most: a mother
-  // waiting on a report that never comes is worse off than a human reading a
-  // stale board column.
-  report(pi as never);
+  // Then the two observers. Checkpoint registers before report so their shared
+  // `session_shutdown` event has a semantic write order: checkpoint flushes its
+  // pending progress first; a queued completion then uses the ordered board
+  // writer and lands the final "report queued, unread" marker last. Peer still
+  // precedes both, so report delivery sees the Run it published.
   checkpoint(pi as never);
+  report(pi as never);
 }

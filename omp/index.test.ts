@@ -172,15 +172,14 @@ const BASE = ['OMP BASE PROMPT', 'TOOL POLICY'];
 
 test('the one factory installs all four extensions, each exactly once', () => {
   const { events, commands, tools } = install('[omp model=@task]');
-
-  // Registration is not idempotent anywhere below: a second install means a
-  // second receive loop consuming the same Run and a doubled completion report.
-  // Counted by event name because that is the shape a duplicate takes.
+  // Registration order is contractual: peer publishes the Run, checkpoint
+  // flushes pending progress, then report may synchronously land the final
+  // queued/unread marker at teardown.
   const count = (name: string): number => events.filter((event) => event === name).length;
 
-  // model + peer + report + checkpoint, in that order.
+  // model + peer + checkpoint + report, in that order.
   expect(count('session_start')).toBe(4);
-  // report and checkpoint both flush at teardown; peer stops its loop.
+  // checkpoint and report both flush at teardown; peer stops its loop.
   expect(count('session_shutdown')).toBe(3);
   // report and checkpoint both read the todo tool.
   expect(count('tool_result')).toBe(2);
@@ -188,27 +187,28 @@ test('the one factory installs all four extensions, each exactly once', () => {
   expect(count('before_agent_start')).toBe(1);
   expect(count('tool_call')).toBe(1);
   expect(count('input')).toBe(1);
-  // peer owns turn_start; peer and report both observe agent_end.
+  // peer marks receive health; checkpoint flushes progress; report delivers.
   expect(count('turn_start')).toBe(1);
-  expect(count('agent_end')).toBe(2);
-
+  expect(count('agent_end')).toBe(3);
   expect([...commands.keys()]).toEqual(['role']);
   expect(tools).toEqual(['peer_reply', 'peer_send', 'peer_list', 'peer_read', 'peer_children', 'peer_diagnostics']);
 });
 
-test('nothing here is internally latched, so the single-install contract is load-bearing', () => {
-  // Stated as a fact about the factories rather than a wish about the loader. A
-  // second install really does mean a second receive loop consuming the same Run
-  // and a doubled completion report — so if anyone ever makes `ax()` reachable
-  // twice, this is the line that says what it costs.
-  const first = install('[omp model=@task]');
-  const once = first.events.length;
+test('installing the adapter twice on one host registers every handler and tool once', () => {
+  const installed = install('[omp model=@task]');
+  const before = {
+    events: [...installed.events],
+    tools: [...installed.tools.keys()],
+    commands: [...installed.commands.keys()],
+  };
 
-  ax(first.pi as never, {});
+  ax(installed.pi as never, { handle: HANDLE, run: runnerFor('[omp model=@task]') });
 
-  expect(first.events.length).toBe(once * 2);
-  expect(first.tools).toHaveLength(12);
+  expect(installed.events).toEqual(before.events);
+  expect([...installed.tools.keys()]).toEqual(before.tools);
+  expect([...installed.commands.keys()]).toEqual(before.commands);
 });
+
 
 // ── the dispatched path: `[omp role=worker …]` ───────────────────────────────
 

@@ -43,6 +43,8 @@ import { axArgv } from '../shared/ax.ts';
 // ── the fake `gh` ────────────────────────────────────────────────────────────
 
 const realSpawn = Bun.spawn;
+const realSpawnSync = Bun.spawnSync;
+
 
 /** Every argv `statusFromPrState` handed to the spawn, in order. */
 let calls: string[][] = [];
@@ -67,10 +69,15 @@ beforeEach(() => {
       unref() {},
     };
   }) as typeof Bun.spawn;
+  Bun.spawnSync = ((argv: string[]) => {
+    calls.push([...argv]);
+    return { success: true, exitCode: 0, stdout: new Uint8Array(), stderr: new Uint8Array() };
+  }) as typeof Bun.spawnSync;
 });
 
 afterEach(() => {
   Bun.spawn = realSpawn;
+  Bun.spawnSync = realSpawnSync;
 });
 
 /** The PR the faked `gh pr view` reports for this checkout. */
@@ -419,4 +426,30 @@ test('session_shutdown flushes mid-debounce and disarms the timer - that last up
   // would write the same comment a second time.
   host.fire();
   expect(calls.length).toBe(1);
+});
+
+test('agent_end flushes progress before a queued report can publish the final board marker', () => {
+  const handlers: Record<string, (event: unknown, ctx: unknown) => void> = {};
+  const pi = {
+    on(name: string, fn: (event: unknown, ctx: unknown) => void) {
+      handlers[name] = fn;
+    },
+  };
+  extension(pi);
+
+  const host = fakeHost();
+  handlers.session_start?.({}, host);
+  handlers.tool_result?.(
+    { toolName: 'todo', details: { phases: [{ tasks: [{ status: 'completed', content: 'ship' }] }] } },
+    host,
+  );
+
+  handlers.agent_end?.({}, host);
+
+  expect(checkpointArgs()).toEqual([['board', '--comment', '1/1 · done']]);
+  expect(host.armed).toHaveLength(0);
+  // Report's later agent_end handler can now write its queued marker without a
+  // 2.5-second checkpoint callback overtaking it.
+  host.fire();
+  expect(calls).toHaveLength(1);
 });

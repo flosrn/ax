@@ -22,11 +22,18 @@ export type MessageType = 'status' | 'question' | 'handoff';
  * origin stamped, and logs the relay. Children get lateral messaging, the
  * orchestrator gets the audit trail for free.
  */
+export interface SendSeams {
+  runOrcaRaw?: typeof orcaRaw;
+  resolveParent?: typeof parentPeer;
+}
+
 export function sendToPeer(o: {
   target: string;
   text: string;
   type?: MessageType;
-}): { ok: boolean; via?: 'direct' | 'relay'; error?: string } {
+}, seams: SendSeams = {}): { ok: boolean; via?: 'direct' | 'relay'; queued?: { run: string }; error?: string } {
+  const run = seams.runOrcaRaw ?? orcaRaw;
+  const resolveParent = seams.resolveParent ?? parentPeer;
   const text = o.text ?? '';
   if (!text.trim()) return { ok: false, error: 'refusing to send an empty message' };
 
@@ -70,7 +77,7 @@ export function sendToPeer(o: {
   // it, and a message that never left must not consume one.
   const seq = nextOutboundSequence(from);
 
-  const attempt = orcaRaw([
+  const attempt = run([
     'orchestration',
     'send',
     '--to',
@@ -95,18 +102,24 @@ export function sendToPeer(o: {
   if (!attempt.text.includes('dispatch_run_mismatch'))
     return { ok: false, error: sendError(attempt) };
 
-  const parent = parentPeer();
-  if (!parent.peer)
+  const parent = resolveParent();
+  // The parent's Run, whether or not a pane is reading it: Orca accepts a `run:`
+  // target on the run's existence alone and holds the message, so a relay through
+  // an orchestrator with no current consumer is deferred rather than lost.
+  // `../peer/lineage.ts` carries the measurement; the caller still learns it
+  // went by relay.
+  const via = parent.peer ? parent.peer.run : parent.queued?.run;
+  if (!via)
     return {
       ok: false,
-      error: `direct send refused (dispatch_run_mismatch) and no live parent to relay through — '${o.target}' is unreachable from this dispatch-bound session`,
+      error: `direct send refused (dispatch_run_mismatch) and no parent Run to relay through — '${o.target}' is unreachable from this dispatch-bound session`,
     };
 
-  const relay = orcaRaw([
+  const relay = run([
     'orchestration',
     'send',
     '--to',
-    `run:${parent.peer.run}`,
+    `run:${via}`,
     '--type',
     type,
     '--subject',
@@ -125,7 +138,9 @@ export function sendToPeer(o: {
   ]);
   if (prop(relay.parsed, 'ok') === true) {
     seq.commit();
-    return { ok: true, via: 'relay' };
+    return parent.queued
+      ? { ok: true, via: 'relay', queued: { run: parent.queued.run } }
+      : { ok: true, via: 'relay' };
   }
   return { ok: false, error: `relay via parent failed: ${sendError(relay)}` };
 }

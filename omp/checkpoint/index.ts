@@ -33,7 +33,7 @@
  */
 
 import { createSessionOwner, isSubagentSession } from '../shared/session.ts';
-import { boardWrite } from '../shared/board.ts';
+import { boardWrite, boardWriteOrdered } from '../shared/board.ts';
 
 // The writer is `ax board` (flosrn/ax) since PORT step 2, 2026-08-21 — the one
 // place that reads the current board value in the process that writes it, so
@@ -125,10 +125,15 @@ function cancelPending(): void {
 }
 
 /** Write whatever the debounce has accumulated, if anything. */
-function flush(): void {
+function flush(ordered = false): void {
   const next = pending;
   pending = null;
-  if (next) writeCheckpoint(next);
+  if (!next) return;
+  if (ordered) {
+    boardWriteOrdered({ comment: next.comment, status: next.status });
+    return;
+  }
+  writeCheckpoint(next);
 }
 
 export function schedule(payload: Checkpoint, host: TimerHost | null): void {
@@ -363,6 +368,18 @@ export default function (pi): void {
     }
   });
 
+  // Registered before report's `agent_end` handler. Drain the pending progress
+  // write synchronously so a queued completion marker written by the next
+  // handler is the final board comment, not something the 2.5-second debounce
+  // can overtake after the turn has ended.
+  pi.on('agent_end', (_event, ctx) => {
+    if (owner.isForeign(ctx)) return;
+    try {
+      cancelPending();
+      flush(true);
+    } catch {}
+  });
+
   // A session that ends mid-debounce would otherwise drop its last update —
   // exactly the one that says where the work stopped.
   pi.on('session_shutdown', (_event, ctx) => {
@@ -370,9 +387,11 @@ export default function (pi): void {
     try {
       // The host clears its own managed timers at teardown, but the ordering
       // between that and this handler is not ours to assume, and an armed
-      // timer here would write the same payload twice.
+      // timer here would write the same payload twice. This flush is ordered:
+      // report's handler is registered after ours and may publish the final
+      // "report queued, unread" marker, which progress must never overtake.
       cancelPending();
-      flush();
+      flush(true);
     } catch {}
   });
 }

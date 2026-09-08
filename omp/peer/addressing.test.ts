@@ -26,7 +26,7 @@ let peersDir = '';
 let saved: Record<string, string | undefined> = {};
 let caseId = 0;
 
-type Term = { handle: string; worktreePath: string };
+type Term = { handle: string; worktreePath: string; connected?: boolean };
 
 /** A fake `orca` that answers `terminal list` from a file written per case. */
 function installFakeOrca(): string {
@@ -271,6 +271,24 @@ test('an unreachable pane is not a resolution target', async () => {
   expect(resolveTarget('t6-les-lots')).toEqual({});
 });
 
+test('a retained Orca slot whose registry owner is dead is not a reachable peer', async () => {
+  setTerminals([{ handle: 'term_cccc3333', worktreePath: WT_A, connected: false }]);
+  writeFileSync(
+    join(peersDir, 'term_cccc3333.json'),
+    JSON.stringify({
+      handle: 'term_cccc3333',
+      run: 'run_sleeping',
+      model: 'claude-opus-5',
+      sessionId: 'sleeping-session',
+      ownerPid: 2147483646,
+    }),
+  );
+  const { resolveTarget, peers } = await load();
+
+  expect(peers()).toEqual([]);
+  expect(resolveTarget('t6-les-lots')).toEqual({});
+});
+
 test('a raw address passes through without a lookup', async () => {
   orcaSaysNothing(); // a lookup here would fail; none must happen
   const { resolveTarget } = await load();
@@ -339,4 +357,28 @@ test('a sibling on the same host is still reachable', async () => {
   publishEntry('term_bbbb2222', 'run_b');
   const { sendToPeer } = await load();
   expect(sendToPeer({ target: 't7-canal-de-scene', text: 'hi' }).ok).toBe(true);
+});
+
+test('a paneless parent Run retains a refused lateral send as an explicit queue', async () => {
+  orcaSaysNothing();
+  const calls: string[][] = [];
+  const raw = (argv: string[]) => {
+    calls.push(argv);
+    return calls.length === 1
+      ? { parsed: { ok: false }, text: 'dispatch_run_mismatch', stdout: '' }
+      : { parsed: { ok: true }, text: '', stdout: '' };
+  };
+  const { sendToPeer } = await load();
+
+  const out = sendToPeer(
+    { target: 'run:run_sibling', text: 'handoff', type: 'status' },
+    {
+      runOrcaRaw: raw,
+      resolveParent: () => ({ queued: { run: 'run_parent_unread', worktree: WT_A } }),
+    },
+  );
+
+  expect(calls).toHaveLength(2);
+  expect(calls[1].slice(0, 4)).toEqual(['orchestration', 'send', '--to', 'run:run_parent_unread']);
+  expect(out).toEqual({ ok: true, via: 'relay', queued: { run: 'run_parent_unread' } });
 });

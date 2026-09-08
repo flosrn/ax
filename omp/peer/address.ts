@@ -74,7 +74,12 @@ function derive(reachableOnly: boolean, pending: string): Peer[] {
   const registered = new Map<string, Partial<Entry>>();
   for (const e of allEntries()) {
     const h = str(e.handle);
-    if (h) registered.set(h, e);
+    // Orca deliberately retains a sleeping pane's slot, but the OMP process
+    // that owns its receiver is gone. A Run published by a dead owner remains
+    // a valid raw queue address; it is not a reachable peer and must not make a
+    // parent report look delivered. `register()` already uses this same
+    // liveness fence when deciding whether a later session may reclaim an entry.
+    if (h && alive(e.ownerPid)) registered.set(h, e);
   }
 
   const self = selfHandle();

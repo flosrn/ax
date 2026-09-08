@@ -22,6 +22,12 @@ type SpawnFn = (argv: string[], opts: Record<string, unknown>) => { unref(): voi
 
 const defaultSpawn: SpawnFn = (argv, opts) => Bun.spawn(argv, opts);
 
+const defaultSpawnSync: SpawnFn = (argv, opts) => {
+  Bun.spawnSync(argv, opts);
+  return { unref() {} };
+};
+
+
 /**
  * Detached, ignored stdio: a board write outlives the turn if it has to and
  * nothing it prints can land in the TUI. Returns `false` only when the spawn
@@ -49,4 +55,15 @@ export function boardWrite(
   } catch {
     return false;
   }
+}
+
+/**
+ * Ordered twin for a session's final board publication. Most checkpoint writes
+ * must stay detached; the queued-report marker is different because teardown
+ * ends the writer and no later attempt can repair an overtaking progress write.
+ * Waiting for the package-local `ax board` process makes registration order the
+ * persistence order while keeping the same fail-open command contract.
+ */
+export function boardWriteOrdered(payload: { comment?: string; status?: string }): boolean {
+  return boardWrite(payload, defaultSpawnSync);
 }

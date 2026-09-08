@@ -249,9 +249,16 @@ test('several panes and no record still refuses, and the reason names what was m
   expect(r.reason).toContain(HANDLE);
 });
 
-test('a record naming a Run that is not live in the parent refuses rather than falling back', async () => {
-  // The dispatcher died and something else opened in its worktree. Falling back
-  // to "the only other pane" is exactly the guess this channel must not make.
+test('a record naming a Run no live pane is reading QUEUES on that Run instead of refusing', async () => {
+  // The refusal this replaces read "the dispatching session is gone", and on
+  // 2026-09-08 that was false: Orca had killed the dispatcher's pty at 14:06:09Z
+  // (`session-killed immediate:true`) and respawned the same `@@9320cb55` slot at
+  // 14:27:50Z, so the session was ABSENT, not gone. Orca keys messages on the run
+  // and holds them — `msg_a5230f12b27a` was created 14:13:32Z inside that window
+  // and delivered 14:27:54Z. A recorded Run with no pane on it is therefore an
+  // address whose arrival is deferred, and the only thing the resolver may not do
+  // is hand it to a stranger: `peer` stays empty so no other pane in the parent
+  // can be mistaken for the dispatcher.
   setMode('parented');
   publishPeer(ORCH, 'run_orchestrator');
   publishPeer(READY, 'run_readiness');
@@ -259,8 +266,53 @@ test('a record naming a Run that is not live in the parent refuses rather than f
   const m = await import('./lineage.ts?case=record-stale');
 
   const r = m.parentPeer();
+  expect(r.reason).toBeUndefined();
   expect(r.peer).toBeUndefined();
-  expect(r.reason).toContain('run_departed');
+  expect(r.queued?.run).toBe('run_departed');
+  expect(r.queued?.worktree).toBe(PARENT_WT);
+});
+
+test('a parent with NO live pane queues on the recorded Run too', async () => {
+  // The whole parent worktree is dark — one pane, killed while the child worked.
+  // This path never consulted the record at all, so the ordinary single-pane
+  // dispatch lost its report to a 21-minute respawn window even though the Run
+  // that owns it was written down before the dispatch was issued.
+  setMode('parented');
+  writeRecord({ request: 'impl-222', run: 'run_orchestrator', pane: HANDLE });
+  const m = await import('./lineage.ts?case=parent-dark');
+
+  const r = m.parentPeer();
+  expect(r.reason).toBeUndefined();
+  expect(r.queued?.run).toBe('run_orchestrator');
+});
+
+test('a dark parent with no record still refuses, naming both facts', async () => {
+  // No pane and no Run is the one state with no address in it. Naming only the
+  // pane would send the child looking for a session that may be fine; naming
+  // only the record hides that nobody is home.
+  setMode('parented');
+  const m = await import('./lineage.ts?case=parent-dark-no-record');
+
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.queued).toBeUndefined();
+  expect(r.reason).toContain('no live session to report to');
+  expect(r.reason).toContain(HANDLE);
+});
+
+test('one live NON-DISPATCHER pane does not receive a no-consumer dispatcher report', async () => {
+  // This is the smallest real no-consumer shape: the dispatcher is down, one
+  // readiness pane remains in the primary checkout, and the record names the
+  // Run Orca is holding. "One pane is unambiguous" would send the report to
+  // the wrong session; the record must turn the sole mismatch into a queue too.
+  setMode('parented');
+  publishPeer(READY, 'run_readiness');
+  writeRecord({ request: 'impl-222', run: 'run_orchestrator', pane: HANDLE });
+  const m = await import('./lineage.ts?case=sole-wrong-pane');
+
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.queued?.run).toBe('run_orchestrator');
 });
 
 test('one live pane still resolves with no record at all — the ordinary case pays nothing', async () => {
