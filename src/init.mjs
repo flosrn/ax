@@ -108,10 +108,11 @@ function inferApps(root) {
 }
 
 /** Infer what can be inferred; refuse to guess what must be decided. */
-function inferConfig(root, { vendor: explicitVendor, plan }) {
-  const packagePath = join(root, 'package.json');
-  const manifest = existsSync(packagePath) ? JSON.parse(readFileSync(packagePath, 'utf8')) : {};
-  const rawName = typeof manifest.name === 'string' && manifest.name.trim() !== '' ? manifest.name : basename(root);
+function inferConfig(root, { vendor: explicitVendor, plan, manifest }) {
+  // The manifest arrives from the ONE read this verb does (./plan.mjs): a
+  // second reader here would have to answer absent-vs-unreadable again, and
+  // answer it with `{}` — the conflation the seed cannot be decided on.
+  const rawName = typeof manifest?.name === 'string' && manifest.name.trim() !== '' ? manifest.name : basename(root);
   const name = rawName
     .replace(/^@[^/]+\//, '')
     .toLowerCase()
@@ -295,12 +296,24 @@ export function init(root, { dryRun = false, vendor } = {}) {
     return 1;
   }
 
-  // The plan, once, before anything is written: whether this checkout IS the
-  // package, and which contracts the configuration already declares
-  // (./plan.mjs). `ax init` is the verb that ADOPTS the provisioning contract,
-  // so it never skips work because a contract is unadopted — the adoption field
-  // tells it what it still has to DECLARE.
-  const plan = planProject({ manifest: readManifest(root), declared: existing.declared });
+  // THE ONE READ OF THE MANIFEST, and the plan derived from it: whether this
+  // checkout IS the package, whether a manifest has to be seeded at all, and
+  // which contracts the configuration already declares (./plan.mjs). `ax init`
+  // is the verb that ADOPTS the provisioning contract, so it never skips work
+  // because a contract is unadopted — the adoption field tells it what it still
+  // has to DECLARE.
+  //
+  // UNREADABLE BYTES END THE VERB HERE, with the same rule the invalid config
+  // above answers to: the file is the project's, the plan is derived from it,
+  // and a manifest ax cannot parse is the one state where writing the seed
+  // would destroy hand-written work. Absent is the seed; broken is a refusal.
+  const { manifest: onDisk, error: manifestError } = readManifest(root);
+  if (manifestError !== null) {
+    bad(`package.json — not valid JSON (${manifestError}), and the plan is derived from it, so nothing is written`);
+    fix('repair package.json, then re-run ax init');
+    return 1;
+  }
+  const plan = planProject({ manifest: onDisk, declared: existing.declared });
 
   // The rest of the write set, now that the plan says what it is. `bin/ax` only
   // where the bootstrap belongs, the managed blocks only where the plan wants
@@ -319,14 +332,19 @@ export function init(root, { dryRun = false, vendor } = {}) {
     return 1;
   }
 
+  // The project's own name, whichever half of the config decided it — the seeded
+  // manifest below carries it, and a second derivation of it would be a repo
+  // whose `ax.config.json` and `package.json` disagree about what it is called.
+  let projectName = '';
   if (!existing.exists) {
-    const inferred = inferConfig(root, { vendor, plan });
+    const inferred = inferConfig(root, { vendor, plan, manifest: onDisk });
     if (inferred.error) {
       bad(`${CONFIG_FILE} — ${inferred.error}`);
       if (inferred.hint) fix(inferred.hint);
       return 1;
     }
     report(CONFIG_FILE, writeFile(existing.path, `${JSON.stringify(inferred.config, null, 2)}\n`, { dryRun, root }));
+    projectName = inferred.config.project.name;
   } else {
     // The two values in a DECLARED config that this plan owns, brought back to
     // it. Everything else is the project's and is copied through untouched, in
@@ -341,6 +359,7 @@ export function init(root, { dryRun = false, vendor } = {}) {
     // this verb wrote wrong. Corrected only where the key EXISTS: absent is not
     // drift, and inventing a key the project never declared is not a repair
     // (`ax doctor` grades it on the same rule).
+    projectName = existing.config.project.name;
     const raw = JSON.parse(readFileSync(existing.path, 'utf8'));
     const next = {};
     for (const [key, value] of Object.entries(raw)) {
@@ -399,14 +418,22 @@ export function init(root, { dryRun = false, vendor } = {}) {
     }
   }
 
+  // THE MANIFEST THE PIN LIVES IN, seeded where the project has none. This read
+  // `existsSync` and ended the verb on `package.json — not found, so no
+  // project-local ax version can be pinned`: a finding with no repair, exit 1
+  // over one surface of six, in the same run that had already written `bin/ax`
+  // — a shim whose only job is to exec an install no manifest could declare
+  // (./plan.mjs, FINDING THREE). A repository with no `package.json` is a
+  // legitimate consumer of the orchestration lane, and the seed guesses nothing:
+  // the name is the one `ax.config.json` just decided, `private` keeps a
+  // manifest ax wrote out of the registry, and every other key stays the
+  // project's to add. The bytes are here because they are what this verb
+  // writes; whether to write them at all is the plan's answer.
   const packagePath = join(root, 'package.json');
-  if (!existsSync(packagePath)) {
-    bad('package.json — not found, so no project-local ax version can be pinned');
-    failed = true;
-  } else if (!plan.bootstrap && !plan.pin) {
+  if (!plan.bootstrap && !plan.pin) {
     note(`package.json — this checkout IS ${PACKAGE_NAME}: no scripts.ax, and no pin pointing back at itself`);
   } else {
-    const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
+    const manifest = plan.seedManifest ? { name: projectName, private: true } : onDisk;
     const pinPath = `devDependencies.${PACKAGE_NAME}`;
     const currentPin = getJsonPath(manifest, pinPath);
     const preservePin =

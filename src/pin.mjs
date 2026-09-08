@@ -90,7 +90,12 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   if (!paths.root) return refuse('not inside a git repository');
   const root = paths.root;
   const packagePath = join(root, 'package.json');
-  if (!existsSync(packagePath)) return refuse('no package.json at the repository root — there is no pin to move');
+  // `ax init` SEEDS a manifest now (./plan.mjs, FINDING THREE), so the absence
+  // has a repair and this refusal names it — the same verb the "declares no
+  // pin" refusal below points at, for the same missing pair.
+  if (!existsSync(packagePath)) {
+    return refuse('no package.json at the repository root — there is no pin to move', 'ax init   # writes the manifest, the pin and the ax script this verb moves');
+  }
 
   let manifest;
   try {

@@ -1031,7 +1031,7 @@ export function release(
   // managed `.gitignore` block and `ax doctor` grades it against, so the dirty
   // row below and the repair it names cannot disagree about which paths are the
   // tool's own runtime state (../plan.mjs, #83).
-  const plan = planProject({ manifest: readManifest(home || cwd) });
+  const plan = planProject({ manifest: readManifest(home || cwd).manifest });
   // The checkout `ax init` would run in. `--dispatch` may be typed from outside
   // any repository, and a repair naming an empty path is not a repair.
   const checkout = home === '' ? `<your ${repo || 'own'} checkout>` : home;

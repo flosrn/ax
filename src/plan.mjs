@@ -25,6 +25,18 @@
 // not "recorded value missing"; it is a different question, and the plan is
 // where a question about target state belongs.
 //
+// FINDING THREE: the repository with no manifest at all. `ax init` wrote the
+// bootstrap, the OMP wiring and both managed blocks into a Python service that
+// had adopted the orchestration lane, then ended on `package.json — not found,
+// so no project-local ax version can be pinned`: exit 1, no repair named, and a
+// `bin/ax` left behind whose only job is to exec an install no manifest could
+// declare. REPORTED 2026-09-08 from a consumer on 0.21.1 — five surfaces of six
+// planned, the sixth a dead end the operator repaired by reading this package's
+// source — and the refusal was still on main when this landed. A
+// manifest is not a decision here: the name is the project's own and nothing
+// else in it belongs to ax, so the plan asks for one (`seedManifest`) instead
+// of refusing a repository for not being a Node project.
+//
 // PURITY, same limit and same reason as the worktree plan: `planProject` takes
 // the manifest and the declared keys as data, so it is callable with plain
 // objects. `readManifest` is the one machine read, kept beside it because both
@@ -37,7 +49,7 @@
 // what this project asks ax for, `ax init` writes that declaration when it
 // provisions, and `ax doctor` grades only the contracts the declaration names.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CONFIG_FILE, PACKAGE_NAME } from './config.mjs';
@@ -137,11 +149,12 @@ export const MANAGED_BLOCKS = [
  * The target state of a project, from its own manifest and the contracts its
  * configuration declares.
  *
- * @param manifest  the checkout's parsed `package.json`, `{}` when there is none
+ * @param manifest  the checkout's parsed `package.json`, `null` when the file
+ *                  does not exist — the one input that means "seed one"
  * @param declared  the root keys `ax.config.json` actually carries, before
  *                  schema defaults — a defaulted `apps` is not a declaration
  */
-export function planProject({ manifest = {}, declared = [] } = {}) {
+export function planProject({ manifest = null, declared = [] } = {}) {
   // THE NAME, never a path or a remote. A `link:`ed dev checkout, a fork and a
   // published install all resolve to different paths; the manifest name is what
   // says this tree publishes the package rather than consumes it.
@@ -155,6 +168,14 @@ export function planProject({ manifest = {}, declared = [] } = {}) {
     // through the `bin` field in the manifest it publishes.
     bootstrap: !selfHosted,
     pin: !selfHosted,
+    // A project with NO manifest can carry neither: the pin has nowhere to
+    // live, and `bin/ax` would exec an install nothing declares. So the plan
+    // asks for the manifest itself — every value in it inferable — rather than
+    // ending the verb on a repository that is not a Node project (FINDING
+    // THREE above). An UNREADABLE manifest is NOT this state: `ax init`
+    // refuses those bytes before it plans, because overwriting a file it could
+    // not parse is not a seed.
+    seedManifest: !selfHosted && manifest === null,
     // Every path ax's own tooling writes, in the block ax owns. One list, so
     // the verb that writes it and the verb that grades it cannot disagree.
     ignore: IGNORE,
@@ -171,15 +192,19 @@ export function planProject({ manifest = {}, declared = [] } = {}) {
 /**
  * The checkout's own manifest — the one read of it, shared by both verbs.
  *
- * Unreadable and absent are the same answer, `{}`: neither says this tree is
- * the package, and a project with no manifest still gets a plan (`ax init`
- * refuses the missing file itself, with its own words).
+ * THREE ANSWERS, not two. Absent and unreadable were one (`{}`) for as long as
+ * nothing acted on the difference; `seedManifest` acts on it, so `manifest` is
+ * the parsed content or `null` for "no file", and `error` is why bytes that DO
+ * exist could not be read. A verb that treated those two alike would replace a
+ * hand-written manifest whose only defect is a trailing comma.
  */
 export function readManifest(root) {
+  const path = join(root, 'package.json');
+  if (!existsSync(path)) return { manifest: null, error: null };
   try {
-    return JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  } catch {
-    return {};
+    return { manifest: JSON.parse(readFileSync(path, 'utf8')), error: null };
+  } catch (error) {
+    return { manifest: null, error: String(error.message ?? error) };
   }
 }
 
@@ -189,4 +214,4 @@ export function readManifest(root) {
  * for. One derivation, so a self-hosted dispatch registered as `"."` cannot be
  * refused as unwired by a second copy of this string.
  */
-export const ompExtensionRoot = root => planProject({ manifest: readManifest(root) }).ompExtension;
+export const ompExtensionRoot = root => planProject({ manifest: readManifest(root).manifest }).ompExtension;

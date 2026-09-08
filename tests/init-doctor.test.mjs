@@ -846,6 +846,104 @@ test('a project that declares only prGate reports provisioning as not adopted, a
   }
 });
 
+// A repository with no `package.json` — a Python service that adopted the
+// orchestration lane. `ax init` wrote five surfaces there and ended on
+// `package.json — not found, so no project-local ax version can be pinned`:
+// exit 1, no repair named, after the same run had written `bin/ax`, a shim
+// whose only job is to exec an install nothing could declare. Reported from a
+// consumer on 0.21.1; the operator repaired it by reading src/init.mjs.
+test('a repository with no manifest is provisioned, not refused', () => {
+  const python = mkdtempSync(join(tmpdir(), 'ax-no-manifest-'));
+  try {
+    mkdirSync(join(python, 'node_modules'), { recursive: true });
+    writeFileSync(join(python, 'pyproject.toml'), '[project]\nname = "chatnow-bot"\n');
+    execFileSync('git', ['init', '-q'], { cwd: python, stdio: 'ignore' });
+
+    // The dry run plans every surface, including the one that used to end it.
+    const planned = capture(() => init(python, { dryRun: true }));
+    assert.equal(planned.code, 0, 'a plan with a seeded manifest has nothing left to refuse');
+    assert.match(planned.out, /package\.json.*created/);
+    assert.doesNotMatch(planned.out, /not found/);
+    assert.equal(existsSync(join(python, 'package.json')), false, 'a dry run still writes nothing');
+
+    assert.equal(init(python), 0);
+    const manifest = JSON.parse(readFileSync(join(python, 'package.json'), 'utf8'));
+    // The name is the one `ax.config.json` just decided, never a second
+    // derivation of it, and `private` keeps a manifest ax wrote out of the
+    // registry. Nothing else is invented.
+    assert.equal(manifest.name, loadConfig(python).config.project.name);
+    assert.equal(manifest.private, true);
+    assert.equal(manifest.scripts.ax, './bin/ax');
+    assert.equal(manifest.devDependencies['@flosrn/ax'], version);
+    assert.deepEqual(Object.keys(manifest), ['name', 'private', 'scripts', 'devDependencies']);
+
+    assert.equal(doctor(python), 0, 'and the checkout it leaves is coherent');
+    assert.equal(init(python), 0, 'a second run seeds nothing — the manifest exists now');
+  } finally {
+    rmSync(python, { recursive: true, force: true });
+  }
+});
+
+// Absent and unreadable were one answer (`{}`) while no verb acted on the
+// difference. The seed acts on it, so the difference is now load-bearing: a
+// manifest whose only defect is a trailing comma must survive the verb that
+// writes one where there is none.
+test('an unreadable manifest is refused with its repair, never seeded over', () => {
+  const broken = mkdtempSync(join(tmpdir(), 'ax-broken-manifest-'));
+  const bytes = '{ "name": "half-typed", }\n';
+  try {
+    mkdirSync(join(broken, 'node_modules'), { recursive: true });
+    writeFileSync(join(broken, 'package.json'), bytes);
+    execFileSync('git', ['init', '-q'], { cwd: broken, stdio: 'ignore' });
+
+    const refused = capture(() => init(broken));
+    assert.equal(refused.code, 1);
+    assert.match(refused.out, /package\.json — not valid JSON/);
+    assert.match(refused.out, /→ repair package\.json/, 'the finding names its repair');
+    assert.equal(readFileSync(join(broken, 'package.json'), 'utf8'), bytes, 'hand-written bytes ax could not parse are not replaced');
+    assert.equal(existsSync(join(broken, 'ax.config.json')), false, 'the refusal came before the first write');
+
+    writeFileSync(join(broken, 'ax.config.json'), `${JSON.stringify({ project: { name: 'half-typed' }, apps: { web: '.' } }, null, 2)}\n`);
+    const graded = capture(() => doctor(broken));
+    assert.match(graded.out, /package\.json is not valid JSON/);
+    assert.match(graded.out, /→ repair package\.json, then ax init/);
+  } finally {
+    rmSync(broken, { recursive: true, force: true });
+  }
+});
+
+// A provisioned project whose manifest was deleted: the plan wants one, so the
+// absence is a finding phrased against a plan field, with the verb that writes
+// it. It could not be named before, because `ax init` exited 1 on this state.
+test('doctor names the seeding verb for a provisioned project whose manifest is gone', () => {
+  const stripped = mkdtempSync(join(tmpdir(), 'ax-manifest-gone-'));
+  try {
+    mkdirSync(join(stripped, 'node_modules'), { recursive: true });
+    writeFileSync(join(stripped, 'package.json'), JSON.stringify({ name: 'consumer' }, null, 2));
+    execFileSync('git', ['init', '-q'], { cwd: stripped, stdio: 'ignore' });
+    assert.equal(init(stripped), 0);
+    rmSync(join(stripped, 'package.json'));
+
+    const graded = capture(() => doctor(stripped));
+    assert.equal(graded.code > 0, true);
+    assert.match(graded.out, /package\.json is missing/);
+    assert.match(graded.out, /→ ax init/);
+
+    assert.equal(init(stripped), 0, 'and the verb it names repairs it');
+    assert.equal(doctor(stripped), 0);
+  } finally {
+    rmSync(stripped, { recursive: true, force: true });
+  }
+});
+
+test('the plan asks for a manifest only where a consumer has none', () => {
+  assert.equal(planProject({ manifest: null }).seedManifest, true);
+  assert.equal(planProject().seedManifest, true, 'no manifest passed is no manifest');
+  assert.equal(planProject({ manifest: { name: 'consumer' } }).seedManifest, false);
+  assert.equal(planProject({ manifest: {} }).seedManifest, false, 'a manifest declaring nothing is still a manifest');
+  assert.equal(planProject({ manifest: { name: '@flosrn/ax' } }).seedManifest, false, 'the package writes no manifest for itself');
+});
+
 
 test('outside a git repository, doctor says so instead of scanning upwards', () => {
   const orphan = mkdtempSync(join(tmpdir(), 'ax-orphan-'));

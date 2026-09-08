@@ -56,7 +56,7 @@ export function doctor(cwd = process.cwd()) {
   // repairable by the verb that writes the plan, and what keeps two states off
   // the findings list entirely: the checkout that IS the package, and a contract
   // this project never adopted.
-  const manifest = readManifest(root);
+  const { manifest, error: manifestError } = readManifest(root);
   const plan = planProject({ manifest, declared });
 
   // The `$schema` pointer is a plan value `ax init` writes, so it is compared
@@ -143,7 +143,21 @@ export function doctor(cwd = process.cwd()) {
 
   // 3. The managed touchpoints in files the vendor also owns.
   const pinned = getJsonPath(manifest, `devDependencies.${PACKAGE_NAME}`);
-  if (!plan.pin) {
+  if (manifestError !== null) {
+    // Unreadable bytes are their own answer, and the repair is the file: every
+    // check below reads a value out of it, and `ax init` refuses the same bytes
+    // rather than replacing work it cannot parse (./plan.mjs, `readManifest`).
+    fail(`package.json is not valid JSON (${manifestError}) — no pin and no ax script can be read from it`, 'repair package.json, then ax init');
+  } else if (plan.seedManifest) {
+    // ABSENT IS A FINDING WITH A REPAIR, because `ax init` seeds the manifest
+    // now (./plan.mjs, FINDING THREE). Before that the verb refused this state,
+    // so naming it here would have sent a non-Node repository to a command that
+    // exits 1 on it.
+    fail(
+      `package.json is missing — nothing pins the ${PACKAGE_NAME} version this project runs, and bin/ax execs an install no manifest declares`,
+      'ax init',
+    );
+  } else if (!plan.pin) {
     // A self-pin is a recorded value the plan refuses, so it IS graded — the
     // state `ax init` used to write here and no install could ever resolve.
     if (pinned !== undefined) {
