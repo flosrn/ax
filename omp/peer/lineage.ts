@@ -120,13 +120,48 @@ export function warmLineage(): void {
  * session wrote its write-ahead record BEFORE issuing the dispatch, pairing the
  * child's pane with its own Run. That record is authority here for the reason it
  * is everywhere in ax — written ahead of the mutation by the only party holding
- * both halves. It breaks the tie and NOTHING ELSE: a single-pane parent never
- * reads it, and an absent, unreadable, ambiguous or departed answer keeps the
- * refusal rather than falling back to a pane that merely happens to be there.
- * Delivering a completion to a session that dispatched different work is worse
- * than telling the child to re-route, which is what the refusal makes it do.
+ * both halves. It confirms or corrects even a sole live pane when present —
+ * worktree sleep can leave a readiness pane behind — while an absent record
+ * preserves the legacy sole-pane fallback. With several or zero panes, an
+ * absent, unreadable or ambiguous answer keeps the refusal rather than falling
+ * back to a pane that merely happens to be there. Delivering a completion to a
+ * session that dispatched different work is worse than telling the child to
+ * re-route.
+ *
+ * A LIVE PANE IS NOT WHAT DELIVERY NEEDS, and requiring one cost a report on
+ * 2026-09-08. Orca has one known reversible way to produce this shape: its
+ * manual "Close terminals" action stops the worktree's ptys while preserving
+ * their identifiers, and revealing the pane later cold-restores the agent into
+ * the same slot (`sleep-worktree-flow.ts`, `pty-exit-hibernate.ts`). There is no
+ * automatic visibility, idle, LRU or memory-pressure reaper in Orca's source.
+ * The measured trace establishes only the shape, not its trigger:
+ * `session-killed` (`immediate: true`) on the ofmchat primary at 14:06:09Z,
+ * then `session-created` for the same `@@9320cb55` slot at 14:27:50Z. The Run
+ * persisted across that no-consumer interval (`run_09c2450956f2`, published by
+ * three successive handles). Orca keys messages on the Run and holds them —
+ * `msg_a5230f12b27a` (`worker_done`) was created 14:13:32Z inside that window
+ * and `delivered_at` 14:27:54Z, and rows a week old still sit pending in
+ * `orchestration.db` with no sweep. So a recorded Run with nobody on it is a
+ * QUEUE, not a dead letter, and the refusal it used to produce — "the
+ * dispatching session is gone" — was false in this case.
+ *
+ * Hence THREE outcomes. `peer`: a pane is reading that Run now. `queued`: the
+ * recorded Run is a real address whose arrival is deferred, which the caller
+ * must say out loud instead of treating as handed over — a Run whose session
+ * never returns keeps the message forever unread (measured: a `worker_done` from
+ * 2026-09-04 is still `read = 0`). `reason`: no address exists at all, and no
+ * guess may stand in for one.
  */
-export function parentPeer(): { peer?: Peer; reason?: string } {
+export interface Dispatcher {
+  /** A pane in the parent worktree that is reading the dispatcher's Run. */
+  peer?: Peer;
+  /** The dispatcher's Run, recorded before the dispatch, with no pane on it. */
+  queued?: { run: string; worktree: string };
+  /** No address at all. Every inability is named (F-028). */
+  reason?: string;
+}
+
+export function parentPeer(): Dispatcher {
   const resolved = parentWorktreePath();
   if (resolved.reason) return { reason: resolved.reason };
   const parentPath = resolved.path;
@@ -138,25 +173,35 @@ export function parentPeer(): { peer?: Peer; reason?: string } {
 
   const inParent = peers().filter((p) => p.worktree === parentPath);
   const name = parentPath.split('/').pop() || parentPath;
-  if (inParent.length === 0)
-    return { reason: `parent worktree '${name}' has no live session to report to` };
-  if (inParent.length > 1) {
-    // Host-local by construction: the store is under this machine's HOME, so a
-    // child on another host resolves nothing here and must not — that case has
-    // its own channel (the board card, src/worker/brief.mjs).
-    const found = dispatcherRunForPane(defaultStore(process.env), selfHandle());
-    if (found.run === undefined)
-      return { reason: `parent worktree '${name}' runs several panes and ${found.reason}` };
-    const dispatcher = inParent.find((p) => p.run === found.run);
-    if (dispatcher === undefined)
-      return {
-        reason:
-          `the record that dispatched this session names Run ${found.run}, which no live pane in '${name}' is running `
-          + '— the dispatching session is gone, so its worktree cannot receive this report',
-      };
-    return { peer: dispatcher };
+  const found = dispatcherRunForPane(defaultStore(process.env), selfHandle());
+
+
+  // Even ONE pane can be the wrong one while Orca sleeps the dispatcher and
+  // leaves a readiness session alive in the same worktree. Consult the local
+  // write-ahead record first: a named Run either confirms that pane or turns the
+  // mismatch into a queue. With no record, preserve the pre-record ordinary case
+  // — one pane is still the only evidence available, and refusing it would
+  // orphan every manually-created/legacy child.
+  if (inParent.length === 1) {
+    if (found.run === undefined) return { peer: inParent[0] };
+    return inParent[0].run === found.run
+      ? { peer: inParent[0] }
+      : { queued: { run: found.run, worktree: parentPath } };
   }
-  return { peer: inParent[0] };
+
+  // Host-local by construction: the store is under this machine's HOME, so a
+  // child on another host resolves nothing here and must not — that case has
+  // its own channel (the board card, src/worker/brief.mjs).
+  if (found.run === undefined)
+    return {
+      reason:
+        inParent.length === 0
+          ? `parent worktree '${name}' has no live session to report to and ${found.reason}`
+          : `parent worktree '${name}' runs several panes and ${found.reason}`,
+    };
+
+  const dispatcher = inParent.find((p) => p.run === found.run);
+  return dispatcher ? { peer: dispatcher } : { queued: { run: found.run, worktree: parentPath } };
 }
 
 export interface Child {

@@ -83,7 +83,7 @@ function readState(phases: unknown): WorkState {
 }
 
 type DeliveryState = 'done' | 'blocked' | 'interrupted' | 'turn-ended';
-type DeliveryResult = { sent: boolean; reason?: string };
+type DeliveryResult = { sent: boolean; queued?: boolean; reason?: string };
 
 function deliver(state: DeliveryState, send: (state: DeliveryState) => DeliveryResult): DeliveryResult {
   try {
@@ -134,10 +134,10 @@ export default function (pi, seams: ReportSeams = {}): void {
 
   // WHAT A REFUSED DELIVERY COSTS, SAID WHERE SOMEBODY CAN ACT ON IT.
   //
-  // `report()` answers `{sent, reason}` and this extension used to drop the
-  // reason on the floor, which made an undeliverable finish indistinguishable
-  // from a delivered one — from inside this session, from the orchestrator's
-  // side, and from the transcript afterwards.
+  // `report()` answers `{sent, queued, reason}` and this extension used to drop
+  // the reason on the floor, which made an undeliverable finish
+  // indistinguishable from a delivered one — from inside this session, from the
+  // orchestrator's side, and from the transcript afterwards.
   //
   // The reason is rarely exotic. Measured 2026-08-25: a child whose parent
   // worktree ran two registered panes got `parent worktree 'ax' runs several
@@ -150,28 +150,47 @@ export default function (pi, seams: ReportSeams = {}): void {
   // A parent running several panes now resolves through the write-ahead dispatch
   // record instead (`dispatcherRunForPane`, ../peer/lineage.ts), so that
   // particular reason is no longer the ordinary one. What has not changed is the
-  // rule this block exists for: every remaining reason — a departed dispatcher,
-  // an unreadable store, a pane no record names, another host — is a finish this
-  // session must not treat as handed over, and silence is the one outcome that
-  // makes it indistinguishable from success.
+  // rule this block exists for: a finish this session must not treat as handed
+  // over, where silence is the one outcome that makes it indistinguishable from
+  // success.
+  //
+  // THREE STATES, TWO SENTENCES. A recorded Run with no pane reading it is
+  // accepted and durable, so it is NOT the refusal above — announcing it as
+  // undelivered sends a child re-routing work already in flight, which is what
+  // happened on 2026-09-08 while Orca held the message and delivered it 14
+  // minutes later. It is not an arrival either: the message is unread, and a Run
+  // whose session never returns keeps it that way. So a queue gets its own
+  // sentence, naming both halves.
   //
   // ONE ANNOUNCEMENT PER DISTINCT REASON. A per-cycle repetition of a condition
   // the session cannot change is noise, and noise is how the signal that matters
   // gets skimmed past. `customType`, never a user message: this is the harness
   // talking about its own plumbing.
   const announced = new Set<string>();
-  const announce = (reason: string): void => {
+  const announce = (reason: string, deferred = false): void => {
     if (!reason || announced.has(reason)) return;
     announced.add(reason);
     try {
-      pi.sendMessage?.({
-        customType: 'report-undelivered',
-        content:
-          `[REPORT NOT DELIVERED] This session finished a unit of work and its completion ` +
-          `could not be delivered: ${reason}. Nobody upstream will learn it from here — ` +
-          `say it on a channel that works, or fix the condition, before treating the work as handed over.`,
-        display: true,
-      });
+      pi.sendMessage?.(
+        deferred
+          ? {
+              customType: 'report-queued',
+              content:
+                `[REPORT QUEUED, NOT YET READ] This session finished a unit of work and Orca accepted its ` +
+                `completion, but nobody has read it: ${reason}. It is durable — treat the work as reported, ` +
+                `never as handed over, and if someone has to know NOW, say it on a channel with a live reader. ` +
+                `The board card carries the same fact for whoever comes back.`,
+              display: true,
+            }
+          : {
+              customType: 'report-undelivered',
+              content:
+                `[REPORT NOT DELIVERED] This session finished a unit of work and its completion ` +
+                `could not be delivered: ${reason}. Nobody upstream will learn it from here — ` +
+                `say it on a channel that works, or fix the condition, before treating the work as handed over.`,
+              display: true,
+            },
+      );
     } catch {
       // Observability must never break the session that produced the work.
     }
@@ -229,6 +248,25 @@ export default function (pi, seams: ReportSeams = {}): void {
     }
   });
 
+  /**
+   * Say every state that is not an arrival. Both `agent_end` and
+   * `session_shutdown` send reports, and the teardown path is the more important
+   * one: there is no later turn in which silence can repair itself.
+   *
+   * `true` means Orca accepted the message, whether it was read or queued. The
+   * caller may persist its duplicate-prevention latch. `false` means no address
+   * accepted it. A parentless interactive session is the one normal quiet no-op.
+   */
+  const handleOutcome = (outcome: DeliveryResult): boolean => {
+    const parentless = outcome.reason?.startsWith('no parent worktree recorded') === true;
+    if (!outcome.sent) {
+      if (!parentless) announce(outcome.reason ?? 'the reason was not reported');
+      return false;
+    }
+    if (outcome.queued) announce(outcome.reason ?? 'the Run holding it was not named', true);
+    return true;
+  };
+
   // The turn boundary, not the todo flip, is when a session has actually
   // stopped. An agent marks its last task done and then keeps working —
   // committing, pushing, tidying — so reporting on the flip would announce a
@@ -260,14 +298,8 @@ export default function (pi, seams: ReportSeams = {}): void {
       if (latch !== null && existsSync(latch)) return;
 
       const outcome = deliver(current === 'none' ? 'turn-ended' : effective, send);
-      // `no parent worktree recorded` is the NORMAL case — most worktrees are not
-      // dispatched — so it is the one refusal that stays quiet. Every other one is
-      // a session that was supposed to be heard from and was not.
-      const parentless = outcome.reason?.startsWith('no parent worktree recorded') === true;
-      if (!outcome.sent && !parentless) {
-        announce(outcome.reason ?? 'the reason was not reported');
-        return;
-      }
+      if (!handleOutcome(outcome)) return;
+
 
       if (latch !== null) {
         try {
@@ -298,27 +330,23 @@ export default function (pi, seams: ReportSeams = {}): void {
       // the cycle boundary is the only thing that can tell them apart.
       // `session_shutdown` fires once per teardown, so no latch is needed here —
       // and `lastReported` holds a todo state, which `interrupted` is not.
+      let outcome: DeliveryResult | null = null;
       if (cycleActive) {
-        deliver('interrupted', send);
-        return;
-      }
-      if (current === 'none') {
+        outcome = deliver('interrupted', send);
+      } else if (current === 'none') {
         // The latch, not `lastReported`, is the authority for this state: the
         // re-arm clears `lastReported` at every cycle, and `turn-ended` is capped
         // once per SESSION on purpose. Retrying a delivery that failed is the one
         // thing this branch is for.
-        if (lastReported === null && !existsSync(latchFor(ctx))) deliver('turn-ended', send);
-        return;
+        if (lastReported === null && !existsSync(latchFor(ctx))) outcome = deliver('turn-ended', send);
+      } else if (current === 'done') {
+        if (lastReported !== 'done') outcome = deliver('done', send);
+      } else if (current === 'blocked') {
+        if (lastReported !== 'blocked') outcome = deliver('blocked', send);
+      } else {
+        outcome = deliver('interrupted', send);
       }
-      if (current === 'done') {
-        if (lastReported !== 'done') deliver('done', send);
-        return;
-      }
-      if (current === 'blocked') {
-        if (lastReported !== 'blocked') deliver('blocked', send);
-        return;
-      }
-      deliver('interrupted', send);
+      if (outcome !== null) handleOutcome(outcome);
     } catch {}
   });
 }

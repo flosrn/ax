@@ -5,7 +5,7 @@
  * carry their own incident history below.
  */
 
-import { boardWrite } from '../shared/board.ts';
+import { boardWrite, boardWriteOrdered } from '../shared/board.ts';
 import { type MessageType, sendToPeer } from './send.ts';
 import { parentPeer, selfWorktree } from './lineage.ts';
 
@@ -130,7 +130,7 @@ export function artifactNote(read: (args: string[]) => string | null): string {
 export function report(
   state: ReportState,
   note = '',
-): { sent: boolean; reason?: string } {
+): { sent: boolean; queued?: boolean; reason?: string } {
   const shape = REPORT_SHAPE[state];
   if (!shape) return { sent: false, reason: `unknown state '${state}'` };
 
@@ -169,7 +169,13 @@ export function report(
   }
 
   const parent = parentPeer();
-  if (!parent.peer) return { sent: false, reason: parent.reason };
+  // A Run with no pane reading it is an ADDRESS, not a failure: Orca validates
+  // `run:` targets on the run's existence alone and holds the message until some
+  // pane binds that run again (`../peer/lineage.ts` carries the measurement).
+  // Refusing to send there is how a 21-minute respawn window turned a finished
+  // slice into a report nobody was ever going to get.
+  const target = parent.peer ? parent.peer.peer : parent.queued ? `run:${parent.queued.run}` : '';
+  if (!target) return { sent: false, reason: parent.reason };
 
   const name = mine.split('/').pop() || 'this session';
   const lines = [`${name} ${shape.head}.`];
@@ -184,9 +190,26 @@ export function report(
   lines.push(`Read it with the peer_read tool (peer: ${name}).`);
 
   const out = sendToPeer({
-    target: parent.peer.peer,
+    target,
     text: lines.join('\n'),
     type: shape.type,
   });
-  return out.ok ? { sent: true } : { sent: false, reason: out.error };
+  if (!out.ok) return { sent: false, reason: out.error };
+  if (!parent.queued) return { sent: true };
+
+  // ACCEPTED, DURABLE, UNREAD — and the last of those three is why this rides
+  // back instead of returning a bare success. The card is the escalation that
+  // outlives this session: a Run whose session never returns keeps the message
+  // forever unread, and then the sidebar is the only place a human can still
+  // see that a finished slice was never collected.
+  const where = parent.queued.worktree.split('/').pop() || parent.queued.worktree;
+  const queuedReason =
+    `no pane in '${where}' is reading Run ${parent.queued.run} right now — Orca is holding this report `
+    + 'on that Run and hands it over when a pane binds it again, which is an arrival nobody has made yet';
+  // Synchronous on purpose: checkpoint's teardown flush is registered after
+  // report's, and its detached progress write must finish before this final
+  // marker returns. `ax board` serializes the two; waiting here fixes their
+  // semantic order rather than merely their spawn order.
+  if (mine && shape.movesBoard) boardWriteOrdered({ comment: `report queued, unread · ${parent.queued.run}` });
+  return { sent: true, queued: true, reason: queuedReason };
 }

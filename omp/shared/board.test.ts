@@ -7,7 +7,7 @@
 
 import { expect, test } from 'bun:test';
 
-import { boardWrite } from './board.ts';
+import { boardWrite, boardWriteOrdered } from './board.ts';
 
 type Spawned = { argv: string[]; opts: Record<string, unknown> };
 
@@ -56,4 +56,20 @@ test('the child is detached and silent: ignored stdio, cwd of this process', () 
     stdout: 'ignore',
     stderr: 'ignore',
   });
+});
+
+test('the ordered twin completes before returning for a final report marker', () => {
+  const calls: string[][] = [];
+  const saved = Bun.spawnSync;
+  Bun.spawnSync = ((argv: string[]) => {
+    calls.push(argv);
+    return { success: true };
+  }) as never;
+  try {
+    expect(boardWriteOrdered({ comment: 'report queued, unread · run_sleeping' })).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(-3)).toEqual(['board', '--comment', 'report queued, unread · run_sleeping']);
+  } finally {
+    Bun.spawnSync = saved;
+  }
 });

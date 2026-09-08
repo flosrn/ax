@@ -282,6 +282,37 @@ test('a session killed inside a second cycle says it stopped, not that it finish
   expect(sent).toEqual(['done', 'interrupted']);
 });
 
+test('a refused shutdown report is announced before the session disappears', async () => {
+  const lead = ctx('shutdown-refused');
+  const h = announcing(() => ({ sent: false, reason: 'Orca rejected the completion' }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('session_shutdown', {}, lead);
+
+  expect(h.said).toHaveLength(1);
+  expect(h.said[0]).toMatch(/not delivered|undelivered/i);
+  expect(h.said[0]).toContain('Orca rejected');
+});
+
+test('a paneless-Run shutdown report announces its durable unread queue', async () => {
+  const lead = ctx('shutdown-queued');
+  const h = announcing(() => ({
+    sent: true,
+    queued: true,
+    reason: 'no pane is reading Run run_sleeping right now',
+  }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('session_shutdown', {}, lead);
+
+  expect(h.said).toHaveLength(1);
+  expect(h.said[0]).toMatch(/queued/i);
+  expect(h.said[0]).toContain('run_sleeping');
+  expect(h.said[0]).not.toMatch(/not delivered|undelivered/i);
+});
+
 test('a cycle that ended cleanly is not re-announced as interrupted at shutdown', async () => {
   // The mirror of the above: a worker that finished and is then torn down must
   // not retract its own completion.
@@ -365,16 +396,15 @@ function announcing(sendReport: Send) {
 }
 
 test('a refused delivery is said in the session that could not deliver it', async () => {
-  // A reason ax still produces: the tie-break through the dispatch record found
-  // the dispatcher's Run and no live pane is running it. A fixture quoting a
-  // refusal the resolver no longer emits would keep passing while the real
-  // sentence went unannounced.
+  // A reason ax still produces: no pane in the parent worktree is reachable AND
+  // no dispatch record names this pane, so there is no Run to queue on either.
+  // A fixture quoting a refusal the resolver no longer emits would keep passing
+  // while the real sentence went unannounced.
   const lead = ctx('mute-child');
   const h = announcing(() => ({
     sent: false,
     reason:
-      "the record that dispatched this session names Run run_departed, which no live pane in 'ax' is running "
-      + '— the dispatching session is gone, so its worktree cannot receive this report',
+      "parent worktree 'ax' has no live session to report to and no dispatch record names pane term_child",
   }));
 
   await h.fire('session_start', {}, lead);
@@ -383,9 +413,45 @@ test('a refused delivery is said in the session that could not deliver it', asyn
   await h.fire('agent_end', {}, lead);
 
   expect(h.said).toHaveLength(1);
-  expect(h.said[0]).toContain('dispatching session is gone');
+  expect(h.said[0]).toContain('no dispatch record names pane');
   // What it is, and what it costs: nobody upstream is going to learn this.
   expect(h.said[0]).toMatch(/not delivered|undelivered/i);
+});
+
+/**
+ * A QUEUED COMPLETION IS NEITHER A REFUSAL NOR AN ARRIVAL.
+ *
+ * Orca's manual "Close terminals" action stops a worktree's ptys, preserves
+ * their slots and cold-restores the agent when a pane is revealed; there is no
+ * automatic idle/background reaper in its source. It holds a Run's messages
+ * meanwhile. So a report
+ * addressed to the dispatcher's recorded Run with nobody reading it is accepted,
+ * durable, and unread — three facts, and the announcement has to carry all three.
+ * Calling it undelivered sends the child re-routing work that is already in
+ * flight; calling it delivered lets it treat unread work as handed over, which is
+ * the failure the undelivered announcement exists to prevent.
+ */
+test('a queued delivery is announced as queued, never as undelivered', async () => {
+  const lead = ctx('queued-child');
+  const h = announcing(() => ({
+    sent: true,
+    queued: true,
+    reason:
+      "no pane in 'ofmchat' is reading Run run_09c2450956f2 right now — Orca is holding this report on that Run",
+  }));
+
+  await h.fire('session_start', {}, lead);
+  await h.fire('agent_start', {}, lead);
+  await h.fire('tool_result', { toolName: 'todo', details: { phases: phases('completed') } }, lead);
+  await h.fire('agent_end', {}, lead);
+
+  expect(h.said).toHaveLength(1);
+  expect(h.said[0]).toContain('run_09c2450956f2');
+  expect(h.said[0]).toMatch(/queued/i);
+  // The child must not read a queue as a refusal and re-route work already sent.
+  expect(h.said[0]).not.toMatch(/not delivered|undelivered/i);
+  // Nor as an arrival: "nobody has read it" is the load-bearing half.
+  expect(h.said[0]).toMatch(/read/i);
 });
 
 test('the same refusal is not repeated every cycle', async () => {

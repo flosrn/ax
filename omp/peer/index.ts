@@ -667,13 +667,19 @@ export default function (pi): void {
           content: [{ type: 'text', text: out.error ?? 'send failed' }],
           isError: true,
         };
-      note(`sent to ${peer}${out.via === 'relay' ? ' via parent relay' : ''}`);
+      note(
+        out.queued
+          ? `queued relay for ${peer} on parent ${out.queued.run}`
+          : `sent to ${peer}${out.via === 'relay' ? ' via parent relay' : ''}`,
+      );
       return {
         content: [
           {
             type: 'text',
-            text:
-              out.via === 'relay'
+            text: out.queued
+              ? `Queued for ${peer} on the parent's Run ${out.queued.run}, currently unread. Orca accepted it durably, `
+                + `but the parent has not read or forwarded it yet; use a channel with a live reader if ${peer} must know now.`
+              : out.via === 'relay'
                 ? `Sent to ${peer} through the shared parent (Orca refused the direct lateral send).`
                 : `Sent to ${peer}.`,
           },
