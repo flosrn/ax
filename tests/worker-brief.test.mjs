@@ -226,6 +226,14 @@ test('the brief says what the completion carries, where a question goes, and wha
   assert.match(text, /rewrite the Report in place/);
   assert.match(text, /board card/);
   assert.match(text, /[Nn]ever a second `worker_done`/);
+  // AND THE OTHER CHANNEL THAT DIES WITH THE SETTLEMENT. Measured 2026-09-08 on
+  // slice #212 of one wave: a worker asked to correct its work after reporting
+  // sent an escalation and was refused `Dispatch … capability is revoked` — its
+  // Dispatch had settled at `worker_done`, and the coordinator had released
+  // nothing. ax already records the same mechanism from the receiving side
+  // (`omp/peer/receive.ts`, measured on ofmchat #55). Saying only "never a
+  // second worker_done" left the child to discover the rest by being refused.
+  assert.match(text, /capability is revoked/);
 });
 
 test('a dispatch that cannot name the Report path says so, and guesses none', () => {

@@ -276,6 +276,24 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
  * msg_…`, and had to resolve the child's pane out of `orca terminal list --json`
  * by hand. The refusal is right; discovering it by failing is not.
  *
+ * AND `failed` IS ONLY THE INCIDENT, NOT THE RULE — read from Orca's own source
+ * after a second report on 2026-09-08 (a worker refused `Dispatch … capability
+ * is revoked` on a correction it was ASKED for, after an ordinary successful
+ * report). Every path below is relative to the fork checkout's
+ * `src/main/runtime/orchestration/db/dispatch-context/`, and the first draft of
+ * this note cited them from `src/main/db/…` — a prefix that resolves to nothing,
+ * which is not a citation:
+ *
+ *   `worker-report-settlement.ts`  sets `capability_revoked_at` UNCONDITIONALLY
+ *     in the settling UPDATE; only `last_failure` is conditioned on the outcome
+ *   `dispatch-completion.ts`       `completeDispatch` does the same on
+ *     completion, in one statement with `status = 'completed'`
+ *   `dispatch-capability.ts`       is where the refusal text comes from, verbatim
+ *
+ * So ANY worker-report settlement ends the capability, whatever the outcome. A
+ * reader who took the incident above for the rule would expect a succeeded child
+ * to still be answerable.
+ *
  * NO ADDRESS IS OFFERED HERE, deliberately. The recorded pane of a dispatch that
  * never settled is a suspicion, not an association (`ls.mjs`), and typing into
  * it is a mutation that can steer a stranger or interrupt a mid-turn child. The

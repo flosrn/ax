@@ -226,10 +226,14 @@ function reportContract(report) {
     '- A question goes to the session that dispatched you through your PEER TOOLS, where it arrives',
     '  attributed and is drained with the rest of that session\u2019s inbox —',
     '  never through `orca orchestration ask`, which nothing on its side is waiting on.',
-    '- A refusal that arrives AFTER your completion — a merge gate\u2019s, a reviewer\u2019s — is supervised',
-    '  work on the same slice: repair it, rewrite the Report in place at the same path, and report by',
-    '  your board card. Never a second `worker_done`: the runtime settled the first, and the ones',
-    '  after it land nowhere.',
+    '- A refusal that arrives AFTER your completion — a merge gate\u2019s, a reviewer\u2019s, your',
+    '  orchestrator\u2019s — is supervised work on the same slice: repair it, rewrite the Report in place',
+    '  at the same path, and report by your board card. Never a second `worker_done`: the runtime',
+    '  settled the first, and the ones after it land nowhere. AND YOUR ESCALATION IS GONE WITH IT —',
+    '  the settlement revokes this Dispatch\u2019s capability, so an escalation sent afterwards is refused',
+    '  outright (`capability is revoked`), whatever the orchestrator has or has not released. Your',
+    '  board card and a message to the session that dispatched you both still work; use those, and',
+    '  say in the message that the Report was rewritten.',
   ].join('\n');
 }
 
