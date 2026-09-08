@@ -47,12 +47,75 @@ function fakeRunner({ worktree = {}, failShow = false, ready = true } = {}) {
   return run;
 }
 
+/** stderr of one call — the channel every bail and every cap notice uses. */
+const said = fn => {
+  const written = [];
+  const stderr = process.stderr.write;
+  process.stderr.write = chunk => (written.push(String(chunk)), true);
+  try {
+    return { code: fn(), out: written.join('').replace(/\u001B\[\d+m/g, '') };
+  } finally {
+    process.stderr.write = stderr;
+  }
+};
+
 test('bad usage exits 0 without touching orca — a typo in a hook must not kill the hook', () => {
   const run = fakeRunner();
   assert.equal(board(['--bogus'], { runner: run, env: fastEnv() }), 0);
   assert.equal(board(['--status'], { runner: run, env: fastEnv() }), 0, 'a flag without a value bails politely');
   assert.equal(board([], { runner: run, env: fastEnv() }), 0, 'nothing to do is not an error');
   assert.equal(run.calls.length, 0);
+});
+
+// Reported 2026-09-08 from a consumer worker on 0.21.1: one warning, exit 0, an
+// empty card, and a Report claiming the checkpoint was written — which is the
+// state an orchestrator reads to decide a merge. Fail-open keeps the exit code;
+// it never bought the right to be quiet about a write that did not happen.
+test('every refusal says NO checkpoint was written, and a mistyped comment names quoting', () => {
+  const run = fakeRunner();
+  const env = fastEnv();
+
+  // The measured shape: a multi-word comment nobody quoted. The words past the
+  // first are unknown arguments.
+  const mistyped = said(() => board(['--status', 'in-review', '--comment', 'panel', 'accounts'], { runner: run, env }));
+  assert.equal(mistyped.code, 0);
+  assert.match(mistyped.out, /NO checkpoint was written/);
+  assert.match(mistyped.out, /ONE quoted argument/, 'the repair is named, not just the symptom');
+  assert.equal(run.sets().length, 0);
+
+  for (const argv of [[], ['--bogus'], ['--status']]) {
+    assert.match(said(() => board(argv, { runner: run, env })).out, /NO checkpoint was written/, `${JSON.stringify(argv)} is silent about its no-op`);
+  }
+});
+
+test('a comment that flattens to nothing is dropped, never sent as a fieldless set', () => {
+  // It passed the truthiness gate, flattened to '' after the lock was taken,
+  // and issued `orca worktree set` with no field at all: a call that changes
+  // nothing, no warning, exit 0.
+  const run = fakeRunner();
+  const refused = said(() => board(['--comment', '\n\n \t \n'], { runner: run, env: fastEnv() }));
+  assert.equal(refused.code, 0);
+  assert.match(refused.out, /only whitespace or newlines/);
+  assert.match(refused.out, /NO checkpoint was written/, 'and nothing was left to write');
+  assert.equal(run.calls.length, 0, 'orca is never called for a write with nothing to set');
+
+  // THE STATUS BESIDE IT IS A SEPARATE INTENT. Refusing the whole call here
+  // would trade a fieldless write for a dropped monotonic transition — the same
+  // silent loss, one field over.
+  const moved = fakeRunner({ worktree: { workspaceStatus: 'in-progress' } });
+  const mixed = said(() => board(['--comment', '   ', '--status', 'in-review'], { runner: moved, env: fastEnv() }));
+  assert.equal(mixed.code, 0);
+  assert.match(mixed.out, /NO comment was written/);
+  assert.doesNotMatch(mixed.out, /NO checkpoint was written/, 'the checkpoint that remained is written');
+  assert.deepEqual(moved.sets()[0], ['worktree', 'set', '--worktree', 'current', '--workspace-status', 'in-review', '--json']);
+});
+
+test('a capped comment says so, with the length it received', () => {
+  const run = fakeRunner();
+  const capped = said(() => board(['--comment', 'x'.repeat(400)], { runner: run, env: fastEnv() }));
+  assert.equal(capped.code, 0);
+  assert.match(capped.out, /capped at 160 — 400 characters received/, 'the caller believes the whole line landed');
+  assert.equal(run.sets()[0][5].length, 160, 'and 160 of it did');
 });
 
 test('no orca on the machine is a skip, exit 0', () => {

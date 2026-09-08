@@ -32,13 +32,20 @@ import { note, warn } from './log.mjs';
 /** Board ranks. A custom column is legal in Orca: unknown ids rank -1 and are forwarded. */
 const RANK = { todo: 0, 'in-progress': 1, 'in-review': 2, completed: 3 };
 
-/** One sidebar line: newlines and tabs flattened, runs of spaces collapsed, capped at 160. */
-export function flattenComment(text) {
-  const flat = String(text)
+/** The sidebar keeps one short line; longer text is truncated, never wrapped. */
+export const COMMENT_CAP = 160;
+
+/** One sidebar line: newlines and tabs flattened, runs of spaces collapsed. */
+export const oneLine = text =>
+  String(text)
     .replace(/[\n\r\t]/g, ' ')
     .replace(/ {2,}/g, ' ')
     .trim();
-  return flat.length > 160 ? `${flat.slice(0, 157)}...` : flat;
+
+/** That line, capped at {@link COMMENT_CAP} — the length Orca's sidebar shows. */
+export function flattenComment(text) {
+  const flat = oneLine(text);
+  return flat.length > COMMENT_CAP ? `${flat.slice(0, COMMENT_CAP - 3)}...` : flat;
 }
 
 const lockDir = env => env.AX_LOCK_DIR || join(env.HOME ?? '', '.omp', 'run', 'ax-locks');
@@ -90,8 +97,15 @@ export function board(argv = [], { resolve = resolveOrca, runner, env = process.
   };
   // A caller bug is worth a message even without --verbose — but never a
   // non-zero exit: this runs from hooks.
+  //
+  // EVERY BAIL NAMES THE CONSEQUENCE. These lines were the message alone, and a
+  // worker that mistyped one read `ax board: unknown argument: accounts`, exit
+  // 0, and reported its checkpoint as written over an empty card — the state an
+  // orchestrator then reads to decide a merge (reported 2026-09-08 from a
+  // consumer worker on 0.21.1). Fail-open keeps the exit code; it never bought
+  // the right to be quiet about a write that did not happen.
   const bail = message => {
-    warn(`ax board: ${message}`);
+    warn(`ax board: ${message} — NO checkpoint was written`);
     return 0;
   };
 
@@ -106,7 +120,35 @@ export function board(argv = [], { resolve = resolveOrca, runner, env = process.
       if (arg === '--worktree') selector = value;
       else if (arg === '--comment') comment = value;
       else status = value;
-    } else return bail(`unknown argument: ${arg}`);
+    } else {
+      return bail(`unknown argument: ${arg}; a multi-word --comment must be ONE quoted argument`);
+    }
+  }
+
+  // FLATTENED BEFORE THIS GATE, because the gate is about what would be
+  // WRITTEN. A comment of nothing but newlines passed the truthiness check
+  // here, flattened to '' after the lock was taken, and then issued
+  // `orca worktree set` with no field at all: a call that changes nothing, no
+  // warning, exit 0. A capped one is said out loud for the same reason — the
+  // caller believes the whole line landed, and 160 characters of it did.
+  //
+  // A BLANK COMMENT IS DROPPED, NOT A REFUSAL OF THE CALL. The status beside it
+  // is a separate intent, and ending the verb here would trade one silent loss
+  // (a fieldless write) for another (a real monotonic transition, refused
+  // because the comment next to it was whitespace). The gate below then decides
+  // on what is left, exactly as it does for `--if-empty` and for a status the
+  // board is already past.
+  if (comment) {
+    const flat = oneLine(comment);
+    if (flat === '') {
+      warn('ax board: --comment is only whitespace or newlines — NO comment was written');
+      comment = '';
+    } else {
+      if (flat.length > COMMENT_CAP) {
+        warn(`ax board: comment capped at ${COMMENT_CAP} — ${flat.length} characters received, the sidebar keeps the first ${COMMENT_CAP - 3}`);
+      }
+      comment = flattenComment(comment);
+    }
   }
 
   if (!comment && !status) return bail('nothing to do: pass --comment and/or --status');
@@ -134,7 +176,6 @@ export function board(argv = [], { resolve = resolveOrca, runner, env = process.
   // --worktree and are honoured verbatim: `current` would silently answer for
   // whatever directory the hook happens to run in.
   if (!selector) selector = 'current';
-  if (comment) comment = flattenComment(comment);
 
   // No lock, no write: an unserialised read→set is exactly the backwards-write
   // race the lock exists to close, and a LOST checkpoint is cheaper than a
