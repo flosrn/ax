@@ -67,7 +67,7 @@ const terminal = (handle, extra = {}) => ({ handle, orphaned: false, worktreePat
  * from, so a pane can be made to move or to sit still; every argv is recorded,
  * which is how "nothing was released" is asserted rather than assumed.
  */
-function fakeOrca({ workers = [], terminals = [], cursors = {}, hostScope = { hostIds: ['local'], omittedHostIds: [] }, releaseReceipts = {}, onRelease } = {}) {
+function fakeOrca({ workers = [], terminals = [], cursors = {}, hostScope = { hostIds: ['local'], omittedHostIds: [] }, releaseReceipts = {}, shows = {}, onRelease } = {}) {
   const calls = [];
   const reads = {};
   const runner = createRunner({
@@ -77,6 +77,12 @@ function fakeOrca({ workers = [], terminals = [], cursors = {}, hostScope = { ho
       const line = args.join(' ');
       if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' };
       if (line.includes('worker-list')) return { status: 0, stdout: JSON.stringify({ ok: true, result: { workers } }), stderr: '' };
+      if (line.includes('worker-show')) {
+        const id = args[args.indexOf('--dispatch') + 1];
+        const canned = shows[id];
+        if (canned) return canned;
+        return { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'unexpected' } }), stderr: '' };
+      }
       if (line.startsWith('terminal list')) return { status: 0, stdout: JSON.stringify({ ok: true, result: { terminals, hostScope, truncated: false } }), stderr: '' };
       if (line.startsWith('terminal read')) {
         const handle = args[args.indexOf('--terminal') + 1];
@@ -570,6 +576,197 @@ test('a NAMED dispatch whose pane is gone says so and names the surviving-proces
   assert.match(r.out, /ctx_local_gone .*pane term_ctx_local_gone is gone from the runtime/);
   assert.match(r.out, /→ pgrep -fl .*149-work/, 'the residual process is read from the worktree the record names');
   assert.doesNotMatch(r.out, /kill -9|pkill/, 'no kill is ever named for an unverified pid');
+});
+
+// ── #185: operator-closed worker, no Release archive ────────────────────────
+//
+// Measured 2026-09-05 on ctx_4f33e28e2c32 after #180 merged: the named AX
+// release found no pane, printed only the #160 pgrep, and stopped. Native
+// `worker-show` already had the stronger facts (Orca 1.4.197-local, extracted
+// from that issue — not invented): observation.status exited, exactWorker
+// true, terminal.connected false, terminal.exitCause.kind operator_close,
+// terminalResource.releaseState not_requested, archive fields null. Native
+// worker-release then retained identity_unproven with archive null. A merged
+// assignment whose exact worker the operator already closed needs a retained
+// ending that names what is still readable, not another process hunt.
+//
+// Orca observations this suite is allowed to use (fork at ~/Code/flosrn/orca):
+//   * showTerminal publishes exitCause { kind: 'operator_close' } on a closed
+//     pane (exit-provenance-audit.test.ts).
+//   * worker-show sets observation.exactWorker from inspectWorkerTerminal.exact;
+//     identity_changed returns exact false and terminal null
+//     (orchestration-worker-observation.ts, orchestration-workers-recovery.test.ts).
+//   * worker-read still serves exact output while releaseState is not_requested
+//     (orchestration-worker-control.ts: a not_requested resource does not take
+//     the archive branch).
+//   * A real Release archive is { source: 'terminal', status: 'captured' } on a
+//     successful worker-release (orchestration-worker-release.test.ts).
+//     archiveSummary is null when both archive_source and archive_status are
+//     empty (orchestration-worker-release-completion.ts). Do not call a null
+//     archive a captured one, or a captured one absent.
+
+const operatorCloseShow = (dispatchId, archive) => ({
+  status: 0,
+  stdout: JSON.stringify({
+    ok: true,
+    result: {
+      dispatch: { id: dispatchId },
+      observation: { status: 'exited', exactWorker: true },
+      terminal: { handle: `term_${dispatchId}`, connected: false, exitCause: { kind: 'operator_close' } },
+      terminalResource: {
+        ownershipState: 'owned',
+        releaseState: 'not_requested',
+        ownerDispatchId: dispatchId,
+        archive,
+      },
+    },
+  }),
+  stderr: '',
+});
+
+test('a NAMED dispatch whose exact worker exited operator_close is retained with history, not a pgrep', () => {
+  const dir = store();
+  record(dir, '180-report-input-bound', 'ctx_op_close');
+  const r = run(['--dispatch', 'ctx_op_close'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_op_close', { resource: { worktreeId: 'repo::/tmp/ws/180-report-input-bound' } })],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: [] },
+      shows: {
+        ctx_op_close: operatorCloseShow('ctx_op_close', { source: null, status: null }),
+      },
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /retained/);
+  assert.match(r.out, /operator_close/);
+  assert.match(r.out, /worker-show --dispatch ctx_op_close/);
+  assert.match(r.out, /worker-read --dispatch ctx_op_close|ax worker transcript 180-report-input-bound/);
+  assert.doesNotMatch(r.out, /pgrep/);
+  assert.doesNotMatch(r.out, /no release archived its transcript/);
+  assert.doesNotMatch(r.out, /kill -9|pkill|worker-stop|--retry-request/);
+  assert.doesNotMatch(r.out, /archive=captured|terminal \/ captured|status.: .captured/);
+});
+
+test('a NAMED gone pane whose worker-show cannot be read is UNKNOWN, never an operator-close', () => {
+  const dir = store();
+  record(dir, '149-work', 'ctx_show_unread');
+  const r = run(['--dispatch', 'ctx_show_unread'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_show_unread', { resource: { worktreeId: 'repo::/tmp/ws/149-work' } })],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: [] },
+      shows: {
+        ctx_show_unread: { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'dispatch_not_found' } }), stderr: '' },
+      },
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /1 terminal gone/);
+  assert.match(r.out, /pane term_ctx_show_unread is gone from the runtime/);
+  assert.match(r.out, /worker-show did not answer|UNKNOWN/);
+  assert.match(r.out, /→ pgrep -fl .*149-work/);
+  assert.doesNotMatch(r.out, /kill -9|pkill|--retry-request/);
+});
+
+test('a NAMED gone pane whose worker identity is unproven stays unknown, not operator-closed', () => {
+  const dir = store();
+  record(dir, '149-work', 'ctx_id_unproven');
+  const r = run(['--dispatch', 'ctx_id_unproven'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_id_unproven', { resource: { worktreeId: 'repo::/tmp/ws/149-work' } })],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: [] },
+      shows: {
+        ctx_id_unproven: {
+          status: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: {
+              dispatch: { id: 'ctx_id_unproven' },
+              observation: { status: 'identity_changed', exactWorker: false },
+              terminal: null,
+              terminalResource: { ownershipState: 'owned', releaseState: 'not_requested', archive: { source: null, status: null } },
+            },
+          }),
+          stderr: '',
+        },
+      },
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /1 terminal gone/);
+  assert.match(r.out, /pane term_ctx_id_unproven is gone from the runtime/);
+  assert.match(r.out, /identity is unproven|UNKNOWN/);
+  assert.match(r.out, /→ pgrep -fl .*149-work/);
+  assert.doesNotMatch(r.out, /kill -9|pkill|--retry-request/);
+});
+
+test('a NAMED operator-close whose worker-show carries a captured archive names that archive, never its absence', () => {
+  const dir = store();
+  record(dir, '180-report-input-bound', 'ctx_op_archived');
+  const r = run(['--dispatch', 'ctx_op_archived'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_op_archived', { resource: { worktreeId: 'repo::/tmp/ws/180-report-input-bound' } })],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: [] },
+      shows: {
+        ctx_op_archived: operatorCloseShow('ctx_op_archived', { source: 'terminal', status: 'captured' }),
+      },
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /retained/);
+  assert.match(r.out, /operator_close/);
+  assert.match(r.out, /ctx_op_archived.*captured|captured.*ctx_op_archived/);
+  assert.match(r.out, /worker-read --dispatch ctx_op_archived/);
+  assert.doesNotMatch(r.out, /no release archived its transcript/);
+  assert.doesNotMatch(r.out, /pgrep/);
+  assert.doesNotMatch(r.out, /kill -9|pkill|--retry-request/);
+});
+
+test('a NAMED gone pane whose worker-show omits result.dispatch.id stays UNKNOWN, not retained', () => {
+  const dir = store();
+  record(dir, '149-work', 'ctx_unbound_show');
+  const r = run(['--dispatch', 'ctx_unbound_show'], {
+    dir,
+    orca: {
+      workers: [worker('ctx_unbound_show', { resource: { worktreeId: 'repo::/tmp/ws/149-work' } })],
+      terminals: [],
+      hostScope: { hostIds: ['local'], omittedHostIds: [] },
+      shows: {
+        ctx_unbound_show: {
+          status: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: {
+              observation: { status: 'exited', exactWorker: true },
+              terminal: { handle: 'term_ctx_unbound_show', connected: false, exitCause: { kind: 'operator_close' } },
+              terminalResource: { archive: { source: 'terminal', status: 'captured' } },
+            },
+          }),
+          stderr: '',
+        },
+      },
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, /1 terminal gone/);
+  assert.match(r.out, /pane term_ctx_unbound_show is gone from the runtime/);
+  assert.match(r.out, /UNKNOWN/);
+  assert.match(r.out, /result.dispatch.id|did not name/);
+  assert.match(r.out, /→ pgrep -fl .*149-work/);
+  assert.doesNotMatch(r.out, /Release archive/);
+  assert.doesNotMatch(r.out, /kill -9|pkill|--retry-request/);
 });
 
 // ── proof of landing ────────────────────────────────────────────────────────
