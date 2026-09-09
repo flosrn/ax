@@ -11,8 +11,10 @@
 //
 // WHAT IT AUTOMATES, IN ORDER. (1) Find the open release-please PR — the one
 // place a version number is allowed to come from (AGENTS.md: a release is never
-// a hand-edited number). (2) Merge it: release-please then owns the tag, the
-// GitHub Release, and publish.yml publishes to npm via OIDC trusted publishing.
+// a hand-edited number). (2) Dispatch Test on that PR's BRANCH (GitHub documents
+// workflow_dispatch `ref` as a branch or tag, never a raw SHA), identify the
+// run that dispatch created, and refuse to merge until that run's head SHA and
+// the named `pnpm test` check succeeded. Then merge bound to the same SHA.
 // (3) Wait for the Release workflow AND for the npm registry to actually serve
 // the new version — the registry lags the workflow, and pinning against a
 // version npm cannot serve yet fails every consumer at once. (4) Discover the
@@ -41,7 +43,8 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { run } from '../src/exec.mjs';
+import { run as defaultRun } from '../src/exec.mjs';
+import { repoView } from '../src/gh.mjs';
 import { bad, fix, note, ok, section } from '../src/log.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,11 +56,24 @@ const PKG = '@flosrn/ax';
  * different ref.
  */
 const RELEASE_WORKFLOW = 'Release';
+/**
+ * The merge ground. File path is what `gh workflow run` takes; `name:` is what
+ * `gh run list --workflow` matches. The enumerated check is the job name.
+ */
+const TEST_WORKFLOW = 'Test';
+const TEST_WORKFLOW_FILE = 'test.yml';
+const TEST_CHECK = 'pnpm test';
 /** Where consumer checkouts live on this machine. Override: --roots a,b */
 const DEFAULT_ROOTS = [join(homedir(), 'Code'), join(homedir(), 'orca', 'workspaces')];
 /** Directories a manifest walk never enters. */
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.worktrees']);
 const WALK_DEPTH = 4;
+const TEST_WAIT_MS = 10 * 60_000;
+const RELEASE_WAIT_MS = 10 * 60_000;
+const NPM_WAIT_MS = 5 * 60_000;
+const MERGE_COMMIT_WAIT_MS = 60_000;
+const POLL_MS = 15_000;
+const MERGE_COMMIT_POLL_MS = 5_000;
 /**
  * The remote surface `consumers()` can NEVER find, because it is not a consumer.
  * `/home/orca/Code/flosrn/ax` declares this package as its OWN name, not as a
@@ -76,444 +92,593 @@ const REMOTE_HOST = 'vps';
 const REMOTE_USER = 'orca';
 const REMOTE_ADAPTER = '/home/orca/Code/flosrn/ax';
 
-const argv = process.argv.slice(2);
-const dry = argv.includes('--dry-run');
-const check = argv.includes('--check');
-const skipPins = argv.includes('--skip-pins');
-const skipRemote = argv.includes('--skip-remote');
-// The propagation half alone: no merge, no publish, version read from npm. It is
-// how a release that aborted AFTER its merge is finished, since the discovery
-// below refuses once release-please's PR is gone (see the block that reads it).
-const pinsOnly = argv.includes('--pins-only');
-const rootsArg = argv.find((a) => a.startsWith('--roots='));
-const roots = rootsArg ? rootsArg.slice('--roots='.length).split(',') : DEFAULT_ROOTS;
-const FLAGS = ['--dry-run', '--check', '--skip-pins', '--skip-remote', '--pins-only'];
-const unknown = argv.filter((a) => !FLAGS.includes(a) && !a.startsWith('--roots='));
-if (unknown.length > 0) {
-  bad(`unknown argument(s): ${unknown.join(' ')}`);
-  fix('node scripts/deploy.mjs [--check] [--dry-run] [--pins-only] [--skip-pins] [--skip-remote] [--roots=/a,/b]');
-  process.exit(2);
-}
-
-const gh = (args) => run('gh', args, { cwd: ROOT, timeout: 60_000 });
-const git = (cwd, args) => run('git', args, { cwd, timeout: 120_000 });
 const succeeded = (out) => !out.error && out.status === 0;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const RUN_FIELDS = 'databaseId,status,conclusion,headSha,headBranch,event,name,workflowName,displayTitle,createdAt';
 
 /**
- * One remote shell as the checkout's OWNER. `sudo -u orca -H` is not politeness:
- * `-H` sets HOME so git finds the right config, and running as the owner is what
- * keeps the NEXT pull from failing on files this one created.
+ * The release-please runbook. `exec`/`sleep`/`now` are the seam tests inject;
+ * production uses `run` and wall time. Timeouts are named defaults, not env.
  */
-const remote = (script) =>
-  run('ssh', [REMOTE_HOST, `sudo -u ${REMOTE_USER} -H bash -lc ${JSON.stringify(script)}`], { cwd: ROOT, timeout: 180_000 });
-
-/**
- * The maintainer's OWN checkout, which the release leaves behind. release-please
- * lands the version bump on origin, so after a merge this tree still reads the
- * PREVIOUS version — measured 2026-08-26: npm served 0.13.0 while the repository
- * that produced it said 0.12.3, and the gap was closed by hand. A propagation
- * runbook that leaves its own origin stale has propagated to everywhere but home.
- */
-function pullSelf() {
-  const dirty = git(ROOT, ['status', '--porcelain']);
-  if (!succeeded(dirty)) return { ok: false, reason: 'git status failed here' };
-  if (dirty.stdout.trim() !== '') return { ok: false, reason: 'this checkout is not clean, so it is not fast-forwarded' };
-  const pulled = git(ROOT, ['pull', '--ff-only', '-q', 'origin', 'main']);
-  if (!succeeded(pulled)) return { ok: false, reason: (pulled.stderr || '').split('\n')[0] || `exit ${pulled.status}` };
-  return { ok: true };
-}
-
-/** The version a checkout's manifest declares, or '' when it cannot be read. */
-function declaredVersion(dir) {
-  try {
-    return String(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version ?? '');
-  } catch {
-    return '';
+export async function deploy(
+  argv = process.argv.slice(2),
+  { exec = defaultRun, sleep = defaultSleep, now = Date.now, root = ROOT } = {},
+) {
+  const dry = argv.includes('--dry-run');
+  const check = argv.includes('--check');
+  const skipPins = argv.includes('--skip-pins');
+  const skipRemote = argv.includes('--skip-remote');
+  const pinsOnly = argv.includes('--pins-only');
+  const rootsArg = argv.find((a) => a.startsWith('--roots='));
+  const roots = rootsArg ? rootsArg.slice('--roots='.length).split(',') : DEFAULT_ROOTS;
+  const FLAGS = ['--dry-run', '--check', '--skip-pins', '--skip-remote', '--pins-only'];
+  const unknown = argv.filter((a) => !FLAGS.includes(a) && !a.startsWith('--roots='));
+  if (unknown.length > 0) {
+    bad(`unknown argument(s): ${unknown.join(' ')}`);
+    fix('node scripts/deploy.mjs [--check] [--dry-run] [--pins-only] [--skip-pins] [--skip-remote] [--roots=/a,/b]');
+    return 2;
   }
-}
 
-/** Every checkout under `roots` that DECLARES this package, read from manifests
- *  fresh on every run. Named keys only: an absent dependencies block is "not a
- *  consumer", never an error, and a manifest that will not parse is reported
- *  rather than silently skipped. */
-function consumers() {
-  const found = [];
-  const walk = (dir, depth) => {
-    const path = join(dir, 'package.json');
-    if (existsSync(path)) {
-      try {
-        const pkg = JSON.parse(readFileSync(path, 'utf8'));
-        if (pkg.name !== PKG) {
-          const pinned = pkg.devDependencies?.[PKG] ?? pkg.dependencies?.[PKG];
-          if (typeof pinned === 'string') {
-            found.push({ dir, pinned });
-            return; // a consumer root; its workspaces inherit the root pin
-          }
-        } else {
-          return; // the package itself (a checkout or worktree), never a consumer
-        }
-      } catch {
-        note(`skipping unreadable manifest: ${path}`);
-      }
-    }
-    if (depth === 0) return;
-    let entries = [];
+  const gh = (args) => exec('gh', args, { cwd: root, timeout: 60_000 });
+  const git = (cwd, args) => exec('git', args, { cwd, timeout: 120_000 });
+
+  const remote = (script) =>
+    exec('ssh', [REMOTE_HOST, `sudo -u ${REMOTE_USER} -H bash -lc ${JSON.stringify(script)}`], { cwd: root, timeout: 180_000 });
+
+  function pullSelf() {
+    const dirty = git(root, ['status', '--porcelain']);
+    if (!succeeded(dirty)) return { ok: false, reason: 'git status failed here' };
+    if (dirty.stdout.trim() !== '') return { ok: false, reason: 'this checkout is not clean, so it is not fast-forwarded' };
+    const pulled = git(root, ['pull', '--ff-only', '-q', 'origin', 'main']);
+    if (!succeeded(pulled)) return { ok: false, reason: (pulled.stderr || '').split('\n')[0] || `exit ${pulled.status}` };
+    return { ok: true };
+  }
+
+  function declaredVersion(dir) {
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      return String(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version ?? '');
     } catch {
-      return;
+      return '';
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
-      walk(join(dir, entry.name), depth - 1);
-    }
-  };
-  for (const root of roots) if (existsSync(root)) walk(root, WALK_DEPTH);
-  return found;
-}
-
-/** The open release-please PR, or null. The version comes from ITS title. */
-function releasePr() {
-  const out = gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName']);
-  if (!succeeded(out)) return { error: `gh pr list failed — ${(out.stderr || '').split('\n')[0] || `exit ${out.status}`}` };
-  let rows;
-  try {
-    rows = JSON.parse(out.stdout);
-  } catch {
-    return { error: 'gh pr list answered something that is not JSON' };
   }
-  const pr = rows.find((row) => String(row.headRefName ?? '').startsWith('release-please--'));
-  if (!pr) return { pr: null };
-  const version = /release (\d+\.\d+\.\d+)/.exec(String(pr.title ?? ''))?.[1] ?? '';
-  return { pr, version };
-}
 
-/**
- * The commit the merge produced, read from the PR itself. GitHub fills
- * `mergeCommit` a moment after the merge call returns, so it is polled — and an
- * absence is named rather than replaced by a guess about which commit main
- * happens to point at.
- */
-async function mergeCommitOf(number) {
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    const out = gh(['pr', 'view', String(number), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid // ""']);
-    if (succeeded(out) && out.stdout.trim() !== '') return out.stdout.trim();
-    if (Date.now() >= deadline) return '';
-    await sleep(5_000);
-  }
-}
-
-/**
- * The RELEASE workflow's run FOR ONE COMMIT — never "the latest run".
- *
- * This read `gh run list --limit 1`, the single most recent run of any workflow
- * on any ref. Measured 2026-09-08 releasing 0.24.2: the newest row was the
- * `Test` run of the release-please PR itself, which GitHub concludes
- * `failure` at startup on every release branch (bot-pushed heads; test.yml's own
- * header carries that history and the manual dispatch that works around it). So
- * this returned false 6 seconds after a merge that had in fact tagged, released
- * and published — and the line it printed claimed a ten-minute wait that never
- * happened. Everything after it was skipped: the npm wait, this checkout's
- * fast-forward, the consumer pins and the remote adapter.
- *
- * `--workflow` plus `--commit` names exactly one run, and the verdict says which
- * of the two failures happened, because their repairs are different.
- */
-async function waitForWorkflow(sha) {
-  const deadline = Date.now() + 10 * 60_000;
-  const short = sha.slice(0, 7);
-  for (;;) {
-    const out = gh(['run', 'list', '--workflow', RELEASE_WORKFLOW, '--commit', sha, '--limit', '1', '--json', 'status,conclusion,databaseId']);
-    if (succeeded(out)) {
-      try {
-        const row = JSON.parse(out.stdout)[0];
-        if (row?.status === 'completed') {
-          return row.conclusion === 'success'
-            ? { ok: true }
-            : { ok: false, reason: `the ${RELEASE_WORKFLOW} workflow for ${short} concluded ${row.conclusion}`, id: row.databaseId };
+  function consumers() {
+    const found = [];
+    const walk = (dir, depth) => {
+      const path = join(dir, 'package.json');
+      if (existsSync(path)) {
+        try {
+          const pkg = JSON.parse(readFileSync(path, 'utf8'));
+          if (pkg.name !== PKG) {
+            const pinned = pkg.devDependencies?.[PKG] ?? pkg.dependencies?.[PKG];
+            if (typeof pinned === 'string') {
+              found.push({ dir, pinned });
+              return;
+            }
+          } else {
+            return;
+          }
+        } catch {
+          note(`skipping unreadable manifest: ${path}`);
         }
-      } catch {}
-    }
-    if (Date.now() >= deadline) {
-      return { ok: false, reason: `the ${RELEASE_WORKFLOW} workflow for ${short} had not completed within 10 minutes` };
-    }
-    await sleep(15_000);
+      }
+      if (depth === 0) return;
+      let entries = [];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
+        walk(join(dir, entry.name), depth - 1);
+      }
+    };
+    for (const dir of roots) if (existsSync(dir)) walk(dir, WALK_DEPTH);
+    return found;
   }
-}
 
-async function waitForNpm(version) {
-  const deadline = Date.now() + 5 * 60_000;
-  for (;;) {
-    const out = run('npm', ['view', PKG, 'version'], { timeout: 30_000 });
-    if (succeeded(out) && out.stdout.trim() === version) return true;
-    if (Date.now() >= deadline) return false;
-    await sleep(10_000);
+  function releasePr() {
+    const out = gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName']);
+    if (!succeeded(out)) return { error: `gh pr list failed — ${(out.stderr || '').split('\n')[0] || `exit ${out.status}`}` };
+    let rows;
+    try {
+      rows = JSON.parse(out.stdout);
+    } catch {
+      return { error: 'gh pr list answered something that is not JSON' };
+    }
+    const pr = rows.find((row) => String(row.headRefName ?? '').startsWith('release-please--'));
+    if (!pr) return { pr: null };
+    const version = /release (\d+\.\d+\.\d+)/.exec(String(pr.title ?? ''))?.[1] ?? '';
+    return { pr, version };
   }
-}
 
-/** Pin one consumer and land the bump. Returns a one-word verdict for the summary. */
-function pinConsumer({ dir, pinned }, version) {
-  if (pinned === version) {
-    ok(`${dir} already pins ${version}`);
-    return 'current';
+  async function mergeCommitOf(number) {
+    const deadline = now() + MERGE_COMMIT_WAIT_MS;
+    for (;;) {
+      const out = gh(['pr', 'view', String(number), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid // ""']);
+      if (succeeded(out) && out.stdout.trim() !== '') return out.stdout.trim();
+      if (now() >= deadline) return '';
+      await sleep(MERGE_COMMIT_POLL_MS);
+    }
   }
-  // REFUSED UNLESS CLEAN. The bump commit below has no pathspec fence against a
-  // pre-staged index: on a dirty tree, `git commit` would sweep unrelated staged
-  // work into the bump, and `ax pin`'s install can collide with local edits to
-  // the very files it rewrites. A dirty consumer is the operator's to settle.
-  const state = git(dir, ['status', '--porcelain']);
-  if (!succeeded(state)) {
-    bad(`${dir}: git status failed — ${(state.stderr || '').split('\n')[0] || `exit ${state.status}`}`);
-    fix(`cd ${dir} && git status   # not a healthy checkout; repair it, then re-run`);
-    return 'unreadable';
+
+  async function waitForWorkflow(sha) {
+    const deadline = now() + RELEASE_WAIT_MS;
+    const short = sha.slice(0, 7);
+    for (;;) {
+      const out = gh(['run', 'list', '--workflow', RELEASE_WORKFLOW, '--commit', sha, '--limit', '1', '--json', 'status,conclusion,databaseId']);
+      if (succeeded(out)) {
+        try {
+          const row = JSON.parse(out.stdout)[0];
+          if (row?.status === 'completed') {
+            return row.conclusion === 'success'
+              ? { ok: true }
+              : { ok: false, reason: `the ${RELEASE_WORKFLOW} workflow for ${short} concluded ${row.conclusion}`, id: row.databaseId };
+          }
+        } catch {}
+      }
+      if (now() >= deadline) {
+        return { ok: false, reason: `the ${RELEASE_WORKFLOW} workflow for ${short} had not completed within 10 minutes` };
+      }
+      await sleep(POLL_MS);
+    }
   }
-  if (state.stdout.trim() !== '') {
-    bad(`${dir}: working tree is not clean — refusing to mix the bump with local work`);
-    fix(`cd ${dir} && git status   # commit or stash what is there, then re-run this script`);
-    return 'dirty';
+
+  async function waitForNpm(version) {
+    const deadline = now() + NPM_WAIT_MS;
+    for (;;) {
+      const out = exec('npm', ['view', PKG, 'version'], { timeout: 30_000 });
+      if (succeeded(out) && out.stdout.trim() === version) return true;
+      if (now() >= deadline) return false;
+      await sleep(10_000);
+    }
   }
-  note(`${dir}: ${pinned} → ${version}`);
-  const pin = run('ax', ['pin', version], { cwd: dir, timeout: 600_000 });
-  process.stdout.write(pin.stdout ?? '');
-  if (!succeeded(pin)) {
-    bad(`${dir}: ax pin exited ${pin.status}`);
-    fix(`cd ${dir} && ax pin ${version}   # read its findings; pin owns migration, install proof and doctor`);
-    return 'pin-failed';
-  }
-  const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(dir, f)));
-  const add = git(dir, ['add', '--', 'package.json', ...lock]);
-  if (!succeeded(add)) {
-    bad(`${dir}: git add failed — ${(add.stderr || '').split('\n')[0]}`);
-    fix(`cd ${dir} && git add package.json ${lock.join(' ')} && git commit -m "chore(deps): bump ${PKG} to ${version}" && git push`);
-    return 'commit-failed';
-  }
-  const commit = git(dir, ['commit', '-m', `chore(deps): bump ${PKG} to ${version}`]);
-  if (!succeeded(commit)) {
-    // Nothing to commit means a previous run already landed it; anything else is a finding.
-    if (/nothing to commit/.test(commit.stdout + commit.stderr)) {
-      ok(`${dir}: bump already committed`);
-    } else {
-      bad(`${dir}: git commit failed — ${(commit.stderr || commit.stdout || '').split('\n')[0]}`);
-      fix(`cd ${dir} && git commit -m "chore(deps): bump ${PKG} to ${version}"   # hooks may have refused; read their output`);
+
+  function pinConsumer({ dir, pinned }, version) {
+    if (pinned === version) {
+      ok(`${dir} already pins ${version}`);
+      return 'current';
+    }
+    const state = git(dir, ['status', '--porcelain']);
+    if (!succeeded(state)) {
+      bad(`${dir}: git status failed — ${(state.stderr || '').split('\n')[0] || `exit ${state.status}`}`);
+      fix(`cd ${dir} && git status   # not a healthy checkout; repair it, then re-run`);
+      return 'unreadable';
+    }
+    if (state.stdout.trim() !== '') {
+      bad(`${dir}: working tree is not clean — refusing to mix the bump with local work`);
+      fix(`cd ${dir} && git status   # commit or stash what is there, then re-run this script`);
+      return 'dirty';
+    }
+    note(`${dir}: ${pinned} → ${version}`);
+    const pin = exec('ax', ['pin', version], { cwd: dir, timeout: 600_000 });
+    process.stdout.write(pin.stdout ?? '');
+    if (!succeeded(pin)) {
+      bad(`${dir}: ax pin exited ${pin.status}`);
+      fix(`cd ${dir} && ax pin ${version}   # read its findings; pin owns migration, install proof and doctor`);
+      return 'pin-failed';
+    }
+    const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(dir, f)));
+    const add = git(dir, ['add', '--', 'package.json', ...lock]);
+    if (!succeeded(add)) {
+      bad(`${dir}: git add failed — ${(add.stderr || '').split('\n')[0]}`);
+      fix(`cd ${dir} && git add package.json ${lock.join(' ')} && git commit -m "chore(deps): bump ${PKG} to ${version}" && git push`);
       return 'commit-failed';
     }
-  }
-  let push = git(dir, ['push']);
-  if (!succeeded(push)) {
-    // A busy main rejects the first push routinely; one rebase retry, then a named repair.
-    note(`${dir}: push rejected — retrying after pull --rebase`);
-    const rebase = git(dir, ['pull', '--rebase']);
-    push = succeeded(rebase) ? git(dir, ['push']) : push;
+    const commit = git(dir, ['commit', '-m', `chore(deps): bump ${PKG} to ${version}`]);
+    if (!succeeded(commit)) {
+      if (/nothing to commit/.test(commit.stdout + commit.stderr)) {
+        ok(`${dir}: bump already committed`);
+      } else {
+        bad(`${dir}: git commit failed — ${(commit.stderr || commit.stdout || '').split('\n')[0]}`);
+        fix(`cd ${dir} && git commit -m "chore(deps): bump ${PKG} to ${version}"   # hooks may have refused; read their output`);
+        return 'commit-failed';
+      }
+    }
+    let push = git(dir, ['push']);
     if (!succeeded(push)) {
-      bad(`${dir}: push failed — ${(push.stderr || '').split('\n')[0]}`);
-      fix(`cd ${dir} && git pull --rebase && git push`);
-      return 'push-failed';
+      note(`${dir}: push rejected — retrying after pull --rebase`);
+      const rebase = git(dir, ['pull', '--rebase']);
+      push = succeeded(rebase) ? git(dir, ['push']) : push;
+      if (!succeeded(push)) {
+        bad(`${dir}: push failed — ${(push.stderr || '').split('\n')[0]}`);
+        fix(`cd ${dir} && git pull --rebase && git push`);
+        return 'push-failed';
+      }
+    }
+    ok(`${dir}: pinned, committed, pushed`);
+    return 'pinned';
+  }
+
+  function propagate(version, list) {
+    const verdicts = [];
+
+    if (skipPins) note('--skip-pins: consumers left as they are');
+    else {
+      section('consumers');
+      for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
+    }
+
+    section('remote adapter');
+    if (skipRemote) note(`--skip-remote: ${REMOTE_HOST}:${REMOTE_ADAPTER} left as it is`);
+    else {
+      const out = remote(
+        `cd ${REMOTE_ADAPTER} && git pull --ff-only -q origin main && git log --oneline -1 && node bin/ax.mjs help 2>&1 | head -1`,
+      );
+      if (!succeeded(out)) {
+        bad(`${REMOTE_HOST} did not converge: ${(out.stderr || out.error || '').toString().split('\n').filter((l) => !l.includes('Address already in use'))[0] || `exit ${out.status}`}`);
+        fix(`ssh ${REMOTE_HOST} 'sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} pull --ff-only origin main'   # as ${REMOTE_USER}, never root`);
+        verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'unreached' });
+      } else {
+        for (const line of out.stdout.trim().split('\n')) note(`  ${line.trim()}`);
+        ok(`${REMOTE_HOST} adapter checkout fast-forwarded — every session there is equipped from it`);
+        verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'pulled' });
+      }
+    }
+
+    section('summary');
+    let failed = 0;
+    for (const { dir, verdict } of verdicts) {
+      note(`${dir}  ${verdict}`);
+      if (!['pinned', 'current', 'pulled'].includes(verdict)) failed = 1;
+    }
+    return failed;
+  }
+
+  function listTestDispatchRuns() {
+    const out = gh(['run', 'list', '--workflow', TEST_WORKFLOW, '--event', 'workflow_dispatch', '--limit', '50', '--json', RUN_FIELDS]);
+    if (!succeeded(out)) return { ok: false, rows: [], detail: (out.stderr || '').split('\n')[0] || `exit ${out.status}` };
+    try {
+      const rows = JSON.parse(out.stdout);
+      return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+    } catch {
+      return { ok: false, rows: [], detail: 'gh run list answered something that is not JSON' };
     }
   }
-  ok(`${dir}: pinned, committed, pushed`);
-  return 'pinned';
-}
 
-section(`deploy — ${PKG}`);
-note(`roots        ${roots.join(', ')}${rootsArg ? '' : '   (defaults — override with --roots=/a,/b)'}`);
-
-// ── --check: the drift report, which needs no release to exist ───────────────
-//
-// The gap this closes: between releases nothing looked at these surfaces, and on
-// 2026-08-26 the remote adapter checkout had been 78 commits stale for days. A
-// release-time script cannot catch that, because at release time it is already
-// too late to have known. This mode answers "is everything where the registry
-// says it should be", mutates nothing, and needs no open release PR.
-if (check) {
-  section('check');
-  const head = git(ROOT, ['log', '--oneline', '-1']);
-  const fetched = git(ROOT, ['fetch', '-q', 'origin', 'main']);
-  const behind = succeeded(fetched) ? git(ROOT, ['rev-list', '--count', 'HEAD..origin/main']) : null;
-  const served = run('npm', ['view', PKG, 'version'], { cwd: ROOT, timeout: 60_000 });
-  const registry = succeeded(served) ? served.stdout.trim() : '';
-  note(`here         ${declaredVersion(ROOT) || '?'} · ${(head.stdout || '').trim() || 'unreadable HEAD'}`);
-  note(`             ${behind === null ? 'origin unreachable — behind-count UNKNOWN' : `${behind.stdout.trim()} commit(s) behind origin/main`}`);
-  note(`npm          ${registry || 'unreadable — the registry answered nothing'}`);
-
-  let drifted = 0;
-  for (const consumer of consumers()) {
-    const aligned = registry !== '' && consumer.pinned === registry;
-    note(`${aligned ? 'aligned' : 'DRIFTED'}      ${consumer.dir} pins ${consumer.pinned}${aligned ? '' : ` — npm serves ${registry || '?'}`}`);
-    if (!aligned) drifted += 1;
-  }
-
-  const out = remote(`cd ${REMOTE_ADAPTER} && git fetch -q origin main; git log --oneline -1; git rev-list --count HEAD..origin/main`);
-  if (!succeeded(out)) {
-    bad(`${REMOTE_HOST} unreachable — the adapter checkout's state is UNKNOWN, which is not the same as current`);
-    fix(`ssh ${REMOTE_HOST}   # then: sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} status`);
-    drifted += 1;
-  } else {
-    const lines = out.stdout.trim().split('\n');
-    const count = Number(lines[lines.length - 1]);
-    note(`${count === 0 ? 'aligned' : 'DRIFTED'}      ${REMOTE_HOST}:${REMOTE_ADAPTER} — ${lines[0]?.trim()}`);
-    if (count !== 0) {
-      bad(`that checkout is ${count} commit(s) behind, and it equips EVERY agent session on ${REMOTE_HOST}`);
-      fix(`node scripts/deploy.mjs --check   # then converge it: node scripts/deploy.mjs (or --skip-pins to release only)`);
-      drifted += 1;
-    }
-  }
-
-  if (drifted === 0) ok('every surface matches the registry');
-  process.exit(drifted === 0 ? 0 : 1);
-}
-
-// ── --pins-only: the propagation half, with no release to make ───────────────
-//
-// What a post-merge abort leaves behind. release-please's PR is merged, so the
-// discovery below refuses ("nothing to release") and every remaining step — the
-// consumer pins and the remote adapter — has no command. On 0.24.2 they were run
-// by hand. The version comes from the REGISTRY here, not from a PR title: what a
-// consumer may pin is what npm can serve, and nothing else.
-if (pinsOnly) {
-  section('pins only');
-  const served = run('npm', ['view', PKG, 'version'], { cwd: ROOT, timeout: 60_000 });
-  if (!succeeded(served) || served.stdout.trim() === '') {
-    bad('the registry did not answer a version, so there is nothing a consumer may be pinned to');
-    fix(`npm view ${PKG} version   # then re-run`);
-    process.exit(3);
-  }
-  const registry = served.stdout.trim();
-  const found = consumers();
-  note(`version      ${registry}   (from the registry — this mode makes no release)`);
-  note(`consumers    ${found.length === 0 ? 'none found under ' + roots.join(', ') : found.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
-  if (dry) {
-    note('dry run — nothing pinned, nothing pulled');
-    process.exit(0);
-  }
-  process.exit(propagate(registry, found));
-}
-
-const found = releasePr();
-if (found.error) {
-  bad(`CANNOT ESTABLISH — ${found.error}`);
-  fix('gh auth status   # then re-run');
-  process.exit(3);
-}
-if (found.pr === null) {
-  bad('no open release-please PR — there is nothing to release');
-  fix('land fix:/feat: commits on main first; release-please opens the PR on the next push, then re-run this script');
-  // Discovery still answers "who would receive it", which is the dry question.
-  const list = consumers();
-  note(`consumers that would receive the next release: ${list.length === 0 ? 'none found' : list.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
-  process.exit(dry ? 0 : 1);
-}
-if (found.version === '') {
-  bad(`the release PR title does not carry a version: "${found.pr.title}"`);
-  fix(`gh pr view ${found.pr.number}   # read it by hand; the title is release-please's contract`);
-  process.exit(3);
-}
-
-const version = found.version;
-note(`release PR   #${found.pr.number} — ${found.pr.title}`);
-note(`version      ${version}`);
-const list = consumers();
-note(`consumers    ${list.length === 0 ? 'none found under ' + roots.join(', ') : list.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
-
-if (dry) {
-  note('dry run — nothing merged, nothing pinned');
-  process.exit(0);
-}
-
-section('release');
-const merged = gh(['pr', 'merge', String(found.pr.number), '--merge']);
-if (!succeeded(merged)) {
-  bad(`merge failed — ${(merged.stderr || '').split('\n')[0] || `exit ${merged.status}`}`);
-  fix(`gh pr merge ${found.pr.number} --merge   # then re-run this script; it will find nothing to merge and continue`);
-  process.exit(1);
-}
-ok(`merged release PR #${found.pr.number}`);
-
-// THE COMMIT, THEN ITS RUN. Everything below this point is skipped when the
-// release workflow is judged failed, so judging the wrong run costs the whole
-// tail of a release (measured on 0.24.2 — see `waitForWorkflow`).
-const mergeSha = await mergeCommitOf(found.pr.number);
-if (mergeSha === '') {
-  bad(`GitHub did not name the merge commit of #${found.pr.number} within a minute, so no run can be attributed to it`);
-  fix(`gh pr view ${found.pr.number} --json mergeCommit   # then: node scripts/deploy.mjs --check`);
-  process.exit(3);
-}
-
-const workflow = await waitForWorkflow(mergeSha);
-if (!workflow.ok) {
-  bad(workflow.reason);
-  // A POST-MERGE FAILURE IS NOT RE-RUNNABLE FROM THE TOP: the release PR is
-  // merged, so a second `node scripts/deploy.mjs` refuses on "no open
-  // release-please PR". `--check` is the mode that answers what still needs
-  // converging without one.
-  if (workflow.id) fix(`gh run view ${workflow.id} --log-failed   # what failed, on the merge commit itself`);
-  else fix(`gh run list --workflow ${RELEASE_WORKFLOW} --commit ${mergeSha}   # what that commit's release run is doing`);
-  fix('node scripts/deploy.mjs --check   # the drift report: what the registry serves, and which surfaces lag it');
-  process.exit(1);
-}
-ok(`${RELEASE_WORKFLOW} workflow completed for ${mergeSha.slice(0, 7)}`);
-
-if (!(await waitForNpm(version))) {
-  bad(`npm still does not serve ${version} after 5 minutes — the registry may be lagging`);
-  fix(`npm view ${PKG} version   # once it answers ${version}, re-run with the pins: node scripts/deploy.mjs`);
-  process.exit(1);
-}
-ok(`npm serves ${PKG}@${version}`);
-
-const self = pullSelf();
-if (self.ok) ok(`this checkout now reads ${declaredVersion(ROOT) || 'an unreadable version'}`);
-else {
-  bad(`this checkout was NOT fast-forwarded: ${self.reason}`);
-  fix('git pull --ff-only origin main   # the release bumped package.json on origin, not here');
-}
-
-/**
- * The propagation half: every discovered consumer pinned, then the remote
- * adapter converged, then one summary whose count IS the exit code.
- *
- * A FUNCTION BECAUSE TWO PATHS REACH IT. A release runs it after publishing;
- * `--pins-only` runs it alone, which is the only way to finish a release that
- * aborted after its merge — release-please's PR is gone by then, so the top of
- * this script refuses ("nothing to release") and these steps get run by hand,
- * which is what happened on 0.24.2. The version is a parameter for the same
- * reason: the registry can name it when no release PR does.
- */
-function propagate(version, list) {
-  const verdicts = [];
-
-  if (skipPins) note('--skip-pins: consumers left as they are');
-  else {
-    section('consumers');
-    for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
-  }
-
-  section('remote adapter');
-  if (skipRemote) note(`--skip-remote: ${REMOTE_HOST}:${REMOTE_ADAPTER} left as it is`);
-  else {
-    const out = remote(
-      `cd ${REMOTE_ADAPTER} && git pull --ff-only -q origin main && git log --oneline -1 && node bin/ax.mjs help 2>&1 | head -1`,
-    );
+  function headOf(pr) {
+    const out = gh(['pr', 'view', String(pr.number), '--json', 'headRefOid,headRefName']);
     if (!succeeded(out)) {
-      // A host that cannot be reached is UNKNOWN, not converged and not broken —
-      // and it does not fail the release that already published.
-      bad(`${REMOTE_HOST} did not converge: ${(out.stderr || out.error || '').toString().split('\n').filter((l) => !l.includes('Address already in use'))[0] || `exit ${out.status}`}`);
-      fix(`ssh ${REMOTE_HOST} 'sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} pull --ff-only origin main'   # as ${REMOTE_USER}, never root`);
-      verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'unreached' });
-    } else {
-      for (const line of out.stdout.trim().split('\n')) note(`  ${line.trim()}`);
-      ok(`${REMOTE_HOST} adapter checkout fast-forwarded — every session there is equipped from it`);
-      verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'pulled' });
+      return { ok: false, reason: `cannot read head of #${pr.number} — ${(out.stderr || '').split('\n')[0] || `exit ${out.status}`}` };
+    }
+    try {
+      const data = JSON.parse(out.stdout);
+      const head = String(data.headRefOid ?? '').trim();
+      const branch = String(data.headRefName ?? '').trim();
+      if (head === '' || branch === '') return { ok: false, reason: `head SHA or branch of #${pr.number} unread` };
+      return { ok: true, head, branch };
+    } catch {
+      return { ok: false, reason: `head of #${pr.number} is not JSON` };
     }
   }
 
-  section('summary');
-  let failed = 0;
-  for (const { dir, verdict } of verdicts) {
-    note(`${dir}  ${verdict}`);
-    if (!['pinned', 'current', 'pulled'].includes(verdict)) failed = 1;
+  function namedCheck(jobs) {
+    if (!Array.isArray(jobs)) return null;
+    return jobs.find((job) => job?.name === TEST_CHECK) ?? null;
   }
-  return failed;
+
+  function viewTestRun(id) {
+    const out = gh(['run', 'view', String(id), '--json', 'databaseId,status,conclusion,headSha,event,name,jobs,headBranch,workflowName']);
+    if (!succeeded(out)) return { ok: false, detail: (out.stderr || '').split('\n')[0] || `exit ${out.status}` };
+    try {
+      return { ok: true, run: JSON.parse(out.stdout) };
+    } catch {
+      return { ok: false, detail: 'gh run view answered something that is not JSON' };
+    }
+  }
+
+  function parseWorkflowRunId(stdout) {
+    try {
+      const body = JSON.parse(stdout);
+      const id = Number(body.workflow_run_id);
+      return Number.isInteger(id) && id > 0 ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * REST `failure` (including a zero-job startup_failure) is failure.
+   * `action_required` / waiting-for-approval is named as approval, never as failure.
+   * https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+   */
+  function testRunVerdict(run, { head, branch, id }) {
+    const runId = Number(run.databaseId);
+    if (!Number.isInteger(runId) || runId <= 0 || runId !== Number(id)) {
+      return { ok: false, reason: `Test run ${id} is unread — the bound id was not the run that answered` };
+    }
+    if (!run.event) return { ok: false, reason: `Test run ${id}: event unread` };
+    if (run.event !== 'workflow_dispatch') {
+      return { ok: false, reason: `Test run ${id} event is ${run.event}, not workflow_dispatch` };
+    }
+    const workflow = run.workflowName || run.name || '';
+    if (workflow !== TEST_WORKFLOW) {
+      return { ok: false, reason: `Test run ${id} is workflow ${workflow || 'unread'}, not ${TEST_WORKFLOW}` };
+    }
+    if (!run.headBranch) return { ok: false, reason: `Test run ${id}: branch unread` };
+    if (run.headBranch !== branch) {
+      return { ok: false, reason: `Test run ${id} ran on ${run.headBranch}, not ${branch}` };
+    }
+    if (!run.headSha) return { ok: false, reason: `Test run ${id}: head unread` };
+    if (run.headSha !== head) {
+      return {
+        ok: false,
+        reason: `Test run ${id} executed ${run.headSha.slice(0, 7)}, which does not authorize merge of ${head.slice(0, 7)} — wrong head`,
+      };
+    }
+    const conclusion = run.conclusion ?? '';
+    const status = run.status ?? '';
+    if (conclusion === 'action_required' || status === 'waiting') {
+      return {
+        ok: false,
+        reason: `Test run ${id} is waiting for approval (action_required) — not a merge ground`,
+      };
+    }
+    if (status === 'completed' && conclusion && conclusion !== 'success') {
+      return { ok: false, reason: `Test run ${id} concluded ${conclusion}` };
+    }
+    if (status !== 'completed' || conclusion !== 'success') return { ok: null };
+    const job = namedCheck(run.jobs);
+    if (!job) {
+      return { ok: false, reason: `Test run ${id} has no named ${TEST_CHECK} check` };
+    }
+    if (job.conclusion !== 'success') {
+      return { ok: false, reason: `Test run ${id}: ${TEST_CHECK} concluded ${job.conclusion || job.status}` };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * POST workflow_dispatch (API 2026-03-10 returns workflow_run_id). Poll that
+   * id only. If the body omits it, match run-name to the ax_dispatch input —
+   * never the newest Test. https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event
+   */
+  async function waitForDispatchedTest({ branch, head }) {
+    const viewed = repoView(gh);
+    if (viewed.slug === '') {
+      return { ok: false, reason: `cannot name this checkout's repository — ${viewed.detail}` };
+    }
+    const token = `ax-dispatch-${now()}`;
+    const dispatched = gh([
+      'api',
+      '--method',
+      'POST',
+      '-H',
+      'Accept: application/vnd.github+json',
+      '-H',
+      'X-GitHub-Api-Version: 2026-03-10',
+      `repos/${viewed.slug}/actions/workflows/${TEST_WORKFLOW_FILE}/dispatches`,
+      '-f',
+      `ref=${branch}`,
+      '-f',
+      `inputs[ax_dispatch]=${token}`,
+    ]);
+    if (!succeeded(dispatched)) {
+      return {
+        ok: false,
+        reason: `could not dispatch Test on ${branch} — ${(dispatched.stderr || '').split('\n')[0] || `exit ${dispatched.status}`}`,
+      };
+    }
+    note(`dispatched ${TEST_WORKFLOW} on ${branch} (workflow_dispatch ref is the branch, not ${head.slice(0, 7)})`);
+
+    let id = parseWorkflowRunId(dispatched.stdout);
+    const deadline = now() + TEST_WAIT_MS;
+    if (id === null) {
+      for (;;) {
+        const listed = listTestDispatchRuns();
+        if (!listed.ok) {
+          return { ok: false, reason: `REST omitted workflow_run_id and Test runs are unread — ${listed.detail}` };
+        }
+        const matched = listed.rows.filter((row) => row.name === token || row.displayTitle === token);
+        if (matched.length > 1) {
+          return { ok: false, reason: 'Test run id unread — more than one run-name matched ax_dispatch' };
+        }
+        if (matched.length === 1) {
+          const found = Number(matched[0].databaseId);
+          if (!Number.isInteger(found) || found <= 0) {
+            return { ok: false, reason: 'Test run id unread — ax_dispatch matched a run without a positive id' };
+          }
+          id = found;
+          break;
+        }
+        if (now() >= deadline) {
+          return { ok: false, reason: 'Test never produced a run — REST omitted workflow_run_id and no run-name matched ax_dispatch' };
+        }
+        await sleep(POLL_MS);
+      }
+    }
+
+
+    for (;;) {
+      const viewed = viewTestRun(id);
+      if (!viewed.ok) {
+        return { ok: false, reason: `Test run ${id} unread — ${viewed.detail}`, id };
+      }
+      const verdict = testRunVerdict(viewed.run, { head, branch, id });
+      if (verdict.ok === true) return { ok: true, id, head };
+      if (verdict.ok === false) return { ok: false, reason: verdict.reason, id };
+      if (now() >= deadline) {
+        return { ok: false, reason: `Test run ${id} had not completed within 10 minutes — timeout`, id };
+      }
+      await sleep(POLL_MS);
+    }
+  }
+
+  section(`deploy — ${PKG}`);
+  note(`roots        ${roots.join(', ')}${rootsArg ? '' : '   (defaults — override with --roots=/a,/b)'}`);
+
+  if (check) {
+    section('check');
+    const head = git(root, ['log', '--oneline', '-1']);
+    const fetched = git(root, ['fetch', '-q', 'origin', 'main']);
+    const behind = succeeded(fetched) ? git(root, ['rev-list', '--count', 'HEAD..origin/main']) : null;
+    const served = exec('npm', ['view', PKG, 'version'], { cwd: root, timeout: 60_000 });
+    const registry = succeeded(served) ? served.stdout.trim() : '';
+    note(`here         ${declaredVersion(root) || '?'} · ${(head.stdout || '').trim() || 'unreadable HEAD'}`);
+    note(`             ${behind === null ? 'origin unreachable — behind-count UNKNOWN' : `${behind.stdout.trim()} commit(s) behind origin/main`}`);
+    note(`npm          ${registry || 'unreadable — the registry answered nothing'}`);
+
+    let drifted = 0;
+    for (const consumer of consumers()) {
+      const aligned = registry !== '' && consumer.pinned === registry;
+      note(`${aligned ? 'aligned' : 'DRIFTED'}      ${consumer.dir} pins ${consumer.pinned}${aligned ? '' : ` — npm serves ${registry || '?'}`}`);
+      if (!aligned) drifted += 1;
+    }
+
+    const out = remote(`cd ${REMOTE_ADAPTER} && git fetch -q origin main; git log --oneline -1; git rev-list --count HEAD..origin/main`);
+    if (!succeeded(out)) {
+      bad(`${REMOTE_HOST} unreachable — the adapter checkout's state is UNKNOWN, which is not the same as current`);
+      fix(`ssh ${REMOTE_HOST}   # then: sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} status`);
+      drifted += 1;
+    } else {
+      const lines = out.stdout.trim().split('\n');
+      const count = Number(lines[lines.length - 1]);
+      note(`${count === 0 ? 'aligned' : 'DRIFTED'}      ${REMOTE_HOST}:${REMOTE_ADAPTER} — ${lines[0]?.trim()}`);
+      if (count !== 0) {
+        bad(`that checkout is ${count} commit(s) behind, and it equips EVERY agent session on ${REMOTE_HOST}`);
+        fix(`node scripts/deploy.mjs --check   # then converge it: node scripts/deploy.mjs (or --skip-pins to release only)`);
+        drifted += 1;
+      }
+    }
+
+    if (drifted === 0) ok('every surface matches the registry');
+    return drifted === 0 ? 0 : 1;
+  }
+
+  if (pinsOnly) {
+    section('pins only');
+    const served = exec('npm', ['view', PKG, 'version'], { cwd: root, timeout: 60_000 });
+    if (!succeeded(served) || served.stdout.trim() === '') {
+      bad('the registry did not answer a version, so there is nothing a consumer may be pinned to');
+      fix(`npm view ${PKG} version   # then re-run`);
+      return 3;
+    }
+    const registry = served.stdout.trim();
+    const found = consumers();
+    note(`version      ${registry}   (from the registry — this mode makes no release)`);
+    note(`consumers    ${found.length === 0 ? 'none found under ' + roots.join(', ') : found.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
+    if (dry) {
+      note('dry run — nothing pinned, nothing pulled');
+      return 0;
+    }
+    return propagate(registry, found);
+  }
+
+  const found = releasePr();
+  if (found.error) {
+    bad(`CANNOT ESTABLISH — ${found.error}`);
+    fix('gh auth status   # then re-run');
+    return 3;
+  }
+  if (found.pr === null) {
+    bad('no open release-please PR — there is nothing to release');
+    fix('land fix:/feat: commits on main first; release-please opens the PR on the next push, then re-run this script');
+    const list = consumers();
+    note(`consumers that would receive the next release: ${list.length === 0 ? 'none found' : list.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
+    return dry ? 0 : 1;
+  }
+  if (found.version === '') {
+    bad(`the release PR title does not carry a version: "${found.pr.title}"`);
+    fix(`gh pr view ${found.pr.number}   # read it by hand; the title is release-please's contract`);
+    return 3;
+  }
+
+  const version = found.version;
+  note(`release PR   #${found.pr.number} — ${found.pr.title}`);
+  note(`version      ${version}`);
+  const list = consumers();
+  note(`consumers    ${list.length === 0 ? 'none found under ' + roots.join(', ') : list.map((c) => `${c.dir} (${c.pinned})`).join(', ')}`);
+
+  if (dry) {
+    note('dry run — nothing merged, nothing pinned');
+    return 0;
+  }
+
+  section('test');
+  const headed = headOf(found.pr);
+  if (!headed.ok) {
+    bad(headed.reason);
+    fix(`gh pr view ${found.pr.number} --json headRefOid,headRefName`);
+    return 3;
+  }
+  const { head: expectedHead, branch } = headed;
+  note(`head         ${expectedHead.slice(0, 7)} on ${branch}`);
+
+  const test = await waitForDispatchedTest({ branch, head: expectedHead });
+  if (!test.ok) {
+    bad(test.reason);
+    if (test.id) fix(`gh run view ${test.id}   # the Test run this dispatch produced`);
+    else {
+      const named = repoView(gh);
+      const path = named.slug
+        ? `repos/${named.slug}/actions/workflows/${TEST_WORKFLOW_FILE}/dispatches`
+        : `repos/<owner>/<repo>/actions/workflows/${TEST_WORKFLOW_FILE}/dispatches`;
+      fix(`gh api --method POST ${path} -f ref=${branch}`);
+    }
+    return 1;
+  }
+  ok(`${TEST_WORKFLOW} run ${test.id} succeeded ${TEST_CHECK} on ${expectedHead.slice(0, 7)}`);
+
+  const again = headOf(found.pr);
+  if (!again.ok) {
+    bad(again.reason);
+    fix(`gh pr view ${found.pr.number} --json headRefOid,headRefName`);
+    return 3;
+  }
+  if (again.head !== expectedHead) {
+    bad(
+      `head moved from ${expectedHead.slice(0, 7)} to ${again.head.slice(0, 7)} — Test of ${expectedHead.slice(0, 7)} is stale and does not authorize this merge`,
+    );
+    fix(`gh pr view ${found.pr.number} --json headRefOid   # dispatch Test on the new head, then re-run`);
+    return 1;
+  }
+
+  section('release');
+  const merged = gh(['pr', 'merge', String(found.pr.number), '--merge', '--match-head-commit', expectedHead]);
+  if (!succeeded(merged)) {
+    bad(`merge failed — ${(merged.stderr || '').split('\n')[0] || `exit ${merged.status}`}`);
+    fix(`gh pr merge ${found.pr.number} --merge --match-head-commit ${expectedHead}   # then re-run this script; it will find nothing to merge and continue`);
+    return 1;
+  }
+  ok(`merged release PR #${found.pr.number} at ${expectedHead.slice(0, 7)}`);
+
+  const mergeSha = await mergeCommitOf(found.pr.number);
+  if (mergeSha === '') {
+    bad(`GitHub did not name the merge commit of #${found.pr.number} within a minute, so no run can be attributed to it`);
+    fix(`gh pr view ${found.pr.number} --json mergeCommit   # then: node scripts/deploy.mjs --check`);
+    return 3;
+  }
+
+  const workflow = await waitForWorkflow(mergeSha);
+  if (!workflow.ok) {
+    bad(workflow.reason);
+    if (workflow.id) fix(`gh run view ${workflow.id} --log-failed   # what failed, on the merge commit itself`);
+    else fix(`gh run list --workflow ${RELEASE_WORKFLOW} --commit ${mergeSha}   # what that commit's release run is doing`);
+    fix('node scripts/deploy.mjs --check   # the drift report: what the registry serves, and which surfaces lag it');
+    return 1;
+  }
+  ok(`${RELEASE_WORKFLOW} workflow completed for ${mergeSha.slice(0, 7)}`);
+
+  if (!(await waitForNpm(version))) {
+    bad(`npm still does not serve ${version} after 5 minutes — the registry may be lagging`);
+    fix(`npm view ${PKG} version   # once it answers ${version}, re-run with the pins: node scripts/deploy.mjs`);
+    return 1;
+  }
+  ok(`npm serves ${PKG}@${version}`);
+
+  const self = pullSelf();
+  if (self.ok) ok(`this checkout now reads ${declaredVersion(root) || 'an unreadable version'}`);
+  else {
+    bad(`this checkout was NOT fast-forwarded: ${self.reason}`);
+    fix('git pull --ff-only origin main   # the release bumped package.json on origin, not here');
+  }
+
+  return propagate(version, list);
 }
 
-process.exit(propagate(version, list));
+const invokedAs = process.argv[1] ? resolve(process.argv[1]) : '';
+if (invokedAs === fileURLToPath(import.meta.url)) {
+  process.exit(await deploy(process.argv.slice(2)));
+}

@@ -15,16 +15,30 @@
 # ax.config.json enumerates, matched by string equality on the head SHA. Change
 # the job name here and that file has to change in the same commit.
 name: Test
+# REST workflow_dispatch (API 2026-03-10) returns workflow_run_id. When that
+# field is absent, scripts/deploy.mjs sets `ax_dispatch` and matches this
+# run-name — not the newest Test of any head.
+run-name: ${{ inputs.ax_dispatch || github.workflow }}
 
 # `workflow_dispatch` is not a convenience. GitHub creates NO workflow run for an
 # event triggered by `GITHUB_TOKEN` (anti-recursion), so a release-please pull
 # request — whose head is pushed by github-actions[bot] — gets zero check-runs,
 # and `prGate.checks` then refuses it forever on a check that structurally
 # cannot run. Measured on #18 at 2ffb48fbab1e: the workflow file was present on
-# that branch and no run existed. A manual dispatch is attributed to the caller
-# rather than to the token, which is what makes the ground reachable there:
+# that branch and no run existed. A later class of bot-pushed heads DOES create
+# a `pull_request` run that REST concludes `failure` with zero jobs and zero
+# check-runs (run 34303568653 on f893666). Other runs sit `action_required`
+# waiting for approval. Those are not the same state: do not call a REST
+# `failure` `action_required`. `scripts/deploy.mjs` POSTs
+# `/actions/workflows/test.yml/dispatches` with `X-GitHub-Api-Version: 2026-03-10`
+# on the release-please BRANCH before merge — GitHub documents `ref` as a
+# branch or tag, not a raw SHA
+# (https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+# — then polls the returned workflow_run_id and merges only that SHA.
 #
-#   gh workflow run test.yml --ref <release-please branch>
+# A GITHUB_TOKEN PR event can still require approval; workflow_dispatch from
+# the caller is the documented exception that produces an attributable run
+# (https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 #
 # Enumerating a check the CI cannot produce on a whole class of pull requests is
 # the same trap as enumerating one that can skip (F-014), reached from the other
@@ -35,6 +49,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      ax_dispatch:
+        description: Correlation token from scripts/deploy.mjs when REST omits workflow_run_id
+        required: false
+        type: string
 
 permissions:
   contents: read
