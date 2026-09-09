@@ -787,8 +787,11 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 `sequence ${verdict.seq} from ${who.name} was already seen — its counter reset, was re-keyed, or this is a resend under a new id. Delivering it: identity is the message id, never the number`,
               );
               diagnose({
-                reason: 'filtered',
-                filter: 'rewound-sequence',
+                // DELIVERED, so it is NOT recorded as a withholding: `filtered`
+                // prints under "withheld on purpose" in the durable readout
+                // (`./diagnostics.ts`), and a record claiming the model never
+                // saw a message it did see is worse than no record at all.
+                reason: 'sequence-rewound',
                 detail: 'delivered anyway — a number is not an identity',
                 peer: who.name,
                 messageId: msgId || undefined,

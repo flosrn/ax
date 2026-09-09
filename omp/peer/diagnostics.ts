@@ -25,6 +25,12 @@
  * wrong half:
  *
  *   `sequence-gap`       messages from a sender never arrived; content is gone
+ *   `sequence-rewound`   a number arrived that had been seen — DELIVERED anyway,
+ *                        because identity is the message id and never the number
+ *                        (`receive.ts`). Recorded, never as a withholding: this
+ *                        readout is the durable one, and a line claiming a
+ *                        message was withheld when the model received it is
+ *                        worse than no line.
  *   `filtered`           this side withheld it ON PURPOSE (`filter` says which rule)
  *   `injection-refused`  it could not be handed to the model; the ack is withheld
  *   `no-reply-route`     it arrived with no verified way back; `peer_reply` refuses
@@ -78,6 +84,7 @@ import { registryDir, selfHandle } from './store.ts';
 /** The closed vocabulary. A reason outside it is refused, never persisted. */
 export type DeliveryReason =
   | 'sequence-gap'
+  | 'sequence-rewound'
   | 'filtered'
   | 'injection-refused'
   | 'no-reply-route'
@@ -88,6 +95,7 @@ export type DeliveryReason =
 /** Static membership, so the table is a literal and not a runtime insertion. */
 const REASONS: Record<string, true> = {
   'sequence-gap': true,
+  'sequence-rewound': true,
   filtered: true,
   'injection-refused': true,
   'no-reply-route': true,
@@ -393,6 +401,18 @@ export function renderDelivery(read: DeliveryRead): string {
         `${at(r)}  ${who(r)}: ${r.lost ?? '?'} message(s) numbered by that sender did not arrive here (expected #${r.expected ?? '?'}, got #${r.sequence ?? '?'}). ` +
         'Repair: ask that sender whether they were lost — their content is unrecoverable here — or addressed to OTHER peers, which reads identically from this side (flosrn/ax#230).',
     );
+  // DELIVERED, and this section exists so the durable readout says so. The
+  // rewind used to be recorded as `filtered`, which this renderer prints under
+  // "withheld on purpose" — a line claiming the model never saw a message it
+  // did see. A false record is worse than a missing one, and this readout is
+  // the one an operator reads last and trusts most.
+  const rewound = open
+    .filter((r) => r.reason === 'sequence-rewound')
+    .map(
+      (r) =>
+        `${at(r)}  ${who(r)}: number #${r.sequence ?? '?'} had already been seen and the message WAS delivered${r.detail ? ` — ${r.detail}` : ''}. ` +
+        "Repair: none needed. That sender's counter reset or was re-keyed, or this was a resend under a new id — identity is the message id, never the number. If the words look repeated, they are: read once, act once.",
+    );
   const withheld = open
     .filter((r) => r.reason === 'filtered')
     .map(
@@ -470,6 +490,7 @@ export function renderDelivery(read: DeliveryRead): string {
     `${read.records.length} record(s), ${open.length} still open, ${resolved} resolved by a later observation` +
       (read.unreadable > 0 ? `, ${read.unreadable} unreadable line(s) skipped` : ''),
     ...section('SEQUENCE GAP — numbers this side never saw: lost, or sent to other peers', lost),
+    ...section('SEQUENCE REWOUND — a seen number arrived again, and was DELIVERED', rewound),
     ...section('WITHHELD — this side did not inject it, on purpose', withheld),
     ...section('REFUSED INJECTION — could not reach the model', refused),
     ...section('NO REPLY ROUTE — answerable only after you establish one', routeless),
