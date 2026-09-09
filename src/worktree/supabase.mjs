@@ -424,6 +424,13 @@ export function restoreConfig({ cwd, relativePath, run = defaultRun }) {
  * own the first time one of these commands runs. PURE policy, no I/O — the
  * wrapper that consults it is an exec shim with nowhere to hang a test.
  *
+ * Classification is semantic, not positional. Global flags (arity from
+ * `supabase --help` / CLI docs, measured against CLI 2.109.1) are skipped
+ * before the verb; `--` ends flag parsing so later tokens are operands even
+ * when they look like `--help` or `--linked`. Unknown or malformed flags
+ * refuse rather than guess — `commandNeedsIsolation` is then false, and the
+ * guard must not promote or execute (#223).
+ *
  * The command NAMES here are the real CLI's, read from `supabase --help` and
  * not from the shape of the wrapper. That distinction was a live hole: `test`
  * and `seed` were listed as `db` subcommands, which the CLI does not have, so
@@ -441,10 +448,147 @@ export function restoreConfig({ cwd, relativePath, run = defaultRun }) {
  *
  * Deliberately NOT triggering: start / stop / status (and `db start`), because
  * promotion itself runs `supabase start` through the same wrapper and would
- * recurse; and anything explicitly aimed at a remote database.
+ * recurse; help (`-h`/`--help` before `--`), which has no side effects; and
+ * anything explicitly aimed at a remote database — except `db pull`, whose
+ * remote flags name the SOURCE while the work still hits the local shadow.
  */
-export function commandNeedsIsolation(argv = []) {
+const GLOBAL_BOOLEAN = new Set(['--create-ticket', '--debug', '--experimental', '--yes', '-h', '--help']);
+
+// `--agent` takes a value in the docs (`auto|yes|no`). Kept as value-taking
+// below; a boolean reading would swallow the next token as a verb.
+const GLOBAL_VALUE = new Set(['--agent', '--dns-resolver', '--network-id', '-o', '--output', '--profile', '--workdir']);
+
+const TARGET_BOOLEAN = new Set(['--local', '--linked']);
+const TARGET_VALUE = new Set(['--db-url']);
+
+const ALWAYS_LOCAL = new Set(['reset', 'diff', 'lint']);
+const LOCAL_ONLY_WITH_FLAG = new Set(['push', 'query', 'dump']);
+
+// Documented command-specific flags, keyed by `cmd` then optional `sub`.
+// `--version` is a value only on `db reset` / `migration down`; elsewhere it
+// is unknown. Unknown combinations refuse (#223).
+const COMMAND_BOOLEAN = {
+  db: {
+    reset: new Set(['--no-seed']),
+    pull: new Set(['--use-pg-delta']),
+    push: new Set(['--dry-run', '--include-all', '--include-roles', '--include-seed']),
+    diff: new Set(['--use-migra', '--use-pg-delta', '--use-pg-schema', '--use-pgadmin']),
+  },
+  gen: {
+    types: new Set(['--postgrest-v9-compat']),
+  },
+  migration: {
+    up: new Set(['--include-all']),
+  },
+};
+
+const COMMAND_VALUE = {
+  db: {
+    reset: new Set(['--last', '--version']),
+    pull: new Set(['--diff-engine', '-p', '--password', '-s', '--schema']),
+    push: new Set(['-p', '--password']),
+    diff: new Set(['-f', '--file', '--from', '--to', '-s', '--schema']),
+    lint: new Set(['-s', '--schema']),
+  },
+  gen: {
+    types: new Set(['--lang', '--project-id', '--query-timeout', '--swift-access-control', '-s', '--schema']),
+  },
+  migration: {
+    down: new Set(['--last']),
+  },
+};
+
+const PFLAG_TRUE = new Set(['1', 't', 'T', 'true', 'TRUE', 'True']);
+const PFLAG_FALSE = new Set(['0', 'f', 'F', 'false', 'FALSE', 'False']);
+
+const parseBool = (name, raw) => {
+  if (PFLAG_TRUE.has(raw)) return { value: true };
+  if (PFLAG_FALSE.has(raw)) return { value: false };
+  return { error: `${name} has a malformed boolean value` };
+};
+
+const splitEq = token => {
+  const eq = token.indexOf('=');
+  if (eq < 2) return { name: token, value: undefined };
+  if (!token.startsWith('-')) return { name: token, value: undefined };
+  return { name: token.slice(0, eq), value: token.slice(eq + 1) };
+};
+
+const takeValue = (name, value, next) => {
+  if (value !== undefined) {
+    if (value === '' || value.startsWith('-')) return { error: `${name} requires a value` };
+    return { consumed: 0 };
+  }
+  if (next === undefined || next.startsWith('-')) return { error: `${name} requires a value` };
+  return { consumed: 1 };
+};
+
+const commandFlags = (table, cmd, sub) => {
+  const byCmd = table[cmd];
+  if (!byCmd) return undefined;
+  if (sub && byCmd[sub]) return byCmd[sub];
+  return undefined;
+};
+
+/**
+ * `{ isolation }` when the argv is classifiable; `{ error }` when it is not.
+ * Shared by the guard (refuse on error, promote on isolation) and the doctor.
+ * Unknown flags never classify as isolate or pass. Boolean flags follow pflag:
+ * bare means true; `=true`/`=false` (and 1/t/T/TRUE / 0/f/F/FALSE) last-wins;
+ * any other explicit value is malformed.
+ */
+export function classifyCommand(argv = []) {
   const args = argv.map(String);
+  const positionals = [];
+  let help = false;
+  let local = false;
+  let linked = false;
+  let dbUrl = false;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === '--') {
+      positionals.push(...args.slice(i + 1));
+      break;
+    }
+    if (token === '-' || token === '') return { error: `malformed argument ${JSON.stringify(token)}` };
+    if (!token.startsWith('-')) {
+      positionals.push(token);
+      continue;
+    }
+
+    const { name, value } = splitEq(token);
+    const [cmd, sub] = positionals;
+    const verbBoolean = commandFlags(COMMAND_BOOLEAN, cmd, sub);
+    const verbValue = commandFlags(COMMAND_VALUE, cmd, sub);
+
+    if (GLOBAL_VALUE.has(name) || TARGET_VALUE.has(name) || verbValue?.has(name)) {
+      const taken = takeValue(name, value, args[i + 1]);
+      if (taken.error) return taken;
+      if (name === '--db-url') dbUrl = true;
+      i += taken.consumed;
+      continue;
+    }
+
+    if (GLOBAL_BOOLEAN.has(name) || TARGET_BOOLEAN.has(name) || verbBoolean?.has(name)) {
+      let on = true;
+      if (value !== undefined) {
+        const parsed = parseBool(name, value);
+        if (parsed.error) return parsed;
+        on = parsed.value;
+      }
+      if (name === '-h' || name === '--help') help = on;
+      else if (name === '--local') local = on;
+      else if (name === '--linked') linked = on;
+      continue;
+    }
+
+    return { error: `unknown flag ${name}` };
+  }
+
+  if (help) return { isolation: false };
+
+  const [cmd, sub] = positionals;
 
   // `db pull` is decided BEFORE the remote-target flags, because for this one
   // command those flags name the SOURCE of the pull and not where the work
@@ -453,41 +597,36 @@ export function commandNeedsIsolation(argv = []) {
   // for exactly that), and that shadow is a container in this project's own
   // port block. `db pull --linked` from an unpromoted worktree therefore still
   // reaches the shared stack.
-  if (args[0] === 'db' && args[1] === 'pull') return true;
+  if (cmd === 'db' && sub === 'pull') return { isolation: true };
 
-  if (args.includes('--linked') || args.includes('--db-url')) return false;
+  if (linked || dbUrl) return { isolation: false };
 
-  // `db` subcommands that reach the local stack with no flag at all.
-  const alwaysLocal = new Set(['reset', 'diff', 'lint']);
-  // Subcommands whose DEFAULT target is remote, and which only reach the local
-  // stack with an explicit --local. Omitting push/query here would let a
-  // shared-stack worktree mutate the shared database without promotion, which
-  // is the exact drift this guard exists to stop.
-  const localOnlyWithFlag = new Set(['push', 'query', 'dump']);
-  const explicitLocal = args.includes('--local');
-
-  switch (args[0]) {
-    // Top-level, and local by definition: `test` runs "on local Supabase
-    // containers", `seed` seeds the project the local `config.toml` describes.
-    // Their subcommands (`test db`, `test new`, `seed buckets`) do not change
-    // the target, so the first word is the whole decision.
+  switch (cmd) {
     case 'test':
     case 'seed':
-      return true;
+      return { isolation: true };
     case 'db':
-      if (!args[1]) return false;
-      if (alwaysLocal.has(args[1])) return true;
-      return localOnlyWithFlag.has(args[1]) && explicitLocal;
+      if (!sub) return { isolation: false };
+      if (ALWAYS_LOCAL.has(sub)) return { isolation: true };
+      return { isolation: LOCAL_ONLY_WITH_FLAG.has(sub) && local };
     case 'migration':
     case 'migrations':
-      return true;
-    // `gen types --local` reads the local schema; the remote form does not.
+      return { isolation: true };
     case 'gen':
-      return explicitLocal;
+      return { isolation: local };
     default:
-      return false;
+      return { isolation: false };
   }
 }
+
+
+export function commandNeedsIsolation(argv = []) {
+  const result = classifyCommand(argv);
+  return !result.error && result.isolation === true;
+}
+
+
+
 
 /**
  * Does this worktree's TREE contain database changes?

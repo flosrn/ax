@@ -277,3 +277,19 @@ test('a database script that bypasses the guard names the contamination', () => 
 
   git(tree, 'checkout', '--', MANIFEST);
 });
+
+test('an unclassifiable database script is named as inability, not treated as read-only', () => {
+  restore(tree);
+  provision(tree, ISOLATED);
+  const manifest = JSON.parse(readFileSync(join(tree, MANIFEST), 'utf8'));
+  manifest.scripts['db:weird'] = 'supabase db --mystery reset';
+  writeFileSync(join(tree, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const finding = about(bad(findings(tree, ISOLATED)), 'db:weird');
+  assert.ok(finding, 'the script is named');
+  assert.match(finding.message, /cannot be classified/);
+  assert.match(finding.message, /unknown flag --mystery/);
+
+  git(tree, 'checkout', '--', MANIFEST);
+});
+

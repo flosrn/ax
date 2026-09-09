@@ -215,6 +215,66 @@ test('the Supabase CLI’s own help flag is forwarded, wherever it sits in the a
   assert.deepEqual(calls, ['run --workdir /repo/apps/web db push --help', 'cwd /repo']);
 });
 
+
+test('a leading --debug cannot hide db reset from isolation', () => {
+  const { calls, deps } = harness();
+  assert.equal(capture(() => supabase(['--debug', 'db', 'reset'], deps)).code, 0);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web --debug db reset', 'cwd /repo']);
+});
+
+test('an unknown flag is refused, not promoted then executed', () => {
+  const { calls, deps } = harness();
+  const result = capture(() => supabase(['--not-a-supabase-flag', 'db', 'reset'], deps));
+  assert.equal(result.code, 1);
+  assert.deepEqual(calls, []);
+  assert.match(result.err, /not-a-supabase-flag|unknown|cannot classify|refusing/i);
+});
+
+test('an unknown flag after the verb is refused, not promoted then executed', () => {
+  for (const argv of [['db', '--unknown', 'reset'], ['db', '--unknown=reset'], ['db', 'reset', '--not-a-flag']]) {
+    const { calls, deps } = harness();
+    const result = capture(() => supabase(argv, deps));
+    assert.equal(result.code, 1);
+    assert.deepEqual(calls, []);
+    assert.match(result.err, /unknown flag/);
+  }
+});
+
+
+test('a value-taking global missing its value is refused before the CLI runs', () => {
+  const { calls, deps } = harness();
+  const result = capture(() => supabase(['db', 'reset', '--profile'], deps));
+  assert.equal(result.code, 1);
+  assert.deepEqual(calls, []);
+});
+
+
+test('help on a writing command does not promote', () => {
+  const { calls, deps } = harness();
+  assert.equal(capture(() => supabase(['db', 'reset', '--help'], deps)).code, 0);
+  assert.deepEqual(calls, ['run --workdir /repo/apps/web db reset --help', 'cwd /repo']);
+});
+
+test('linked=false cannot bypass isolation of db reset', () => {
+  const { calls, deps } = harness();
+  assert.equal(capture(() => supabase(['db', 'reset', '--linked=false'], deps)).code, 0);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web db reset --linked=false', 'cwd /repo']);
+});
+
+test('help=false cannot hide a local write from isolation', () => {
+  const { calls, deps } = harness();
+  assert.equal(capture(() => supabase(['db', 'reset', '--help=false'], deps)).code, 0);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web db reset --help=false', 'cwd /repo']);
+});
+
+test('a malformed boolean value is refused before the CLI runs', () => {
+  const { calls, deps } = harness();
+  const result = capture(() => supabase(['db', 'reset', '--linked=maybe'], deps));
+  assert.equal(result.code, 1);
+  assert.deepEqual(calls, []);
+});
+
+
 test('the primary checkout never promotes — it owns the shared stack', () => {
   const { calls, deps } = harness({ primary: true });
 

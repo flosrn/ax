@@ -12,7 +12,7 @@
 // first time it actually runs a command that would write.
 //
 // This module owns none of that policy. Which commands count is
-// `commandNeedsIsolation`; whether a checkout is already promoted is
+// `classifyCommand`; whether a checkout is already promoted is
 // `isIsolatedConfig`; what an isolated checkout should look like is
 // `planWorktree`; and the promotion itself is `promote`. What is left here, and
 // only here, is the sequencing: resolve a binary, promote BEFORE running,
@@ -31,7 +31,8 @@ import { identify } from './worktree/identity.mjs';
 import { physical } from './worktree/locate.mjs';
 import { PREFIX, planWorktree } from './worktree/plan.mjs';
 import { probeAll, readWorktreeRecord } from './worktree/probes.mjs';
-import { commandNeedsIsolation, configProjectId, isIsolatedConfig, promoteFromPlan } from './worktree/supabase.mjs';
+import { classifyCommand, configProjectId, isIsolatedConfig, promoteFromPlan } from './worktree/supabase.mjs';
+
 
 /** Names the CLI to run when neither the workspace nor PATH has an acceptable one. */
 export const CLI_ENV = 'AX_SUPABASE_CLI';
@@ -256,7 +257,8 @@ export function supabase(argv = [], deps = {}) {
     return 1;
   }
 
-  const refusal = protect(target.args, { env, root, config, deps });
+  const classified = classifyCommand(target.args);
+  const refusal = protect(target.args, { env, root, config, deps, classified });
   if (refusal !== 0) return refusal;
 
   // WHICH STACK THIS RUN TOUCHES, IN AX'S OWN WORDS (reported 2026-09-08). On an
@@ -267,7 +269,7 @@ export function supabase(argv = [], deps = {}) {
   // detour (`ax worktree ls`, endpoint comparison) to disprove. ax cannot
   // relabel another CLI's output, so it says what it routed BEFORE that output
   // arrives, and only for the commands whose target is the question.
-  if (commandNeedsIsolation(target.args)) {
+  if (classified.isolation === true) {
     const stack = configProjectId(join(root, configTomlPath(config)));
     if (stack !== undefined) note(`stack ${stack} — declared by ${configTomlPath(config)}; whatever branch label the CLI prints below is its own local database label`);
   }
@@ -276,7 +278,7 @@ export function supabase(argv = [], deps = {}) {
 }
 
 /** `0` to proceed, a non-zero exit code to refuse. */
-function protect(argv, { env, root, config, deps }) {
+function protect(argv, { env, root, config, deps, classified }) {
   const bypass = env[GUARD_ENV];
   if (bypass !== undefined && bypass !== '1') {
     // Loud, because the cost of opting out lands on other people's sessions
@@ -289,7 +291,12 @@ function protect(argv, { env, root, config, deps }) {
   const isIsolated = deps.isIsolated ?? (() => isIsolatedConfig({ cwd: root, relativePath: configTomlPath(config) }));
   const promoteCheckout = deps.promoteCheckout ?? (() => promoteCurrent({ root, config }));
 
-  if (!commandNeedsIsolation(argv)) return 0;
+  if (classified.error) {
+    fatal(classified.error);
+    warn('fix the arguments and retry; unknown flags are refused rather than run against any database.');
+    return 1;
+  }
+  if (!classified.isolation) return 0;
 
   // The primary checkout OWNS the shared stack: its committed config.toml is
   // what every other checkout falls back to. Promoting it would rename the
