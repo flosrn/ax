@@ -8,6 +8,24 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.4](https://github.com/flosrn/ax/compare/v0.24.3...v0.24.4) (2026-09-09)
+
+
+### Bug Fixes
+
+* **brief:** a required artifact goes in the pull request, not beside the Report ([492ad5e](https://github.com/flosrn/ax/commit/492ad5eed5e4051610a089d818702a0ee6a277cb))
+* **brief:** the settlement kills the escalation too, and the brief says so ([67b57b9](https://github.com/flosrn/ax/commit/67b57b98ef57684bd1b2c905f88226b7aa122621))
+* **help:** a verb declares its own flags, so the terminal names them ([4be28d9](https://github.com/flosrn/ax/commit/4be28d941ba677de2db158ddb411ae78f1523911))
+* **peer:** a number is not an identity, and the series counts one pair ([65a76ef](https://github.com/flosrn/ax/commit/65a76ef69daf1d113c2d68b759a7568bd0515753))
+* **peer:** a sequence gap names both of its readings, instead of asserting a loss ([d5c0768](https://github.com/flosrn/ax/commit/d5c076894c217e9a5970068e8e2986ef747dd183))
+* **peer:** an ambiguous target hands back a selector that works ([86b7d67](https://github.com/flosrn/ax/commit/86b7d671dd2033fc34b7becb7092e7d7389d7958))
+* **reclaim:** decide the landed head by ancestry, in its four directions ([f8d416f](https://github.com/flosrn/ax/commit/f8d416f3330056bafe698985ec0dafbb0785a9da))
+* **reclaim:** the live-pane KEEP names what it is keeping the tree for ([32bc449](https://github.com/flosrn/ax/commit/32bc449fe45bf8deb932d7c22df78f546112961e))
+* **supabase:** an exhausted address pool names our own stacks, not a global prune ([cae768f](https://github.com/flosrn/ax/commit/cae768f6c6ed212b867305ff2c0705ec9dc289eb))
+* **supabase:** name the app instead of moving into it, and say which stack ([f482f9f](https://github.com/flosrn/ax/commit/f482f9f9aacebe437a3389990605843964c83368))
+* **worker:** a release that closed nothing over a live pane settles nothing ([bfd5007](https://github.com/flosrn/ax/commit/bfd5007cedc255cb81845928f63464c518ce4066))
+* **worker:** release takes the request slug, and states what it resolved ([0d7d5b1](https://github.com/flosrn/ax/commit/0d7d5b111a3319b953af3d81ee6dab9ddbeaa297))
+
 ## [0.24.3](https://github.com/flosrn/ax/compare/v0.24.2...v0.24.3) (2026-09-08)
 
 
