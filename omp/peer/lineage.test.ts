@@ -45,9 +45,17 @@ function installFakeOrca(): string {
   const script = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${log}"
 mode="$(cat "${dir}/mode")"
+terms="$(cat "${dir}/terms" 2>/dev/null || echo ok)"
 case "$*" in
   *"terminal list"*)
-    echo '{"ok":true,"result":{"terminals":[{"handle":"${HANDLE}","worktreePath":"${CHILD_WT}"},{"handle":"${ORCH}","worktreePath":"${PARENT_WT}"},{"handle":"${READY}","worktreePath":"${PARENT_WT}"}]}}'
+    if [[ "$terms" == "fail" ]]; then
+      echo 'temporary inventory failure' >&2
+      exit 1
+    elif [[ "$terms" == "self-only" ]]; then
+      echo '{"ok":true,"result":{"terminals":[{"handle":"${HANDLE}","worktreePath":"${CHILD_WT}"}]}}'
+    else
+      echo '{"ok":true,"result":{"terminals":[{"handle":"${HANDLE}","worktreePath":"${CHILD_WT}"},{"handle":"${ORCH}","worktreePath":"${PARENT_WT}"},{"handle":"${READY}","worktreePath":"${PARENT_WT}"}]}}'
+    fi
     ;;
   *"worktree ps"*)
     if [[ "$mode" == "down" ]]; then
@@ -69,6 +77,23 @@ esac
 function setMode(mode: 'down' | 'orphan' | 'parented'): void {
   writeFileSync(join(dir, 'mode'), mode);
 }
+
+/**
+ * How Orca answers `terminal list`.
+ *
+ * `fail` is the #220 shape: a runtime that could not be read at all. It is set
+ * AFTER lineage has been warmed, never before — a session witnesses its own
+ * worktree from this same inventory, so breaking it first would only prove that
+ * an unplaceable session cannot resolve a parent, which is a different fact and
+ * the one the first draft of these cases accidentally measured.
+ *
+ * `self-only` is the true empty: the inventory reads fine and the parent
+ * worktree genuinely runs no pane.
+ */
+function setTerms(mode: 'ok' | 'fail' | 'self-only'): void {
+  writeFileSync(join(dir, 'terms'), mode);
+}
+
 
 function calls(pattern: string): number {
   return readFileSync(log, 'utf8')
@@ -324,3 +349,96 @@ test('one live pane still resolves with no record at all — the ordinary case p
 
   expect(m.parentPeer().peer?.handle).toBe(ORCH);
 });
+
+// ── #220 an unread inventory is not an absence ────────────────────────────────
+//
+// `terminal list` failing arrived here as an empty pane list, which is what a
+// parent worktree running nothing also looks like — so `parentPeer` stated the
+// second out of the first: `has no live session to report to`. A recorded Run is
+// still a usable address in that state (Orca queues on the Run, not on a pane),
+// and what may never be produced is a reader, or a certain absence of one.
+//
+// EVERY CASE HERE WARMS LINEAGE FIRST, because a session witnesses its own
+// worktree from this same inventory. Breaking it before the warm measures an
+// unplaceable session instead — a real defect, pinned separately below, but not
+// this one.
+
+test('an unreadable inventory is not an absent parent', async () => {
+  setMode('parented');
+  const m = await import('./lineage.ts?case=unread-no-record');
+  m.warmLineage();
+
+  setTerms('fail');
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.queued).toBeUndefined();
+  expect(r.reason ?? '').not.toMatch(/no live session/);
+  expect(r.reason ?? '').toMatch(/not established/i);
+});
+
+test('an unreadable inventory still queues on the recorded Run', async () => {
+  setMode('parented');
+  writeRecord({ request: 'impl-220', run: 'run_orchestrator', pane: HANDLE });
+  const m = await import('./lineage.ts?case=unread-with-record');
+  m.warmLineage();
+
+  setTerms('fail');
+  const r = m.parentPeer();
+  // The Run came from this machine's own write-ahead record, so it survives an
+  // unreadable runtime — but no pane may be called its reader.
+  expect(r.peer).toBeUndefined();
+  expect(r.queued?.run).toBe('run_orchestrator');
+  expect(r.queued?.worktree).toBe(PARENT_WT);
+  expect(r.reason ?? '').not.toMatch(/no live session/);
+  expect(r.reason ?? '').toMatch(/not established/i);
+});
+
+test('a truly empty parent worktree with no record is still an absence', async () => {
+  // The positive control, and the reason the case above cannot simply widen the
+  // refusal: here the inventory READS, and it says the parent runs no pane at
+  // all. That is a measurement, and the refusal must keep naming it.
+  setMode('parented');
+  setTerms('self-only');
+  const m = await import('./lineage.ts?case=empty-no-record');
+
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.queued).toBeUndefined();
+  expect(r.reason).toContain('no live session to report to');
+  expect(r.reason).toContain(HANDLE);
+});
+
+test('a truly empty parent worktree with a record queues with nothing left unproven', async () => {
+  setMode('parented');
+  setTerms('self-only');
+  writeRecord({ request: 'impl-234', run: 'run_orchestrator', pane: HANDLE });
+  const m = await import('./lineage.ts?case=empty-with-record');
+
+  const r = m.parentPeer();
+  expect(r.peer).toBeUndefined();
+  expect(r.queued?.run).toBe('run_orchestrator');
+  // #234's queue, unchanged: the absence of a reader was OBSERVED here, so the
+  // caller has nothing further to say about it.
+  expect(r.reason).toBeUndefined();
+});
+
+test('an unreadable inventory that later recovers finds the exact reader', async () => {
+  setMode('parented');
+  publishPeer(ORCH, 'run_orchestrator');
+  const m = await import('./lineage.ts?case=unread-recover');
+  m.warmLineage();
+
+  setTerms('fail');
+  const down = m.parentPeer();
+  expect(down.peer).toBeUndefined();
+  expect(down.reason ?? '').not.toMatch(/no live session/);
+
+  // A refusal that had been cached — or a pane named on no evidence — both fail
+  // here: the same inventory, readable again, names one exact reader.
+  setTerms('ok');
+  const up = m.parentPeer();
+  expect(up.peer?.handle).toBe(ORCH);
+  expect(up.peer?.run).toBe('run_orchestrator');
+  expect(up.reason).toBeUndefined();
+});
+

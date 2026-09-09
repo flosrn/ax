@@ -17,7 +17,12 @@
 
 import { expect, test } from 'bun:test';
 
-import { environmentOfDispatch, resolveChildRoute, worktreeName } from './route.ts';
+import {
+  attestsRelayEnvironment,
+  environmentOfDispatch,
+  resolveChildRoute,
+  worktreeName,
+} from './route.ts';
 
 const HANDLE = 'term_d5683080-71b6-4660-8adb-b2e7beabc991';
 const WT = '1a71daea-5ad3-4792-b007-527718ad3df0::/home/orca/orca/workspaces/probe-mail';
@@ -255,4 +260,92 @@ test('a local dispatch record yields no environment', () => {
     ],
   };
   expect(environmentOfDispatch(record, 'ctx_1')).toBe('');
+});
+
+/**
+ * WHAT THE PARENT KNOWS BY ITSELF.
+ *
+ * A relay envelope naming `--environment` asks this session to spend its own
+ * `orchestration send` on another runtime. Being pane-witnessed attests the
+ * sender, never the destination's host — so the pair (Run, host) has to come
+ * back out of records THIS session wrote before it dispatched, joined against
+ * Orca exactly as `resolveChildRoute` already joins them.
+ */
+const recordOn = (env: string, dispatchId: string) => ({
+  id: dispatchId,
+  request: 'probe-mail',
+  json: {
+    request: 'probe-mail',
+    attempts: [
+      {
+        phases: [
+          {
+            argv: ['orca', 'orchestration', 'worker-start', '--on', env],
+            receipt: { result: { dispatchId } },
+          },
+        ],
+      },
+    ],
+  },
+});
+
+test('the exact Run this session dispatched onto that host is attested', () => {
+  const calls: string[] = [];
+  expect(
+    attestsRelayEnvironment(
+      orca({ 'worker-show': shown(), 'run-list': listed([runRow()]) }, calls),
+      [recordOn('gapicore', 'ctx_73e5a2dec161')],
+      'run:run_2aa06e94548e',
+      'gapicore',
+    ),
+  ).toBe(true);
+  expect(calls[1]).toBe('orchestration run-list --environment gapicore --json');
+});
+
+test('a Run this session never dispatched onto that host is not attested', () => {
+  expect(
+    attestsRelayEnvironment(
+      orca({ 'worker-show': shown(), 'run-list': listed([runRow()]) }),
+      [recordOn('gapicore', 'ctx_1')],
+      `run:${'a'.repeat(20)}`,
+      'gapicore',
+    ),
+  ).toBe(false);
+});
+
+test('the right Run on the WRONG host is not attested — the pair is the claim', () => {
+  // The record places this dispatch on `gapicore`; the envelope asks for
+  // `prod`. Nothing here was ever dispatched to `prod`, so no record is even
+  // consulted for it.
+  const calls: string[] = [];
+  expect(
+    attestsRelayEnvironment(
+      orca({ 'worker-show': shown(), 'run-list': listed([runRow()]) }, calls),
+      [recordOn('gapicore', 'ctx_1')],
+      'run:run_2aa06e94548e',
+      'prod',
+    ),
+  ).toBe(false);
+  expect(calls).toEqual([]);
+});
+
+test('an empty target or host attests nothing, and asks Orca nothing', () => {
+  const calls: string[] = [];
+  const run = orca({ 'worker-show': shown(), 'run-list': listed([runRow()]) }, calls);
+  expect(attestsRelayEnvironment(run, [recordOn('gapicore', 'ctx_1')], '', 'gapicore')).toBe(false);
+  expect(attestsRelayEnvironment(run, [recordOn('', 'ctx_1')], 'run:run_2aa06e94548e', '')).toBe(
+    false,
+  );
+  expect(calls).toEqual([]);
+});
+
+test('no records at all is a refusal, not an empty allowance', () => {
+  expect(
+    attestsRelayEnvironment(
+      orca({ 'worker-show': shown(), 'run-list': listed([runRow()]) }),
+      [],
+      'run:run_2aa06e94548e',
+      'gapicore',
+    ),
+  ).toBe(false);
 });

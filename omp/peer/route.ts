@@ -120,6 +120,46 @@ export function resolveChildRoute(
 }
 
 /**
+ * MAY THIS SESSION SPEND ITS `--environment` ON THAT RELAY?
+ *
+ * A sibling that cannot send laterally hands the parent a `forwardTo` envelope,
+ * and `send.ts` puts the destination's runtime INSIDE it because the parent's own
+ * Run lives here. The parent then re-posts with `--environment <that host>` —
+ * which is a privileged send aimed by a value the parent never verified. A
+ * witnessed pane attests WHO wrote the envelope; it attests nothing about where
+ * the target lives, so `forwardEnvironment` alone would let any sibling point the
+ * orchestrator's authority at any declared runtime.
+ *
+ * So the pair is re-derived from what THIS session owns: the write-ahead dispatch
+ * records, whose `--on` says which host each dispatch went to, joined against Orca
+ * by `resolveChildRoute`'s existing two-field match. Attested means one of our own
+ * dispatches is on exactly that host AND resolves to exactly that Run. Anything
+ * else — no record, another host, another Run, an Orca that will not answer — is
+ * false, and the caller REFUSES the relay. Stripping the environment instead would
+ * resolve `run:<id>` against this runtime and deliver the message to whoever holds
+ * that id here, which is the wrong-runtime delivery this check exists to prevent.
+ *
+ * A same-host relay never reaches here: an empty environment is not a claim.
+ */
+export function attestsRelayEnvironment(
+  run: Runner,
+  records: { id: string; request: string; json: unknown }[],
+  target: string,
+  environment: string,
+): boolean {
+  if (target === '' || environment === '') return false;
+  for (const record of records) {
+    // The cheap half first, and it is also the honest half: a record that was
+    // not dispatched to this host says nothing about it, so no Orca call is
+    // made on its behalf.
+    if (environmentOfDispatch(record.json, record.id) !== environment) continue;
+    const route = resolveChildRoute(run, record.id, environment, record.request);
+    if (route !== null && route.run === target) return true;
+  }
+  return false;
+}
+
+/**
  * The environment a dispatch was issued onto, read from the recorded argv.
  *
  * `ax worker start` writes every phase's argv before issuing it, so `--on <env>`

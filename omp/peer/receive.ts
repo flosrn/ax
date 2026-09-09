@@ -100,7 +100,7 @@ export interface ReceiveDeps {
   rememberInjected: (id: string) => void;
   /** Ack succeeded: durable replay ids may now be reduced to the live window. */
   compactInjected: () => void;
-  recordRoute: (id: string, route: { run: string; peer: string; environment?: string }) => void;
+  recordRoute: (id: string, route: { run: string; peer: string; environment?: string; threadId?: string }) => void;
   /**
    * Where to write back to a worker we dispatched, DERIVED rather than read off the
    * message. Optional: a host that cannot resolve it simply has no route, and
@@ -126,6 +126,22 @@ export interface ReceiveDeps {
    * machine's dispatch store and its filesystem (`./completion.ts`).
    */
   completionReport?: (msg: Record<string, unknown>) => string;
+  /**
+   * "Do MY OWN dispatch records place `target` on `environment`?" — the gate on
+   * a cross-host relay.
+   *
+   * A relay envelope is pane-witnessed, which attests its sender and not its
+   * destination's runtime; `--environment` on the re-post is this session's
+   * privileged send, aimed. So the pair is re-derived from records this side
+   * wrote (`./route.ts`), and an unattested cross-host relay is REFUSED rather
+   * than sent bare — a bare `run:<id>` resolves against this runtime and would
+   * deliver to whoever holds that id here.
+   *
+   * Optional, and absent means it attests NOTHING: a host that cannot read its
+   * dispatch store refuses every cross-host relay and keeps every same-host one,
+   * which is the conservative half of the same rule.
+   */
+  attestRelayEnvironment?: (target: string, environment: string) => boolean;
   /**
    * Persist one delivery diagnostic. Optional: a host that cannot write still
    * injects, and a test that does not care about the store passes nothing.
@@ -563,14 +579,61 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                   });
                   continue;
                 }
+                // A CROSS-HOST RELAY IS A SECOND CLAIM, and the witness covers
+                // only the first. `sender_pane_key` proves who wrote this
+                // envelope; `forwardEnvironment` asserts which runtime the
+                // target lives on, and the parent applies it to its OWN
+                // `orchestration send` — a privileged call aimed by an
+                // unverified value. Any witnessed sibling could therefore point
+                // this session at any declared host. So the pair is re-derived
+                // from records this side wrote before dispatching, and the two
+                // wrong answers are both closed: an unattested relay is
+                // REFUSED, never sent bare, because a bare `run:<id>` resolves
+                // against THIS runtime and would deliver a sibling's words to
+                // whoever holds that id here.
+                const forwardEnvironment = String(fwBag?.forwardEnvironment ?? '').trim();
+                if (forwardEnvironment !== '') {
+                  let attested = false;
+                  try {
+                    attested = deps.attestRelayEnvironment?.(forwardTo, forwardEnvironment) === true;
+                  } catch {
+                    // An attestation that could not be made is not one that
+                    // succeeded. The refusal below names the host, so the repair
+                    // is readable either way.
+                    attested = false;
+                  }
+                  if (!attested) {
+                    if (fwId) deps.rememberInjected(fwId);
+                    const detail = `no dispatch record of this session places ${forwardTo} on '${forwardEnvironment}'`;
+                    deps.note(
+                      `forward REFUSED: cross-host relay to ${forwardTo} on '${forwardEnvironment}' — ${detail}`,
+                    );
+                    diagnose({
+                      reason: 'filtered',
+                      filter: 'forward-environment',
+                      peer: origin.name,
+                      messageId: fwId || undefined,
+                      deliveryId: deliveryId || undefined,
+                      detail,
+                    });
+                    continue;
+                  }
+                }
                 try {
+                  const statedReturn = String(fwBag?.replyTo ?? '').trim();
+                  // The return address travelled in a PANE-WITNESSED envelope,
+                  // which is what authorises this relay at all. It still has to
+                  // be a Run address before the final recipient is invited to
+                  // answer it; malformed data is omitted, never "mostly"
+                  // trusted. The original sender remains the return route — the
+                  // parent does not insert itself into the conversation.
+                  const replyTo = RUN_ADDRESS.test(statedReturn) ? statedReturn : '';
+                  const forwardThreadId = String(fwBag?.forwardThreadId ?? fwId).trim();
                   const relayPayload = JSON.stringify({
                     peer: origin.name,
                     relayedByParent: true,
                     ...(sequenceOf(fwBag) === null ? {} : { seq: sequenceOf(fwBag) }),
-                    ...(String(fwBag?.replyTo ?? '').trim()
-                      ? { replyTo: String(fwBag?.replyTo).trim() }
-                      : {}),
+                    ...(replyTo ? { replyTo } : {}),
                   });
                   const relay = deps.spawn(
                     [
@@ -587,6 +650,17 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                       String(msg.body ?? ''),
                       '--payload',
                       relayPayload,
+                      // The thread root travelled in the PANE-WITNESSED relay
+                      // envelope. `fwId` is only the parent's receipt id; using
+                      // it here splits one exchange into a new thread at every
+                      // relay hop. Legacy envelopes stated no root, so only they
+                      // correctly fall back to their own id.
+                      ...(forwardThreadId ? ['--thread-id', forwardThreadId] : []),
+                      // The environment names the FINAL destination's runtime;
+                      // `send.ts` deliberately kept it off the local parent hop.
+                      // Nonempty only once ATTESTED above, so this flag never
+                      // carries a host the payload merely asked for.
+                      ...(forwardEnvironment ? ['--environment', forwardEnvironment] : []),
                       '--json',
                     ],
                     { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 15_000 },
@@ -703,6 +777,12 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             const replyTo = String(
               (msgPayload as Record<string, unknown> | null)?.replyTo ?? '',
             ).trim();
+            // Orca carries the first message id as `thread_id` on every child
+            // message in the exchange. A message created before thread support
+            // has none, and its own id is the correct root. This value is what a
+            // reply must reuse — using the newest message id forks the history at
+            // every turn and loses the original question after one round trip.
+            const threadId = String(msg.thread_id ?? msg.threadId ?? msgId).trim();
             // ANSWERABLE IS "A ROUTE WAS RECORDED", NEVER "THE SENDER WAS NAMED".
             //
             // This used to start `true` and be falsified only on the dispatch
@@ -725,7 +805,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               // The sender's own statement first: it is the more specific answer,
               // and honouring it means the fallback below can only fill a silence.
               if (RUN_ADDRESS.test(replyTo)) {
-                deps.recordRoute(msgId, { run: replyTo, peer: who.name });
+                deps.recordRoute(msgId, { run: replyTo, peer: who.name, threadId });
                 answerable = true;
               } else {
                 // No return address stated. The pane that sent this was witnessed
@@ -734,7 +814,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 // `runAddressOfHandle` in `store.ts` for the bound on that.
                 const published = deps.paneRoute?.(paneHandle) ?? '';
                 if (RUN_ADDRESS.test(published)) {
-                  deps.recordRoute(msgId, { run: published, peer: who.name });
+                  deps.recordRoute(msgId, { run: published, peer: who.name, threadId });
                   answerable = true;
                   deps.note(
                     `reply route for ${who.name} from its own registered Run (${published}) — the message stated none`,
@@ -755,7 +835,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               if (derived === null) {
                 deps.note(`no reply route derived for ${who.name} — refusing rather than guessing`);
               } else {
-                deps.recordRoute(msgId, derived);
+                deps.recordRoute(msgId, { ...derived, threadId });
                 answerable = true;
               }
             }

@@ -104,11 +104,59 @@ export function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
-/** Orca has answered `{result: {things: []}}` and `{result: []}` across versions. */
-export function rows(envelope: unknown, key: string): Record<string, unknown>[] {
-  const result = prop(envelope, 'result');
+/**
+ * A LIST ORCA ANSWERED, or the named reason it could not be read.
+ *
+ * A bare list of rows cannot carry that difference: a runtime that failed, an
+ * unparseable answer and a genuinely empty list all arrive as `[]`, and every
+ * caller above then reads the same absence out of them. That collapse is #220 —
+ * a child whose `terminal list` failed was told its parent worktree "has no
+ * live session to report to", which is a claim about the parent made out of an
+ * inability to look. `unread` is set EXACTLY when nothing was established, and
+ * `rows` is then empty and means nothing; an empty `rows` with no `unread` is
+ * Orca stating that the list is empty, which is a fact a caller may act on.
+ *
+ * A success envelope is not enough. `result.truncated === true` is Orca saying
+ * the rows it returned are a PREFIX, so they cannot authorise a complete view
+ * either: a handle missing from a capped list reads identically to a handle
+ * that is not there. The rows travel with the reason only as emptiness — a
+ * partial list left in place is a list the next caller acts on.
+ */
+export interface Inventory {
+  rows: Record<string, unknown>[];
+  /** Named inability (F-028). Absent when Orca answered, empty list included. */
+  unread?: string;
+}
+
+export function inventory(args: string[], key: string): Inventory {
+  const spoken = args.filter((a) => a !== '--json').join(' ');
+  const { parsed, stdout, text } = orcaRaw(args, 15_000);
+  // stdout alone decides classification, exactly as `runOrca` does: stderr
+  // chatter beside an empty answer must not turn "produced nothing" into
+  // "unparseable". The stderr line rides along as the diagnostic, because it is
+  // the only place a busy or absent runtime says why.
+  const detail = text.trim().slice(0, 120).replace(/\s+/g, ' ');
+  if (stdout === '')
+    return { rows: [], unread: `\`${spoken}\` produced nothing${detail ? ` (${detail})` : ''}` };
+  if (parsed === null) return { rows: [], unread: `\`${spoken}\` was unparseable` };
+  if (prop(parsed, 'ok') === false)
+    return { rows: [], unread: `\`${spoken}\` refused${detail ? ` (${detail})` : ''}` };
+  const result = prop(parsed, 'result');
+  if (prop(result, 'truncated') === true)
+    return { rows: [], unread: `\`${spoken}\` truncated — a partial list is not a read list` };
   const listed = prop(result, key) ?? result;
-  return Array.isArray(listed) ? (listed as Record<string, unknown>[]) : [];
+  if (!Array.isArray(listed)) return { rows: [], unread: `\`${spoken}\` listed no ${key}` };
+  return { rows: listed as Record<string, unknown>[] };
+}
+
+/** Every pane Orca knows about, or why that could not be read. */
+export function terminalInventory(): Inventory {
+  return inventory(['terminal', 'list', '--json'], 'terminals');
+}
+
+/** Every worktree with its lineage, or why that could not be read. */
+export function worktreeInventory(): Inventory {
+  return inventory(['worktree', 'ps', '--json'], 'worktrees');
 }
 
 // `worktree ps` and not `worktree list`: one row already carries lineage, board
@@ -117,8 +165,13 @@ export function lineageRows(): Record<string, unknown>[] {
   return worktrees();
 }
 
+/**
+ * The rows only. For readers whose answer is the same either way — a table, a
+ * lineage walk that reports `-1` for an incomplete chain. Anything that turns an
+ * absence into a claim about someone else takes `worktreeInventory` instead.
+ */
 export function worktrees(): Record<string, unknown>[] {
-  return rows(orca(['worktree', 'ps', '--json']), 'worktrees');
+  return worktreeInventory().rows;
 }
 
 /** `<repoId>::<path>` is Orca's worktree id; a report is addressed by the path. */

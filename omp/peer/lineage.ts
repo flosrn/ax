@@ -5,9 +5,9 @@
  * the fence — written at worktree creation, forgeable by no peer shell.
  */
 
-import { idToPath, orca, prop, rows, str, worktrees } from './orca.ts';
+import { idToPath, prop, str, terminalInventory, worktreeInventory, worktrees } from './orca.ts';
 import { selfHandle } from './store.ts';
-import { type Peer, peers } from './address.ts';
+import { type Peer, reachablePeers } from './address.ts';
 import { defaultStore, dispatcherRunForPane } from '../../src/worker/record.mjs';
 
 // -------------------------------------------------------------- worktrees --
@@ -21,30 +21,37 @@ import { defaultStore, dispatcherRunForPane } from '../../src/worker/record.mjs'
  */
 let witnessedCache = '';
 
-export function witnessedWorktree(): string {
+function witness(): { path: string; unread?: string } {
   // A pane does not move between worktrees, so a POSITIVE answer is cached.
   // A negative one never is: an empty answer means Orca could not vouch for this
   // terminal right now, and caching that would permanently downgrade a session
   // to the cwd fallback because the runtime was busy once.
-  if (witnessedCache) return witnessedCache;
+  if (witnessedCache) return { path: witnessedCache };
   const h = selfHandle();
-  if (!h) return '';
-  for (const t of rows(orca(['terminal', 'list', '--json']), 'terminals')) {
+  if (!h) return { path: '', unread: 'this session has no Orca terminal handle' };
+  const inv = terminalInventory();
+  if (inv.unread) return { path: '', unread: inv.unread };
+  for (const t of inv.rows) {
     if (str(prop(t, 'handle')) !== h) continue;
     witnessedCache = str(prop(t, 'worktreePath') ?? prop(t, 'worktree'));
-    return witnessedCache;
+    return { path: witnessedCache };
   }
-  return '';
+  // Orca answered and this pane is not in the answer. Named as its own fact:
+  // "the runtime did not vouch for me" is not "the runtime is down".
+  return { path: '', unread: `Orca listed ${inv.rows.length} terminal(s) and none is ${h}` };
+}
+
+export function witnessedWorktree(): string {
+  return witness().path;
 }
 
 /**
- * "Which worktree am I standing in?" — falls back to the checkout under the
- * cwd, which is right for a session asking about ITSELF and wrong for anything
- * addressing someone else.
+ * The checkout the cwd sits in. A session runs INSIDE its own worktree, so this
+ * is a sound second witness for "where am I" — and never for "who is that": it
+ * proves nothing about another pane, which is why only the two functions below
+ * consult it, and only about themselves.
  */
-export function selfWorktree(): string {
-  const witnessed = witnessedWorktree();
-  if (witnessed) return witnessed;
+function cwdWorktree(): string {
   try {
     const p = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
       cwd: process.cwd(),
@@ -55,6 +62,15 @@ export function selfWorktree(): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * "Which worktree am I standing in?" — falls back to the checkout under the
+ * cwd, which is right for a session asking about ITSELF and wrong for anything
+ * addressing someone else.
+ */
+export function selfWorktree(): string {
+  return witness().path || cwdWorktree();
 }
 
 // ----------------------------------------------------------------- lineage --
@@ -76,17 +92,36 @@ let parentPathCache: string | null = null;
 function parentWorktreePath(): { path: string; reason?: string } {
   if (parentPathCache !== null) return { path: parentPathCache };
 
-  const me = selfWorktree();
-  if (!me) return { path: '', reason: 'cannot determine this worktree' };
+  const seen = witness();
+  const me = seen.path || cwdWorktree();
+  if (!me)
+    return {
+      path: '',
+      reason: `cannot determine this worktree — ${seen.unread ?? 'no witness and no checkout under the cwd'}`,
+    };
 
-  const rows = worktrees();
-  // An empty answer is Orca being unavailable, not a worktree without lineage.
-  // Caching it would permanently orphan a dispatched child.
-  if (rows.length === 0)
+  const inv = worktreeInventory();
+  // An answer that could not be read, and an empty one, are both Orca being
+  // unavailable rather than a worktree without lineage. Caching either would
+  // permanently orphan a dispatched child.
+  if (inv.unread)
+    return { path: '', reason: `${inv.unread} — lineage is unknown, not absent` };
+  if (inv.rows.length === 0)
     return { path: '', reason: 'Orca listed no worktrees — lineage is unknown, not absent' };
 
-  const row = rows.find((w) => str(prop(w, 'path')) === me);
-  parentPathCache = idToPath(prop(row ?? {}, 'parentWorktreeId'));
+  const row = inv.rows.find((w) => str(prop(w, 'path')) === me);
+  // NOT CACHED, AND NOT PARENTLESS. A worktree missing from an answer that
+  // listed others is a gap in the answer: Orca was mid-refresh, or this session
+  // is standing somewhere the runtime does not track yet. Reading it as
+  // `parentWorktreeId: null` — which is what `prop({}, …)` did — reports "this
+  // session was not dispatched", and `../report/index.ts` deliberately keeps
+  // THAT one silent, so a dispatched child went mute with nothing said anywhere.
+  if (row === undefined)
+    return {
+      path: '',
+      reason: `Orca listed ${inv.rows.length} worktree(s) and none is '${me}' — lineage is unknown, not absent`,
+    };
+  parentPathCache = idToPath(prop(row, 'parentWorktreeId'));
   return { path: parentPathCache };
 }
 
@@ -151,13 +186,27 @@ export function warmLineage(): void {
  * never returns keeps the message forever unread (measured: a `worker_done` from
  * 2026-09-04 is still `read = 0`). `reason`: no address exists at all, and no
  * guess may stand in for one.
+ *
+ * AND A FOURTH FACT ACROSS THEM, which is #220: whether anybody is READING was
+ * itself established, or was not. `terminal list` failing used to arrive here as
+ * an empty pane list, indistinguishable from a parent worktree that genuinely
+ * runs nothing, and this function then stated the second — `has no live session
+ * to report to` — out of an inability to look. A recorded Run stays a usable
+ * address in that state (it is Orca's queue, not a pane), so it is still
+ * returned; what may never happen is naming a pane a reader, or calling the
+ * absence of a reader certain. `reason` therefore travels BESIDE an address
+ * whenever the reader's presence is unproven, and alone when there is no address
+ * at all.
  */
 export interface Dispatcher {
   /** A pane in the parent worktree that is reading the dispatcher's Run. */
   peer?: Peer;
   /** The dispatcher's Run, recorded before the dispatch, with no pane on it. */
   queued?: { run: string; worktree: string };
-  /** No address at all. Every inability is named (F-028). */
+  /**
+   * Named inability (F-028): no address at all when it stands alone, and the
+   * reason no reader could be confirmed when it rides beside `queued`.
+   */
   reason?: string;
 }
 
@@ -171,9 +220,28 @@ export function parentPeer(): Dispatcher {
         'no parent worktree recorded — this session was not dispatched (or was created without a parent)',
     };
 
-  const inParent = peers().filter((p) => p.worktree === parentPath);
+  const reachable = reachablePeers();
+  const inParent = reachable.list.filter((p) => p.worktree === parentPath);
   const name = parentPath.split('/').pop() || parentPath;
   const found = dispatcherRunForPane(defaultStore(process.env), selfHandle());
+
+  // NOBODY WAS OBSERVED, BECAUSE NOBODY COULD BE. Every branch below reads
+  // `inParent` as evidence about the parent worktree, and an unread inventory is
+  // not evidence: it cannot confirm the record's Run, cannot contradict it, and
+  // cannot support "no live session". The recorded Run is unaffected — it was
+  // written on this machine before the dispatch and Orca holds messages on a Run
+  // whether or not a pane is bound to it — so it is returned as the deferred
+  // address it is, with the inability said out loud.
+  if (reachable.unread) {
+    const unread =
+      `whether any pane in '${name}' is reading is NOT established — ${reachable.unread}`;
+    return found.run === undefined
+      ? { reason: `${unread}; and ${found.reason}` }
+      : {
+          queued: { run: found.run, worktree: parentPath },
+          reason: `${unread}, so this is Orca's queue on Run ${found.run} rather than a reader`,
+        };
+  }
 
 
   // Even ONE pane can be the wrong one while Orca sleeps the dispatcher and

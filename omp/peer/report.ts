@@ -195,7 +195,14 @@ export function report(
     type: shape.type,
   });
   if (!out.ok) return { sent: false, reason: out.error };
-  if (!parent.queued) return { sent: true };
+  if (!parent.queued) {
+    // A READER WAS OBSERVED, or was merely not disproved. `parentPeer` names a
+    // pane only from an inventory it actually read, so a `reason` beside a
+    // resolved peer cannot happen; a `reason` here would be a claim this
+    // function has no evidence for, and it is passed through rather than
+    // dropped for exactly that reason (#220).
+    return parent.reason ? { sent: true, reason: parent.reason } : { sent: true };
+  }
 
   // ACCEPTED, DURABLE, UNREAD — and the last of those three is why this rides
   // back instead of returning a bare success. The card is the escalation that
@@ -203,9 +210,16 @@ export function report(
   // forever unread, and then the sidebar is the only place a human can still
   // see that a finished slice was never collected.
   const where = parent.queued.worktree.split('/').pop() || parent.queued.worktree;
+  // TWO DIFFERENT QUEUES, AND THE SENTENCE SAYS WHICH. Orca answered and no pane
+  // holds the Run: "nobody is reading it" is measured. Orca could not be read:
+  // the message is just as durable and just as uncollected, but nothing was
+  // measured about a reader, and stating the stronger fact is the #220 defect one
+  // layer up. `parent.reason` is the observation `parentPeer` made; it replaces
+  // the measured wording rather than being appended to it.
   const queuedReason =
+    parent.reason ??
     `no pane in '${where}' is reading Run ${parent.queued.run} right now — Orca is holding this report `
-    + 'on that Run and hands it over when a pane binds it again, which is an arrival nobody has made yet';
+      + 'on that Run and hands it over when a pane binds it again, which is an arrival nobody has made yet';
   // Synchronous on purpose: checkpoint's teardown flush is registered after
   // report's, and its detached progress write must finish before this final
   // marker returns. `ax board` serializes the two; waiting here fixes their

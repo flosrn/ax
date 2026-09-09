@@ -555,6 +555,7 @@ test('a failed relay is neither remembered nor acknowledged, so backoff can retr
 async function deliverAs(
   identity: { name: string; attributed: boolean; kind?: 'pane' | 'dispatch' },
   payload: Record<string, unknown>,
+  overrides: Partial<ReceiveDeps> = {},
 ) {
   const relayed: string[][] = [];
   const routes: string[] = [];
@@ -583,6 +584,7 @@ async function deliverAs(
         { unref() {} },
       );
     },
+    ...overrides,
   });
   const r = createReceiver(h.deps);
   r.useTimers(h.timers);
@@ -608,6 +610,82 @@ test('a dispatch sender may not borrow this session authority to relay', async (
   expect(pane.notes.some((n) => n.includes('forward REFUSED'))).toBe(false);
   expect(pane.relayed.some((argv) => argv.includes(A_RUN))).toBe(true);
 });
+
+test('a parent repost of a relay keeps the thread, return address, and an ATTESTED destination environment', async () => {
+  const replyTo = `run:${'b'.repeat(20)}`;
+  const asked: Array<[string, string]> = [];
+  const out = await deliverAs(
+    PANE_SENDER,
+    {
+      forwardTo: A_RUN,
+      replyTo,
+      // Deliberately NOT `m1`: that is the parent receipt id. The original
+      // conversation root must survive this hop unchanged.
+      forwardThreadId: 'msg_original_question',
+      forwardEnvironment: 'vps',
+      text: 'pong',
+    },
+    {
+      // THIS session's own dispatch records place that Run on that host. The
+      // payload only says where to send; this seam is what makes it true.
+      attestRelayEnvironment: (target, environment) => {
+        asked.push([target, environment]);
+        return target === A_RUN && environment === 'vps';
+      },
+    },
+  );
+  const send = out.relayed.find((argv) => argv.includes(A_RUN) && argv.includes('send'));
+  expect(send).toBeDefined();
+  expect(send).toContain('--thread-id');
+  expect(send![send!.indexOf('--thread-id') + 1]).toBe('msg_original_question');
+  expect(send).toContain('--environment');
+  expect(send![send!.indexOf('--environment') + 1]).toBe('vps');
+  expect(asked).toEqual([[A_RUN, 'vps']]);
+  const payload = JSON.parse(send![send!.indexOf('--payload') + 1] as string) as {
+    replyTo?: string;
+    forwardTo?: string;
+  };
+  expect(payload.replyTo).toBe(replyTo);
+  expect(payload.forwardTo).toBeUndefined();
+});
+
+/**
+ * A PAYLOAD MAY NOT CHOOSE THE RUNTIME.
+ *
+ * `--environment` on the parent's re-post sends this session's privileged
+ * `orchestration send` at whatever runtime the envelope named. The envelope is
+ * pane-witnessed, which attests WHO sent it and nothing about where the target
+ * lives — so a sibling asking for a host this session cannot place the target on
+ * is refused outright. Dropping the environment instead would deliver the same
+ * message to the wrong runtime, which is the failure this refusal replaces.
+ */
+test('a cross-host relay this session cannot attest is REFUSED, never sent to the wrong runtime', async () => {
+  const out = await deliverAs(
+    PANE_SENDER,
+    { forwardTo: A_RUN, forwardEnvironment: 'prod-secrets', text: 'x' },
+    { attestRelayEnvironment: () => false },
+  );
+  expect(out.notes.some((n) => n.includes('forward REFUSED: cross-host'))).toBe(true);
+  expect(out.notes.some((n) => n.includes('prod-secrets'))).toBe(true);
+  expect(out.relayed.some((argv) => argv.includes(A_RUN))).toBe(false);
+  expect(out.relayed.some((argv) => argv.includes('--environment'))).toBe(false);
+});
+
+test('a receiver with no attestation seam at all still relays same-host, and refuses cross-host', async () => {
+  // The seam is optional (a host that cannot read its dispatch store), and
+  // optional must mean "attests nothing", not "waves everything through".
+  const local = await deliverAs(PANE_SENDER, { forwardTo: A_RUN, text: 'x' });
+  expect(local.relayed.some((argv) => argv.includes(A_RUN))).toBe(true);
+
+  const remote = await deliverAs(PANE_SENDER, {
+    forwardTo: A_RUN,
+    forwardEnvironment: 'vps',
+    text: 'x',
+  });
+  expect(remote.notes.some((n) => n.includes('forward REFUSED: cross-host'))).toBe(true);
+  expect(remote.relayed.some((argv) => argv.includes(A_RUN))).toBe(false);
+});
+
 
 test('a dispatch sender may not hand this session a reply address', async () => {
   const out = await deliverAs(DISPATCH_SENDER, { replyTo: A_RUN });
@@ -672,6 +750,7 @@ test('a dispatch route is DERIVED, and its own payload is not consulted', async 
     run: `run:${'d'.repeat(20)}`,
     peer: 'child:probe-mail',
     environment: 'gapicore',
+    threadId: 'm1',
   });
 });
 
@@ -930,7 +1009,7 @@ test('a witnessed pane that sent no return address is routed by its published Ru
     { paneRoute: (handle) => (handle === 'term_child' ? CHILD_RUN : '') },
   );
 
-  expect(h.routes).toEqual([{ id: 'm1', route: { run: CHILD_RUN, peer: 'worker' } }]);
+  expect(h.routes).toEqual([{ id: 'm1', route: { run: CHILD_RUN, peer: 'worker', threadId: 'm1' } }]);
   expect(h.answerable).toEqual([true]);
   expect(String(h.sent[0]?.content ?? '')).not.toContain('[NO REPLY ROUTE]');
   expect(h.notes.join('\n')).toContain("reply route for worker from its own registered Run");
@@ -951,7 +1030,7 @@ test('a return address in the payload still wins over the registry', async () =>
     { paneRoute: () => CHILD_RUN },
   );
 
-  expect(h.routes).toEqual([{ id: 'm1', route: { run: PAYLOAD_RUN, peer: 'worker' } }]);
+  expect(h.routes).toEqual([{ id: 'm1', route: { run: PAYLOAD_RUN, peer: 'worker', threadId: 'm1' } }]);
   expect(h.answerable).toEqual([true]);
 });
 
