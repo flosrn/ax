@@ -91,11 +91,52 @@ export function dispatchIStarted(dispatchId: string): string | null {
 }
 
 /**
+ * Every `{file, record}` the store holds. One walk, and every consumer below is
+ * a reading of THIS list: a second walk of these files would be a second way to
+ * disagree about whether a dispatch is ours. A half-written record is one
+ * unreadable file, not a verdict, and a missing store means nothing was ever
+ * dispatched from this machine — not a fault.
+ */
+function storeRecords(): { file: string; record: unknown }[] {
+  const store = dispatchStore();
+  let files: string[];
+  try {
+    files = readdirSync(store).filter((name) => name.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out: { file: string; record: unknown }[] = [];
+  for (const file of files) {
+    try {
+      out.push({ file, record: JSON.parse(readFileSync(join(store, file), 'utf8')) });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+/** The dispatch ids one record's phases RECORDED, in file order. */
+function dispatchIdsOf(record: unknown): string[] {
+  const bag = record as { attempts?: unknown } | null;
+  const attempts = Array.isArray(bag?.attempts) ? bag.attempts : [];
+  const ids: string[] = [];
+  for (const attempt of attempts) {
+    const phases = (attempt as { phases?: unknown } | null)?.phases;
+    if (!Array.isArray(phases)) continue;
+    for (const phase of phases) {
+      const result = (phase as { receipt?: { result?: { dispatchId?: unknown } } } | null)
+        ?.receipt?.result;
+      const id = String(result?.dispatchId ?? '');
+      if (id !== '' && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
  * The whole record, for a caller that needs more than the name — the reply-route resolver
  * reads the recorded argv out of it to learn which environment the dispatch went to.
- *
- * One reader over the store, two consumers. A second walk of these files would be a second
- * way to disagree about whether a dispatch is ours.
  */
 export function dispatchRecord(
   dispatchId: string,
@@ -104,41 +145,33 @@ export function dispatchRecord(
   const cached = dispatchNames.get(dispatchId);
   if (cached !== undefined) return cached;
 
-  const store = dispatchStore();
-  let files: string[];
-  try {
-    files = readdirSync(store).filter((name) => name.endsWith('.json'));
-  } catch {
-    // No store means nothing was ever dispatched from this machine. Not a fault.
-    return null;
-  }
-
-  for (const file of files) {
-    let record: unknown;
-    try {
-      record = JSON.parse(readFileSync(join(store, file), 'utf8'));
-    } catch {
-      continue; // A half-written record is one unreadable file, not a verdict.
-    }
-    const bag = record as { request?: unknown; attempts?: unknown } | null;
-    const attempts = Array.isArray(bag?.attempts) ? bag.attempts : [];
-    for (const attempt of attempts) {
-      const phases = (attempt as { phases?: unknown } | null)?.phases;
-      if (!Array.isArray(phases)) continue;
-      for (const phase of phases) {
-        const result = (phase as { receipt?: { result?: { dispatchId?: unknown } } } | null)
-          ?.receipt?.result;
-        if (String(result?.dispatchId ?? '') !== dispatchId) continue;
-        const found = {
-          request: String(bag?.request ?? '').trim() || file.replace(/\.json$/, ''),
-          json: record,
-        };
-        dispatchNames.set(dispatchId, found);
-        return found;
-      }
-    }
+  for (const { file, record } of storeRecords()) {
+    if (!dispatchIdsOf(record).includes(dispatchId)) continue;
+    const named = String((record as { request?: unknown } | null)?.request ?? '').trim();
+    const found = { request: named || file.replace(/\.json$/, ''), json: record };
+    dispatchNames.set(dispatchId, found);
+    return found;
   }
   return null;
+}
+
+/**
+ * EVERY dispatch this machine recorded, one entry per dispatch id.
+ *
+ * The lookup above answers "is this id ours"; this answers the question a
+ * cross-host relay asks, which has no id in hand: "did I ever dispatch anything
+ * to that host, and does it resolve to that Run" (`./route.ts`,
+ * `attestsRelayEnvironment`). Deliberately UNCACHED — a dispatch issued a second
+ * ago must be visible, or the parent refuses to relay to a child it just started.
+ */
+export function dispatchRecords(): { id: string; request: string; json: unknown }[] {
+  const out: { id: string; request: string; json: unknown }[] = [];
+  for (const { file, record } of storeRecords()) {
+    const named = String((record as { request?: unknown } | null)?.request ?? '').trim();
+    const request = named || file.replace(/\.json$/, '');
+    for (const id of dispatchIdsOf(record)) out.push({ id, request, json: record });
+  }
+  return out;
 }
 
 /**

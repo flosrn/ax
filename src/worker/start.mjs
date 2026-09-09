@@ -922,7 +922,20 @@ export function start(
       // An unreadable owner record is still precious: it cannot be proven stale.
     }
     if (!stale?.stale) {
-      note(redactSecrets(`CLAIM LOST — ${stale?.reason ?? 'the owner record is unreadable'}; replaying the owner's record instead of minting a second identity.`));
+      const reason = stale?.reason ?? 'the owner record is unreadable';
+      // UNKNOWN EMPTINESS IS NOT A REPLAY (#212). Rewriting the historical
+      // record is the other half of the mint this issue forbids, and the store's
+      // own proof says which doubt refused: a silent receipt — closed, refused,
+      // naming no resource containers — is emptiness nobody established, so
+      // neither a takeover nor a replay under this caller is authorised. Open,
+      // unknown-outcome, succeeded and own-Run records still resume.
+      if (stale?.unknownEmptiness === true) {
+        return cannot(
+          `CLAIM LOST — ${reason}`,
+          `cat ${claim.path}   # this record: whether it created anything is UNKNOWN, not nothing — never a second identity`,
+        );
+      }
+      note(redactSecrets(`CLAIM LOST — ${reason}; replaying the owner's record instead of minting a second identity.`));
       return resume(claim.path, context);
     }
 

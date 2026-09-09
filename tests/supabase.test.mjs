@@ -11,7 +11,9 @@ import {
   basePorts,
   blockFree,
   blockPorts,
+  classifyCommand,
   commandNeedsIsolation,
+
   configProjectId,
   envKeys,
   findOffset,
@@ -259,6 +261,101 @@ test('only commands that would write to the shared database trigger promotion', 
   assert.equal(commandNeedsIsolation(['db']), false);
   assert.equal(commandNeedsIsolation([]), false);
 });
+
+test('documented global flags before the verb cannot hide a local write', () => {
+  // #223: commandNeedsIsolation read args[0]/args[1] positionally, so
+  // `--debug db reset` classified as unknown and skipped isolation.
+  // Globals and arity are from supabase CLI docs (global flags), CLI 2.109.1.
+  assert.equal(commandNeedsIsolation(['--debug', 'db', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['--yes', 'db', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['--experimental', 'test', 'db']), true);
+  assert.equal(commandNeedsIsolation(['--create-ticket', 'seed', 'buckets']), true);
+  assert.equal(commandNeedsIsolation(['--profile', 'ci', 'db', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['--output', 'json', 'db', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['-o', 'json', 'migration', 'up']), true);
+  assert.equal(commandNeedsIsolation(['--dns-resolver', 'https', 'db', 'lint']), true);
+  assert.equal(commandNeedsIsolation(['--agent', 'yes', 'db', 'diff']), true);
+  assert.equal(commandNeedsIsolation(['--network-id', 'net_1', 'db', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['--profile=ci', 'db', 'reset']), true);
+});
+
+test('interspersed globals and a -- terminator still classify the verb', () => {
+  assert.equal(commandNeedsIsolation(['db', '--debug', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['db', '--yes', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['--', 'db', 'reset']), true);
+  assert.equal(commandNeedsIsolation(['db', '--', 'reset']), true);
+  // After `--`, later tokens are operands even when they look like flags.
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--', '--help']), true);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--', '--linked']), true);
+});
+
+
+test('a value-taking global is not mistaken for the command', () => {
+  // `--output <env|pretty|json|toml|yaml>` consumes the next token; json is
+  // not a verb. The positional parser treated args[0] as the command.
+  assert.equal(commandNeedsIsolation(['--output', 'json', 'status']), false);
+  assert.equal(commandNeedsIsolation(['--output', 'json', 'db', 'reset']), true);
+});
+
+test('remote targets are parsed as flags, not guessed by substring', () => {
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--db-url=postgres://x']), false);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--linked=true']), false);
+  // `--db-url` as a profile *value* is not the remote-target flag.
+  assert.equal(commandNeedsIsolation(['--profile', 'db-url', 'db', 'reset']), true);
+});
+
+test('db pull stays local when globals or remote source flags precede the verb', () => {
+  assert.equal(commandNeedsIsolation(['--debug', 'db', 'pull']), true);
+  assert.equal(commandNeedsIsolation(['--debug', 'db', 'pull', '--linked']), true);
+  assert.equal(commandNeedsIsolation(['db', '--debug', 'pull', '--db-url', 'postgres://x']), true);
+});
+
+test('help is not a local write', () => {
+  assert.equal(commandNeedsIsolation(['--help']), false);
+  assert.equal(commandNeedsIsolation(['-h']), false);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--help']), false);
+  assert.equal(commandNeedsIsolation(['-h', 'db', 'reset']), false);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '-h']), false);
+});
+
+test('start remains excluded when globals precede it', () => {
+  assert.equal(commandNeedsIsolation(['--debug', 'start']), false);
+  assert.equal(commandNeedsIsolation(['--yes', 'db', 'start']), false);
+});
+
+test('documented command-specific flags keep a known local write classifiable', () => {
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--no-seed']), true);
+  assert.equal(commandNeedsIsolation(['db', 'pull', '--diff-engine', 'migra']), true);
+  assert.equal(commandNeedsIsolation(['db', 'diff', '-f', 'my_table']), true);
+  assert.equal(commandNeedsIsolation(['db', 'push', '--local', '--dry-run']), true);
+});
+
+test('an unknown flag after the verb is unclassifiable, not a local write', () => {
+  assert.equal(classifyCommand(['db', '--unknown', 'reset']).error, 'unknown flag --unknown');
+  assert.equal(commandNeedsIsolation(['db', '--unknown', 'reset']), false);
+  assert.equal(classifyCommand(['db', '--unknown=reset']).error, 'unknown flag --unknown');
+  assert.equal(commandNeedsIsolation(['db', '--unknown=reset']), false);
+  assert.equal(classifyCommand(['db', 'reset', '--not-a-flag']).error, 'unknown flag --not-a-flag');
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--not-a-flag']), false);
+});
+
+test('explicit boolean false does not pretend a remote or help flag is set', () => {
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--linked=false']), true);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--help=false']), true);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--local=false']), true);
+  assert.equal(commandNeedsIsolation(['db', 'push', '--local=false']), false);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--linked=true']), false);
+  assert.equal(classifyCommand(['db', 'reset', '--linked=maybe']).error !== undefined, true);
+});
+
+test('a command-specific value flag is refused on a verb that does not take it', () => {
+  assert.equal(classifyCommand(['db', 'push', '--version', '20240101']).error !== undefined, true);
+  assert.equal(commandNeedsIsolation(['db', 'reset', '--version', '20240101']), true);
+});
+
+
+
+
 
 test('the force override short-circuits the tree probe both ways', () => {
   const refuse = () => assert.fail('force must not run git');

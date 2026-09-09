@@ -915,6 +915,7 @@ export function dispatchIndex(store) {
           kind: typeof rec.kind === 'string' ? rec.kind.trim() : '',
           handle: agentTerminal(result),
           env: argvValue(ph.argv, '--on') ?? '',
+          worktree: argvValue(ph.argv, '--worktree') ?? '',
           ready: ph.exit === 0 && ph.receipt.ok === true && result.state === 'ready',
         });
       }
@@ -1079,14 +1080,9 @@ const PRE_WRITE_REFUSALS = new Map([['task-create', new Set(['consumer_fenced'])
  *
  * Null, a scalar, or an absent container is UNKNOWN under both. Observed
  * resources refuse first, through `noMutation`, so the table can never overrule
- * a receipt that names one.
- *
- * THE ASYMMETRY WITH `staleClaim` IS DELIBERATE AND MUST STAY VISIBLE. That
- * reader was ratified at the weaker strength on 2026-08-14 and #205 forbids
- * changing its answers, so the same silent receipt is still RECLAIMABLE while
- * it is not proof of unrelatedness. The stronger proof belongs to the stronger
- * consequence. Whether reclaim deserves the same tightening is a separate
- * question with its own cost, and it is not settled here.
+ * a receipt that names one. Reclaim (`staleClaim`) uses this same proof plus a
+ * Run term (#212): a silent receipt is UNKNOWN for takeover as well — not empty,
+ * not permission to mint a second identity.
  *
  * `reason` names the doubt when the proof fails and `ground` the evidence when
  * it holds; both are `''` in the other case, and the caller quotes rather than
@@ -1162,33 +1158,44 @@ function noMutation(phases) {
  * second identity minted over a mutation that is still in flight.
  *
  * Reclaimable requires ALL of:
- *   - the proof above — the record held no mutation at all;
+ *   - `heldNoMutation` — positive emptiness, the same proof relatedness uses;
  *   - a recorded Run, and one that is not the caller's (a caller's own Run is
  *     replayable from here, which is always better than a takeover).
  *
- * The first term is `noMutation`'s, shared rather than copied: two readings of
- * "this record touched nothing" is how one of them starts reclaiming a record
- * the other refuses. Its `reason` is forwarded verbatim, so every answer this
- * function gave before the split it still gives.
+ * The caller's own Run is recognised FIRST: replay beats takeover even when
+ * emptiness is unknown. A foreign or unnamed record that cannot prove it
+ * created nothing is precious — UNKNOWN, not empty — and is not resumed under
+ * this caller (#212).
  *
  * Anything else is precious: the reason says why, and the caller replays it.
  */
 export function staleClaim(path, callerRun) {
+  const empty = heldNoMutation(path);
   const attempts = must(load(path), 'attempts', 'record root');
   const phases = attempts.flatMap(attempt => must(attempt, 'phases', 'attempt'));
-  const empty = noMutation(phases);
-  if (!empty.proven) return { stale: false, reason: empty.reason };
 
   let recorded = '';
   for (const ph of phases) {
     recorded = argvValue(ph.argv ?? [], '--run') ?? '';
     if (recorded) break;
   }
+  if (recorded && recorded === callerRun) {
+    return { stale: false, reason: `record names this caller's own Run ${recorded} — replay it` };
+  }
+  if (!empty.proven) {
+    // WHICH DOUBT REFUSED, AS A FACT RATHER THAN AS PROSE (#212). `noMutation`
+    // is the lenient reading — every phase closed, conclusively refused, none
+    // reporting resources — so its passing while the positive proof above fails
+    // is exactly the SILENT receipt: emptiness UNKNOWN, and a record whose
+    // history no caller may rewrite. Every other doubt (no phase yet, an open
+    // one, an unknown outcome, a success) leaves this false, and those records
+    // are still replayable. `./start.mjs` reads this instead of matching on
+    // `reason`, which is a second, weaker proof by another road.
+    return { stale: false, reason: empty.reason, unknownEmptiness: noMutation(phases).proven };
+  }
   if (!recorded) return { stale: false, reason: 'record names no Run — being foreign cannot be proven' };
-  if (recorded === callerRun) return { stale: false, reason: `record names this caller's own Run ${recorded} — replay it` };
   return { stale: true, foreignRun: recorded };
 }
-
 /**
  * The repository a record NAMES, trimmed — `''` when it names none.
  *

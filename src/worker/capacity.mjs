@@ -113,6 +113,41 @@ export function machineCapOf(config = {}, env = {}) {
 const inRepo = repo => (repo === '' ? 'this repository' : repo);
 
 /**
+ * WHY a count could not be established, and the read that settles it — the two
+ * causes `unmeasured` carries, said apart (#221 review).
+ *
+ * The caps gate the TOTAL, so the arithmetic never looks at this. The sentence
+ * does, because it is consumed as an instruction: a host that could not be
+ * asked is settled by asking it or declaring it under `dispatch.hosts`, while a
+ * recorded worktree a restored pane still occupies is settled by inspecting
+ * that handle. One sentence for both printed "a host that could not be asked"
+ * on a machine where every host answered, and sent the reader to `ax worker ls`
+ * — a verb that renders RECORDS and therefore cannot show a handle no record
+ * names.
+ */
+const ASKED = 'ax worker ls   # the host and why it could not answer; declare it under dispatch.hosts, or settle the records naming it, then re-run';
+const OCCUPIED =
+  "ax worker gate <task>   # it names the live handle(s) at the recorded worktree; inspect each with 'orca terminal show --terminal <handle> --json', then release or settle that record and re-run";
+const BOTH =
+  "ax worker ls   # which host could not answer (declare it under dispatch.hosts, or settle the records naming it) and which record's worktree is still occupied; then 'orca terminal show --terminal <handle> --json' on the live pane at that path, and re-run";
+
+const HOST_WHY = 'on a host that could not be asked';
+const TREE_WHY = 'at a recorded worktree a live pane no record owns still occupies';
+
+/** The count of the pair whose cause is occupancy, read tolerantly. */
+const occupiedIn = (unmeasured, scope) => {
+  const value = (unmeasured?.occupied ?? {})[scope];
+  return Number.isInteger(value) && value > 0 ? value : 0;
+};
+
+function causeOf(total, occupied) {
+  const unasked = total - occupied;
+  if (occupied <= 0) return { why: `are ${HOST_WHY}, so their liveness is unknown`, repair: ASKED };
+  if (unasked <= 0) return { why: `are ${TREE_WHY}, so their liveness is unknown`, repair: OCCUPIED };
+  return { why: `have no established liveness — ${unasked} ${HOST_WHY}, ${occupied} ${TREE_WHY}`, repair: BOTH };
+}
+
+/**
  * The two counts, each labelled by its scope — the lines `ax worker ls` prints
  * and both dispatch verbs note.
  *
@@ -138,9 +173,8 @@ export function capLines({ live, repo = '', repoCap, machineCap }) {
     );
   }
   if (live.unmeasured.machine > 0) {
-    lines.push(
-      `${live.unmeasured.machine} pane(s) are on a host that could not be asked — their liveness is unknown, so neither count includes them (F-028)`,
-    );
+    const cause = causeOf(live.unmeasured.machine, occupiedIn(live.unmeasured, 'machine'));
+    lines.push(`${live.unmeasured.machine} pane(s) ${cause.why} — so neither count includes them (F-028)`);
   }
   return lines;
 }
@@ -165,9 +199,12 @@ export function capLines({ live, repo = '', repoCap, machineCap }) {
  *      `dispatch.machineCap` BOUNDS the machine instead, and a bounded mutation
  *      may proceed; with neither, nothing gates it at all and it stops.
  *   2. A PANE OF THIS REPOSITORY WHOSE LIVENESS IS UNKNOWN — a record naming a
- *      host that could not be asked. Its absence understates the very number
- *      `dispatch.cap` gates, so authorizing against it can admit a pane past a
- *      cap that is already full.
+ *      host that could not be asked, or one whose recorded worktree a live pane
+ *      no record owns still occupies (#221). Its absence understates the very
+ *      number `dispatch.cap` gates, so authorizing against it can admit a pane
+ *      past a cap that is already full. Which of the two causes it is decides
+ *      the READ that settles it, never the arithmetic, so the number is one and
+ *      the sentence names the cause (`causeOf` above).
  *   3. AN UNKNOWN PANE ELSEWHERE, once a ceiling is armed. Unarmed, nothing
  *      gates the machine total, and treating it as an inability would park this
  *      repository on another checkout's unreachable host — #88 through a new
@@ -184,7 +221,8 @@ export function capLines({ live, repo = '', repoCap, machineCap }) {
 export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
   const notes = [];
   const unmeasured = live.unmeasured;
-  const asked = 'ax worker ls   # the host and why it could not answer; declare it under dispatch.hosts, or settle the records naming it, then re-run';
+  const mineCause = causeOf(unmeasured.mine, occupiedIn(unmeasured, 'mine'));
+  const machineCause = causeOf(unmeasured.machine, occupiedIn(unmeasured, 'machine'));
 
   if (repo === '') {
     if (machineCap === null) {
@@ -208,8 +246,8 @@ export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
       kind: 'cannot',
       scope: 'repository',
       notes,
-      message: `the count dispatch.cap ${repoCap} gates cannot be established: ${unmeasured.mine} pane(s) in ${inRepo(repo)} are on a host that could not be asked, so their liveness is unknown and ${live.mine} understates it (F-028)`,
-      repair: asked,
+      message: `the count dispatch.cap ${repoCap} gates cannot be established: ${unmeasured.mine} pane(s) in ${inRepo(repo)} ${mineCause.why}, and ${live.mine} understates it (F-028)`,
+      repair: mineCause.repair,
     };
   }
 
@@ -230,8 +268,8 @@ export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
       kind: 'cannot',
       scope: 'machine',
       notes,
-      message: `the machine total dispatch.machineCap ${machineCap} gates cannot be established: ${unmeasured.machine} pane(s) are on a host that could not be asked, so their liveness is unknown and ${live.machine} understates it (F-028)`,
-      repair: asked,
+      message: `the machine total dispatch.machineCap ${machineCap} gates cannot be established: ${unmeasured.machine} pane(s) ${machineCause.why}, and ${live.machine} understates it (F-028)`,
+      repair: machineCause.repair,
     };
   }
 
@@ -253,7 +291,7 @@ export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
     // disclosure. It is still printed, because the reader's NEXT decision may be
     // to arm the ceiling, and then these panes decide.
     notes.push(
-      `${unmeasured.machine} pane(s) are on a host that could not be asked and are in neither count — nothing gates the machine total here, so they stop nothing (F-028)`,
+      `${unmeasured.machine} pane(s) ${machineCause.why}, and are in neither count — nothing gates the machine total here, so they stop nothing (F-028)`,
     );
   }
 

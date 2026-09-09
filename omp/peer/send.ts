@@ -27,80 +27,77 @@ export interface SendSeams {
   resolveParent?: typeof parentPeer;
 }
 
-export function sendToPeer(o: {
-  target: string;
+export interface Delivery {
+  /** A resolved Orca address. A reply gets this exclusively from its received route. */
+  address: string;
   text: string;
   type?: MessageType;
-}, seams: SendSeams = {}): { ok: boolean; via?: 'direct' | 'relay'; queued?: { run: string }; error?: string } {
+  /** The original message id. Kept unchanged through every relay hop. */
+  threadId?: string;
+  /** Runtime that owns `address`, absent for a same-host destination. */
+  environment?: string;
+  /** Audit label only; never used to derive `address`. */
+  targetName?: string;
+}
+
+export interface DeliveryResult {
+  ok: boolean;
+  via?: 'direct' | 'relay';
+  queued?: { run: string };
+  error?: string;
+}
+
+/**
+ * THE ONE MESSAGE TRANSPORT. `peer_send` resolves a typed name and enters here;
+ * `peer_reply` takes the address/thread/environment recorded from the received
+ * route and enters here. The two are then byte-for-byte the same policy:
+ * direct send, `dispatch_run_mismatch` only → verified parent relay, same
+ * origin, return address, sequence, thread, and destination environment.
+ *
+ * This is deliberately exported as a narrow resolved-address API: reply must
+ * never run name resolution, because the sender's received route is its only
+ * destination authority. Conversely, the relay receiver still requires a
+ * pane-witnessed sender before it lends the parent's authority; sharing the
+ * outbound transport does not weaken that inbound fence.
+ */
+export function deliver(o: Delivery, seams: SendSeams = {}): DeliveryResult {
   const run = seams.runOrcaRaw ?? orcaRaw;
   const resolveParent = seams.resolveParent ?? parentPeer;
   const text = o.text ?? '';
   if (!text.trim()) return { ok: false, error: 'refusing to send an empty message' };
-
-  const resolved = resolveTarget(o.target);
-  if (resolved.ambiguous)
-    return {
-      ok: false,
-      error: `peer '${o.target}' is ambiguous — matches ${resolved.ambiguous.join(', ')}`,
-    };
-  if (!resolved.address)
-    return { ok: false, error: `unknown peer '${o.target}'` };
+  if (!/^(?:@|run:|dispatch:|term_)/.test(o.address))
+    return { ok: false, error: `refusing malformed resolved address '${o.address}'` };
 
   const me = selfPeer();
-  // A SELF-ADDRESSED SEND IS NEVER THE INTENT, and it is the one failure that
-  // cannot be seen from either end: Orca accepts it and delivers the message to
-  // this very session, so a report that never reached its orchestrator reads
-  // exactly like one that arrived. Measured 2026-08-15: a dispatched child on
-  // another host answered its orchestrator for five hours and every answer came
-  // home to itself — on that host the registry can only see local panes, so the
-  // orchestrator's name resolved to the only peer there was, the child. Its own
-  // transcript said `my own report echoed back through the relay`; nothing on
-  // the orchestrator's side said anything at all.
-  const selfAddress =
-    me !== null && (resolved.address === `run:${me.run}` || resolved.address === me.handle);
-  if (selfAddress || (me !== null && resolved.handle !== undefined && resolved.handle === me.handle))
+  const selfAddress = me !== null && (o.address === `run:${me.run}` || o.address === me.handle);
+  if (selfAddress)
     return {
       ok: false,
-      error: `refusing to send to this session itself — '${o.target}' resolves to ${resolved.address}, which is this session. The peer you want is not reachable from this host, so its name matched the only pane here.`,
+      error: `refusing to send to this session itself — ${o.address} is this session`,
     };
 
-  // The sender states BOTH a readable name and its own return address. The
-  // receiver builds its "reply with …" line from the name, so a name the
-  // recipient cannot resolve yields an instruction that fails on first use. A
-  // return address must never be a free-text label — `replyTo` is the sender's
-  // own Run.
   const from = me?.peer || process.env.ORCA_WORKSPACE_NAME || 'unregistered-session';
   const replyTo = me?.run ? { replyTo: `run:${me.run}` } : {};
   const type = o.type ?? 'status';
-  // Allocated before the attempt, committed only once Orca accepts one of the
-  // two routes: the number identifies THIS message on whichever route carries
-  // it, and a message that never left must not consume one.
-  //
-  // KEYED BY THE PAIR, and the key is the RESOLVED ADDRESS rather than what the
-  // caller typed: one peer answers to a bare name, a suffixed name, a session-id
-  // prefix and a worktree basename (`resolveTarget`, ./address.ts), and keying
-  // on the spelling would split one conversation into four series. The run
-  // address is what the message is actually delivered to and it outlives the
-  // pane-handle churn that renames a peer mid-wave (measured 2026-09-08).
-  // A raw `term_` address typed by hand keys its own series; the cost is a
-  // replayed number, which the receiver reports and delivers (`./receive.ts`).
-  const seq = nextOutboundSequence(from, resolved.address);
+  const seq = nextOutboundSequence(from, o.address);
+  const thread = o.threadId ? ['--thread-id', o.threadId] : [];
+  const environment = o.environment ? ['--environment', o.environment] : [];
 
   const attempt = run([
     'orchestration',
     'send',
     '--to',
-    resolved.address,
+    o.address,
     '--type',
     type,
-    // The subject carries the readable name because Orca's own formatter shows
-    // the raw handle, and a handle tells a reader nothing.
     '--subject',
     `peer:${from}`,
     '--body',
     text,
     '--payload',
     JSON.stringify({ peer: from, seq: seq.seq, ...replyTo }),
+    ...thread,
+    ...environment,
     '--json',
   ]);
   if (prop(attempt.parsed, 'ok') === true) {
@@ -112,18 +109,18 @@ export function sendToPeer(o: {
     return { ok: false, error: sendError(attempt) };
 
   const parent = resolveParent();
-  // The parent's Run, whether or not a pane is reading it: Orca accepts a `run:`
-  // target on the run's existence alone and holds the message, so a relay through
-  // an orchestrator with no current consumer is deferred rather than lost.
-  // `../peer/lineage.ts` carries the measurement; the caller still learns it
-  // went by relay.
   const via = parent.peer ? parent.peer.run : parent.queued?.run;
   if (!via)
     return {
       ok: false,
-      error: `direct send refused (dispatch_run_mismatch) and no parent Run to relay through — '${o.target}' is unreachable from this dispatch-bound session`,
+      error: `direct send refused (dispatch_run_mismatch) and no parent Run to relay through — '${o.targetName ?? o.address}' is unreachable from this dispatch-bound session`,
     };
 
+  // THE PARENT IS LOCAL; THE DESTINATION MAY NOT BE. Sending the parent Run
+  // with the destination's `--environment` resolves that Run on the wrong
+  // runtime and loses the relay. The environment therefore rides INSIDE the
+  // witnessed envelope, and the parent applies it only while reposting to
+  // `forwardTo` (`receive.ts`).
   const relay = run([
     'orchestration',
     'send',
@@ -132,17 +129,20 @@ export function sendToPeer(o: {
     '--type',
     type,
     '--subject',
-    `peer:${from} \u2192 ${o.target}`,
+    `peer:${from} → ${o.targetName ?? o.address}`,
     '--body',
     text,
     '--payload',
     JSON.stringify({
       peer: from,
       seq: seq.seq,
-      forwardTo: resolved.address,
-      forwardToName: o.target,
+      forwardTo: o.address,
+      forwardToName: o.targetName ?? o.address,
+      ...(o.threadId ? { forwardThreadId: o.threadId } : {}),
+      ...(o.environment ? { forwardEnvironment: o.environment } : {}),
       ...replyTo,
     }),
+    ...thread,
     '--json',
   ]);
   if (prop(relay.parsed, 'ok') === true) {
@@ -152,6 +152,36 @@ export function sendToPeer(o: {
       : { ok: true, via: 'relay' };
   }
   return { ok: false, error: `relay via parent failed: ${sendError(relay)}` };
+}
+
+/** Resolve a human target, then use the exact same transport as a reply. */
+export function sendToPeer(o: {
+  target: string;
+  text: string;
+  type?: MessageType;
+}, seams: SendSeams = {}): DeliveryResult {
+  const text = o.text ?? '';
+  if (!text.trim()) return { ok: false, error: 'refusing to send an empty message' };
+
+  const resolved = resolveTarget(o.target);
+  if (resolved.ambiguous)
+    return {
+      ok: false,
+      error: `peer '${o.target}' is ambiguous — matches ${resolved.ambiguous.join(', ')}`,
+    };
+  if (!resolved.address) return { ok: false, error: `unknown peer '${o.target}'` };
+
+  const me = selfPeer();
+  if (me !== null && resolved.handle !== undefined && resolved.handle === me.handle)
+    return {
+      ok: false,
+      error: `refusing to send to this session itself — '${o.target}' resolves to ${resolved.address}, which is this session. The peer you want is not reachable from this host, so its name matched the only pane here.`,
+    };
+
+  return deliver(
+    { address: resolved.address, targetName: o.target, text, type: o.type },
+    seams,
+  );
 }
 
 function sendError(r: { parsed: unknown; text: string }): string {

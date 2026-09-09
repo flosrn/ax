@@ -44,13 +44,14 @@ import { dirname } from 'node:path';
 // The Orca adapter: every spawn of the Orca CLI in this extension goes through
 // `./orca.ts`, which resolves the binary per call — its header carries the VPS
 // incident (`orca` vs `orca-ide`, D-007) behind that rule.
-import { orca, orcaBin, orcaRaw, runOrca } from './orca.ts';
+import { orca, orcaBin, runOrca } from './orca.ts';
 
 import {
   dispatchRecord,
+  dispatchRecords,
   senderIdentity as identify,
 } from './attribution.ts';
-import { environmentOfDispatch, resolveChildRoute } from './route.ts';
+import { attestsRelayEnvironment, environmentOfDispatch, resolveChildRoute } from './route.ts';
 // The Report a worker's completion carries: derived from the dispatch record,
 // read on the host that record names (here, or over ssh), never from `payload.reportPath`.
 import { completionReport } from './completion.ts';
@@ -60,11 +61,11 @@ import { readDelivery, recordDelivery, renderDelivery } from './diagnostics.ts';
 // The naming rule that decides an address lives in `./address.ts` alone;
 // `refreshHandleMap` reads it rather than restating it, so no second copy can
 // disagree about which session a handle belongs to.
-import { panes, peers, register as publishSelf, resolvePeerName, setModel, shortId, worktreeOf } from './address.ts';
+import { panes, peers, reachablePeers, register as publishSelf, resolvePeerName, setModel, shortId, worktreeOf } from './address.ts';
 import { children as peerChildren, depthOf } from './lineage.ts';
 import { lineageRows } from './orca.ts';
 import { runAddressOfHandle } from './store.ts';
-import { sendToPeer } from './send.ts';
+import { type DeliveryResult, deliver, sendToPeer } from './send.ts';
 import { transcriptFor } from './transcript.ts';
 
 // When the receive loop is down, and whether the model has been told. Kept
@@ -392,19 +393,26 @@ function peerInfoForHandle(handle: string): PeerInfo {
 // gets no route at all.
 //
 // It is emphatically NOT the registry, which a peer shell can overwrite to
-// redirect a victim's answers to itself; and not
-// `orca orchestration reply --id`, which routes to the sender's terminal
-// handle, a legacy_read_only mailbox nobody consumes (observed: the reply
-// landed at `to=term_840e…` while the asking peer waited forever).
+// redirect a victim's answers to itself.
 //
 // `environment` is present only for a worker on another execution host, and it is not
 // decoration: Orca resolves `run:<id>` against the runtime receiving the call, so the same
 // address without it reaches this runtime, finds no such Run, and the answer is lost while
 // the sender reports a clean reply.
-const replyRoutes = new Map<
-  string,
-  { run: string; peer: string; environment?: string }
->();
+export interface PeerReplyRoute {
+  run: string;
+  peer: string;
+  environment?: string;
+  threadId?: string;
+}
+
+const replyRoutes = new Map<string, PeerReplyRoute>();
+
+/** Receiver-owned write into the route table; exported for the registered-tool
+ * integration test, which must install the same state the live receiver does. */
+export function recordReplyRoute(messageId: string, route: PeerReplyRoute): void {
+  replyRoutes.set(messageId, route);
+}
 
 
 // The loop's collaborators, wired to the real ones. `runId` is a getter
@@ -438,6 +446,14 @@ const receiver = createReceiver({
       `child:${record.request}`,
     );
   },
+  // A CROSS-HOST RELAY IS ATTESTED BY THIS SIDE'S RECORDS, never by the
+  // envelope that asks for it. The witnessed sender proves who wrote the
+  // request; the host it names would otherwise aim this session's own
+  // `orchestration send --environment` at any declared runtime. So the pair is
+  // re-derived from the dispatch records this machine wrote, joined against
+  // Orca — the same join `deriveRoute` above uses for the reverse direction.
+  attestRelayEnvironment: (target, environment) =>
+    attestsRelayEnvironment(runOrca, dispatchRecords(), target, environment),
   // A witnessed pane that stated no return address: the Run it published for
   // itself is read under the handle ORCA vouched for, never under a name the
   // sender claimed. `store.ts`'s `runAddressOfHandle` carries the bound on that.
@@ -451,7 +467,7 @@ const receiver = createReceiver({
   wasInjected: (id) => injectedIds.has(id),
   rememberInjected,
   compactInjected,
-  recordRoute: (id, route) => replyRoutes.set(id, route),
+  recordRoute: recordReplyRoute,
 });
 
 // A SUBAGENT MUST NOT PUBLISH ITSELF AS ITS PARENT.
@@ -461,7 +477,30 @@ const receiver = createReceiver({
 // worktree, which they share); and Run adoption by the `peer session: <name>`
 // prefix, built for restart adoption, will hand a child its parent's identity.
 // Last writer wins, so an unguarded subagent rewrites the lead's entry.
-//
+
+/**
+ * Execute one reply from the route the receiver recorded. Exported because the
+ * load-bearing contract is behavioral — direct refusal must become a parent
+ * relay that preserves the original thread, return route and environment — and
+ * asserting a separately-exported argv builder would prove none of the actual
+ * `peer_reply` handler. The registered tool below calls this function directly.
+ */
+export function replyToReceived(
+  messageId: string,
+  answer: string,
+  route: PeerReplyRoute,
+  send: typeof deliver = deliver,
+): DeliveryResult {
+  return send({
+    address: route.run,
+    targetName: route.peer,
+    text: answer,
+    type: 'status',
+    threadId: route.threadId || messageId,
+    environment: route.environment,
+  });
+}
+
 // The damage is not the label. The published `run` is the ADDRESS peers send
 // to, so the lead's mailbox would point at a subagent's Run that dies with the
 // subagent.
@@ -481,7 +520,7 @@ const receiver = createReceiver({
 // redundant; `registry.test.ts` pins it.
 const owner = createSessionOwner();
 
-export default function (pi): void {
+export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
   // Replying is a TOOL, not a shell command the model has to compose.
   //
   // Four review rounds were spent on the shell form: an interpolated argument
@@ -491,8 +530,8 @@ export default function (pi): void {
   // was shell source containing peer-influenced text, composed by a model.
   //
   // A tool call has no shell. `text` is a string argument, `message_id` routes
-  // via `orca orchestration reply --id`, so the sender never supplies an
-  // address either. The entire injection class is gone by construction.
+  // via `deliver`, so the sender never supplies an address either. The entire
+  // injection class is gone by construction.
   pi.registerTool({
     name: 'peer_reply',
     description:
@@ -514,8 +553,8 @@ export default function (pi): void {
       message: pi.zod.string().optional().describe('Alias of `text`.'),
       // And `body` is the THIRD name for this one concept, which is why the
       // alias above only removed half the collision. `orca orchestration send`
-      // and `reply` both take `--body`, and this tool's own execute below
-      // spawns `reply --body`. So an agent that has just written the CLI form,
+      // takes `--body`, and this tool's own execute below calls `deliver`.
+      // So an agent that has just written the CLI form,
       // or read this file, reaches for `body` — measured 2026-08-15, on an
       // orchestrator that had run `orchestration send --body` minutes earlier.
       // Rejecting the name your own implementation uses protects nothing.
@@ -555,61 +594,36 @@ export default function (pi): void {
         };
       }
 
-      // `send --to run:<sender>` and NOT `reply --id`: the latter routes to the
-      // sender's bare terminal handle, whose mailbox is legacy_read_only and is
-      // consumed by nobody, so the answer is delivered and never seen.
-      // `--thread-id` keeps the exchange threaded for anyone reading history.
-      const out = orcaRaw([
-        'orchestration',
-        'send',
-        '--to',
-          // Already a full `run:<id>` address — validated by RUN_ADDRESS in
-          // `receive.ts` on the way in. Re-prefixing produced `run:run:<id>`,
-          // and Orca answered "Run not found" while the sending agent reported
-          // a clean reply.
-          route.run,
-          '--type',
-          'status',
-          '--subject',
-          `peer:${peerName}`,
-          '--body',
-          answer,
-          // A reply must carry its OWN return address, exactly as `send` does.
-          // Without this the route was one-directional: the first message
-          // established a route home, the answer established nothing, and the
-          // peer_reply tool refused the second hop with "No reply route" -
-          // while AGENTS.md states answering with this tool as an absolute.
-          // A conversation that dies on its second turn is not a channel.
-          '--payload',
-          JSON.stringify(
-            runId
-              ? { peer: peerName, replyTo: `run:${runId}` }
-              : { peer: peerName },
-          ),
-          '--thread-id',
-          message_id,
-          // WITHOUT THIS THE ANSWER IS LOST. Orca resolves `run:<id>` against the runtime
-          // receiving the call, so a Run that lives on another execution host is not found
-          // there — measured 2026-08-13, and the sender still reports a clean reply. The
-          // route carries the environment only for a worker we dispatched onto another
-          // server; a same-host peer has none and the flag is omitted.
-          ...(route.environment ? ['--environment', route.environment] : []),
-          '--json',
-        ],
-        20_000,
-      );
-      if (out.parsed?.ok) {
-        note(`replied to ${route.peer} (${message_id})`);
+      // The received route is the ONLY destination authority. No name lookup,
+      // no fallback to a record-named sender and no caller-supplied address: the
+      // route was validated and recorded on receipt (`receive.ts`). From here on
+      // reply is the same transport as send — including the one allowed fallback
+      // when Orca answers `dispatch_run_mismatch`, through this session's
+      // verified parent. That is #231: a dispatch-bound worker must not be able
+      // to send a question laterally and then fail to ANSWER the same peer.
+      const out = replyToReceived(message_id, answer, route, seams.deliver ?? deliver);
+      if (out.ok) {
+        note(
+          out.queued
+            ? `queued reply to ${route.peer} (${message_id}) on parent ${out.queued.run}`
+            : `replied to ${route.peer} (${message_id})${out.via === 'relay' ? ' via parent relay' : ''}`,
+        );
         return {
-          content: [{ type: 'text', text: `Replied to ${route.peer}.` }],
+          content: [
+            {
+              type: 'text',
+              text: out.queued
+                ? `Queued reply to ${route.peer} on the parent's Run ${out.queued.run}; it has not been forwarded yet.`
+                : out.via === 'relay'
+                  ? `Replied to ${route.peer} through the shared parent (Orca refused the direct send).`
+                  : `Replied to ${route.peer}.`,
+            },
+          ],
         };
       }
-      const why = String(
-        out.parsed?.error?.message ?? out.text,
-      ).slice(0, 200);
       return {
         content: [
-          { type: 'text', text: `Reply to ${route.peer} failed: ${why}` },
+          { type: 'text', text: `Reply to ${route.peer} failed: ${out.error ?? 'send failed'}` },
         ],
         isError: true,
       };
@@ -697,7 +711,17 @@ export default function (pi): void {
       'session. Names come from Orca, not from the sender.',
     parameters: pi.zod.object({}),
     execute: async () => {
-      const live = peers();
+      const reachable = reachablePeers();
+      // An unread inventory is not an empty machine. `peers()` flattens the two
+      // into `[]`, which is the right answer for a lookup that has nowhere to
+      // send; this tool's job is to SAY which of the two it saw, so the model
+      // does not conclude its children are gone because `terminal list` failed.
+      if (reachable.unread)
+        return {
+          content: [{ type: 'text', text: `Cannot list peers: ${reachable.unread}` }],
+          isError: true,
+        };
+      const live = reachable.list;
       // One `worktree ps` for the whole table, and only for this tool: `peers()`
       // is on the lineage hot path, where an unconditional Orca call per lookup
       // is the memoisation `parentWorktreePath` exists to avoid.

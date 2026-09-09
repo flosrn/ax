@@ -37,7 +37,8 @@ import { identify } from './identity.mjs';
 import { KEYS, planWorktree } from './plan.mjs';
 import { isReserved } from './ports.mjs';
 import { envFiles, probeAll, readWorktreeRecord } from './probes.mjs';
-import { SUPABASE_LABEL, commandNeedsIsolation, configProjectId, isIsolatedConfig } from './supabase.mjs';
+import { SUPABASE_LABEL, classifyCommand, configProjectId, isIsolatedConfig } from './supabase.mjs';
+
 
 /** The one command that reconciles a recorded value with the plan. */
 const SETUP = 'ax worktree setup';
@@ -342,39 +343,55 @@ function guard(root, { config, add }) {
 
   // Unguarded is not the same as dangerous. A script aimed at a REMOTE project,
   // or one that only starts and stops containers, cannot contaminate anyone's
-  // data — and `commandNeedsIsolation` is already the authority on that
-  // distinction, because it is the predicate the guard itself consults before
-  // promoting. Grading every unguarded line instead would flag the deliberate
-  // escape hatches (`supabase:raw`), the CI path, and `db push --project-ref`,
-  // which teaches a reader to ignore this section.
-  const named = Object.entries(scripts)
-    .filter(([, command]) => invokesSupabaseCli(command) && !reachesGuard(command) && commandNeedsIsolation(argsOf(command)))
-    .map(([name]) => name);
-
+  // data — and `classifyCommand` is already the authority on that distinction,
+  // because it is the predicate the guard itself consults before promoting.
+  // An unclassifiable line is not read-only: the doctor names the inability
+  // rather than treating `{error}` as safe (#223).
   const relative = `${config.apps.web}/package.json`;
-  if (named.length === 0) {
+  const unguarded = Object.entries(scripts).filter(([, command]) => invokesSupabaseCli(command) && !reachesGuard(command));
+
+  const contaminating = [];
+  const unclassifiable = [];
+  for (const [name, command] of unguarded) {
+    const classified = classifyCommand(argsOf(command));
+    if (classified.error) unclassifiable.push({ name, error: classified.error });
+    else if (classified.isolation) contaminating.push(name);
+  }
+
+  if (unclassifiable.length > 0) {
+    add(
+      'bad',
+      `${relative}: ${unclassifiable.map(entry => entry.name).join(', ')} ${unclassifiable.length === 1 ? 'invokes' : 'invoke'} the Supabase CLI with arguments that cannot be classified (${unclassifiable.map(entry => entry.error).join('; ')}) — isolation cannot be established`,
+      `route ${unclassifiable.map(entry => entry.name).join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\` with documented flags, or fix the arguments`,
+    );
+  }
+
+  if (contaminating.length > 0) {
+    add(
+      'bad',
+      `${relative}: ${contaminating.join(', ')} ${contaminating.length === 1 ? 'calls' : 'call'} the Supabase CLI directly — a migration or reset from this checkout would contaminate every other session's database`,
+      `route ${contaminating.join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\`, which promotes this checkout to its own stack first`,
+    );
+  }
+
+  if (contaminating.length === 0 && unclassifiable.length === 0) {
     if (Object.values(scripts).some(command => reachesGuard(command))) {
       add('ok', `${relative}: every database command routes through \`${GUARDED_INVOCATION}\``);
     }
-    return;
   }
-
-  add(
-    'bad',
-    `${relative}: ${named.join(', ')} ${named.length === 1 ? 'calls' : 'call'} the Supabase CLI directly — a migration or reset from this checkout would contaminate every other session's database`,
-    `route ${named.join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\`, which promotes this checkout to its own stack first`,
-  );
 }
+
 
 /**
  * The arguments a package script hands the Supabase CLI.
  *
- * Everything after the `supabase` command word, so `commandNeedsIsolation` sees
- * what the CLI would see. Shell noise beyond the first pipeline stage is not
+ * Everything after the `supabase` command word, so `classifyCommand` sees what
+ * the CLI would see. Shell noise beyond the first pipeline stage is not
  * modelled: a script that pipes `gen types` into a file is still `gen types`,
  * and a script complex enough to defeat this is one a human should be reading
  * anyway.
  */
+
 function argsOf(script) {
   const words = String(script).split(/\s+/);
   const at = words.indexOf('supabase');

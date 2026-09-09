@@ -16,6 +16,8 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { z } from 'zod';
+import peerExtension, { recordReplyRoute } from './index.ts';
 import { join } from 'node:path';
 
 const WT_A = '/tmp/fake/t6-les-lots';
@@ -54,6 +56,18 @@ function setTerminals(terms: Term[]): void {
 /** Orca answering nothing at all — the case that must NOT fall back. */
 function orcaSaysNothing(): void {
   writeFileSync(join(dir, 'terminals.json'), JSON.stringify({ ok: false }));
+}
+
+/**
+ * Orca answering a list it CAPPED: `ok:true`, rows, and `truncated` beside
+ * them. Indistinguishable from a complete answer to any reader that only looks
+ * at `ok` — which is the case below.
+ */
+function truncatedTerminals(terms: Term[]): void {
+  writeFileSync(
+    join(dir, 'terminals.json'),
+    JSON.stringify({ ok: true, result: { terminals: terms, truncated: true } }),
+  );
 }
 
 /** A published registry entry: the Run is what makes a pane reachable. */
@@ -390,3 +404,252 @@ test('a paneless parent Run retains a refused lateral send as an explicit queue'
   expect(calls[1].slice(0, 4)).toEqual(['orchestration', 'send', '--to', 'run:run_parent_unread']);
   expect(out).toEqual({ ok: true, via: 'relay', queued: { run: 'run_parent_unread' } });
 });
+
+test('a dispatch_run_mismatch reply keeps the thread, return address, and remote environment on the parent relay', async () => {
+  // THE SENDER MUST HAVE A RUN OF ITS OWN, which the first draft of this case
+  // did not give it: under `orcaSaysNothing()` there is no self peer, so there is
+  // no return address to put in the payload and the case measured its own
+  // fixture. A session answering a peer is registered by construction — it
+  // received the message on its Run.
+  setTerminals([{ handle: 'term_aaaa1111', worktreePath: WT_A }]);
+  publishEntry('term_aaaa1111', 'run_self');
+  const calls: string[][] = [];
+  const raw = (argv: string[]) => {
+    calls.push(argv);
+    return calls.length === 1
+      ? { parsed: { ok: false }, text: 'dispatch_run_mismatch', stdout: '' }
+      : { parsed: { ok: true }, text: '', stdout: '' };
+  };
+  const { deliver } = await load();
+
+  const out = deliver(
+    {
+      address: 'run:run_sibling',
+      text: 'pong',
+      type: 'status' as const,
+      threadId: 'msg_d3385d25590a',
+      environment: 'vps',
+      targetName: 'sibling',
+    },
+    {
+      runOrcaRaw: raw,
+      resolveParent: () => ({ peer: { run: 'run_parent', peer: 'parent' } as never }),
+    },
+  );
+
+  expect(out).toEqual({ ok: true, via: 'relay' });
+  expect(calls).toHaveLength(2);
+  // ONE THREAD AND ONE RETURN ADDRESS ON EVERY HOP. A relay that drops either
+  // ends the conversation at its second turn: the answer arrives unthreaded and
+  // the recipient's own reply has nowhere to go.
+  for (const argv of calls) {
+    expect(argv).toContain('--thread-id');
+    expect(argv[argv.indexOf('--thread-id') + 1]).toBe('msg_d3385d25590a');
+    const payload = JSON.parse(argv[argv.indexOf('--payload') + 1] as string) as {
+      replyTo?: string;
+    };
+    expect(payload.replyTo).toBe('run:run_self');
+  }
+  // The DESTINATION's host, on the hop that addresses the destination. The
+  // parent is host-local by construction (`lineage.ts`), so sending its Run with
+  // `--environment vps` would resolve that Run on the wrong runtime and lose the
+  // relay — the environment rides in the payload for the parent to re-apply.
+  expect(calls[0]).toContain('--environment');
+  expect(calls[0][calls[0].indexOf('--environment') + 1]).toBe('vps');
+  expect(calls[1]).not.toContain('--environment');
+  const relayed = JSON.parse(calls[1][calls[1].indexOf('--payload') + 1] as string) as {
+    forwardTo?: string;
+    forwardThreadId?: string;
+    forwardEnvironment?: string;
+    replyTo?: string;
+  };
+  expect(relayed.forwardTo).toBe('run:run_sibling');
+  expect(relayed.forwardThreadId).toBe('msg_d3385d25590a');
+  expect(relayed.forwardEnvironment).toBe('vps');
+  expect(relayed.replyTo).toBe('run:run_self');
+});
+
+test('a reply and a send are the SAME transport, not two spellings of one', async () => {
+  // #231: `peer_reply` spawned its own `orchestration send` with no relay branch
+  // at all, so a dispatch-bound session could send laterally through the parent
+  // and not ANSWER through it — the reply failed with `dispatch_run_mismatch`
+  // while the tool that had just delivered the question succeeded. Both verbs go
+  // through `deliver` now, and this pins that they do: the reply-shaped call and
+  // the send-shaped call produce the same two hops.
+  setTerminals([
+    { handle: 'term_aaaa1111', worktreePath: WT_A },
+    { handle: 'term_bbbb2222', worktreePath: WT_B },
+  ]);
+  publishEntry('term_aaaa1111', 'run_self');
+  publishEntry('term_bbbb2222', 'run_b');
+  const seen: string[][] = [];
+  const raw = (argv: string[]) => {
+    seen.push(argv);
+    return seen.length % 2 === 1
+      ? { parsed: { ok: false }, text: 'dispatch_run_mismatch', stdout: '' }
+      : { parsed: { ok: true }, text: '', stdout: '' };
+  };
+  const seams = {
+    runOrcaRaw: raw,
+    resolveParent: () => ({ peer: { run: 'run_parent', peer: 'parent' } as never }),
+  };
+  const { deliver, sendToPeer } = await load();
+
+  expect(sendToPeer({ target: 't7-canal-de-scene', text: 'hi' }, seams)).toEqual({
+    ok: true,
+    via: 'relay',
+  });
+  expect(deliver({ address: 'run:run_b', text: 'hi', targetName: 't7-canal-de-scene' }, seams)).toEqual({
+    ok: true,
+    via: 'relay',
+  });
+
+  const shape = (argv: string[]) => [argv[2], argv[3], argv.includes('--payload')];
+  expect(shape(seen[0])).toEqual(shape(seen[2]));
+  expect(shape(seen[1])).toEqual(shape(seen[3]));
+  for (const argv of [seen[1], seen[3]]) {
+    const bag = JSON.parse(argv[argv.indexOf('--payload') + 1] as string) as {
+      forwardTo?: string;
+    };
+    expect(bag.forwardTo).toBe('run:run_b');
+  }
+});
+
+test('the registered peer_reply tool relays an answer and preserves the next answer route', async () => {
+  // Drive the tool Orca actually exposes, not a wrapper or argv builder. Install
+  // the route through the same receiver-owned operation used in production,
+  // parse the params through its real zod schema, then call its registered
+  // execute handler.
+  setTerminals([{ handle: 'term_aaaa1111', worktreePath: WT_A }]);
+  publishEntry('term_aaaa1111', 'run_self');
+  const calls: string[][] = [];
+  const raw = (argv: string[]) => {
+    calls.push(argv);
+    return calls.length === 1
+      ? { parsed: { ok: false }, text: 'dispatch_run_mismatch', stdout: '' }
+      : { parsed: { ok: true }, text: '', stdout: '' };
+  };
+  const { deliver } = await load();
+  const tools = new Map<string, {
+    parameters: { parse: (value: unknown) => Record<string, unknown> };
+    execute: (id: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+  }>();
+  peerExtension(
+    {
+      zod: z,
+      registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
+      on: () => {},
+      registerCommand: () => {},
+      addTool: () => {},
+      sendMessage: () => {},
+      appendEntry: () => {},
+    } as never,
+    {
+      deliver: (request) => deliver(request, {
+        runOrcaRaw: raw,
+        resolveParent: () => ({ peer: { run: 'run_parent', peer: 'parent' } as never }),
+      }),
+    },
+  );
+  recordReplyRoute('msg_answer', {
+    run: 'run:run_sibling',
+    peer: 'sibling',
+    environment: 'vps',
+    threadId: 'msg_question',
+  });
+
+  const tool = tools.get('peer_reply');
+  expect(tool).toBeDefined();
+  const params = tool!.parameters.parse({ message_id: 'msg_answer', text: 'pong' });
+  const result = await tool!.execute('call-1', params);
+
+  expect(result.isError).toBeUndefined();
+  expect(result.content[0]?.text).toContain('through the shared parent');
+  expect(calls).toHaveLength(2);
+  const repost = calls[1];
+  expect(repost[repost.indexOf('--thread-id') + 1]).toBe('msg_question');
+  const envelope = JSON.parse(repost[repost.indexOf('--payload') + 1] as string) as {
+    replyTo?: string;
+    forwardThreadId?: string;
+    forwardEnvironment?: string;
+  };
+  expect(envelope.forwardThreadId).toBe('msg_question');
+  // The destination can answer THIS answer directly back to the original
+  // sender. That is the second half of the two-way contract, not merely "one
+  // send returned ok".
+  expect(envelope.replyTo).toBe('run:run_self');
+});
+
+// ── #220 at the tool surface: an unread inventory is not an empty machine ─────
+
+/** The tools this extension registers, driven as Orca drives them. */
+function installTools(): Map<
+  string,
+  {
+    parameters: { parse: (value: unknown) => Record<string, unknown> };
+    execute: (
+      id: string,
+      params: Record<string, unknown>,
+    ) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+  }
+> {
+  const tools = new Map();
+  peerExtension(
+    {
+      zod: z,
+      registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
+      on: () => {},
+      registerCommand: () => {},
+      addTool: () => {},
+      sendMessage: () => {},
+      appendEntry: () => {},
+    } as never,
+    { deliver: () => ({ ok: true }) as never },
+  );
+  return tools as never;
+}
+
+test('peer_list on an unreadable inventory names the inability, never nobody', async () => {
+  // THE DEFECT, at the surface a model reads. `orca terminal list` refusing
+  // printed "No reachable peers. A session registers itself when it starts." —
+  // a claim about who is up on this machine, made out of an inability to look.
+  // An orchestrator acting on it concludes its children are gone.
+  orcaSaysNothing();
+  const tool = installTools().get('peer_list');
+  const result = await tool!.execute('call-1', {});
+  expect(result.isError).toBe(true);
+  expect(result.content[0]?.text).not.toContain('No reachable peers');
+  expect(result.content[0]?.text).toContain('terminal list');
+});
+
+test('peer_list on a truncated list refuses too, though Orca answered ok', async () => {
+  // A capped list carries rows, so this one would otherwise print a TABLE and
+  // pass it off as the machine — the omission that survives the refusal above.
+  truncatedTerminals([{ handle: 'term_aaaa1111', worktreePath: WT_A }]);
+  publishEntry('term_aaaa1111', 'run_a');
+  const tool = installTools().get('peer_list');
+  const result = await tool!.execute('call-1', {});
+  expect(result.isError).toBe(true);
+  expect(result.content[0]?.text).not.toContain('t6-les-lots');
+});
+
+test('peer_list on a list Orca answered as empty still states the absence', async () => {
+  // The positive control: a read machine with nobody registered on it is a
+  // measurement, and the wording that reports it must not be widened away.
+  setTerminals([]);
+  const tool = installTools().get('peer_list');
+  const result = await tool!.execute('call-1', {});
+  expect(result.isError).toBeUndefined();
+  expect(result.content[0]?.text).toContain('No reachable peers');
+});
+
+test('peer_list on a complete list prints the table it always printed', async () => {
+  setTerminals([{ handle: 'term_aaaa1111', worktreePath: WT_A }]);
+  publishEntry('term_aaaa1111', 'run_a', 'grok-4.5', 'sess_aaaa1111');
+  const tool = installTools().get('peer_list');
+  const result = await tool!.execute('call-1', {});
+  expect(result.isError).toBeUndefined();
+  expect(result.content[0]?.text).toContain('PEER  MODEL  DEPTH  ID  WORKTREE');
+  expect(result.content[0]?.text).toContain('t6-les-lots');
+});
+

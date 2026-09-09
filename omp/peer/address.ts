@@ -21,8 +21,7 @@
  */
 
 import { existsSync } from 'node:fs';
-
-import { orca, prop, rows, str, worktrees } from './orca.ts';
+import { prop, str, terminalInventory, worktrees } from './orca.ts';
 import {
   type Entry,
   acquireRegisterLock,
@@ -65,11 +64,19 @@ export interface Peer {
  * name there makes the tag `peer session: `, which prefixes every peer Run and
  * lets a session adopt somebody else's.
  */
-function derive(reachableOnly: boolean, pending: string): Peer[] {
-  const terms = rows(orca(['terminal', 'list', '--json']), 'terminals');
+function derive(
+  reachableOnly: boolean,
+  pending: string,
+): { list: Peer[]; unread?: string } {
+  const inv = terminalInventory();
   // No Orca, no identities. Returning a registry-only list here would
-  // resurrect exactly the forgeable naming this join exists to remove.
-  if (terms.length === 0) return [];
+  // resurrect exactly the forgeable naming this join exists to remove — and an
+  // inventory that could not be READ says nothing about who is there, which is
+  // why the inability travels with the empty list instead of being flattened
+  // into it (#220).
+  if (inv.unread) return { list: [], unread: inv.unread };
+  const terms = inv.rows;
+  if (terms.length === 0) return { list: [] };
 
   const registered = new Map<string, Partial<Entry>>();
   for (const e of allEntries()) {
@@ -120,14 +127,24 @@ function derive(reachableOnly: boolean, pending: string): Peer[] {
       out.push(row);
     }
   }
-  return out.sort((a, b) => a.peer.localeCompare(b.peer));
+  return { list: out.sort((a, b) => a.peer.localeCompare(b.peer)) };
 }
 
 /**
  * Panes that can be ADDRESSED: Orca lists every terminal, but only those that
  * published a Run are reachable.
+ *
+ * The bare list, for every caller whose answer is the same whether the
+ * inventory was empty or unreadable — a lookup by name has nothing to resolve
+ * either way. A caller that would otherwise state an ABSENCE takes
+ * `reachablePeers` and says which of the two it saw.
  */
 export function peers(pending = ''): Peer[] {
+  return derive(true, pending).list;
+}
+
+/** `peers()` with the reason the list is empty, when it is empty for a reason. */
+export function reachablePeers(pending = ''): { list: Peer[]; unread?: string } {
   return derive(true, pending);
 }
 
@@ -143,7 +160,7 @@ export function peers(pending = ''): Peer[] {
  * session is called is how the same pane ends up with two names.
  */
 export function panes(): Peer[] {
-  return derive(false, '');
+  return derive(false, '').list;
 }
 
 /** This session's own row, or `null` when it has not published one. */

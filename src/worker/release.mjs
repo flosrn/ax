@@ -361,6 +361,83 @@ function workerInventory(run) {
 }
 
 /**
+ * One named `worker-show`. A missing, refused or unbound receipt is UNKNOWN —
+ * never an operator-close and never a Release archive (#185).
+ * The normal Orca shape is `result.dispatch.id` (orchestration-worker-control.ts).
+ */
+function workerShow(run, dispatchId) {
+  const out = run(['orchestration', 'worker-show', '--dispatch', dispatchId, '--json']);
+  const receipt = out.receipt ?? {};
+  if (out.status !== 0 || receipt.ok !== true) {
+    return { known: false, reason: 'worker-show did not answer' };
+  }
+  if (!('result' in receipt) || receipt.result === null || typeof receipt.result !== 'object') {
+    return { known: false, reason: 'worker-show answered without a result' };
+  }
+  const result = receipt.result;
+  const named =
+    result.dispatch !== null && typeof result.dispatch === 'object' && typeof result.dispatch.id === 'string'
+      ? result.dispatch.id
+      : '';
+  if (named === '') {
+    return { known: false, reason: 'worker-show did not name result.dispatch.id' };
+  }
+  if (named !== dispatchId) {
+    return { known: false, reason: `worker-show named dispatch ${named}, not this one` };
+  }
+  return { known: true, result };
+}
+
+/**
+ * The exact operator-close Orca publishes on a closed pane: observation.exited
+ * with exactWorker true, terminal.connected false, exitCause.kind operator_close
+ * (orchestration-worker-observation.ts, exit-provenance-audit.test.ts). Anything
+ * else is not this case — including identity_changed, which returns exact false
+ * and terminal null. Absent fields are unknown, never a throw.
+ */
+function exactOperatorClose(result) {
+  if (result === null || result === undefined || typeof result !== 'object') return false;
+  const observation = result.observation;
+  const terminal = result.terminal;
+  if (observation === null || observation === undefined || typeof observation !== 'object') return false;
+  if (observation.exactWorker !== true || observation.status !== 'exited') return false;
+  if (terminal === null || terminal === undefined || typeof terminal !== 'object') return false;
+  if (terminal.connected !== false) return false;
+  const cause = terminal.exitCause;
+  if (cause === null || cause === undefined || typeof cause !== 'object') return false;
+  return cause.kind === 'operator_close';
+}
+
+/**
+ * A Release archive is only the runtime's captured receipt for THIS dispatch.
+ * archiveSummary is null when source and status are both empty
+ * (orchestration-worker-release-completion.ts); a successful close publishes
+ * { source: 'terminal', status: 'captured' }. Null fields are absence, not capture.
+ * ownerDispatchId must positively name this dispatch — an empty owner is not ours.
+ */
+function establishedArchive(resource, dispatchId) {
+  if (resource === null || resource === undefined || typeof resource !== 'object') return null;
+  const owner = typeof resource.ownerDispatchId === 'string' ? resource.ownerDispatchId : '';
+  if (owner === '' || owner !== dispatchId) return null;
+  const archive = resource.archive;
+  if (archive === null || archive === undefined || typeof archive !== 'object') return null;
+  const status = typeof archive.status === 'string' ? archive.status : '';
+  const source = typeof archive.source === 'string' ? archive.source : '';
+  if (status !== 'captured' || source === '') return null;
+  return { source, status };
+}
+
+const processReadRepair = (worktree, dispatchId) =>
+  worktree === ''
+    ? `orca orchestration worker-show --dispatch ${dispatchId} --json   # the worktree it ran in; then read what still runs there before anything is killed`
+    : `pgrep -fl '${worktree}'   # a runtime restart keeps the pty's process alive with no pane (#160): read it before anything is killed, never by name alone`;
+
+const historyRepair = (dispatchId, request) => {
+  const read = `orca orchestration worker-read --dispatch ${dispatchId} --json   # inspect remaining output; this is not a Release archive`;
+  return request === '' ? read : `${read}. Session history: ax worker transcript ${request}`;
+};
+
+/**
  * The dispatches this host recorded that Orca's inventory does not mention.
  *
  * F-048: a `worker-start` repaired with `--inject` produces a Dispatch without
@@ -1339,14 +1416,34 @@ export function release(
         // told what to read. The repair is a read, never a kill: this verb never
         // touches a process, and a pid nobody verified is not one to signal.
         if (only !== '') {
-          lines.push({
-            level: 'note',
-            text: `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane ${row.handle} is gone from the runtime — nothing here to close, and no release archived its transcript`,
-            repair:
-              worktree === ''
-                ? `orca orchestration worker-show --dispatch ${row.dispatchId} --json   # the worktree it ran in; then read what still runs there before anything is killed`
-                : `pgrep -fl '${worktree}'   # a runtime restart keeps the pty's process alive with no pane (#160): read it before anything is killed, never by name alone`,
-          });
+          // #185: a NAMED gone pane may already have an exact operator-close
+          // observation. That is a retained ending with readable history, not
+          // another process hunt. Unread show and unproven identity stay
+          // UNKNOWN and keep the #160 process read. Never reopen, kill, or
+          // mint a release identity from here.
+          const shown = workerShow(run, row.dispatchId);
+          const gonePrefix = `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane ${row.handle} is gone from the runtime`;
+          if (shown.known && exactOperatorClose(shown.result)) {
+            const archive = establishedArchive(shown.result.terminalResource ?? null, row.dispatchId);
+            const archiveText =
+              archive === null
+                ? 'no Release archive can be established'
+                : `Release archive ${archive.source}/${archive.status} for ${row.dispatchId}`;
+            lines.push({
+              level: 'note',
+              text: `${gonePrefix} — retained: exact worker exited operator_close; ${archiveText}`,
+              repair: `orca orchestration worker-show --dispatch ${row.dispatchId} --json   # the observation that established operator_close. ${historyRepair(row.dispatchId, entry?.request ?? '')}`,
+            });
+          } else {
+            const why = shown.known
+              ? 'UNKNOWN: identity is unproven — this observation is not an exact operator_close'
+              : `UNKNOWN: ${shown.reason}`;
+            lines.push({
+              level: 'note',
+              text: `${gonePrefix} — ${why}`,
+              repair: processReadRepair(worktree, row.dispatchId),
+            });
+          }
         }
       }
       continue;

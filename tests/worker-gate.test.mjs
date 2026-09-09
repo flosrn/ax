@@ -867,3 +867,99 @@ test('#205: a fenced task-create that nonetheless reports an effect still refuse
   assert.equal(r.code, 3, r.out);
   assert.match(r.out, /still reports resources/, 'the existing resource term answers first');
 });
+
+// ── #221: a restored pane under a new handle is not a proven-dead worktree ──
+// Orca readoption (#160) matches assignee_handle AND process_incarnation on
+// pending/dispatched + starting/ready/start_unknown only. A succeeded dispatch
+// restored under a new handle is invisible to worker-list's recorded handle,
+// so handle-keyed MORT is not exclusivity of the worktree. Occupancy is not
+// ownership: a live pane is not attributed to a dispatch by path or title.
+
+test('#221: a live pane at the recorded worktree under a new handle is not a proven corpse', () => {
+  const tree = '/tmp/221-restored-tree';
+  const dir = store();
+  record(dir, '221-restored', { dispatchId: 'ctx_old', handle: 'term_old', worktree: tree });
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_old', 'term_old', 'succeeded')],
+      terminals: [{ handle: 'term_restored', worktreePath: tree }],
+    },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /Safe to re-dispatch/);
+  assert.doesNotMatch(r.out, /no live agent: every dispatch of this task is a PROVEN corpse/);
+  assert.doesNotMatch(r.out, /attributed|belongs to ctx_old/, 'occupancy is not pane-to-dispatch ownership');
+});
+
+test('#221: the occupancy refusal names the exact read for each extra handle, not a verb that cannot show it', () => {
+  // The review finding: the repair was `ax worker ls`, which renders RECORDS —
+  // and the extra handle is by definition one no record of this task names, so
+  // it appears in no line that verb prints. The only read that can settle it is
+  // the one aimed at the handle itself.
+  const tree = '/tmp/221-inspect-tree';
+  const dir = store();
+  record(dir, '221-inspect', { dispatchId: 'ctx_old', handle: 'term_old', worktree: tree });
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_old', 'term_old', 'succeeded')],
+      terminals: [
+        { handle: 'term_restored', worktreePath: tree },
+        { handle: 'term_second', worktreePath: tree },
+      ],
+    },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /orca terminal show --terminal term_restored --json/, 'the first extra is inspectable as written');
+  assert.match(r.out, /orca terminal show --terminal term_second --json/, 'and so is every other one');
+  assert.doesNotMatch(r.out, /attributed|belongs to ctx_old/, 'the inspection is not an attribution');
+});
+
+test('#221: a live pane on a different worktree does not invent a rival for this task', () => {
+  const dir = store();
+  record(dir, '221-ours', { dispatchId: 'ctx_old', handle: 'term_old', worktree: '/tmp/221-ours' });
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_old', 'term_old')],
+      terminals: [{ handle: 'term_stranger', worktreePath: '/tmp/someone-else' }],
+    },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /no live agent/);
+});
+
+test('#221: restored original plus a live replacement still refuses a fresh identity', () => {
+  const tree = '/tmp/221-both-tree';
+  const dir = store();
+  record(dir, '221-both', { dispatchId: 'ctx_old', handle: 'term_old', worktree: tree });
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_old', 'term_old', 'succeeded'), dispatch('ctx_new', 'term_new', 'ready')],
+      terminals: [
+        { handle: 'term_restored', worktreePath: tree },
+        { handle: 'term_new', worktreePath: tree },
+      ],
+    },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.notEqual(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /Safe to re-dispatch/);
+});
+
+test('#221: an unreadable inventory still cannot establish — restoration does not invent a list', () => {
+  const dir = store();
+  record(dir, '221-unknown', { dispatchId: 'ctx_old', handle: 'term_old', worktree: '/tmp/221-unknown' });
+  const r = verdict(
+    { workers: [dispatch('ctx_old', 'term_old')], terminalListFails: true },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /Safe to re-dispatch/);
+});

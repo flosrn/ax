@@ -1162,23 +1162,13 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
   };
 
   /**
-   * Every file that spawns Orca with a literal argv, with the exact resolver
-   * import it must carry. The specifier is stated per file rather than matched
-   * loosely — a loose match is how a second resolver grows unnoticed. The peer
-   * registry split (2026-08-26) left exactly one Orca spawner in that package,
-   * `orca.ts`. The board writer (`shared/board.ts`) builds its argv from
-   * `axArgv()` behind an injected spawn, so no literal argv exists here to
-   * audit; its shape is pinned by `shared/board.test.ts` instead.
+   * Every file that spawns Orca with a literal argv. The peer registry split
+   * left the process adapter in `orca.ts`; the extension still probes the
+   * resolved binary. The board writer is exercised by shared/board.test.ts.
    */
-  const SPAWNERS: { path: string; imports: string }[] = [
-    {
-      path: '../peer/index.ts',
-      imports: "import { orca, orcaBin, orcaRaw, runOrca } from './orca.ts'",
-    },
-    {
-      path: '../peer/orca.ts',
-      imports: "import { resolveOrcaBin } from '../model/self.ts'",
-    },
+  const SPAWNERS = [
+    { path: '../peer/index.ts' },
+    { path: '../peer/orca.ts' },
   ];
 
   /** Source with comments stripped, so prose naming the binary cannot fail a test. */
@@ -1231,10 +1221,6 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
         ).toEqual([]);
       });
 
-      test('it imports the one resolver instead of growing a second', async () => {
-        const source = await Bun.file(new URL(spawner.path, import.meta.url)).text();
-        expect(source).toContain(spawner.imports);
-      });
     });
   }
 

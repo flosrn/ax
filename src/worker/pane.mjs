@@ -393,3 +393,60 @@ export function liveInventory({ local, panes, scopes }) {
   }
   return { ok: true, byHandle, unresolved, omitted: local.omitted, omittedHosts: local.omittedHosts, hosts: local.hosts };
 }
+
+/**
+ * The comparable worktree identity a selector or inventory path names.
+ *
+ * `path:<abs>` strips to the path; `current` and `id:` selectors name no
+ * filesystem occupancy this reader may compare; anything else is used as
+ * written. Matching is string identity after that, never a guessed realpath
+ * (two spellings of one tree would under-refuse, which is the safe direction
+ * only if we also refuse unknowns — occupancy is fail-closed on a HIT, not
+ * on a miss). This does not attribute a pane to a dispatch.
+ */
+export function worktreeKey(value) {
+  const raw = String(value ?? '').trim();
+  if (raw === '' || raw === 'current') return '';
+  if (raw.startsWith('path:')) return raw.slice('path:'.length);
+  if (raw.startsWith('id:')) return '';
+  return raw;
+}
+
+/**
+ * Live (non-orphaned) inventory handles grouped by worktreeKey.
+ * A handle whose path does not key is occupancy nobody can compare, ignored.
+ */
+export function occupiedWorktrees(inventory) {
+  const byTree = new Map();
+  if (!inventory || !(inventory.byHandle instanceof Map)) return byTree;
+  for (const [handle, terminal] of inventory.byHandle) {
+    if (!terminal || terminal.orphaned === true) continue;
+    const key = worktreeKey(terminal.worktreePath);
+    if (key === '') continue;
+    const row = byTree.get(key);
+    if (row === undefined) byTree.set(key, [handle]);
+    else row.push(handle);
+  }
+  return byTree;
+}
+
+/**
+ * Are there live panes at `recordedWorktree` that `knownHandles` do not own?
+ *
+ * Occupancy, not ownership: extras are named as handles, never as a dispatch.
+ * An empty recorded tree is nothing to compare — not a permission, just no
+ * question this function can ask (the caller still has handle-keyed liveness).
+ */
+export function worktreeOccupancy({ inventory, recordedWorktree, knownHandles = [] } = {}) {
+  const tree = worktreeKey(recordedWorktree);
+  if (tree === '') return { ok: true, extras: [], tree: '' };
+  const known = new Set(knownHandles.filter(handle => typeof handle === 'string' && handle !== ''));
+  const extras = (occupiedWorktrees(inventory).get(tree) ?? []).filter(handle => !known.has(handle));
+  if (extras.length === 0) return { ok: true, extras, tree };
+  return {
+    ok: false,
+    extras,
+    tree,
+    reason: `worktree ${tree} has ${extras.length} live pane(s) under handle(s) this task does not own — exclusivity is UNKNOWN, not a proven corpse`,
+  };
+}

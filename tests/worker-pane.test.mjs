@@ -8,7 +8,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { createRunner } from '../src/orca-bin.mjs';
-import { hostScopes, liveInventory, paneReadable, readPane, terminalCursor, terminalInventory } from '../src/worker/pane.mjs';
+import {
+  hostScopes,
+  liveInventory,
+  occupiedWorktrees,
+  paneReadable,
+  readPane,
+  terminalCursor,
+  terminalInventory,
+  worktreeKey,
+  worktreeOccupancy,
+} from '../src/worker/pane.mjs';
 
 const HANDLE = 'term_a51ccbf8-23e1-4aa7-8735-9d0cbf09a521';
 
@@ -253,4 +263,57 @@ test('#161: a pane two records place on two hosts is unresolved only when NEITHE
   });
   assert.equal(unknown.byHandle.size, 0);
   assert.deepEqual(unknown.unresolved.map(row => row.handle), ['term_far'], 'named once, however many hosts failed');
+});
+
+// ── #221: occupancy of a recorded worktree, never ownership of a pane ────────
+// Orca readoption (#160) binds a restored session to a NEW handle, and matches
+// only pending/dispatched rows, so a succeeded dispatch restored at the
+// recorded path is invisible to the recorded handle. A dead handle is therefore
+// not proof the tree is free. What this reader may NOT do is the other error:
+// attribute the pane it found to that dispatch.
+
+/** An inventory as `terminalInventory` answers it, live unless said otherwise. */
+const inv = entries => ({
+  ok: true,
+  byHandle: new Map(entries.map(([handle, row]) => [handle, { orphaned: false, ...row }])),
+});
+
+test('#221: a selector naming no comparable path asks no occupancy question, and grants nothing', () => {
+  // `current` is resolved by the runtime, not by this process, and `id:` names a
+  // worktree whose path this reader does not hold. Neither is a permission:
+  // the caller still has its handle-keyed liveness, which is what it had before.
+  for (const selector of ['', '   ', 'current', 'id:wt_7', null, undefined]) {
+    assert.equal(worktreeKey(selector), '', `${JSON.stringify(selector)} names no path to compare`);
+    const occ = worktreeOccupancy({ inventory: inv([['term_x', { worktreePath: '/tmp/tree' }]]), recordedWorktree: selector });
+    assert.deepEqual([occ.ok, occ.extras, occ.tree], [true, [], ''], 'no question asked is never an established emptiness');
+  }
+  assert.equal(worktreeKey('path:/tmp/tree'), '/tmp/tree');
+  assert.equal(worktreeKey(' /tmp/tree '), '/tmp/tree', 'an inventory path is compared as written, trimmed');
+});
+
+test('#221: a live pane at the recorded tree that no recorded handle owns refuses — naming handles, never a dispatch', () => {
+  const inventory = inv([
+    ['term_old', { worktreePath: '/tmp/tree', orphaned: true }],
+    ['term_restored', { worktreePath: '/tmp/tree' }],
+    ['term_elsewhere', { worktreePath: '/tmp/other-tree' }],
+  ]);
+
+  const occ = worktreeOccupancy({ inventory, recordedWorktree: 'path:/tmp/tree', knownHandles: ['term_old'] });
+  assert.equal(occ.ok, false);
+  assert.deepEqual(occ.extras, ['term_restored'], 'the extra is named as a handle');
+  assert.match(occ.reason, /exclusivity is UNKNOWN/);
+  assert.doesNotMatch(occ.reason, /ctx_|dispatch|belongs to/, 'occupancy is not pane-to-dispatch attribution');
+
+  // A pane a record already accounts for is not an extra: a repair reuses one
+  // terminal and a --replace leaves two records naming one, so every recorded
+  // handle counts as owned or one task would refuse on its own pane.
+  assert.equal(worktreeOccupancy({ inventory, recordedWorktree: 'path:/tmp/tree', knownHandles: ['term_old', 'term_restored'] }).ok, true);
+
+  // A live pane on another tree is nobody's rival here.
+  assert.equal(worktreeOccupancy({ inventory, recordedWorktree: 'path:/tmp/nothing-here', knownHandles: [] }).ok, true);
+
+  // An orphaned pane is a corpse Orca still lists, and it occupies nothing.
+  assert.deepEqual(occupiedWorktrees(inventory).get('/tmp/tree'), ['term_restored']);
+  // And an inventory this reader cannot walk answers for no tree at all.
+  assert.equal(occupiedWorktrees({ byHandle: null }).size, 0);
 });
