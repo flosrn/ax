@@ -318,7 +318,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     }
     if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
   };
-  const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0 } };
+  const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0, occupied: { machine: 0, mine: 0 } } };
 
   const dir = storeArg || defaultStore(env);
   let files;

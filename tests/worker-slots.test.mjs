@@ -91,6 +91,19 @@ const failedStart = () => ({
 const count = (dir, { local = [], hosts = {}, repo = 'acme/widgets' } = {}) =>
   livePanes({ store: dir, local: localOf(local), scopes: scopesOf(hosts), repo });
 
+/**
+ * The unmeasured pair with its CAUSE split (#221 review): `occupied` is the
+ * subset whose liveness could not be established because a recorded worktree is
+ * still occupied by a pane no record owns, and the remainder is a record on a
+ * host that could not be asked. A cap's arithmetic reads the TOTALS; only the
+ * sentence a caller prints reads the cause, so the two must not be one number.
+ */
+const unmeasured = ({ machine = 0, mine = 0, occupiedMachine = 0, occupiedMine = 0 } = {}) => ({
+  machine,
+  mine,
+  occupied: { machine: occupiedMachine, mine: occupiedMine },
+});
+
 test('#161: a pane ANY phase recorded is a slot, and the dispatch index is not consulted', () => {
   const dir = store();
   // The F-048 record: the `worker-start` receipt carries no effects, so nothing
@@ -98,7 +111,7 @@ test('#161: a pane ANY phase recorded is a slot, and the dispatch index is not c
   record(dir, 'gap-353-u3', [failedStart(), recorded({ name: 'worker-start-inject', handle: 'term_live' })]);
 
   const slots = count(dir, { local: [['term_live', up]] });
-  assert.deepEqual(slots.live, { machine: 1, mine: 1, unknown: 0, unmeasured: { machine: 0, mine: 0 } });
+  assert.deepEqual(slots.live, { machine: 1, mine: 1, unknown: 0, unmeasured: unmeasured() });
   assert.deepEqual(slots.unreadable, []);
 });
 
@@ -114,7 +127,7 @@ test('#161: two records naming ONE pane are one slot, and agree on the repositor
     machine: 1,
     mine: 1,
     unknown: 0,
-    unmeasured: { machine: 0, mine: 0 },
+    unmeasured: unmeasured(),
   });
 
   // And when the two records place that one pane in two DIFFERENT repositories,
@@ -127,7 +140,7 @@ test('#161: two records naming ONE pane are one slot, and agree on the repositor
     machine: 1,
     mine: 0,
     unknown: 1,
-    unmeasured: { machine: 0, mine: 0 },
+    unmeasured: unmeasured(),
   });
 
   // AND THE DISAGREEMENT IS PERMANENT. A third record agreeing with the first
@@ -144,7 +157,7 @@ test('#161: two records naming ONE pane are one slot, and agree on the repositor
     machine: 1,
     mine: 0,
     unknown: 1,
-    unmeasured: { machine: 0, mine: 0 },
+    unmeasured: unmeasured(),
   });
 });
 
@@ -159,7 +172,7 @@ test('only a recorded handle whose pane is alive and owned is capacity', () => {
   // term_b is orphaned, term_gone is in no list, term_editor has no record:
   // none of them is dispatch capacity.
   const slots = count(dir, { local: [['term_a', up], ['term_b', orphaned], ['term_editor', up]] });
-  assert.deepEqual(slots.live, { machine: 1, mine: 1, unknown: 0, unmeasured: { machine: 0, mine: 0 } });
+  assert.deepEqual(slots.live, { machine: 1, mine: 1, unknown: 0, unmeasured: unmeasured() });
 });
 
 test('#88: the per-repository count is scoped by the repository each record NAMES', () => {
@@ -174,7 +187,7 @@ test('#88: the per-repository count is scoped by the repository each record NAME
   record(dir, 'nameless', [recorded({ handle: 'term_nameless' })], { repo: '' });
 
   const local = [['term_mine', up], ['term_theirs', up], ['term_theirs_2', up], ['term_nameless', up]];
-  const none = { machine: 0, mine: 0 };
+  const none = unmeasured();
   assert.deepEqual(count(dir, { local, repo: 'flosrn/ax' }).live, { machine: 4, mine: 1, unknown: 1, unmeasured: none });
   // The same store read from the other checkout: a slug differing only in case
   // is the same repository, which is the comparison `ax worker start` already
@@ -199,7 +212,7 @@ test('#88: a pane whose host could not be asked is UNMEASURED, scoped by the rep
     machine: 1,
     mine: 1,
     unknown: 0,
-    unmeasured: { machine: 2, mine: 1 },
+    unmeasured: unmeasured({ machine: 2, mine: 1 }),
   });
   // Read from the other checkout, the same store: its own unknown is the one
   // that could make ITS cap unmeasurable, and mine is only a machine-total fact.
@@ -207,12 +220,12 @@ test('#88: a pane whose host could not be asked is UNMEASURED, scoped by the rep
     machine: 1,
     mine: 0,
     unknown: 0,
-    unmeasured: { machine: 2, mine: 1 },
+    unmeasured: unmeasured({ machine: 2, mine: 1 }),
   });
   // A host that ANSWERS classifies its own panes: present is capacity, absent
   // from the list it gave is a corpse there, and neither is unmeasured.
   const answered = count(dir, { local: [['term_mine', up]], hosts: { gapicore: ['term_mine_far'] }, repo: 'flosrn/ax' });
-  assert.deepEqual(answered.live, { machine: 2, mine: 2, unknown: 0, unmeasured: { machine: 0, mine: 0 } });
+  assert.deepEqual(answered.live, { machine: 2, mine: 2, unknown: 0, unmeasured: unmeasured() });
 });
 
 test('a phase that recorded a pane and NO argv makes its record unreadable, never a local pane (#130)', () => {
@@ -285,7 +298,7 @@ test('a store that never existed is a real zero; one that cannot be enumerated i
   // opposite: zero would be a lie, so there is no number to spend.
   const missing = count(join(store(), 'never-dispatched'));
   assert.equal(missing.missing, true);
-  assert.deepEqual(missing.live, { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0 } });
+  assert.deepEqual(missing.live, { machine: 0, mine: 0, unknown: 0, unmeasured: unmeasured() });
 
   const file = join(store(), 'store');
   writeFileSync(file, 'this is a file, not a directory');
@@ -304,4 +317,65 @@ test('the inventory the count was taken against is returned, never rebuilt by th
   const slots = count(dir, { hosts: { gapicore: ['term_far'] } });
   assert.deepEqual([...slots.inventory.byHandle.keys()], ['term_far']);
   assert.deepEqual(slots.inventory.unresolved, []);
+});
+
+test('#221: a live pane at a recorded worktree is not a spendable empty cap', () => {
+  const tree = '/tmp/221-slots-tree';
+  const dir = store();
+  record(dir, 'old', [{
+    name: 'worker-start',
+    identity: 'id-old',
+    argv: ['orca', 'orchestration', 'worker-start', '--worktree', `path:${tree}`, '--json'],
+    beganAt: '2026-09-04T10:00:00.000Z',
+    exit: 0,
+    receipt: { ok: true, result: { dispatchId: 'ctx-old', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_old' }] } },
+  }]);
+
+  const occupied = count(dir, { local: [['term_restored', { orphaned: false, worktreePath: tree }]] });
+  assert.ok(
+    occupied.live === null || (occupied.live.unmeasured && occupied.live.unmeasured.machine > 0),
+    `recorded worktree occupancy must not read as a proven-empty cap: ${JSON.stringify(occupied.live)}`,
+  );
+  assert.equal(occupied.live?.mine ?? 0, 0, 'the extra pane is not attributed to this repository by path');
+  // The consequence a dispatch consumes: an unmeasured pane of THIS repository
+  // is what `capVerdict` refuses on as an inability (F-028), so the freed slot
+  // an unproven death would have handed out is never spent.
+  assert.equal(occupied.live?.unmeasured.mine, 1, 'the recorded pane of this repository has no established liveness');
+  // AND THE CAUSE RIDES WITH IT, never flattened into "a host could not be
+  // asked" (review of #221): no host was omitted here — the local list answered
+  // in full, and what is unknown is whether the recorded tree is exclusive. A
+  // caller that prints the host sentence over this sends its reader to declare a
+  // host that has nothing to do with the pane.
+  assert.deepEqual(occupied.live?.unmeasured.occupied, { machine: 1, mine: 1 }, 'occupancy is named as occupancy');
+
+  const foreign = count(dir, { local: [['term_stranger', { orphaned: false, worktreePath: '/tmp/other-tree' }]] });
+  assert.deepEqual(foreign.live, { machine: 0, mine: 0, unknown: 0, unmeasured: unmeasured() });
+});
+
+test('#221: an unaskable host and an occupied worktree are both unmeasured, and are counted APART', () => {
+  // Two inabilities, two repairs: one is answered by asking a host, the other by
+  // inspecting the live handle at a path. Summing them into one number leaves
+  // every caller printing one of the two repairs over both.
+  const tree = '/tmp/221-mixed-tree';
+  const dir = store();
+  record(dir, 'far', [recorded({ handle: 'term_far', on: 'gapicore' })]);
+  record(dir, 'here', [{
+    name: 'worker-start',
+    identity: 'id-here',
+    argv: ['orca', 'orchestration', 'worker-start', '--worktree', `path:${tree}`, '--json'],
+    beganAt: '2026-09-04T10:00:00.000Z',
+    exit: 0,
+    receipt: { ok: true, result: { dispatchId: 'ctx-here', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_here' }] } },
+  }]);
+
+  const mixed = count(dir, {
+    local: [['term_restored', { orphaned: false, worktreePath: tree }]],
+    hosts: { gapicore: 'ssh_unreachable' },
+  });
+  assert.deepEqual(mixed.live, {
+    machine: 0,
+    mine: 0,
+    unknown: 0,
+    unmeasured: unmeasured({ machine: 2, mine: 2, occupiedMachine: 1, occupiedMine: 1 }),
+  });
 });

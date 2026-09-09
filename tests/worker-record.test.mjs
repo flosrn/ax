@@ -296,12 +296,12 @@ test('taskIdScan finds the newest id across attempts, both receipt shapes', () =
 });
 
 test('a stale claim is a record proved EMPTY: every phase a conclusive refusal, and foreign', () => {
-  const refusal = JSON.stringify({ ok: false, error: { code: 'runtime_unavailable', message: 'no runtime here' } });
-  const refused = (argv, receiptText = refusal, rest = {}) => closed(receiptText, { exit: 1, argv, ...rest });
+  const fenced = JSON.stringify({ ok: false, error: { code: 'consumer_fenced', message: 'bound elsewhere' } });
+  const refused = (argv, receiptText = fenced, rest = {}) => closed(receiptText, { exit: 1, argv, ...rest });
 
   const foreign = ['orca', 'x', '--run', 'run_theirs'];
 
-  // The ONE reclaimable shape: closed, refused, empty-handed, and not ours.
+  // The ONE reclaimable shape: closed, refused before Orca's first write, and not ours.
   assert.deepEqual(staleClaim(refused(foreign), 'run_mine'), { stale: true, foreignRun: 'run_theirs' });
 
   // No phase at all: the first mutation may be in flight right now.
@@ -317,7 +317,7 @@ test('a stale claim is a record proved EMPTY: every phase a conclusive refusal, 
 
   // Unknown outcomes — illegible receipt, transport that never concluded.
   assert.match(staleClaim(refused(foreign, 'not json {'), 'run_mine').reason, /unknown outcome/);
-  assert.match(staleClaim(refused(foreign, refusal, { error: new Error('ETIMEDOUT') }), 'run_mine').reason, /unknown outcome/);
+  assert.match(staleClaim(refused(foreign, fenced, { error: new Error('ETIMEDOUT') }), 'run_mine').reason, /unknown outcome/);
 
   // Success, with a task id and without one: both may name a live agent.
   assert.match(staleClaim(refused(foreign, JSON.stringify({ ok: true, result: { task: { id: 'task_x' } } })), 'run_mine').reason, /task id/);
@@ -334,9 +334,10 @@ test('a stale claim is a record proved EMPTY: every phase a conclusive refusal, 
   phaseBegin(mixed, { name: 'worker-start', identity: 'id-2', argv: ['orca', 'orchestration', 'worker-start'] });
   assert.match(staleClaim(mixed, 'run_mine').reason, /still open/);
 
-  // And the Run tests, unchanged: unprovable, or the caller's own to replay.
-  assert.match(staleClaim(refused(['orca', 'x', '--json']), 'run_mine').reason, /names no Run/);
-  assert.match(staleClaim(refused(['orca', 'x', '--run', 'run_mine']), 'run_mine').reason, /own Run run_mine/);
+  // And the Run tests, on a positively empty receipt: unprovable, or the caller's own to replay.
+  const empty = JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: [], residualResources: [] } });
+  assert.match(staleClaim(refused(['orca', 'x', '--json'], empty), 'run_mine').reason, /names no Run/);
+  assert.match(staleClaim(refused(['orca', 'x', '--run', 'run_mine'], empty), 'run_mine').reason, /own Run run_mine/);
 });
 
 test('#205: "held no mutation" is the stale-claim proof WITHOUT its Run term — relatedness, not takeover', () => {
@@ -380,11 +381,11 @@ test('#205: "held no mutation" is the stale-claim proof WITHOUT its Run term —
   assert.match(heldNoMutation(mixed).reason, /still open/);
 });
 
-test('#205 repair 1: relatedness needs POSITIVE emptiness — and is strictly stronger than reclaimability', () => {
+test('#205 repair 1: relatedness needs POSITIVE emptiness — reclaim uses the same proof (#212)', () => {
   // P1 on PR #209: `?? []` read an ABSENT container as an empty one, so
   // "created nothing" was concluded from a silent receipt (F-028) in the one
   // place whose consequence is a re-dispatch. Emptiness is now asserted, by one
-  // of exactly two positive grounds.
+  // of exactly two positive grounds — for relatedness AND for takeover.
   const phased = (name, receiptText, { exit = 1 } = {}) => {
     const { path } = claimRecord(store(), 'req-1');
     initRecord(path, { request: 'req-1', orca: 'orca' });
@@ -394,14 +395,9 @@ test('#205 repair 1: relatedness needs POSITIVE emptiness — and is strictly st
   };
   const quiet = code => JSON.stringify({ ok: false, error: { code, message: 'no runtime here' } });
 
-  // GROUND 1 — the receipt NAMES both containers and both are empty. The code
-  // is irrelevant then: the mutator itself reported creating nothing.
   const named = phased('anything', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: [], residualResources: [] } }));
   assert.deepEqual(heldNoMutation(named), { proven: true, reason: '', ground: 'each reports no effects and no residual resources' });
 
-  // GROUND 2 — a refusal Orca's source proves is raised before the mutation's
-  // first write, keyed by PHASE because `consumer_fenced` is not universally
-  // pre-mutation (mailbox delivery and the gate store raise it after writes).
   assert.equal(heldNoMutation(phased('task-create', quiet('consumer_fenced'))).proven, true);
   assert.match(
     heldNoMutation(phased('worker-start', quiet('consumer_fenced'))).reason,
@@ -409,17 +405,12 @@ test('#205 repair 1: relatedness needs POSITIVE emptiness — and is strictly st
     'the same code on a phase nobody read to the write is not proof',
   );
 
-  // NEITHER GROUND — a silent receipt is unknown, whatever its code.
   assert.match(heldNoMutation(phased('task-create', quiet('runtime_unavailable'))).reason, /names no effects/);
   assert.match(
     heldNoMutation(phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: null, residualResources: [] } }))).reason,
     /names no effects/,
     'null is not an empty list',
   );
-  // A scalar is not a list either, and the two terms divide it: a non-empty one
-  // trips the resource term first (its `length` is not zero), while an EMPTY
-  // string would slip past that and is caught by the strict ground — which is
-  // exactly the hole `?? []` left open.
   assert.match(
     heldNoMutation(phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: 'none', residualResources: 'none' } }))).reason,
     /still reports resources/,
@@ -431,15 +422,50 @@ test('#205 repair 1: relatedness needs POSITIVE emptiness — and is strictly st
     'an empty scalar is not an empty list',
   );
 
-  // THE ASYMMETRY, PINNED. `staleClaim` was ratified at the weaker strength on
-  // 2026-08-14 and #205 forbids changing its answers, so the same silent
-  // receipt is still reclaimable while it is NOT proof of unrelatedness. The
-  // stronger proof belongs to the stronger consequence, and the gap is
-  // deliberate rather than accidental.
   const silent = phased('task-create', quiet('runtime_unavailable'));
-  assert.deepEqual(staleClaim(silent, 'run_mine'), { stale: true, foreignRun: 'run_theirs' }, "staleClaim's agreed answer is untouched");
-  assert.equal(heldNoMutation(silent).proven, false, 'and relatedness refuses the very same record');
+  assert.equal(staleClaim(silent, 'run_mine').stale, false, 'reclaim needs the same positive emptiness as relatedness (#212)');
+  assert.match(staleClaim(silent, 'run_mine').reason, /names no effects/);
+  assert.equal(heldNoMutation(silent).proven, false);
 });
+
+test('#212: absent, null, or empty-scalar resource containers do not make a claim reclaimable', () => {
+  const phased = (name, receiptText) => {
+    const { path } = claimRecord(store(), 'req-1');
+    initRecord(path, { request: 'req-1', orca: 'orca' });
+    phaseBegin(path, { name, identity: 'id-1', argv: ['orca', 'orchestration', name, '--run', 'run_theirs', '--json'] });
+    phaseEnd(path, 'last', { exit: 1, receiptText });
+    return path;
+  };
+
+  const silent = phased('task-create', JSON.stringify({ ok: false, error: { code: 'runtime_unavailable', message: 'no runtime here' } }));
+  assert.equal(staleClaim(silent, 'run_mine').stale, false, 'an absent effects container is UNKNOWN, not empty');
+  assert.match(staleClaim(silent, 'run_mine').reason, /names no effects/);
+
+  const nulled = phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: null, residualResources: [] } }));
+  assert.equal(staleClaim(nulled, 'run_mine').stale, false, 'null is not an empty list');
+  assert.match(staleClaim(nulled, 'run_mine').reason, /names no effects/);
+
+  const scalar = phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: '', residualResources: '' } }));
+  assert.equal(staleClaim(scalar, 'run_mine').stale, false, 'an empty scalar is not an empty list');
+  assert.match(staleClaim(scalar, 'run_mine').reason, /names no effects/);
+});
+
+test('#212: explicit empty arrays and a pre-write task-create fence remain reclaimable', () => {
+  const phased = (name, receiptText) => {
+    const { path } = claimRecord(store(), 'req-1');
+    initRecord(path, { request: 'req-1', orca: 'orca' });
+    phaseBegin(path, { name, identity: 'id-1', argv: ['orca', 'orchestration', name, '--run', 'run_theirs', '--json'] });
+    phaseEnd(path, 'last', { exit: 1, receiptText });
+    return path;
+  };
+
+  const named = phased('task-create', JSON.stringify({ ok: false, error: { code: 'boom' }, result: { effects: [], residualResources: [] } }));
+  assert.deepEqual(staleClaim(named, 'run_mine'), { stale: true, foreignRun: 'run_theirs' });
+
+  const fencedCreate = phased('task-create', JSON.stringify({ ok: false, error: { code: 'consumer_fenced', message: 'bound elsewhere' } }));
+  assert.deepEqual(staleClaim(fencedCreate, 'run_mine'), { stale: true, foreignRun: 'run_theirs' });
+});
+
 
 test('attemptNew settles the current attempt and opens the next', () => {
   const path = begun();

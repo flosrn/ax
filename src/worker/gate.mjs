@@ -80,7 +80,7 @@ import { defaultExec } from '../exec.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
-import { hostReader, hostScopes, terminalInventory } from './pane.mjs';
+import { hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
 import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, scanStore, taskIdScan } from './record.mjs';
 
 /**
@@ -445,6 +445,39 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
       if (row.prov !== undefined) fix(`ax worker tail ${row.prov.request}   # the record behind ${row.w.dispatchId}: is its pane still emitting?`);
     }
     fix('ax worker ls   # every record, the pane it named and the host that answered for it');
+    return 3;
+  }
+
+  // A DEAD HANDLE IS NOT EXCLUSIVITY OF THE WORKTREE (#221). Restoration can
+  // sit at the recorded path under a new handle that worker-list does not
+  // bind. Occupancy names those extras; it does not attribute them to a
+  // dispatch. A live pane on a different tree is not a rival.
+  const knownHandles = rows
+    .map(w => w.agentTerminalHandle)
+    .filter(handle => typeof handle === 'string' && handle !== '');
+  const occupied = [];
+  for (const { w, prov } of dead) {
+    if (prov === undefined || prov.worktree === undefined || prov.worktree === '') continue;
+    const occ = worktreeOccupancy({ inventory: terminals, recordedWorktree: prov.worktree, knownHandles });
+    if (!occ.ok) occupied.push({ w, prov, occ });
+  }
+  if (occupied.length > 0) {
+    bad(`CANNOT ESTABLISH — ${occupied.length} recorded worktree(s) still have live pane(s) this task does not own, so exclusivity is UNKNOWN (F-028).`);
+    note('Do not re-dispatch on this result: a restored session under a new handle is not a proven corpse, and a dead recorded handle is not proof the worktree is empty.');
+    for (const row of occupied) {
+      note(`${row.w.dispatchId}: ${row.occ.reason}`);
+      note(`live handle(s) at that tree: ${row.occ.extras.join(', ')}`);
+    }
+    // THE READ IS AIMED AT THE HANDLE, not at the record store (#221 review).
+    // `ax worker ls` renders records, and an extra is BY DEFINITION a handle no
+    // record of this task names — so it appears in no line that verb prints,
+    // and the repair sent the reader to an output their pane is absent from.
+    // Each extra is inspectable as written, and the inspection claims nothing:
+    // it reads a pane, it does not attribute it to a dispatch.
+    for (const handle of [...new Set(occupied.flatMap(row => row.occ.extras))]) {
+      fix(`orca terminal show --terminal ${handle} --json   # what is this pane, and is it still working in that tree?`);
+    }
+    fix('ax worker ls   # and the records beside it: which dispatch placed a tree, and which host answered for it');
     return 3;
   }
 

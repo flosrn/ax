@@ -169,6 +169,88 @@ test('capVerdict: an unestablished pane of ANOTHER repository stops nothing unti
   assert.match(armed.repair, /ax worker ls/);
 });
 
+test('capVerdict: an OCCUPIED recorded worktree is named as occupancy, and repaired by inspecting the pane (#221)', () => {
+  // The review finding: this inability has two causes with two different
+  // repairs, and one sentence covered both. Nothing here omitted a host — the
+  // lists answered, and what is unknown is whether the recorded tree is
+  // exclusive. "A host that could not be asked" sends the reader to declare a
+  // host that has nothing to do with the pane, and `ax worker ls` renders
+  // records, so the extra handle is in no output it prints.
+  const out = capVerdict({
+    live: live(0, 0, 0, { mine: 1, machine: 1, occupied: { mine: 1, machine: 1 } }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.kind, 'cannot', 'still an inability, and still about the machine');
+  assert.equal(out.scope, 'repository');
+  assert.match(out.message, /1 pane\(s\) in flosrn\/ax/, 'the count and its scope are unchanged');
+  assert.match(out.message, /worktree/, 'the cause said as itself');
+  assert.doesNotMatch(out.message, /host that could not be asked/, 'no host was omitted');
+  assert.match(out.repair, /orca terminal show --terminal/, 'the read that settles it inspects the live pane');
+  assert.doesNotMatch(out.repair, /dispatch\.hosts/, 'and never asks for a host declaration this has no use for');
+});
+
+test('capVerdict: the two causes of one unmeasured count are named APART, each with its own read (#221)', () => {
+  const out = capVerdict({
+    live: live(0, 0, 0, { mine: 2, machine: 2, occupied: { mine: 1, machine: 1 } }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.kind, 'cannot');
+  assert.match(out.message, /2 pane\(s\) in flosrn\/ax/, 'the total the cap arithmetic used is untouched');
+  assert.match(out.message, /1 on a host that could not be asked/);
+  assert.match(out.message, /1 at a recorded worktree/);
+  assert.match(out.repair, /ax worker ls/, 'the host read');
+  assert.match(out.repair, /orca terminal show --terminal/, 'and the pane read');
+});
+
+test('capVerdict: an armed ceiling unmeasurable through occupancy says occupancy too (#221)', () => {
+  const out = capVerdict({
+    live: live(1, 0, 0, { mine: 0, machine: 1, occupied: { mine: 0, machine: 1 } }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: 3,
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.kind, 'cannot');
+  assert.equal(out.scope, 'machine');
+  assert.match(out.message, /worktree/);
+  assert.doesNotMatch(out.message, /host that could not be asked/);
+  assert.match(out.repair, /orca terminal show --terminal/);
+
+  // Unarmed, the same panes gate nothing and the disclosure still says which
+  // cause it is: the reader's next decision may be to arm the ceiling.
+  const unarmed = capVerdict({
+    live: live(1, 0, 0, { mine: 0, machine: 1, occupied: { mine: 0, machine: 1 } }),
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  });
+  assert.equal(unarmed.ok, true);
+  assert.ok(unarmed.notes.some(line => /worktree/.test(line)), JSON.stringify(unarmed.notes));
+  assert.ok(!unarmed.notes.some(line => /host that could not be asked/.test(line)), JSON.stringify(unarmed.notes));
+});
+
+test('capLines: an occupied worktree in neither count is disclosed as occupancy, not as an unasked host (#221)', () => {
+  const lines = capLines({
+    live: live(1, 1, 0, { mine: 1, machine: 2, occupied: { mine: 1, machine: 1 } }),
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  }).join('\n');
+  assert.match(lines, /2 pane\(s\)/, 'the total is still one number');
+  assert.match(lines, /1 on a host that could not be asked/);
+  assert.match(lines, /1 at a recorded worktree/);
+});
+
 test('capLines label each count by its scope, and never call a machine total the cap count', () => {
   const lines = capLines({ live: live(5, 2, 1, { mine: 0, machine: 2 }), repo: 'flosrn/ax', repoCap: 3, machineCap: null }).join('\n');
   assert.match(lines, /2 pane\(s\).*could not be asked/, 'a pane whose liveness is unknown is in neither count, and the line says so');

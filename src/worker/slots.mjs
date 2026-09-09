@@ -39,7 +39,7 @@
 // records can name ONE terminal: counting rows there reports two panes for one
 // and refuses a dispatch the machine had room for.
 
-import { liveInventory } from './pane.mjs';
+import { liveInventory, worktreeOccupancy } from './pane.mjs';
 import { agentTerminal, argvValue, scanStore } from './record.mjs';
 
 /**
@@ -99,7 +99,7 @@ function recordedPanes(store) {
             unnamed = `phase ${String(ph.name)} recorded pane ${handle} and no argv, so its placement cannot be read`;
             break;
           }
-          found.push({ handle, host: argvValue(ph.argv, '--on') ?? '' });
+          found.push({ handle, host: argvValue(ph.argv, '--on') ?? '', tree: argvValue(ph.argv, '--worktree') ?? '' });
         }
         if (unnamed !== null) break;
       }
@@ -120,10 +120,10 @@ function recordedPanes(store) {
       continue;
     }
 
-    for (const { handle, host } of found) {
+    for (const { handle, host, tree } of found) {
       let claim = claims.get(handle);
       if (claim === undefined) {
-        claim = { names: new Map(), hosts: [] };
+        claim = { names: new Map(), hosts: [], trees: [] };
         claims.set(handle, claim);
       }
       // A slug differing only in case is the same repository — the comparison
@@ -132,6 +132,10 @@ function recordedPanes(store) {
       if (recorded !== '' && !claim.names.has(recorded.toLowerCase())) claim.names.set(recorded.toLowerCase(), recorded);
       // The hosts are a UNION: no ask that could decide this pane is skipped.
       if (host !== '' && !claim.hosts.includes(host)) claim.hosts.push(host);
+      // The worktree the phase PLACED that pane at, for the occupancy question
+      // below. A union for the same reason the hosts are one: two records can
+      // name one handle.
+      if (tree !== '' && !claim.trees.includes(tree)) claim.trees.push(tree);
     }
   }
 
@@ -140,7 +144,7 @@ function recordedPanes(store) {
     // naming no repository says nothing, and two records naming two of them say
     // nothing this reader may choose between (F-028).
     const named = [...claim.names.values()];
-    byHandle.set(handle, { handle, repo: named.length === 1 ? named[0] : '', hosts: claim.hosts });
+    byHandle.set(handle, { handle, repo: named.length === 1 ? named[0] : '', hosts: claim.hosts, trees: claim.trees });
   }
   return { byHandle, unreadable, missing: false, reason: '' };
 }
@@ -157,7 +161,11 @@ function recordedPanes(store) {
  *   `unmeasured`  the panes whose LIVENESS could not be established at all,
  *                 scoped the same way. NOT a count of dead panes: a container
  *                 that could not be read, which is why `capVerdict` treats it
- *                 as an inability rather than as room (F-028)
+ *                 as an inability rather than as room (F-028). `occupied` is
+ *                 the subset of each whose cause is a recorded worktree a live
+ *                 pane no record owns still occupies, the rest being a host
+ *                 that could not be asked — two causes, two repairs, and the
+ *                 caps read only the totals
  *
  * A caller that cannot name its own repository gets `mine: 0`, which is an
  * absence to act on and never a zero to spend: `capVerdict` says so.
@@ -190,11 +198,57 @@ function countPanes({ panes, inventory, repo }) {
     if (ours !== '' && named(row) === ours) unmeasuredMine.add(row.handle);
   }
 
+  // A RECORDED WORKTREE STILL OCCUPIED IS NOT A PROVEN-EMPTY SLOT (#221). A
+  // handle absent from every list reads MORT, and Orca readoption binds a
+  // restored session to a NEW handle (#160 matches assignee_handle and
+  // process_incarnation, and only on pending/dispatched rows), so a succeeded
+  // dispatch restored at the recorded path is invisible to the recorded handle.
+  // Its death therefore does not establish that the tree is free, and the slot
+  // it held is UNMEASURED rather than reclaimed — `capVerdict` turns that into
+  // an inability instead of room (F-028).
+  //
+  // OCCUPANCY, NEVER OWNERSHIP: the extra pane is not attributed to this
+  // repository, to that dispatch, or to any record. It only removes the
+  // proof of emptiness, which is why it lands in `unmeasured` and never in
+  // `machine` or `mine`. Every recorded handle counts as owned, so a pane one
+  // record placed is not an extra for another's tree.
+  //
+  // AND ITS CAUSE IS CARRIED APART from the unasked host's, because the two have
+  // different repairs and the messages are consumed as instructions: an unasked
+  // host is settled by asking it (or declaring it under `dispatch.hosts`), an
+  // occupied tree by inspecting the live handle sitting in it. One number for
+  // both printed "a host that could not be asked" over a machine where every
+  // host answered. The two sets are disjoint by construction — a handle already
+  // unmeasured through its host never reaches this loop — so the caps still read
+  // the totals and the arithmetic is untouched.
+  const occupiedMachine = new Set();
+  const occupiedMine = new Set();
+  const recorded = [...panes.byHandle.keys()];
+  for (const row of panes.byHandle.values()) {
+    const terminal = inventory.byHandle.get(row.handle);
+    if (terminal !== undefined && terminal.orphaned !== true) continue;
+    if (unmeasuredMachine.has(row.handle)) continue;
+    for (const tree of Array.isArray(row.trees) ? row.trees : []) {
+      if (worktreeOccupancy({ inventory, recordedWorktree: tree, knownHandles: recorded }).ok) continue;
+      unmeasuredMachine.add(row.handle);
+      occupiedMachine.add(row.handle);
+      if (ours !== '' && named(row) === ours) {
+        unmeasuredMine.add(row.handle);
+        occupiedMine.add(row.handle);
+      }
+      break;
+    }
+  }
+
   return {
     machine: machine.size,
     mine: mine.size,
     unknown: unknown.size,
-    unmeasured: { machine: unmeasuredMachine.size, mine: unmeasuredMine.size },
+    unmeasured: {
+      machine: unmeasuredMachine.size,
+      mine: unmeasuredMine.size,
+      occupied: { machine: occupiedMachine.size, mine: occupiedMine.size },
+    },
   };
 }
 

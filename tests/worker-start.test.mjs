@@ -1034,7 +1034,7 @@ test('two reclaimers of one closed foreign refusal serialize before minting', as
         identity: 'old-id',
         argv: ['orca', 'orchestration', 'task-create', '--run', 'run_old', '--retry-request', 'old-id', '--json'],
         receiptPath: null,
-        receipt: { ok: false, error: { code: 'runtime_unavailable' } },
+        receipt: { ok: false, error: { code: 'consumer_fenced' } },
         exit: 1,
       }],
     }],
@@ -1087,7 +1087,7 @@ test('a sibling arriving DURING the mint waits the winner out and replays — ne
   const request = 'req-mint-window';
   writeFileSync(spec, 'Do the one exact task.');
   mkdirSync(store, { recursive: true });
-  // A closed foreign refusal: reclaimable, so the winner reaches the mint.
+  // A closed foreign fence: positively empty, so the winner reaches the mint.
   writeFileSync(join(store, `${request}.json`), JSON.stringify({
     request,
     host: 'old-host',
@@ -1101,7 +1101,7 @@ test('a sibling arriving DURING the mint waits the winner out and replays — ne
         identity: 'old-id',
         argv: ['orca', 'orchestration', 'task-create', '--run', 'run_old', '--retry-request', 'old-id', '--json'],
         receiptPath: null,
-        receipt: { ok: false, error: { code: 'runtime_unavailable' } },
+        receipt: { ok: false, error: { code: 'consumer_fenced' } },
         exit: 1,
       }],
     }],
@@ -1783,4 +1783,150 @@ test('an unarmable stall watcher never fails the dispatch: absent module, throwi
   const late = captureErr(() => child.emit('error', new Error('spawn ENOENT')));
   assert.match(late, /NOT armed/);
   assert.match(late, /ENOENT/);
+});
+
+// ── #212: a lost claim may mint only on POSITIVE emptiness ──────────────────
+// A silent foreign refusal (absent resource containers) is still reclaimable
+// according to staleClaim (#205). start() must not mint on that weaker answer:
+// rename+fresh needs heldNoMutation. An explicit empty pair, or a task-create
+// fence Orca raises before its first write, keeps the legitimate takeover.
+
+function plantForeignRefusal(home, request, receipt) {
+  const store = join(home, 'dispatch');
+  mkdirSync(store, { recursive: true });
+  const path = join(store, `${request}.json`);
+  const planted = `${JSON.stringify({
+    request,
+    host: 'old-host',
+    orca: 'orca',
+    createdAt: '2026-08-01T00:00:00Z',
+    attempts: [{
+      n: 1,
+      settled: false,
+      phases: [{
+        name: 'task-create',
+        identity: 'old-id',
+        argv: ['orca', 'orchestration', 'task-create', '--run', 'run_old', '--retry-request', 'old-id', '--json'],
+        receiptPath: null,
+        receipt,
+        exit: 1,
+      }],
+    }],
+  })}\n`;
+  writeFileSync(path, planted, { mode: 0o600 });
+  return { store, path, planted };
+}
+
+test('#212: a silent foreign refusal does not move the record or mint a fresh identity', () => {
+  const home = scratch();
+  const request = 'req-silent-foreign';
+  const { store, path, planted } = plantForeignRefusal(home, request, { ok: false, error: { code: 'runtime_unavailable' } });
+  const run = fakeRunner();
+  const r = invoke(freshArgs(home, request), { env: { HOME: home }, run });
+
+  assert.equal(r.code, 3, r.out);
+  assert.equal(readFileSync(path, 'utf8'), planted, 'the historical record stays at its original path, byte for byte');
+  assert.equal(readdirSync(store).filter(name => name.includes('.foreign-')).length, 0, 'nothing was set aside as a stale foreign claim');
+  assert.deepEqual(
+    run.calls.filter(call => call.includes('task-create') || call.includes('worker-start')),
+    [],
+    'no fresh mutation — an absent effects container is not permission to start again',
+  );
+});
+
+test('#212: a positively empty foreign fence still authorizes rename and a fresh identity', () => {
+  const home = scratch();
+  const request = 'req-fenced-foreign';
+  const { store, path } = plantForeignRefusal(home, request, { ok: false, error: { code: 'consumer_fenced', message: 'bound elsewhere' } });
+  const run = fakeRunner();
+  const r = invoke(freshArgs(home, request), { env: { HOME: home }, run });
+
+  assert.equal(r.code, 0, r.out);
+  const foreign = readdirSync(store).filter(name => name.includes('.foreign-'));
+  assert.equal(foreign.length, 1, 'the proved-empty foreign record is preserved, not deleted');
+  assert.equal(existsSync(path), true);
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  assert.deepEqual(record.attempts[0].phases.map(phase => phase.name), ['task-create', 'worker-start']);
+  assert.ok(run.calls.some(call => call.includes('task-create')), 'a proved-empty claim may mint');
+  const preserved = JSON.parse(readFileSync(join(store, foreign[0]), 'utf8'));
+  assert.equal(preserved.attempts[0].phases[0].identity, 'old-id', 'the historical identity is still on disk');
+});
+
+test('#212: named empty resource arrays on a foreign refusal are the other positive ground', () => {
+  const home = scratch();
+  const request = 'req-empty-arrays-foreign';
+  const { store, path } = plantForeignRefusal(home, request, {
+    ok: false,
+    error: { code: 'boom' },
+    result: { effects: [], residualResources: [] },
+  });
+  const run = fakeRunner();
+  const r = invoke(freshArgs(home, request), { env: { HOME: home }, run });
+
+  assert.equal(r.code, 0, r.out);
+  assert.equal(readdirSync(store).filter(name => name.includes('.foreign-')).length, 1);
+  assert.deepEqual(
+    JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases.map(phase => phase.name),
+    ['task-create', 'worker-start'],
+  );
+});
+
+function occupancyRunner({
+  workers = [],
+  terminals = [],
+  task = 'task_abc123',
+  workerState = 'ready',
+} = {}) {
+  const calls = [];
+  const run = args => {
+    calls.push([...args]);
+    const line = args.join(' ');
+    if (args[0] === 'status') return receipt({ runtime: { reachable: true } });
+    if (line.includes('worker-list')) return receipt({ workers });
+    if (line.includes('terminal list')) {
+      return receipt({
+        terminals,
+        truncated: false,
+        hostScope: { hostIds: ['local'], omittedHostIds: [] },
+      });
+    }
+    if (line.includes('task-list')) return receipt({ tasks: [{ id: task }] });
+    if (line.includes('task-update')) return receipt({ task: { id: task, status: 'ready' } });
+    if (line.includes('task-create')) return receipt({ task: { id: task }, mutation: { replayed: false } });
+    if (line.includes('worker-start')) {
+      return receipt({
+        taskId: task,
+        dispatchId: 'ctx_abc123',
+        state: workerState,
+        mutation: { replayed: false },
+        effects: [{ kind: 'terminal', id: 'term_abc123' }],
+      });
+    }
+    return receipt({});
+  };
+  run.calls = calls;
+  return run;
+}
+
+test('#221: replace refuses when a live pane occupies the recorded worktree under a new handle', () => {
+  const home = scratch();
+  const tree = join(home, '221-tree');
+  const first = invoke(freshArgs(home, 'req-221', ['--worktree', `path:${tree}`, '--agent', 'omp']), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const before = readFileSync(recordAt(first.env, 'req-221'), 'utf8');
+  const run = occupancyRunner({
+    workers: [{
+      taskId: 'task_abc123',
+      dispatchId: 'ctx_abc123',
+      workerState: 'succeeded',
+      terminalState: 'reclaimable',
+      agentTerminalHandle: 'term_abc123',
+    }],
+    terminals: [{ handle: 'term_restored', worktreePath: tree }],
+  });
+  const r = invoke(['--replace', '--request', 'req-221'], { env: { HOME: home }, run });
+  assert.equal(r.code, 3, r.out);
+  assert.equal(readFileSync(recordAt(first.env, 'req-221'), 'utf8'), before, 'the historical record is not rewritten');
+  assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0, 'gate refusal issues no ready-flip');
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'and no second identity');
 });
