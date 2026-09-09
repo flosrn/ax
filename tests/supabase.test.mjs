@@ -221,11 +221,9 @@ test('only commands that would write to the shared database trigger promotion', 
   assert.equal(commandNeedsIsolation(['test', 'new', 'orders']), true);
   assert.equal(commandNeedsIsolation(['seed', 'buckets']), true);
 
-  // And the dead entries are gone. `supabase db --help` lists exactly:
-  //   diff | dump | push | pull | reset | lint | start | query | advisors | schema
-  // so `db test` and `db seed` are not commands at all; answering `true` for
-  // them only hid the two real ones above.
-  assert.equal(commandNeedsIsolation(['db', 'test']), false);
+  // `db seed` is not a command: `supabase db seed --help` prints the `db`
+  // subcommand list. `db test` is — see the hidden-alias test below, measured
+  // on the same CLI, which is why it is no longer pinned as harmless here.
   assert.equal(commandNeedsIsolation(['db', 'seed']), false);
 
   // `db push` defaults to the REMOTE project, so it only counts as a local
@@ -351,6 +349,94 @@ test('explicit boolean false does not pretend a remote or help flag is set', () 
 test('a command-specific value flag is refused on a verb that does not take it', () => {
   assert.equal(classifyCommand(['db', 'push', '--version', '20240101']).error !== undefined, true);
   assert.equal(commandNeedsIsolation(['db', 'reset', '--version', '20240101']), true);
+});
+
+// The command lines these are taken from are the ones two real checkouts run
+// through this wrapper, read from their manifests on 2026-09-09:
+//
+//   gapila   apps/web/package.json  supabase:deploy   supabase link --project-ref $SUPABASE_PROJECT_REF && supabase db push
+//                                  supabase:db:dump:local  ... db dump --local --data-only
+//   ofmchat  apps/web/package.json  supabase:start:ci supabase status || supabase start -x studio,imgproxy,logflare,vector
+//                                  supabase:typegen:packages  ax supabase gen types typescript --local
+//   gapila   .github/workflows/ci-pgtap.yml            supabase start -x studio,mailpit,imgproxy,edge-runtime
+//
+// Every flag below is quoted from `supabase <cmd> --help` on CLI 2.109.1, the
+// version this table was measured against, so the arity is the CLI's and not a
+// guess: `--exclude, -x string` on `start` and on `db dump`, `--project-ref
+// string` on `link` and on `functions deploy`, `--data-only` boolean on
+// `db dump`.
+test('the flags real consumer scripts pass are classifiable, not refused as unknown', () => {
+  for (const argv of [
+    ['start', '-x', 'studio,imgproxy,logflare,vector'],
+    ['start', '--exclude', 'analytics,vector,studio,inbucket'],
+    ['start', '-x=studio,mailpit', '--ignore-health-check'],
+    ['link', '--project-ref', 'ojzwhmdzptjsksogvdzu'],
+    ['functions', 'deploy', '--project-ref', 'ojzwhmdzptjsksogvdzu', '--no-verify-jwt'],
+    ['db', 'dump', '--local', '--data-only'],
+    ['db', 'dump', '--local', '-x', 'public.audit', '-f', 'seed.sql'],
+    ['gen', 'types', 'typescript', '--local'],
+    ['stop', '--project-id', 'ax_widgets_7'],
+    ['status', '-o', 'json'],
+  ]) {
+    assert.equal(classifyCommand(argv).error, undefined, `${argv.join(' ')} must classify`);
+  }
+});
+
+test('supporting those flags does not move a start into promotion, nor a deploy into a local write', () => {
+  // Promotion itself runs `supabase start` through this guard: an excluded
+  // service list must not turn that into a recursion.
+  assert.equal(commandNeedsIsolation(['start', '-x', 'studio,imgproxy,logflare,vector']), false);
+  assert.equal(commandNeedsIsolation(['start', '--exclude=analytics,vector']), false);
+  assert.equal(commandNeedsIsolation(['stop', '--project-id', 'ax_widgets_7']), false);
+  // `link` and `functions deploy` are remote: no local stack is involved, so
+  // neither may promote a shared checkout.
+  assert.equal(commandNeedsIsolation(['link', '--project-ref', 'ref']), false);
+  assert.equal(commandNeedsIsolation(['functions', 'deploy', '--project-ref', 'ref']), false);
+  assert.equal(commandNeedsIsolation(['functions', 'deploy', '--prune']), false);
+  // A local dump reads THIS checkout's database, so it still earns a stack.
+  assert.equal(commandNeedsIsolation(['db', 'dump', '--local', '--data-only']), true);
+  assert.equal(commandNeedsIsolation(['db', 'dump', '--data-only']), false);
+});
+
+test('a documented flag on one verb stays unknown on another, and still needs its value', () => {
+  // `-x` belongs to `start` and `db dump` only; `--project-ref` to `link`,
+  // `functions deploy` and no `db` subcommand. Blanket acceptance of either
+  // would be the hole this table exists to close.
+  assert.equal(classifyCommand(['db', 'reset', '-x', 'studio']).error, 'unknown flag -x');
+  assert.equal(classifyCommand(['db', 'push', '--project-ref', 'ref']).error, 'unknown flag --project-ref');
+  assert.equal(classifyCommand(['start', '--not-a-flag']).error, 'unknown flag --not-a-flag');
+  assert.equal(classifyCommand(['functions', 'deploy', '--project-id', 'ref']).error, 'unknown flag --project-id');
+  // Arity is enforced: a value flag with nothing to take must not swallow a verb.
+  assert.equal(classifyCommand(['start', '-x']).error, '-x requires a value');
+  assert.equal(classifyCommand(['link', '--project-ref']).error, '--project-ref requires a value');
+  assert.equal(classifyCommand(['db', 'dump', '--local', '-x', '--data-only']).error, '-x requires a value');
+  // And an explicit boolean false is still read as false, not as presence.
+  assert.equal(classifyCommand(['db', 'dump', '--local=false', '--data-only']).isolation, false);
+  assert.equal(classifyCommand(['db', 'dump', '--data-only=maybe']).error, '--data-only has a malformed boolean value');
+});
+
+// `supabase db test` is NOT in the `supabase db --help` subcommand list, which
+// is why it was recorded as a non-command. It is a live hidden alias, measured
+// on CLI 2.109.1:
+//
+//   $ supabase db test --help
+//   DESCRIPTION
+//     Tests local database with pgTAP.
+//   USAGE
+//     supabase db test [flags] <path...>
+//
+// and it is the form both real checkouts use (`supabase:test` in gapila's and
+// ofmchat's apps/web manifests). Classified as "no isolation needed", pgTAP
+// runs its fixtures against the SHARED database from an unpromoted worktree —
+// the exact contamination this predicate exists to prevent.
+test('db test is the hidden pgTAP alias, and runs against the local database', () => {
+  assert.equal(commandNeedsIsolation(['db', 'test']), true);
+  assert.equal(commandNeedsIsolation(['db', 'test', 'supabase/tests/rls.sql']), true);
+  assert.equal(commandNeedsIsolation(['db', 'test', '--linked']), false);
+  assert.equal(commandNeedsIsolation(['db', 'test', '--db-url', 'postgres://x']), false);
+  // `db seed` is not an alias — `supabase db seed --help` prints the `db`
+  // subcommand list, so the CLI never ran a seed there.
+  assert.equal(commandNeedsIsolation(['db', 'seed']), false);
 });
 
 

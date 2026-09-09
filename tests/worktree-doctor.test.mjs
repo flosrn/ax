@@ -293,3 +293,45 @@ test('an unclassifiable database script is named as inability, not treated as re
   git(tree, 'checkout', '--', MANIFEST);
 });
 
+test('the real deploy and CI scripts of the checkouts this wrapper serves are classified, not named unclassifiable', () => {
+  restore(tree);
+  provision(tree, ISOLATED);
+  const manifest = JSON.parse(readFileSync(join(tree, MANIFEST), 'utf8'));
+  // Verbatim from gapila and ofmchat apps/web/package.json (2026-09-09). Both
+  // are remote-or-container-only: the doctor must grade them as safe rather
+  // than reporting an inability to classify, which reads as a repo defect and
+  // sends the operator to rewrite a working script.
+  manifest.scripts['supabase:deploy'] = 'supabase link --project-ref $SUPABASE_PROJECT_REF && supabase db push';
+  manifest.scripts['supabase:start:ci'] = 'supabase status || supabase start -x studio,imgproxy,logflare,vector';
+  writeFileSync(join(tree, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const list = bad(findings(tree, ISOLATED));
+  assert.equal(about(list, 'supabase:deploy'), undefined, 'a remote link+push is not a finding');
+  assert.equal(about(list, 'supabase:start:ci'), undefined, 'an excluded-service start is not a finding');
+
+  git(tree, 'checkout', '--', MANIFEST);
+});
+
+test('a raw invocation chained after a guarded one is still graded', () => {
+  restore(tree);
+  provision(tree, ISOLATED);
+  const manifest = JSON.parse(readFileSync(join(tree, MANIFEST), 'utf8'));
+  // The line reaches the guard, and half of it does not. Grading the LINE let
+  // the second command through: a `db push --local` from a shared checkout
+  // writes the database every other session reads.
+  manifest.scripts['db:mixed'] = 'pnpm -w ax supabase db reset && supabase db push --local';
+  // A separator inside quotes is not a separator, and cutting there dropped the
+  // `--local` that makes this local.
+  manifest.scripts['db:quoted'] = 'supabase db query "select 1; select 2" --local';
+  writeFileSync(join(tree, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const list = bad(findings(tree, ISOLATED));
+  const finding = about(list, 'db:mixed');
+  assert.ok(finding, 'the raw tail of a guarded line is named');
+  assert.match(finding.message, /every other session's database/);
+  assert.match(finding.message, /db:quoted/, 'the quoted-separator script is named too');
+
+  git(tree, 'checkout', '--', MANIFEST);
+});
+
+

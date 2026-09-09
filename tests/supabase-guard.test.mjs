@@ -14,7 +14,74 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { CLI_ENV, GUARD_ENV, invokesSupabaseCli, reachesGuard, resolveCli, supabase } from '../src/supabase-guard.mjs';
+import { CLI_ENV, GUARD_ENV, invokesSupabaseCli, reachesGuard, resolveCli, supabase, supabaseInvocations } from '../src/supabase-guard.mjs';
+
+// A script LINE is not a command, and the two ways of reading it wrong both
+// end in a database nobody meant to touch.
+test('a separator inside a quoted argument does not cut the command in half', () => {
+  // `;` and `|` are ordinary characters inside quotes. Cutting there dropped
+  // the rest of the argv — including the `--local` that decides whether this
+  // reaches the shared database.
+  assert.deepEqual(supabaseInvocations('supabase db query "select 1; select 2" --local'), [
+    ['db', 'query', 'select 1; select 2', '--local'],
+  ]);
+  assert.deepEqual(supabaseInvocations("supabase db query 'a && b' --local"), [['db', 'query', 'a && b', '--local']]);
+  assert.deepEqual(supabaseInvocations('supabase db diff -f "my table" --local'), [
+    ['db', 'diff', '-f', 'my table', '--local'],
+  ]);
+  // And a real separator outside quotes still cuts.
+  assert.deepEqual(supabaseInvocations('supabase status || supabase start -x studio'), [['status'], ['start', '-x', 'studio']]);
+});
+
+test('quotes are the shell\u2019s, not the CLI\u2019s: a quoted flag still reaches pflag as a flag', () => {
+  // Quoting protects a token from the SHELL's word splitting and from nothing
+  // else — `supabase db reset "--linked"` hands the CLI a literal `--linked`,
+  // which pflag reads as the remote-target flag. So the quotes come off and
+  // the meaning does not change; inventing an operand here would have this
+  // doctor promote a checkout for a command aimed at the linked project.
+  assert.deepEqual(supabaseInvocations('supabase db reset "--linked"'), [['db', 'reset', '--linked']]);
+  assert.deepEqual(supabaseInvocations("supabase db push '--local'"), [['db', 'push', '--local']]);
+});
+
+test('a newline between commands is a separator, not whitespace', () => {
+  // `\n` is in SEPARATORS, but `/\s/` matches it first and ate the boundary —
+  // the second command was then a positional of the first, so `start -x` never
+  // classified and a raw `db reset` after a newline went ungraded.
+  assert.deepEqual(supabaseInvocations('supabase status\nsupabase start -x studio'), [
+    ['status'],
+    ['start', '-x', 'studio'],
+  ]);
+  assert.deepEqual(supabaseInvocations('supabase db reset\nsupabase db push --local'), [
+    ['db', 'reset'],
+    ['db', 'push', '--local'],
+  ]);
+});
+
+test('double-quote backslash keeps the escaped character and the rest of the argv', () => {
+  // POSIX: inside `"`, `\` is special only before `"`, `\`, `$`, `` ` ``, or a
+  // newline. Without that, `"select \\"x;y\\""` closed the quote at the inner
+  // `"` and the `;` became a separator — `--local` vanished.
+  assert.deepEqual(supabaseInvocations('supabase db query "select \\"x;y\\"" --local'), [
+    ['db', 'query', 'select "x;y"', '--local'],
+  ]);
+  assert.deepEqual(supabaseInvocations('supabase db query "a\\\nb" --local'), [['db', 'query', 'ab', '--local']]);
+  assert.deepEqual(supabaseInvocations("supabase db query 'select \\' --local"), [['db', 'query', 'select \\', '--local']]);
+});
+
+test('every raw invocation in a line is returned, including beside a guarded one', () => {
+  // `pnpm -w ax supabase ...` is the guarded spelling and is NOT a raw
+  // invocation; the segment next to it is, and it was going ungraded because
+  // the whole line looked guarded.
+  assert.deepEqual(supabaseInvocations('pnpm -w ax supabase db reset && supabase db push --local'), [
+    ['db', 'push', '--local'],
+  ]);
+  assert.deepEqual(supabaseInvocations('ax supabase db reset'), []);
+  assert.deepEqual(supabaseInvocations('pnpm -w ax supabase db reset'), []);
+  // The name as an ARGUMENT is still not an invocation.
+  assert.deepEqual(supabaseInvocations('rm -rf supabase'), []);
+  assert.deepEqual(supabaseInvocations('echo "supabase db reset"'), []);
+  assert.equal(invokesSupabaseCli('rm -rf supabase'), false);
+});
 
 /**
  * Run the guard with every machine-touching dependency replaced, recording what

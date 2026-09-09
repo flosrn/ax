@@ -32,7 +32,7 @@ import { join } from 'node:path';
 
 import { readConfigured, readKey } from '../dotenv.mjs';
 import { isMainCheckout, listWorktrees } from '../git.mjs';
-import { GUARDED_INVOCATION, invokesSupabaseCli, reachesGuard } from '../supabase-guard.mjs';
+import { GUARDED_INVOCATION, reachesGuard, supabaseInvocations } from '../supabase-guard.mjs';
 import { identify } from './identity.mjs';
 import { KEYS, planWorktree } from './plan.mjs';
 import { isReserved } from './ports.mjs';
@@ -347,55 +347,51 @@ function guard(root, { config, add }) {
   // because it is the predicate the guard itself consults before promoting.
   // An unclassifiable line is not read-only: the doctor names the inability
   // rather than treating `{error}` as safe (#223).
+  //
+  // Graded per INVOCATION, never per line, and a line is not exempted for
+  // reaching the guard somewhere in it. `pnpm -w ax supabase db reset &&
+  // supabase db push --local` reaches the guard and still runs one raw command
+  // that writes the shared database; a whole-line exemption hid exactly that
+  // half. Nothing guarded can slip in here, because `supabaseInvocations`
+  // returns only segments whose command WORD is the CLI — in the guarded
+  // spelling that word is `ax`.
   const relative = `${config.apps.web}/package.json`;
-  const unguarded = Object.entries(scripts).filter(([, command]) => invokesSupabaseCli(command) && !reachesGuard(command));
 
-  const contaminating = [];
-  const unclassifiable = [];
-  for (const [name, command] of unguarded) {
-    const classified = classifyCommand(argsOf(command));
-    if (classified.error) unclassifiable.push({ name, error: classified.error });
-    else if (classified.isolation) contaminating.push(name);
+  // A script name appears once however many invocations it chains: the finding
+  // names scripts, and a repair is per script.
+  const contaminating = new Set();
+  const unclassifiable = new Map();
+  for (const [name, command] of Object.entries(scripts)) {
+    for (const args of supabaseInvocations(command)) {
+      const classified = classifyCommand(args);
+      if (classified.error) unclassifiable.set(name, classified.error);
+      else if (classified.isolation) contaminating.add(name);
+    }
   }
 
-  if (unclassifiable.length > 0) {
+  if (unclassifiable.size > 0) {
+    const names = [...unclassifiable.keys()];
     add(
       'bad',
-      `${relative}: ${unclassifiable.map(entry => entry.name).join(', ')} ${unclassifiable.length === 1 ? 'invokes' : 'invoke'} the Supabase CLI with arguments that cannot be classified (${unclassifiable.map(entry => entry.error).join('; ')}) — isolation cannot be established`,
-      `route ${unclassifiable.map(entry => entry.name).join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\` with documented flags, or fix the arguments`,
+      `${relative}: ${names.join(', ')} ${names.length === 1 ? 'invokes' : 'invoke'} the Supabase CLI with arguments that cannot be classified (${[...unclassifiable.values()].join('; ')}) — isolation cannot be established`,
+      `route ${names.join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\` with documented flags, or fix the arguments`,
     );
   }
 
-  if (contaminating.length > 0) {
+  if (contaminating.size > 0) {
+    const names = [...contaminating];
     add(
       'bad',
-      `${relative}: ${contaminating.join(', ')} ${contaminating.length === 1 ? 'calls' : 'call'} the Supabase CLI directly — a migration or reset from this checkout would contaminate every other session's database`,
-      `route ${contaminating.join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\`, which promotes this checkout to its own stack first`,
+      `${relative}: ${names.join(', ')} ${names.length === 1 ? 'calls' : 'call'} the Supabase CLI directly — a migration or reset from this checkout would contaminate every other session's database`,
+      `route ${names.join(', ')} through \`pnpm -w ${GUARDED_INVOCATION} ...\`, which promotes this checkout to its own stack first`,
     );
   }
 
-  if (contaminating.length === 0 && unclassifiable.length === 0) {
+  if (contaminating.size === 0 && unclassifiable.size === 0) {
     if (Object.values(scripts).some(command => reachesGuard(command))) {
       add('ok', `${relative}: every database command routes through \`${GUARDED_INVOCATION}\``);
     }
   }
-}
-
-
-/**
- * The arguments a package script hands the Supabase CLI.
- *
- * Everything after the `supabase` command word, so `classifyCommand` sees what
- * the CLI would see. Shell noise beyond the first pipeline stage is not
- * modelled: a script that pipes `gen types` into a file is still `gen types`,
- * and a script complex enough to defeat this is one a human should be reading
- * anyway.
- */
-
-function argsOf(script) {
-  const words = String(script).split(/\s+/);
-  const at = words.indexOf('supabase');
-  return at === -1 ? [] : words.slice(at + 1).filter(word => !['>', '|', '&&', ';'].includes(word));
 }
 
 /**
