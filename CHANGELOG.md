@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.24.7](https://github.com/flosrn/ax/compare/v0.24.6...v0.24.7) (2026-09-09)
+
+
+### Bug Fixes
+
+* **supabase:** preserve supported deployment scripts while classifying every invocation ([#239](https://github.com/flosrn/ax/issues/239)) ([1e505dd](https://github.com/flosrn/ax/commit/1e505dd45b166f41d5e88eacaf815c5fab76e8ab))
+
 ## [0.24.6](https://github.com/flosrn/ax/compare/v0.24.5...v0.24.6) (2026-09-09)
 
 
