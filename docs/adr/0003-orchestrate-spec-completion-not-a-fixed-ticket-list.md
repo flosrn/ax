@@ -105,7 +105,5 @@ Landed with the Spec's tickets, never by citing this ADR mid-Wave:
 
 ## Implementation boundary
 
-The Spec-scoped read, the admission rule and the second-refusal guidance have landed. Get
-bearings (#192), landed notes (#195) and remaining sibling tickets of #174 are still in flight.
 Citing this ADR mid-Wave is still not permission to bypass a current refusal. This package's
 own Gate and npm release still do not establish a consumer's deployment.
