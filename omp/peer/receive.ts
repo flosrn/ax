@@ -767,21 +767,34 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // above (self-send, heartbeat, relay) carries no sequence of ours.
             const verdict = inspectSequence(who.name, sequenceOf(msgPayload));
             if (verdict.repeat) {
-              // A duplicate the id dedup could not catch — same number, new id.
-              // Saying so beats injecting the same words twice.
+              // A NUMBER IS NOT AN IDENTITY, AND THIS USED TO DROP THE MESSAGE.
+              //
+              // Identity is the message id, deduped nine lines above; by the
+              // time control reaches here the id is NEW. What a re-used or
+              // rewound number means is that the SENDER's counter moved
+              // backwards — its store was lost or reset (`nextOutboundSequence`
+              // starts a series at 1 on an absent or corrupt file, on purpose),
+              // or the series was re-keyed. Every one of those is a real
+              // message, and dropping it made the mechanism that exists to
+              // detect loss the one that caused it: a sender whose counter file
+              // disappeared had its next N messages deleted in silence, exactly
+              // as if the network had eaten them.
+              //
+              // So the number is REPORTED and the words are delivered. A
+              // genuine double-inject is what the id dedup is for, and it has
+              // never needed this branch to work.
               deps.note(
-                `duplicate sequence ${verdict.seq} from ${who.name} — not injecting twice`,
+                `sequence ${verdict.seq} from ${who.name} was already seen — its counter reset, was re-keyed, or this is a resend under a new id. Delivering it: identity is the message id, never the number`,
               );
               diagnose({
                 reason: 'filtered',
-                filter: 'duplicate-sequence',
+                filter: 'rewound-sequence',
+                detail: 'delivered anyway — a number is not an identity',
                 peer: who.name,
                 messageId: msgId || undefined,
                 deliveryId: deliveryId || undefined,
                 sequence: verdict.seq ?? undefined,
               });
-              if (msgId) deps.rememberInjected(msgId);
-              continue;
             }
             if (verdict.lost > 0) {
               deps.note(

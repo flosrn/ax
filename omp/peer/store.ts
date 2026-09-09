@@ -212,11 +212,25 @@ export function releaseRegisterLock(lock: RegisterLock): void {
  * by the sender identity rather than the process, so the same peer name keeps
  * one ascending series.
  */
-function seqFile(sender: string): string {
+function seqFile(sender: string, recipient: string): string {
   // The key rides into a filename, so anything that is not plainly a name is
   // flattened. Collisions merely share a counter; they cannot escape the dir.
-  const safe = sender.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 120) || 'unnamed';
-  return `${registryDir()}/seq/${safe}.json`;
+  const flat = (part: string): string => part.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 60);
+  const safe = flat(sender) || 'unnamed';
+  // ONE SERIES PER SENDER→RECIPIENT PAIR, not per sender. Measured 2026-09-08:
+  // a coordinator sent #1 here, #2 and #3 to two workers, #4 here — and this
+  // side reported two messages lost, asked for a resend that was never owed,
+  // and called their content unrecoverable. A receiver only ever sees one pair,
+  // so numbering per pair makes its arithmetic true; numbering per sender makes
+  // every multi-peer turn look like a loss.
+  //
+  // NOT SEEDED from the old sender-only counter, deliberately. Seeding would
+  // start each pair ABOVE the receiver's last-seen number and manufacture the
+  // exact false gap this repairs; starting at 1 replays numbers instead, which
+  // the receiver now REPORTS and delivers (`gapBanner`, `./receive.ts` — a
+  // number is not an identity). A loud replayed number beats a silent invented
+  // loss.
+  return `${registryDir()}/seq/${safe}${recipient ? `__${flat(recipient) || 'unnamed'}` : ''}.json`;
 }
 
 /**
@@ -226,11 +240,14 @@ function seqFile(sender: string): string {
  * is one the sender already knows about, and burning its number would make the
  * receiver cry loss over a message that was never on the wire.
  */
-export function nextOutboundSequence(sender: string): {
+export function nextOutboundSequence(
+  sender: string,
+  recipient = '',
+): {
   seq: number;
   commit: () => void;
 } {
-  const path = seqFile(sender);
+  const path = seqFile(sender, recipient);
   let last = 0;
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8'));
@@ -247,13 +264,13 @@ export function nextOutboundSequence(sender: string): {
       try {
         mkdirSync(`${registryDir()}/seq`, { recursive: true });
         const tmp = `${path}.${process.pid}.tmp`;
-        writeFileSync(tmp, JSON.stringify({ seq, sender }));
+        writeFileSync(tmp, JSON.stringify({ seq, sender, recipient: recipient || undefined }));
         renameSync(tmp, path);
       } catch (err) {
         // A counter that cannot be persisted must not fail the send. It does
-        // mean the next send reuses this number, which the receiver reports as
-        // a duplicate — loud, and the right way round.
-        console.error(`[orca-peer] sequence not persisted for ${sender}: ${err}`);
+        // mean the next send reuses this number, which the receiver now REPORTS
+        // and delivers rather than dropping — loud, and the right way round.
+        console.error(`[orca-peer] sequence not persisted for ${sender}${recipient ? ` → ${recipient}` : ''}: ${err}`);
       }
     },
   };

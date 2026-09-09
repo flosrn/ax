@@ -75,7 +75,16 @@ export function sendToPeer(o: {
   // Allocated before the attempt, committed only once Orca accepts one of the
   // two routes: the number identifies THIS message on whichever route carries
   // it, and a message that never left must not consume one.
-  const seq = nextOutboundSequence(from);
+  //
+  // KEYED BY THE PAIR, and the key is the RESOLVED ADDRESS rather than what the
+  // caller typed: one peer answers to a bare name, a suffixed name, a session-id
+  // prefix and a worktree basename (`resolveTarget`, ./address.ts), and keying
+  // on the spelling would split one conversation into four series. The run
+  // address is what the message is actually delivered to and it outlives the
+  // pane-handle churn that renames a peer mid-wave (measured 2026-09-08).
+  // A raw `term_` address typed by hand keys its own series; the cost is a
+  // replayed number, which the receiver reports and delivers (`./receive.ts`).
+  const seq = nextOutboundSequence(from, resolved.address);
 
   const attempt = run([
     'orchestration',

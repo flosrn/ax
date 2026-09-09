@@ -64,6 +64,45 @@ test('each sender identity keeps its own series', () => {
   expect(nextOutboundSequence('worker-1').seq).toBe(3);
 });
 
+test('and one series PER RECIPIENT, because that is what the receiver counts', () => {
+  // Measured 2026-09-08: a coordinator sent #1 to the maintainer session, #2 and
+  // #3 to two workers, #4 to the maintainer again — which read there as "2
+  // message(s) never arrived", bought a resend nobody owed, and called the
+  // content of two messages unrecoverable. A receiver only ever sees one pair of
+  // the sender's traffic, so the number has to count that pair.
+  const a = 'run:run_aaaa';
+  const b = 'run:run_bbbb';
+
+  expect(nextOutboundSequence('coord', a).seq).toBe(1);
+  nextOutboundSequence('coord', a).commit();
+  // Two messages to somebody else must not move this pair's counter.
+  nextOutboundSequence('coord', b).commit();
+  nextOutboundSequence('coord', b).commit();
+  expect(nextOutboundSequence('coord', a).seq).toBe(2);
+  expect(nextOutboundSequence('coord', b).seq).toBe(3);
+});
+
+test('the pair key is the address, so two spellings of one peer share a series', () => {
+  // `resolveTarget` accepts a bare name, a suffixed name, a session-id prefix
+  // and a worktree basename for the SAME session, and every one of them resolves
+  // to that session's run address. Keying on the spelling would split one
+  // conversation into four series and re-create the false gap this closes.
+  nextOutboundSequence('coord', 'run:run_same').commit();
+  nextOutboundSequence('coord', 'run:run_same').commit();
+  expect(nextOutboundSequence('coord', 'run:run_same').seq).toBe(3);
+});
+
+test('a pair series does not inherit the old sender-only counter', () => {
+  // Seeding would start the pair ABOVE the receiver's last-seen number and
+  // manufacture the exact false gap this repairs. Starting at 1 replays numbers
+  // instead, which the receiver reports and DELIVERS — a loud replayed number
+  // beats a silent invented loss.
+  nextOutboundSequence('legacy').commit();
+  nextOutboundSequence('legacy').commit();
+  nextOutboundSequence('legacy').commit();
+  expect(nextOutboundSequence('legacy', 'run:run_new').seq).toBe(1);
+});
+
 test('a name that is not filename-safe still gets a counter', () => {
   const weird = '../../etc/passwd ws:1657';
   const first = nextOutboundSequence(weird);

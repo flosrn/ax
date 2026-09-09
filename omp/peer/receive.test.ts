@@ -848,17 +848,32 @@ test('an in-order run raises no alarm at all', async () => {
   expect(h.sent[2].details.lostBefore).toBeUndefined();
 });
 
-test('a repeated sequence is reported, not injected twice', async () => {
-  // Same number, DIFFERENT id — the case the injected-id dedup cannot catch,
-  // which is why the sequence check is worth having on top of it.
+test('a rewound sequence is reported and STILL delivered — a number is not an identity', async () => {
+  // Same number, DIFFERENT id. This used to inject the first and DROP the
+  // second, on the theory that a re-used number means re-used content. The
+  // receiver cannot tell that from a sender whose counter rewound — and
+  // `nextOutboundSequence` restarts a series at 1 whenever its store is absent
+  // or corrupt, on purpose — so the drop deleted real messages in silence, in
+  // the one mechanism that exists to notice deletions. Measured cost of the
+  // other direction: the same words appear twice, with a note saying why.
+  //
+  // Identity is the message id, deduped before this check ever runs — across
+  // polls, which is where a real replay comes from: a retained delivery Orca
+  // re-offers is caught by `wasInjected` and never reaches here (the retained
+  // cases below assert exactly one injection). Two copies of one id inside a
+  // single batch are not a shape this channel produces, and nothing here
+  // pretends to decide it.
   const h = await deliverSequenced([{ id: 'm1', seq: 4 }, { id: 'm1-again', seq: 4 }]);
 
-  expect(h.sent).toHaveLength(1);
+  expect(h.sent).toHaveLength(2);
   expect(String(h.sent[0].content)).toContain('content of m1');
-  expect(h.notes.join('\n')).toContain('duplicate sequence 4 from peer');
-  // Consumed, so a retained delivery does not re-litigate it.
+  expect(String(h.sent[1].content)).toContain('content of m1-again');
+  expect(h.notes.join('\n')).toContain('sequence 4 from peer was already seen');
+  expect(h.notes.join('\n')).toContain('identity is the message id, never the number');
+  // Consumed, so a retained delivery does not re-litigate either of them.
   expect(h.injected).toEqual(['m1', 'm1-again']);
 });
+
 
 /**
  * ANSWERABILITY IS THE RECORDED ROUTE, NEVER THE ATTRIBUTION.
