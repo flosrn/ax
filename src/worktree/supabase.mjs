@@ -432,19 +432,33 @@ export function restoreConfig({ cwd, relativePath, run = defaultRun }) {
  * guard must not promote or execute (#223).
  *
  * The command NAMES here are the real CLI's, read from `supabase --help` and
- * not from the shape of the wrapper. That distinction was a live hole: `test`
- * and `seed` were listed as `db` subcommands, which the CLI does not have, so
- * `supabase test db` (pgTAP) and `supabase seed buckets` fell through to "no
- * isolation needed" and ran fixtures and seeds against the SHARED database from
- * an unpromoted worktree. Verbatim from `supabase --help` (CLI 2.109.1):
+ * from each command's own `--help`, never from the shape of the wrapper. That
+ * distinction was a live hole: `test` and `seed` were listed as `db`
+ * subcommands, so `supabase test db` (pgTAP) and `supabase seed buckets` fell
+ * through to "no isolation needed" and ran fixtures and seeds against the
+ * SHARED database from an unpromoted worktree. Verbatim from `supabase --help`
+ * (CLI 2.109.1):
  *
  *     seed                Seed a Supabase project
  *     test                Run tests on local Supabase containers
  *
- * and the complete `supabase db --help` list, in which no `test` and no `seed`
- * appear:
+ * The `db` subcommand LIST is not the whole truth, and reading it as one was
+ * the second half of the same hole. `supabase db --help` prints:
  *
  *     diff | dump | push | pull | reset | lint | start | query | advisors | schema
+ *
+ * yet `db test` is a live hidden alias on the same CLI, and it is the form both
+ * consuming checkouts spell their pgTAP script with:
+ *
+ *     $ supabase db test --help
+ *     DESCRIPTION
+ *       Tests local database with pgTAP.
+ *     USAGE
+ *       supabase db test [flags] <path...>
+ *
+ * So it isolates like `reset`. `db seed`, by contrast, is genuinely absent —
+ * `supabase db seed --help` prints the `db` subcommand list, because the CLI
+ * never had a seed there.
  *
  * Deliberately NOT triggering: start / stop / status (and `db start`), because
  * promotion itself runs `supabase start` through the same wrapper and would
@@ -456,46 +470,78 @@ const GLOBAL_BOOLEAN = new Set(['--create-ticket', '--debug', '--experimental', 
 
 // `--agent` takes a value in the docs (`auto|yes|no`). Kept as value-taking
 // below; a boolean reading would swallow the next token as a verb.
-const GLOBAL_VALUE = new Set(['--agent', '--dns-resolver', '--network-id', '-o', '--output', '--profile', '--workdir']);
+const GLOBAL_VALUE = new Set([
+  '--agent',
+  '--dns-resolver',
+  '--log-level',
+  '--network-id',
+  '-o',
+  '--output',
+  '--output-format',
+  '--profile',
+  '--workdir',
+]);
 
 const TARGET_BOOLEAN = new Set(['--local', '--linked']);
 const TARGET_VALUE = new Set(['--db-url']);
 
-const ALWAYS_LOCAL = new Set(['reset', 'diff', 'lint']);
+const ALWAYS_LOCAL = new Set(['reset', 'diff', 'lint', 'test']);
 const LOCAL_ONLY_WITH_FLAG = new Set(['push', 'query', 'dump']);
 
-// Documented command-specific flags, keyed by `cmd` then optional `sub`.
-// `--version` is a value only on `db reset` / `migration down`; elsewhere it
-// is unknown. Unknown combinations refuse (#223).
+// Documented command-specific flags, keyed by the command PATH — `start`, or
+// `db reset` — because a flag's arity belongs to the command that declares it
+// and to no other. `-x` is a service list on `start` and a table list on `db
+// dump`; `--project-ref` exists on `link` and `functions deploy` and on no `db`
+// subcommand; `--version` is a value on `db reset` / `migration squash` and
+// unknown elsewhere. Blanket acceptance of a name seen anywhere is the hole
+// this shape exists to close: it would let a typo'd `db push --version 20240101`
+// read as a bare boolean and push to the REMOTE project (#223).
+//
+// Every entry below is quoted from that command's own `--help` on CLI 2.109.1.
+// Target flags (`--local`, `--linked`, `--db-url`) are shared above rather than
+// repeated per command. Commands that declare no flags of their own — `unlink`,
+// `migration new`, `migration fetch`, `seed buckets`, `test db` — need no entry.
 const COMMAND_BOOLEAN = {
-  db: {
-    reset: new Set(['--no-seed']),
-    pull: new Set(['--use-pg-delta']),
-    push: new Set(['--dry-run', '--include-all', '--include-roles', '--include-seed']),
-    diff: new Set(['--use-migra', '--use-pg-delta', '--use-pg-schema', '--use-pgadmin']),
-  },
-  gen: {
-    types: new Set(['--postgrest-v9-compat']),
-  },
-  migration: {
-    up: new Set(['--include-all']),
-  },
+  start: new Set(['--ignore-health-check']),
+  stop: new Set(['--all', '--no-backup']),
+  link: new Set(['--skip-pooler']),
+  'db dump': new Set(['--data-only', '--dry-run', '--keep-comments', '--role-only', '--use-copy']),
+  'db reset': new Set(['--no-seed']),
+  // `--use-pg-delta` is kept for CLIs older than 2.109.1, where `db pull` still
+  // advertised it; 2.109.1 spells the same choice `--declarative`. Accepting
+  // both costs nothing here: `db pull` isolates whatever its engine flags say.
+  'db pull': new Set(['--declarative', '--use-pg-delta']),
+  'db push': new Set(['--dry-run', '--include-all', '--include-roles', '--include-seed']),
+  'db diff': new Set(['--use-migra', '--use-pg-delta', '--use-pg-schema', '--use-pgadmin']),
+  'db schema': new Set(['--no-cache']),
+  'migration up': new Set(['--include-all']),
+  'gen types': new Set(['--postgrest-v9-compat']),
+  'functions deploy': new Set(['--no-verify-jwt', '--prune', '--use-api']),
+  'functions serve': new Set(['--inspect', '--inspect-main', '--no-verify-jwt']),
 };
 
 const COMMAND_VALUE = {
-  db: {
-    reset: new Set(['--last', '--version']),
-    pull: new Set(['--diff-engine', '-p', '--password', '-s', '--schema']),
-    push: new Set(['-p', '--password']),
-    diff: new Set(['-f', '--file', '--from', '--to', '-s', '--schema']),
-    lint: new Set(['-s', '--schema']),
-  },
-  gen: {
-    types: new Set(['--lang', '--project-id', '--query-timeout', '--swift-access-control', '-s', '--schema']),
-  },
-  migration: {
-    down: new Set(['--last']),
-  },
+  start: new Set(['-x', '--exclude']),
+  stop: new Set(['--project-id']),
+  status: new Set(['--override-name']),
+  link: new Set(['--project-ref', '-p', '--password']),
+  'db dump': new Set(['-x', '--exclude', '-f', '--file', '-p', '--password', '-s', '--schema']),
+  'db reset': new Set(['--last', '--sql-paths', '--version']),
+  'db pull': new Set(['--diff-engine', '-p', '--password', '-s', '--schema']),
+  'db push': new Set(['-p', '--password']),
+  'db diff': new Set(['-f', '--file', '--from', '--to', '-s', '--schema']),
+  'db lint': new Set(['--fail-on', '--level', '-s', '--schema']),
+  'db query': new Set(['-f', '--file']),
+  'db start': new Set(['--from-backup']),
+  'db advisors': new Set(['--fail-on', '--level', '--type']),
+  'migration down': new Set(['--last']),
+  'migration list': new Set(['-p', '--password']),
+  'migration repair': new Set(['-p', '--password', '--status']),
+  'migration squash': new Set(['-p', '--password', '--version']),
+  'gen types': new Set(['--lang', '--project-id', '--query-timeout', '--swift-access-control', '-s', '--schema']),
+  'functions deploy': new Set(['--import-map', '-j', '--jobs', '--project-ref']),
+  'functions serve': new Set(['--env-file', '--import-map', '--inspect-mode']),
+  'test new': new Set(['-t', '--template']),
 };
 
 const PFLAG_TRUE = new Set(['1', 't', 'T', 'true', 'TRUE', 'True']);
@@ -523,12 +569,7 @@ const takeValue = (name, value, next) => {
   return { consumed: 1 };
 };
 
-const commandFlags = (table, cmd, sub) => {
-  const byCmd = table[cmd];
-  if (!byCmd) return undefined;
-  if (sub && byCmd[sub]) return byCmd[sub];
-  return undefined;
-};
+const commandFlags = (table, cmd, sub) => (cmd === undefined ? undefined : table[sub === undefined ? cmd : `${cmd} ${sub}`]);
 
 /**
  * `{ isolation }` when the argv is classifiable; `{ error }` when it is not.

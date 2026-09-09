@@ -68,10 +68,116 @@ const WRAPPERS = new Set(['pnpm', 'npm', 'npx', 'yarn', 'bun', 'bunx', 'run', 'e
 /** Wrapper flags whose VALUE is the next token, not the command. */
 const TAKES_VALUE = new Set(['--filter', '-F', '-C', '--dir', '--prefix', '--workspace', '-u']);
 
-const bare = token => token.replace(/^[("']+/, '').split('/').pop();
+const bare = token => token.split('/').pop();
+
+/** Operators that end a segment; the doubled forms are the same boundary. */
+const SEPARATORS = new Set([';', '|', '&', '(', ')']);
+
+/** Inside `"`, `\` is special only before these, or a newline (POSIX). */
+const DOUBLE_ESCAPE = new Set(['"', '\\', '$', '`']);
 
 /**
- * The command word of every `;`/`&&`/`|`-separated segment of a script line.
+ * A script line as segments of tokens: quote-aware, and evaluating nothing.
+ *
+ * Splitting on a `;`/`&&`/`|` REGEX cut inside quoted arguments, where those
+ * characters are ordinary text. `supabase db query "select 1; select 2"
+ * --local` came apart at the semicolon and lost its `--local` — the one token
+ * that says the command hits the local database — so a contaminating script
+ * read as harmless. Quotes come off, because that is what the shell does
+ * before the CLI ever sees the token: a quoted `--linked` still reaches pflag
+ * as `--linked` and still means the linked project.
+ *
+ * Newline is a separator, and it is checked before whitespace: `/\s/` matches
+ * `\n`, and treating it as a token break swallowed the next command as an
+ * argument of the last. Inside `"`, `\` escapes `"`, `\`, `$`, `` ` ``, and a
+ * newline (line continuation); anywhere else inside `"`, and everywhere
+ * inside `'`, the backslash is literal.
+ */
+function scan(line) {
+  const segments = [[]];
+  let token = '';
+  let started = false;
+  let quote = '';
+
+  const end = () => {
+    if (started) segments.at(-1).push(token);
+    token = '';
+    started = false;
+  };
+
+  const text = String(line);
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    const next = text[index + 1];
+
+    if (quote === "'") {
+      started = true;
+      if (character === "'") quote = '';
+      else token += character;
+      continue;
+    }
+
+    if (quote === '"') {
+      started = true;
+      if (character === '\\') {
+        if (next === '\n') {
+          index += 1;
+          continue;
+        }
+        if (DOUBLE_ESCAPE.has(next)) {
+          token += next;
+          index += 1;
+          continue;
+        }
+        token += character;
+        continue;
+      }
+      if (character === '"') quote = '';
+      else token += character;
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      started = true;
+      quote = character;
+      continue;
+    }
+    if (character === '\\') {
+      if (next === undefined) {
+        started = true;
+        token += character;
+        continue;
+      }
+      if (next === '\n') {
+        index += 1;
+        continue;
+      }
+      started = true;
+      token += next;
+      index += 1;
+      continue;
+    }
+    if (character === '\n' || SEPARATORS.has(character)) {
+      if ((character === '|' || character === '&') && next === character) index += 1;
+      end();
+      segments.push([]);
+      continue;
+    }
+    if (/\s/.test(character)) {
+      end();
+      continue;
+    }
+    started = true;
+    token += character;
+  }
+  end();
+
+  return segments;
+}
+
+/**
+ * The command word of every segment of a script line, and the arguments that
+ * follow it.
  *
  * Anchoring on the command word, rather than matching the name anywhere, is
  * what keeps `rm -rf supabase` and `prettier --write supabase` out of a doctor
@@ -79,28 +185,57 @@ const bare = token => token.replace(/^[("']+/, '').split('/').pop();
  * more often than as a binary — it is also a directory in every one of these
  * repositories.
  */
-function commandWords(line) {
-  return String(line)
-    .split(/\s*(?:\|\||&&|[;|&])\s*/)
-    .map(segment => {
-      const tokens = segment.trim().split(/\s+/).filter(Boolean);
-      let index = 0;
+function invocations(line) {
+  return scan(line).map(tokens => {
+    let index = 0;
 
-      while (index < tokens.length) {
-        const token = tokens[index];
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) index += 1; // FOO=bar prefix
-        else if (TAKES_VALUE.has(token)) index += 2;
-        else if (token.startsWith('-')) index += 1;
-        else if (WRAPPERS.has(bare(token))) index += 1;
-        else break;
-      }
+    while (index < tokens.length) {
+      const token = tokens[index];
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) index += 1; // FOO=bar prefix
+      else if (TAKES_VALUE.has(token)) index += 2;
+      else if (token.startsWith('-')) index += 1;
+      else if (WRAPPERS.has(bare(token))) index += 1;
+      else break;
+    }
 
-      return index < tokens.length ? bare(tokens[index]) : '';
-    });
+    return index < tokens.length ? { name: bare(tokens[index]), args: tokens.slice(index + 1) } : { name: '', args: [] };
+  });
 }
 
 /** Does this script line invoke the Supabase CLI as a command? */
-export const invokesSupabaseCli = script => commandWords(script).includes(CLI_NAME);
+export const invokesSupabaseCli = script => invocations(script).some(entry => entry.name === CLI_NAME);
+
+/**
+ * Every argv this script line hands the Supabase CLI directly — one per
+ * segment whose command word is the CLI itself, so what a classifier sees is
+ * what the CLI would see.
+ *
+ * A script chains, and reading only the first invocation is how the rest go
+ * ungraded: `supabase status || supabase start -x studio` and `supabase link
+ * --project-ref $REF && supabase db push` are two commands each, and taking
+ * everything after the first `supabase` word made one nonsense argv out of
+ * them — `-x` resolved against `status`, and a `&& supabase db reset` tail was
+ * swallowed as positionals of the head.
+ *
+ * The GUARDED spelling is absent from this list by construction: in `pnpm -w
+ * ax supabase db reset` the command word is `ax`, so a caller can grade every
+ * argv here as raw without re-testing the line. That is what lets a mixed line
+ * — one guarded command and one raw one — have its raw half graded.
+ *
+ * Redirections and their targets are dropped: `gen types --local > types.ts`
+ * is still `gen types --local`.
+ */
+export const supabaseInvocations = script =>
+  invocations(script)
+    .filter(entry => entry.name === CLI_NAME)
+    .map(entry => {
+      const args = [];
+      for (let index = 0; index < entry.args.length; index += 1) {
+        if (/^\d*(?:>>?|<)$/.test(entry.args[index])) index += 1; // the redirection target, not an operand
+        else args.push(entry.args[index]);
+      }
+      return args;
+    });
 
 /**
  * The CLI reads `SUPABASE_DB_PASSWORD` for EVERY database connection, local ones
