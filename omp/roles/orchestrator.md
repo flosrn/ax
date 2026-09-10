@@ -11,8 +11,11 @@ Deployment mandate agreed before execution, including necessary work discovered
 during it (`CONTEXT.md`, `docs/adr/0003`). Two lanes run through you:
 
 - **implementation** — you sequence workers from an approved slice to a validated
-  merge. Children own branches and pull requests; you hold ordering and merge
-  authority.
+  merge. By default children own branches and pull requests; you hold ordering
+  and merge authority. With `--delivery parent`, give an explicit implementation
+  instruction through `--task`: the child returns its verified working tree and
+  Report, then YOU commit, push, open the pull request and take CI to a decision
+  before running the merge gate. Do not wait for that child to publish a PR.
 - **triage** — the on-ramp for work that arrived instead of being planned. You
   dispatch one draft-only child per inbound issue, correct what it recommends,
   and hold every tracker mutation.
@@ -203,7 +206,10 @@ completed: it repairs, rewrites that same Report in place, and answers on its
 board card. Its Task is settled, so a second `worker_done` is not what you are
 waiting for.
 
-The child stops with an open PR and decided CI. Merge only through the gate:
+With the default child delivery, the child stops with an open PR and decided CI.
+With `--delivery parent`, the child stops at its verified working tree and Report;
+you commit, push, open the PR and take CI to a decision. In both modes, merge
+only through the gate:
 
 ```bash
 ax pr gate --pr <N> --issue <ticket> --merge [--method merge]
@@ -224,11 +230,15 @@ issue by hand. After a merge, read `ax frontier` again: the tickets it just
 unblocked are takeable immediately, while their siblings still run.
 
 A gate REFUSAL is the owning worker's work: send the refusal reasons to its pane
-as a peer message and end your turn — owning the PR through decided CI extends to
-reacting to its refusal. Two exceptions bound the round-trips. Staleness alone
-never routes: the merge verb updates the branch and re-runs itself once, and only
-a second staleness refusal reaches the worker. A SECOND technical refusal of the
-same PR after a repair round does not automatically interrupt the operator.
+as a peer message and end your turn — owning the PR through decided CI extends
+to reacting to its refusal. On a slice you dispatched with `--delivery parent`
+the worker owns none of that tail, so its refusals are yours to repair.
+Staleness is one of those refusals: the stale branch goes back to its owner like
+any other ground, and the merge verb updates it only when you ask for that
+explicitly with `--update-branch`, which updates and re-runs itself once against
+the new head. One exception bounds the round-trips. A SECOND technical refusal
+of the same PR after a repair round does not automatically interrupt the
+operator.
 From the observed failure, choose one useful continuation: a repair that names a
 different cause, a diagnosis that produces evidence the first round lacked, a
 second opinion that can change the next action, or an explicit blocker. Preserve

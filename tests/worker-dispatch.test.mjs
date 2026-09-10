@@ -1335,6 +1335,56 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
 });
 
+// ── who delivers this slice ─────────────────────────────────────────────────
+//
+// `--delivery parent` moves the shipping tail — commit, push, pull request, CI
+// — to the dispatching session. Two properties make it a mode rather than a
+// hint: the instruction has to be given (a project's `entry` is its SHIPPING
+// verb by construction, and ax cannot invent an implementation-only one), and
+// the value travels on the argv `ax worker start` records.
+
+test('--delivery parent needs an instruction of its own, because the project entry is its shipping verb', () => {
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--delivery', 'parent', '--dry-run'], { root });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /--delivery parent needs --task/);
+  assert.match(r.out, /--delivery parent --task/, 'the refusal names the way out');
+  assert.deepEqual(r.started, []);
+});
+
+test('--delivery parent reaches the child as its contract and the record as its argv', () => {
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--delivery', 'parent', '--task', 'implement the skeletons only', '--dry-run'], { root });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /the session that dispatched you owns the shipping tail/i, 'the child is told who owns the tail');
+  assert.doesNotMatch(r.out, /You own the shipping tail/);
+  assert.match(r.out, /would run: ax worker start .*--delivery parent/, 'the mode is recorded, not only rendered');
+});
+
+test('a dispatch that names no delivery is the default one, and records no mode', () => {
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root });
+
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /the session that dispatched you owns the shipping tail/i);
+  assert.match(r.out, /You own the shipping tail/);
+  assert.doesNotMatch(r.out, /--delivery/);
+});
+
+test('an unknown --delivery value is refused, never read as the default', () => {
+  // The default is the one that SHIPS, so a typo read leniently would put a
+  // child on a branch the parent is already delivering.
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--delivery', 'somebody', '--task', 'x', '--dry-run']);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--delivery expects child or parent/);
+  assert.deepEqual(r.started, []);
+});
+
 test('the brief a dispatch composes names the Report path the record rule answers', () => {
   // `docs/adr/0002`: the child is told where its Report goes in the last text it
   // reads, and the location is derived — never a path the worker names. This is

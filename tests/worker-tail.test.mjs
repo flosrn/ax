@@ -449,7 +449,7 @@ test('an unreachable runtime cannot establish, and is probed before the read', (
  * `superseded` adds the OLDER worker-start a `--replace` leaves behind: its own
  * pane, dispatched an hour earlier, in the same record.
  */
-function placed(request, { dispatchId = 'ctx_placed', pane = HANDLE, superseded = null } = {}) {
+function placed(request, { dispatchId = 'ctx_placed', pane = HANDLE, superseded = null, delivery = '' } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ax-tail-placed-'));
   const worktree = join(home, request);
   mkdirSync(worktree, { recursive: true });
@@ -469,6 +469,7 @@ function placed(request, { dispatchId = 'ctx_placed', pane = HANDLE, superseded 
     JSON.stringify({
       request,
       repo: 'acme/widgets',
+      ...(delivery === '' ? {} : { delivery }),
       attempts: [{
         n: 1,
         settled: false,
@@ -548,6 +549,23 @@ test('#165: a MERGED pull request routes to release, and no pull request at all 
   const unshipped = capture(() => tail(['168-work'], { runner: runner2, env: nothing, exec: fakeShell({ branch: 'feat/168-work' }).exec }));
   assert.match(unshipped.out, /→ ax worker settle 168-work/);
   assert.doesNotMatch(unshipped.out, /--replace/);
+});
+
+test('#3: a --delivery parent pane with no pull request prints the shipping handoff, not the ending', () => {
+  // The other reader of a gone pane, on the shape the classifier used to send
+  // to `settle`: this child was dispatched with the tail moved to its parent,
+  // so it opened no pull request BY CONTRACT (../src/worker/brief.mjs).
+  const env = placed('172-work', { delivery: 'parent' });
+  const { runner } = fakeRunner({ receipt: EXITED([]) });
+  const { exec } = fakeShell({ branch: 'feat/172-work' });
+
+  const r = capture(() => tail(['172-work'], { runner, env, exec }));
+
+  assert.equal(r.code, 4, 'the pane verdict is unchanged: it is gone');
+  assert.doesNotMatch(r.out, /→ ax worker settle 172-work/, 'and the ending is not what remains to write');
+  assert.doesNotMatch(r.out, /--replace/);
+  assert.match(r.out, /feat\/172-work/, 'the branch whose shipping the parent still owes is named');
+  assert.match(r.out, /parent/);
 });
 
 test('#165: a gh that refuses prints no continuation, and quotes the refusal', () => {

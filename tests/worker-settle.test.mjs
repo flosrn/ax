@@ -652,3 +652,136 @@ test('an explicit `repo: null` is the absence --repo exists for, and a blank str
     assert.equal(JSON.parse(r.after).repo, REPO, `${request}: the name replaced the absence`);
   }
 });
+
+// ── #3: the ending a parent's unshipped branch may not be given ──────────────
+// This verb writes the ending of an attempt the gate proved dead, and death of
+// the PANE is all the gate can prove. On a `--delivery parent` dispatch that is
+// not the end of the work: the child never opens a pull request by contract
+// (../src/worker/brief.mjs), so its branch sits shipped-by-nobody, and the
+// record — the only place the mode survives — is what separates "failed and
+// left nothing" from "did exactly what it was dispatched to do".
+//
+// The abandonment that IS allowed is the one already written down: a pull
+// request closed unmerged, or a branch this checkout can no longer name at
+// all. Both are things an operator DID, not an inference this verb made.
+
+/** `gh repo view` (which checkout), `gh pr list` (its pull requests), `git rev-parse` (which branch). */
+const shipping = ({ slug = REPO, branch = 'feat/3-handoff', prs = [] } = {}) => (bin, args) => {
+  if (bin === 'gh' && args[0] === 'repo') return { status: 0, stdout: `${slug}\n`, stderr: '' };
+  if (bin === 'gh' && args[0] === 'pr') return { status: 0, stdout: JSON.stringify(prs), stderr: '' };
+  if (bin === 'git' && args.includes('rev-parse')) return { status: 0, stdout: `${branch}\n`, stderr: '' };
+  return { status: 1, stdout: '', stderr: `no stub for ${bin} ${String(args?.[0] ?? '')}\n` };
+};
+
+/** A dead attempt of a `--delivery parent` dispatch, placed on a worktree that exists. */
+function parentAttempt(dir, request, { handle = 'term_7f0854ba' } = {}) {
+  const worktree = mkdtempSync(join(tmpdir(), `ax-settle-${request}-`));
+  const { path } = claimRecord(dir, request);
+  initRecord(path, { request, orca: 'orca', repo: REPO, delivery: 'parent' });
+  phaseBegin(path, { name: 'task-create', identity: 'id-create', argv: ['orca', 'orchestration', 'task-create', '--json'] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify(taskCreated()) });
+  phaseBegin(path, {
+    name: 'worker-start',
+    identity: 'id-start',
+    argv: ['orca', 'orchestration', 'worker-start', '--worktree', `path:${worktree}`, '--agent', 'omp', '--json'],
+  });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify(startFailed(handle)) });
+  return path;
+}
+
+test('#3: settle REFUSES a proven-dead parent handoff whose branch was never shipped', () => {
+  const dir = store();
+  const path = parentAttempt(dir, '3-handoff');
+  const before = readFileSync(path, 'utf8');
+
+  const r = run(['3-handoff'], {
+    runner: fakeRunner({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')], terminals: [] }),
+    exec: shipping(),
+    env: { ORCA_DISPATCH_STORE: dir },
+  });
+
+  assert.equal(r.code, 1, `an unshipped parent handoff is a refusal, never a write: ${r.out}`);
+  assert.equal(readFileSync(path, 'utf8'), before, 'and not one byte of the record moved');
+  assert.equal(settledFlag(path), false);
+  assert.match(r.out, /feat\/3-handoff/, 'the branch that would have been abandoned is named');
+  assert.match(r.out, /parent/, 'and so is the mode that makes its missing pull request expected');
+});
+
+test('parent settlement cannot use repository backfill to bypass the shipping handoff', () => {
+  const dir = store();
+  const path = parentAttempt(dir, '3-unnamed');
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  delete raw.repo;
+  writeFileSync(path, JSON.stringify(raw));
+  const before = readFileSync(path, 'utf8');
+  const r = run(['3-unnamed', '--repo', REPO], {
+    runner: fakeRunner({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')], terminals: [] }),
+    exec: shipping(), env: { ORCA_DISPATCH_STORE: dir },
+  });
+  assert.equal(r.code, 1, r.out);
+  assert.equal(readFileSync(path, 'utf8'), before);
+});
+
+test('parent settlement backfills an established repository after an abandoned PR', () => {
+  const dir = store();
+  const path = parentAttempt(dir, '3-backfill-closed');
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  delete raw.repo;
+  writeFileSync(path, JSON.stringify(raw));
+  const r = run(['3-backfill-closed', '--repo', REPO], {
+    runner: fakeRunner({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')], terminals: [] }),
+    exec: shipping({ branch: 'feat/3-backfill-closed', prs: [{ number: 44, state: 'CLOSED', headRefName: 'feat/3-backfill-closed' }] }),
+    env: { ORCA_DISPATCH_STORE: dir },
+  });
+  assert.equal(r.code, 0, r.out);
+  const after = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(after.repo, REPO);
+  assert.equal(settledFlag(path), true);
+});
+
+test('#3: a parent handoff an operator ALREADY ended is settleable — a closed PR, or no branch to name', () => {
+  // The two endings that are facts rather than inferences. Neither is invented
+  // here: a closed unmerged pull request is #165's own settle case, and a
+  // record whose worktree is gone can name no branch at all.
+  const closedDir = store();
+  const closed = parentAttempt(closedDir, '3-closed');
+  const abandoned = run(['3-closed'], {
+    runner: fakeRunner({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')], terminals: [] }),
+    exec: shipping({ branch: 'feat/3-closed', prs: [{ number: 44, state: 'CLOSED', headRefName: 'feat/3-closed' }] }),
+    env: { ORCA_DISPATCH_STORE: closedDir },
+  });
+  assert.equal(abandoned.code, 0, abandoned.out);
+  assert.equal(settledFlag(closed), true, 'a pull request closed unmerged IS the abandonment, and it was an operator\'s act');
+
+  const goneDir = store();
+  const { path: gone } = claimRecord(goneDir, '3-gone');
+  initRecord(gone, { request: '3-gone', orca: 'orca', repo: REPO, delivery: 'parent' });
+  phaseBegin(gone, { name: 'task-create', identity: 'id-create', argv: ['orca', 'orchestration', 'task-create', '--json'] });
+  phaseEnd(gone, 'last', { exit: 0, receiptText: JSON.stringify(taskCreated()) });
+  phaseBegin(gone, { name: 'worker-start', identity: 'id-start', argv: ['orca', 'orchestration', 'worker-start', '--json'] });
+  phaseEnd(gone, 'last', { exit: 0, receiptText: JSON.stringify(startFailed('term_7f0854ba')) });
+  const archaeology = run(['3-gone'], {
+    runner: fakeRunner({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')], terminals: [] }),
+    exec: shipping({ branch: 'feat/3-gone' }),
+    env: { ORCA_DISPATCH_STORE: goneDir },
+  });
+  assert.equal(archaeology.code, 0, archaeology.out);
+  assert.equal(settledFlag(gone), true, 'a record naming no worktree names no unshipped branch either');
+});
+
+test('#3: a child-delivered record settles without asking the forge anything', () => {
+  // The cost of this refusal is paid by the rows it is about. A default
+  // dispatch is unchanged, and pays no branch read and no pull-request read.
+  const dir = store();
+  const path = deadAttempt(dir, '3-child');
+  const calls = [];
+  const r = run(['3-child'], {
+    runner: fakeRunner({ workers: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')], terminals: [] }),
+    exec: (bin, args) => (calls.push([bin, ...args].join(' ')), shipping()(bin, args)),
+    env: { ORCA_DISPATCH_STORE: dir },
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.equal(settledFlag(path), true);
+  assert.deepEqual(calls.filter(line => line.includes('pr list') || line.includes('rev-parse')), [], `a child's ending asks the forge nothing: ${calls.join(' | ')}`);
+});

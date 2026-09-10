@@ -54,13 +54,23 @@
 // Printing that beside the permission is what keeps a fresh orchestrator from
 // reading "safe" as "start another one" over work that is already open.
 //
+// WITH ONE ANSWER THE PERMISSION CANNOT SURVIVE (#3). A child dispatched
+// `--delivery parent` opens no pull request by contract, so a corpse of one
+// leaves a branch of finished work its parent has not shipped: "safe to
+// re-dispatch" over that builds the same slice twice. A caveat printed under
+// a permission is still a permission — the omission-then-0 shape this file
+// already removed once — so that row withholds the authorisation entirely and
+// exits 3 naming the shipping the session owes.
+//
 // Exit codes are per-verb (ADR 0003), and this verb is FAIL-CLOSED — the
 // opposite of `ax board`, because the act it authorises is irreversible:
 //   0  safe: every dispatch of this task is proven gone (or there is none)
 //   1  one live agent — do NOT re-dispatch
 //   2  duplicate: two or more live agents on one task
 //   3  cannot establish — never a permission, and that includes an unproven
-//      pane, an unaskable host and a mutation whose outcome nobody knows
+//      pane, an unaskable host, a mutation whose outcome nobody knows, and a
+//      proven corpse whose slice its PARENT still owes a pull request (#3):
+//      the pane ended, the work did not
 //
 // `--help` NEVER REACHES THIS VERB, and that reverses what this header said
 // until #89. The rule was that the original had no `--help`, that a `--help`
@@ -81,7 +91,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
-import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, scanStore, taskIdScan } from './record.mjs';
+import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, scanStore, taskIdScan } from './record.mjs';
 
 /**
  * The task a REQUEST id names, read from the dispatch record store, or null.
@@ -481,24 +491,70 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     return 3;
   }
 
-  // PROVEN DEAD: the question this verb was asked is answered, so it authorises
-  // — and the verb that record takes NEXT is not this one's to guess. Its
-  // branch's pull request decides between replacing an unfinished slice,
-  // releasing a landed one and settling one that shipped nothing
-  // (./continuation.mjs), and unreadable evidence decides none of them. Naming
-  // it here is what keeps "safe to re-dispatch" from being read as "start
-  // another one" over work that is already open.
-  ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch (return the task to `ready` first).');
+  // PROVEN DEAD, AND WHAT THAT AUTHORISES. The question this verb was asked is
+  // answered, so it authorises — and the verb that record takes NEXT is not
+  // this one's to guess. Its branch's pull request decides between replacing
+  // an unfinished slice, releasing a landed one and settling one that shipped
+  // nothing (./continuation.mjs), and unreadable evidence decides none of
+  // them. Naming it here is what keeps "safe to re-dispatch" from being read
+  // as "start another one" over work that is already open.
   const branches = new Map();
+  const continuations = [];
   for (const { w, prov } of dead) {
     if (prov === undefined) continue;
-    const continuation = continuationFor(join(store, prov.file), {
-      request: prov.request,
-      dispatchId: typeof w.dispatchId === 'string' ? w.dispatchId : null,
-      exec,
-      memo: branches,
-      run,
+    let delivery;
+    try {
+      delivery = recordDelivery(join(store, prov.file));
+    } catch (error) {
+      delivery = { state: 'malformed', owner: '', detail: `delivery record unread: ${String(error.message ?? error)}` };
+    }
+    continuations.push({
+      prov,
+      delivery,
+      continuation: continuationFor(join(store, prov.file), {
+        request: prov.request,
+        dispatchId: typeof w.dispatchId === 'string' ? w.dispatchId : null,
+        exec,
+        memo: branches,
+        run,
+      }),
     });
+  }
+
+  // EXCEPT WHERE THE PANE'S DEATH IS NOT THE WORK'S END (#3). A child
+  // dispatched `--delivery parent` opens no pull request by contract, so its
+  // branch is finished work its parent has not shipped — and this verb's own
+  // sentence, "safe to re-dispatch", is how that slice gets built a second
+  // time while the first sits unmerged. Death is proven; the DISPOSITION is
+  // not, and an authorisation printed with a caveat under it is an
+  // authorisation (the omission-then-0 shape #192 already removed once). So
+  // the pending handoff withholds it and says what would end it.
+  const pending = continuations.filter(row => row.continuation.route === 'deliver');
+  const unread = continuations.filter(row => row.delivery.state === 'malformed' || (row.delivery.owner === 'parent' && row.continuation.failed !== ''));
+  if (unread.length > 0) {
+    bad('CANNOT ESTABLISH — parent delivery or its landing evidence is unread; a dead pane alone does not authorize rebuilding its slice.');
+    for (const row of unread) {
+      note(row.delivery.state === 'malformed' ? row.delivery.detail : row.continuation.failed);
+      fix(row.continuation.fix || `ax worker start --show --request ${row.prov.request}   # establish the recorded delivery owner before continuing`);
+    }
+    return 3;
+  }
+  if (pending.length > 0) {
+    bad(
+      `CANNOT ESTABLISH — every pane is a corpse, but ${pending.length} of them delivered a slice this session still owes a pull request: re-dispatching would build work that already exists, unmerged.`,
+    );
+    note('The pane is dead and the WORK is not. Ship those branches, or close what they opened, and this gate answers ordinarily.');
+    for (const row of pending) fix(row.continuation.fix);
+    for (const row of continuations) {
+      if (row.continuation.route !== 'deliver' && row.continuation.failed !== '') {
+        note(`the continuation of ${row.prov.request} is undecided: ${row.continuation.failed}`);
+      }
+    }
+    return 3;
+  }
+
+  ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch (return the task to `ready` first).');
+  for (const { prov, continuation } of continuations) {
     if (continuation.failed !== '') note(`the continuation of ${prov.request} is undecided: ${continuation.failed}`);
     if (continuation.fix !== '') fix(continuation.fix);
   }

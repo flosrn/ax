@@ -26,7 +26,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { loadCheckoutConfig, repoPaths } from './config.mjs';
 import { removeBlock, writeBlock } from './dotenv.mjs';
 import { currentBranch, isMainCheckout } from './git.mjs';
-import { fatal, note, warn } from './log.mjs';
+import { fatal, status, warn } from './log.mjs';
 import { identify } from './worktree/identity.mjs';
 import { physical } from './worktree/locate.mjs';
 import { PREFIX, planWorktree } from './worktree/plan.mjs';
@@ -406,7 +406,7 @@ export function supabase(argv = [], deps = {}) {
   // arrives, and only for the commands whose target is the question.
   if (classified.isolation === true) {
     const stack = configProjectId(join(root, configTomlPath(config)));
-    if (stack !== undefined) note(`stack ${stack} — declared by ${configTomlPath(config)}; whatever branch label the CLI prints below is its own local database label`);
+    if (stack !== undefined) status(`stack ${stack} — declared by ${configTomlPath(config)}; whatever branch label the CLI prints below is its own local database label`);
   }
 
   return runCli(cli.path, ['--workdir', appDir, ...target.args], { cwd, env });

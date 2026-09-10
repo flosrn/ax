@@ -318,7 +318,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     }
     if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
   };
-  const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0, occupied: { machine: 0, mine: 0 } } };
+  const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0, occupied: { machine: 0, mine: 0 }, occupancy: [] } };
 
   const dir = storeArg || defaultStore(env);
   let files;
@@ -522,7 +522,12 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   //
   // The tallies above were taken before this split, so both views answer the
   // same machine: the flag changes what is SHOWN, never what was established.
-  const carries = view => view.continuation.route !== null || view.continuation.failed !== '';
+  // A ROW CARRIES SOMETHING IF IT NAMES ANYTHING TO TYPE OR ANYTHING UNREAD:
+  // the route, the failure, and the repair are three ways of saying it, and
+  // the fix is the one an operator acts on — a continuation that names a
+  // command under no route (an unreadable delivery mode, #3) would otherwise
+  // be hidden by the very predicate that exists to stop hiding repairs.
+  const carries = view => view.continuation.route !== null || view.continuation.failed !== '' || view.continuation.fix !== '';
   const shown = all ? views : views.filter(view => (view.pane === 'MORT' ? carries(view) : !view.deadAttempt));
   const hidden = views.length - shown.length;
   const withheldMort = views.filter(view => view.pane === 'MORT' && !carries(view)).length;
@@ -571,12 +576,18 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
         fix(`ax worker transcript ${row.request}   # what that child actually did — a session outlives its pane`);
       }
       // And the debt itself, on the one row that carries it (#102). Named
-      // UNCONDITIONALLY: this verb resolves no repository slug and grades no row
-      // by settleability — 205 per-row predicates on every invocation to answer
-      // a question the verb itself answers for one. `settle` is fail-closed and
-      // refuses a row that is not this checkout's, which is what makes naming it
-      // here honest rather than a guess.
-      if (deadAttempt) fix(`ax worker settle ${row.request}   # write the ending, once the gate's evidence proves it`);
+      // unconditionally EXCEPT where the continuation has just established
+      // that this attempt has no ending to write yet (#3): this verb resolves
+      // no repository slug and grades no row by settleability — 205 per-row
+      // predicates on every invocation to answer a question the verb itself
+      // answers for one — but a row whose branch is unshipped parent work is
+      // one this reader ALREADY asked about, and printing the ending beside
+      // the handoff offers the operator the exact line #3 exists to withdraw.
+      // `settle` is fail-closed and refuses that row too, which is what makes
+      // naming it on every other row honest rather than a guess.
+      if (deadAttempt && continuation.route !== 'deliver') {
+        fix(`ax worker settle ${row.request}   # write the ending, once the gate's evidence proves it`);
+      }
       // AND THE CONTINUATION OF A GONE PANE (#165), decided by
       // ./continuation.mjs and rendered here. A failed read is printed as the
       // failure it is, with the call to make, and offers no route: a route

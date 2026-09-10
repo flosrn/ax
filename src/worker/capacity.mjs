@@ -126,13 +126,67 @@ const inRepo = repo => (repo === '' ? 'this repository' : repo);
  * names.
  */
 const ASKED = 'ax worker ls   # the host and why it could not answer; declare it under dispatch.hosts, or settle the records naming it, then re-run';
-const OCCUPIED =
-  "ax worker gate <task>   # it names the live handle(s) at the recorded worktree; inspect each with 'orca terminal show --terminal <handle> --json', then release or settle that record and re-run";
-const BOTH =
-  "ax worker ls   # which host could not answer (declare it under dispatch.hosts, or settle the records naming it) and which record's worktree is still occupied; then 'orca terminal show --terminal <handle> --json' on the live pane at that path, and re-run";
 
 const HOST_WHY = 'on a host that could not be asked';
 const TREE_WHY = 'at a recorded worktree a live pane no record owns still occupies';
+
+/** Occupancy evidence the count carries; absent is none, never a guess. */
+const occupancyOf = unmeasured => (Array.isArray(unmeasured?.occupancy) ? unmeasured.occupancy : []);
+
+const extrasOf = occupancy => [
+  ...new Set(occupancy.flatMap(row => (Array.isArray(row.extras) ? row.extras : [])).filter(handle => typeof handle === 'string' && handle !== '')),
+];
+
+const occupancyNamed = occupancy =>
+  occupancy
+    .map(row => {
+      const records = Array.isArray(row.records) && row.records.length > 0 ? row.records.join(', ') : 'a record';
+      const extras = Array.isArray(row.extras) && row.extras.length > 0 ? row.extras.join(', ') : 'a live pane no record owns';
+      const tree = row.tree !== undefined && row.tree !== '' ? row.tree : 'a recorded worktree';
+      return `${records} at ${tree} still occupied by live handle(s) ${extras}`;
+    })
+    .join('; ');
+
+const showCommands = occupancy => {
+  const extras = extrasOf(occupancy);
+  return extras.length > 0
+    ? extras.map(handle => `orca terminal show --terminal ${handle} --json`).join('; ')
+    : "orca terminal show --terminal <handle> --json";
+};
+
+const occupancyRepair = occupancy =>
+  `${showCommands(occupancy)}   # live pane(s) at the recorded worktree, not the orphaned recorded handle; then release or settle that record and re-run`;
+
+const bothRepair = occupancy =>
+  `ax worker ls; ${showCommands(occupancy)}   # inspect the unasked hosts and occupied worktrees before re-running`;
+
+/** Evidence for this repository follows the same named-repository rule as its count. */
+const occupancyFor = (unmeasured, repo, scope) => {
+  const rows = occupancyOf(unmeasured);
+  if (scope === 'machine') return rows;
+  const ours = String(repo ?? '').trim().toLowerCase();
+  if (ours === '') return rows;
+  return rows.filter(row => {
+    const named = String(row.repo ?? '').trim().toLowerCase();
+    return named === ours;
+  });
+};
+
+function occupancyLines(occupancy) {
+  const lines = [];
+  for (const row of occupancy) {
+    const records = Array.isArray(row.records) && row.records.length > 0 ? row.records.join(', ') : 'a record';
+    const extras = Array.isArray(row.extras) && row.extras.length > 0 ? row.extras.join(', ') : 'none';
+    const tree = row.tree !== undefined && row.tree !== '' ? row.tree : 'a recorded worktree';
+    lines.push(`recorded ${records} at ${tree} still occupied by live handle(s) ${extras} — occupancy, not a worker`);
+    for (const handle of Array.isArray(row.extras) ? row.extras : []) {
+      if (typeof handle === 'string' && handle !== '') {
+        lines.push(`orca terminal show --terminal ${handle} --json   # live pane at that path, not the recorded handle`);
+      }
+    }
+  }
+  return lines;
+}
 
 /** The count of the pair whose cause is occupancy, read tolerantly. */
 const occupiedIn = (unmeasured, scope) => {
@@ -140,11 +194,18 @@ const occupiedIn = (unmeasured, scope) => {
   return Number.isInteger(value) && value > 0 ? value : 0;
 };
 
-function causeOf(total, occupied) {
+function causeOf(total, occupied, occupancy = []) {
   const unasked = total - occupied;
   if (occupied <= 0) return { why: `are ${HOST_WHY}, so their liveness is unknown`, repair: ASKED };
-  if (unasked <= 0) return { why: `are ${TREE_WHY}, so their liveness is unknown`, repair: OCCUPIED };
-  return { why: `have no established liveness — ${unasked} ${HOST_WHY}, ${occupied} ${TREE_WHY}`, repair: BOTH };
+  if (unasked <= 0) {
+    const named = occupancyNamed(occupancy);
+    return {
+      why: named === '' ? `are ${TREE_WHY}, so their liveness is unknown` : `are ${TREE_WHY} (${named}), so their liveness is unknown`,
+      repair: occupancyRepair(occupancy),
+    };
+  }
+  const named = occupancyNamed(occupancy);
+  return { why: `have no established liveness — ${unasked} ${HOST_WHY}, ${occupied} ${TREE_WHY}${named === '' ? '' : ` (${named})`}`, repair: bothRepair(occupancy) };
 }
 
 /**
@@ -173,8 +234,10 @@ export function capLines({ live, repo = '', repoCap, machineCap }) {
     );
   }
   if (live.unmeasured.machine > 0) {
-    const cause = causeOf(live.unmeasured.machine, occupiedIn(live.unmeasured, 'machine'));
+    const occupancy = occupancyFor(live.unmeasured, repo, 'machine');
+    const cause = causeOf(live.unmeasured.machine, occupiedIn(live.unmeasured, 'machine'), occupancy);
     lines.push(`${live.unmeasured.machine} pane(s) ${cause.why} — so neither count includes them (F-028)`);
+    lines.push(...occupancyLines(occupancy));
   }
   return lines;
 }
@@ -221,8 +284,10 @@ export function capLines({ live, repo = '', repoCap, machineCap }) {
 export function capVerdict({ live, adding, repo = '', repoCap, machineCap }) {
   const notes = [];
   const unmeasured = live.unmeasured;
-  const mineCause = causeOf(unmeasured.mine, occupiedIn(unmeasured, 'mine'));
-  const machineCause = causeOf(unmeasured.machine, occupiedIn(unmeasured, 'machine'));
+  const mineOccupancy = occupancyFor(unmeasured, repo, 'mine');
+  const machineOccupancy = occupancyFor(unmeasured, repo, 'machine');
+  const mineCause = causeOf(unmeasured.mine, occupiedIn(unmeasured, 'mine'), mineOccupancy);
+  const machineCause = causeOf(unmeasured.machine, occupiedIn(unmeasured, 'machine'), machineOccupancy);
 
   if (repo === '') {
     if (machineCap === null) {

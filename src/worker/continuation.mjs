@@ -8,13 +8,35 @@
 // by an operator who already knew it exists, which is the same as unreachable.
 // A row that names no repair is a finding nobody can act on (../log.mjs).
 //
-// THREE DEAD-PANE CASES, AND THEY TAKE THREE DIFFERENT VERBS. The pull request
-// of the record's own branch is what separates them, and nothing else does:
+// FOUR DEAD-PANE CASES, AND THEY TAKE FOUR DIFFERENT VERBS. The pull request
+// of the record's own branch separates three of them, and WHO OWES that pull
+// request separates the fourth:
 //
 //   OPEN        the work is unfinished and its placement is known → --replace
 //   MERGED      the work landed; that row is `release`'s, which reads the
 //               landing proof for itself before it closes anything
 //   none/CLOSED nothing shipped; what remains is the ending `settle` writes
+//   none, and   the child was dispatched `--delivery parent`, so it opened no
+//   the parent  pull request BY CONTRACT: the shipping tail is the dispatching
+//   delivers    session's, and the handoff is still PENDING → no ending
+//
+// THE FOURTH CASE USED TO READ AS THE THIRD (#3). `--delivery parent` removes
+// the bullets that make a child the owner of its shipping tail (./brief.mjs),
+// so "no pull request on that branch" is the shape the dispatch ASKED FOR —
+// and this classifier read it as "nothing shipped" and offered `settle`, the
+// verb that writes an attempt's ending. Following that line throws away work
+// that is finished and unmerged: the branch is real, nobody has judged it, and
+// the record is the only surviving witness of the mode (the brief that carried
+// it is a spec file in a temp directory, ./record.mjs `recordDelivery`).
+//
+// So the fourth case names the HANDOFF instead, and it names no ending at all.
+// The two endings a parent's branch can legitimately reach are things an
+// operator DID and this reader can see: a pull request closed unmerged (the
+// third case, unchanged), or a worktree gone so the record can name no branch
+// (no continuation at all). Neither is inferred here. And an owner that cannot
+// be READ is neither — a `delivery` this cannot parse is a named inability
+// (F-028), because collapsing it to the default would put `settle` straight
+// back under a parent's unshipped branch.
 //
 // AN ABSENT ANSWER IS NOT AN OPEN PULL REQUEST (F-028). Every read below can
 // fail — no placement recorded, a worktree already removed, a `git` or a `gh`
@@ -59,7 +81,7 @@ import { existsSync } from 'node:fs';
 import { defaultExec } from '../exec.mjs';
 import { parseReceipt } from '../orca-bin.mjs';
 import { physical } from '../worktree/locate.mjs';
-import { argvValue, recordRepo, workerStartArgv } from './record.mjs';
+import { argvValue, recordDelivery, recordRepo, workerStartArgv } from './record.mjs';
 import { inheritPlacement } from './start.mjs';
 
 /**
@@ -194,7 +216,7 @@ function remoteBranch(host, selector, repoArg, run) {
  * listing is a point-in-time answer, and two different answers inside one
  * receipt would be worse than a stale one.
  */
-export function continuationFor(recordPath, { request, dispatchId = null, exec = defaultExec, memo = null, run = null } = {}) {
+export function continuationFor(recordPath, { request, dispatchId = null, exec = defaultExec, memo = null, run = null, establishedRepo = '' } = {}) {
   let recorded;
   let repo;
   try {
@@ -205,10 +227,26 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
     // would refuse it and this reader has no branch to ask about either.
     return NO_CONTINUATION;
   }
+  // Only settle supplies this after corroborating its explicit --repo against
+  // the checkout. It fills absence for the read, never overrides recorded scope;
+  // persistence still happens atomically with settlement after all proofs pass.
+  if (repo === '' && establishedRepo !== '') repo = establishedRepo;
   // A record naming no repository is UNKNOWN, never this one: the store is
   // host-global, and asking the wrong forge about a branch name is how a
   // same-named merge answers for a stranger's pane (#83).
-  if (repo === '') return NO_CONTINUATION;
+  if (repo === '') {
+    // A parent-delivered slice cannot be silently unknown here: silence lets a
+    // reader offer the ending over unshipped work (#3).
+    const delivery = recordDelivery(recordPath);
+    if (delivery.state === 'malformed' || delivery.owner === 'parent') {
+      return {
+        route: null,
+        failed: `${request} names no repository, and its delivery owner is ${delivery.state === 'malformed' ? 'unread' : 'the parent'}: whether its branch was shipped cannot be asked`,
+        fix: `ax worker start --show --request ${request}   # inspect the dispatch; for an abandoned slice, use ax worker settle ${request} --repo <owner/repo> from its owning checkout`,
+      };
+    }
+    return NO_CONTINUATION;
+  }
 
   const placement = inheritPlacement(recorded, []);
   if (placement.passthru === undefined) return NO_CONTINUATION;
@@ -250,7 +288,30 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
 
   const settle = why => ({ route: 'settle', failed: '', fix: `ax worker settle ${request}   # ${why}, so this attempt's ending is what remains to write` });
 
-  if (mine.length === 0) return settle(`no pull request was ever opened for ${branch}`);
+  if (mine.length === 0) {
+    // WHOSE PULL REQUEST IS MISSING decides whether one is missing at all
+    // (#3). Read HERE and nowhere earlier: a branch that already carries a
+    // pull request routes on its state whoever opened it, so a row that is
+    // not about to be sent to an ending pays nothing for this.
+    const delivery = recordDelivery(recordPath);
+    if (delivery.state === 'malformed') {
+      return {
+        route: null,
+        failed: `who delivers ${request} is unread: ${delivery.detail} — and an owner this cannot read decides no continuation, least of all an ending for ${branch}`,
+        fix: `ax worker ls --all   # then repair that field by hand: the record is the only thing left that says who owed ${branch} a pull request`,
+      };
+    }
+    if (delivery.owner === 'parent') {
+      return {
+        route: 'deliver',
+        failed: '',
+        fix:
+          `ax worker transcript ${request}   # this child was dispatched --delivery parent, so it opened no pull request BY CONTRACT: ` +
+          `${branch} is finished work nobody has shipped, and the tail is THIS session's — read what the child left, then ship ${branch} yourself`,
+      };
+    }
+    return settle(`no pull request was ever opened for ${branch}`);
+  }
 
   const pr = mine[0];
   if (pr.state === 'OPEN') {

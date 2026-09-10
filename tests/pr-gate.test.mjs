@@ -931,7 +931,6 @@ test('#176: --merge over an incomplete check read issues no merge at all', () =>
   });
   assert.equal(code, 3, out);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), `a merge was issued over an incomplete read: ${calls.join(' | ')}`);
-  assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
 });
 
 test('#176: an unknown announced total is stated as unknown, never as zero', () => {
@@ -1158,7 +1157,6 @@ test('#175: an unestablished read on --merge mutates nothing — no merge call i
   const { code, out, calls } = run(['--pr', '1845', '--merge'], { threads: [threadShape({ pageInfo: { hasNextPage: false, endCursor: null } })] });
   assert.equal(code, 3, out);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), `a merge was issued over an unestablished thread read: ${calls.join(' | ')}`);
-  assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
 });
 
 test('#175: the page bound reached with the pagination still advancing is unestablished, and merges nothing', () => {
@@ -1453,7 +1451,7 @@ test('#90: the staleness self-repair no longer refuses the commit it just create
   // and its mutation is bound to it (#177), never to the commit that refused.
   const root = repoFor('stale-merged', DEFAULT_GATE);
   const moved = shaOf(root, 'updated');
-  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+  const { code, out, calls } = run(['--pr', '1845', '--merge', '--update-branch'], {
     ...CLEAN,
     shape: 'stale-merged',
     // receipt · the head after the update · the retried run's own receipt · the
@@ -2148,11 +2146,8 @@ test('--method merge lands a real merge commit, and squash never appears', () =>
 });
 
 test('--merge on a refusal mutates nothing', () => {
-  // An unresolved thread rather than staleness: staleness alone has its own
-  // self-repair path (KTD6), which ends the run before this line is reached.
   const { code, out, calls } = run(['--pr', '1845', '--merge'], { threads: [threadPage([thread('T1', false)])] });
   assert.equal(code, 1);
-  assert.match(out, /--merge ignored: the verdict is not a pass, so nothing was mutated/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a refusing verdict issued a merge');
 });
 
@@ -2296,29 +2291,31 @@ test('replay against an open PR whose head moved opens a NEW attempt on the fres
   assert.equal(record.attempts[0].settled, true);
 });
 
-test('KTD6 rider: an update-branch the head did not follow refuses instead of recursing', () => {
-  // `gh pr update-branch` returns before GitHub has moved the head, and the
-  // recursion is the ONE retry this verb gets. Spending it on an unchanged head
-  // re-runs every ground against the very commit that just refused, and reports
-  // the second refusal as if a repair had been attempted.
+test('a stale merging gate refuses without requesting a remote branch update', () => {
   const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'stale' });
-  assert.equal(code, 1);
-  assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
-  assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
-  assert.match(out, /REFUSE — self-repair: the head is still .* after gh pr update-branch/);
-  assert.doesNotMatch(out, /self-repair already ran once/, 'the one retry was spent on an unmoved head');
-  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
+  assert.equal(code, 1, out);
+  assert.ok(!calls.some(call => call.startsWith('pr update-branch')), 'a refusing gate requested a remote branch mutation');
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), 'a refusing gate requested a merge');
+});
+
+test('an explicitly accepted branch update with an unchanged head is pending, not a clean refusal', () => {
+  const { code, out, calls } = run(['--pr', '1845', '--merge', '--update-branch'], { ...CLEAN, shape: 'stale' });
+  assert.equal(code, 3, out);
+  assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')));
+  assert.doesNotMatch(out, /Nothing was mutated|nothing was mutated/);
+  assert.match(out, /branch update accepted; completion is not established/);
 });
 
 test('KTD6 rider: a head that cannot be re-read is cannot-establish, never a spent retry', () => {
-  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+  const { code, out, calls } = run(['--pr', '1845', '--merge', '--update-branch'], {
     ...CLEAN,
     shape: 'stale',
     // receipt, then the post-update head read fails.
     prStates: [prView(), null],
   });
   assert.equal(code, 3);
-  assert.match(out, /CANNOT ESTABLISH — self-repair: the head after gh pr update-branch 1845 is unread/);
+  assert.doesNotMatch(out, /Nothing was mutated|nothing was mutated/);
   assert.match(out, /→ gh pr view 1845 --repo gapilabs\/gapila --json headRefOid/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')));
 });
@@ -2331,25 +2328,25 @@ test('KTD6: staleness as the only refusing ground updates the branch and re-runs
   const root = repoFor('stale-twice', DEFAULT_GATE);
   const announced = shaOf(root, 'feature~1');
   const moved = shaOf(root, 'feature');
-  const { code, out, calls } = run(['--pr', '1845', '--merge'], {
+  const { code, out, calls } = run(['--pr', '1845', '--merge', '--update-branch'], {
     ...CLEAN,
     shape: 'stale-twice',
     // receipt · the head after the update · the retried run's own receipt
     prStates: [prView({ headRefOid: announced }), prView({ headRefOid: moved }), prView({ headRefOid: moved })],
   });
   assert.equal(code, 1, out);
-  assert.match(out, /self-repair: staleness is the only refusing ground — updating the branch from base/);
   assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1, 'exactly one update, never a loop');
   assert.match(out, new RegExp(`REFUSE — staleness: [0-9a-f]{12} \\(origin/main\\) is not an ancestor of the validated head ${moved.slice(0, 12)}`));
-  assert.match(out, /self-repair already ran once — a second staleness refusal routes to the owning worker/);
+  assert.doesNotMatch(out, /Nothing was mutated|nothing was mutated/);
+  assert.match(out, /remote branch update was already requested/);
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'nothing merged through a refusing verdict');
 });
 
 test('a failing update-branch stops the self-repair with the named repair', () => {
-  const { code, out, calls } = run(['--pr', '1845', '--merge'], { ...CLEAN, shape: 'stale', updateBranchFails: true });
-  assert.equal(code, 1);
-  assert.match(out, /self-repair failed — update failed/);
-  assert.match(out, /→ gh pr update-branch 1845/);
+  const { code, out, calls } = run(['--pr', '1845', '--merge', '--update-branch'], { ...CLEAN, shape: 'stale', updateBranchFails: true });
+  assert.equal(code, 3);
+  assert.doesNotMatch(out, /Nothing was mutated|nothing was mutated/);
+  assert.equal(calls.filter(call => call.startsWith('pr update-branch')).length, 1);
   assert.ok(!calls.some(call => call.startsWith('pr merge')));
 });
 
