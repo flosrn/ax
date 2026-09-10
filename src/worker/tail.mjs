@@ -39,11 +39,13 @@
 // AN EXITED PANE IS ALSO A QUESTION ABOUT THE WORK (#165). Its verdict named
 // the child's history and nothing about what the child owed, so an operator
 // reading a corpse whose pull request was still open had to know `ax worker
-// start --replace` exists. That decision — replace, release, settle or nothing
-// — is ./continuation.mjs, shared with `ax worker ls` so the two readers of one
-// dead row cannot answer differently. It rides the EXITED verdict alone: the
-// other three answers are a live pane and two inabilities, and a `--replace`
-// offered on any of them re-places a child that may still be working.
+// start --replace` exists. That decision — replace, release, settle, the
+// shipping handoff a `--delivery parent` dispatch left its parent (#3), or
+// nothing — is ./continuation.mjs, shared with `ax worker ls` so the two
+// readers of one dead row cannot answer differently. It rides the EXITED
+// verdict alone: the other three answers are a live pane and two inabilities,
+// and a `--replace` offered on any of them re-places a child that may still
+// be working.
 
 import { join } from 'node:path';
 

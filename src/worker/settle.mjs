@@ -88,11 +88,14 @@
 //   0  settled, already settled, or already settled and now scoped by --repo
 //   1  refused: a live agent, a foreign `repo`, a `repo` no --repo asserted, an
 //      assertion the checkout contradicts, a record already attributed, an open
-//      phase
+//      phase, or a `--delivery parent` slice whose branch was never shipped —
+//      the pane ended, the work did not, and the ending is not this run's to
+//      write (#3; ./continuation.mjs decides it, this verb only refuses on it)
 //   2  usage error
 //   3  cannot establish: no Orca CLI, a silent runtime, an unreadable store or
-//      terminal list, no repository slug, a `repo` that is not a name, an
-//      unknown pane, no row at all
+//      terminal list, no repository slug, a `repo` that is not a name, a
+//      `delivery` that is not a mode, an unread pull request on a parent's
+//      branch, an unknown pane, no row at all
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -101,9 +104,10 @@ import { defaultExec } from '../exec.mjs';
 import { repoView } from '../gh.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
+import { continuationFor } from './continuation.mjs';
 import { namedList } from './gate.mjs';
 import { paneVerdict, terminalInventory } from './pane.mjs';
-import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordRepoNaming, requestIdOk, taskIdScan } from './record.mjs';
+import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordDelivery, recordRepoNaming, requestIdOk, taskIdScan } from './record.mjs';
 
 const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
@@ -511,6 +515,46 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
           ? `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`
           : `orca terminal list --environment ${host} --json   # read the pane where it lives; settle once that host proves it gone`,
       );
+    }
+
+    // AND A DEAD PANE IS NOT ALWAYS A DEAD SLICE (#3). Everything above proves
+    // that no agent of this attempt is working; on a `--delivery parent`
+    // dispatch that is not the whole question. Such a child opens NO pull
+    // request by contract (./brief.mjs), so its branch is finished work whose
+    // shipping tail the dispatching session still holds — and `settled: true`
+    // over it is exactly the ending #3 found this verb writing on work nobody
+    // had judged, reachable in one keystroke from a reader that offered it.
+    //
+    // The two endings that remain reachable are the ones an OPERATOR performs
+    // and the classifier can see: a pull request closed unmerged, or a
+    // worktree removed so the record names no branch at all. Neither is
+    // invented here, and neither needs a flag.
+    //
+    // PAID BY THE ROWS IT IS ABOUT: the mode is read from the record first, so
+    // a child-delivered attempt — every dispatch before the mode existed —
+    // makes no branch read and no forge read, and this verb's `gh` stays the
+    // one call it always was.
+    const delivery = recordDelivery(path);
+    if (delivery.state === 'malformed') {
+      return cannot(
+        `who delivered ${request} is unread: ${delivery.detail} — and an owner this run cannot read is not the default owner (F-028), so whether this attempt has an ending to write is unknown`,
+        `ax worker ls --all   # then repair that field by hand: the record is the only thing that says who owed this branch a pull request`,
+      );
+    }
+    if (delivery.owner === 'parent') {
+      const continuation = continuationFor(path, { request, exec, run, establishedRepo: backfill });
+      if (continuation.failed !== '') {
+        return cannot(
+          `${request} was delivered by its parent, and whether that slice was ever shipped is unread: ${continuation.failed}`,
+          continuation.fix,
+        );
+      }
+      if (continuation.route === 'deliver') {
+        return refuse(
+          `${request} was dispatched --delivery parent: its child opened no pull request BECAUSE IT WAS TOLD NOT TO, and settling now writes an ending over finished work this session never shipped`,
+          continuation.fix,
+        );
+      }
     }
 
     try {

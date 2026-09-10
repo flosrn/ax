@@ -98,10 +98,11 @@ const count = (dir, { local = [], hosts = {}, repo = 'acme/widgets' } = {}) =>
  * host that could not be asked. A cap's arithmetic reads the TOTALS; only the
  * sentence a caller prints reads the cause, so the two must not be one number.
  */
-const unmeasured = ({ machine = 0, mine = 0, occupiedMachine = 0, occupiedMine = 0 } = {}) => ({
+const unmeasured = ({ machine = 0, mine = 0, occupiedMachine = 0, occupiedMine = 0, occupancy = [] } = {}) => ({
   machine,
   mine,
   occupied: { machine: occupiedMachine, mine: occupiedMine },
+  occupancy,
 });
 
 test('#161: a pane ANY phase recorded is a slot, and the dispatch index is not consulted', () => {
@@ -376,6 +377,66 @@ test('#221: an unaskable host and an occupied worktree are both unmeasured, and 
     machine: 0,
     mine: 0,
     unknown: 0,
-    unmeasured: unmeasured({ machine: 2, mine: 2, occupiedMachine: 1, occupiedMine: 1 }),
+    unmeasured: unmeasured({
+      machine: 2,
+      mine: 2,
+      occupiedMachine: 1,
+      occupiedMine: 1,
+      occupancy: [
+        {
+          handle: 'term_here',
+          repo: 'acme/widgets',
+          tree,
+          records: ['here.json'],
+          extras: ['term_restored'],
+        },
+      ],
+    }),
   });
+});
+
+test('occupancy evidence names the recorded tree, the dead record, and live extras — without counting extras as slots', () => {
+  // Regression: a dead recorded worker whose recorded tree still holds live
+  // Setup/shell panes. The refusal stays (the recorded slot is unmeasured),
+  // but the count must carry identifying evidence — path, record, live handles —
+  // so ls and both dispatch refusals can name them. Auxiliary panes occupy the
+  // tree; they are not this repository's workers, so they do not join machine
+  // or mine. An unknown remote stays a host-unasked fact, never occupancy.
+  const tree = '/tmp/occupancy-evidence-tree';
+  const dir = store();
+  record(dir, 'dead-worker', [{
+    name: 'worker-start',
+    identity: 'id-dead',
+    argv: ['orca', 'orchestration', 'worker-start', '--worktree', `path:${tree}`, '--json'],
+    beganAt: '2026-09-04T10:00:00.000Z',
+    exit: 0,
+    receipt: { ok: true, result: { dispatchId: 'ctx-dead', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_dead' }] } },
+  }]);
+  record(dir, 'far-unknown', [recorded({ handle: 'term_far', on: 'gapicore' })]);
+
+  const slots = count(dir, {
+    local: [
+      ['term_dead', { orphaned: true, worktreePath: tree }],
+      ['term_setup', { orphaned: false, worktreePath: tree, title: 'Setup' }],
+      ['term_shell', { orphaned: false, worktreePath: tree, title: 'shell' }],
+    ],
+    hosts: { gapicore: 'ssh_unreachable' },
+  });
+
+  assert.equal(slots.live.machine, 0, 'auxiliaries are occupancy, never recorded-slot live panes');
+  assert.equal(slots.live.mine, 0, 'Setup/shell are not attributed as this repository\'s workers');
+  assert.equal(slots.live.unknown, 0);
+  assert.equal(slots.live.unmeasured.machine, 2, 'one occupied recorded pane + one unasked remote');
+  assert.equal(slots.live.unmeasured.mine, 2);
+  assert.deepEqual(slots.live.unmeasured.occupied, { machine: 1, mine: 1 }, 'only the recorded dead pane is occupancy');
+
+  const occupancy = slots.live.unmeasured.occupancy;
+  assert.ok(Array.isArray(occupancy), 'occupancy evidence rides with the count, not only the totals');
+  assert.equal(occupancy.length, 1, 'the unasked remote is not an occupancy row');
+  assert.equal(occupancy[0].tree, tree);
+  assert.equal(occupancy[0].handle, 'term_dead', 'the recorded handle is named, never as a live worker');
+  assert.ok(occupancy[0].records.includes('dead-worker.json'), `records: ${JSON.stringify(occupancy[0].records)}`);
+  assert.deepEqual([...occupancy[0].extras].sort(), ['term_setup', 'term_shell']);
+  assert.ok(!occupancy[0].extras.includes('term_dead'), 'the orphaned recorded handle is not a live extra');
+  assert.ok(!occupancy.some(row => row.handle === 'term_far'), 'unknown remote is not mislabeled occupancy');
 });

@@ -94,7 +94,7 @@ import { repoSlug } from '../gh.mjs';
 
 const USAGE =
   'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
-  '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
+  '[--delivery <child|parent>] [--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -226,6 +226,12 @@ export function dispatch(
     run: '',
     notes: '',
     task: '',
+    // WHO owns the shipping tail of this slice: the child (the default, and
+    // every dispatch before this mode existed) or the session dispatching it.
+    // A MODE, read from this flag alone — never inferred from the prose of a
+    // note, which is the channel the brief places last and forbids from
+    // displacing the contract above it.
+    delivery: 'child',
     because: '',
     model: '@default',
     agent: 'omp',
@@ -245,6 +251,7 @@ export function dispatch(
     '--run': 'run',
     '--notes': 'notes',
     '--task': 'task',
+    '--delivery': 'delivery',
     '--because': 'because',
     '--model': 'model',
     '--agent': 'agent',
@@ -309,6 +316,11 @@ export function dispatch(
   }
   if (flags.issue === '' && flags.name === '') return usageError('no --issue and no --name given');
   if (!/^[0-9]+$/.test(String(flags.wait))) return usageError('--wait expects a number of seconds');
+  // A typo read leniently would default to the mode that SHIPS, putting a child
+  // on a branch the dispatching session is already delivering.
+  if (!['child', 'parent'].includes(flags.delivery)) {
+    return usageError(`--delivery expects child or parent, not "${flags.delivery}"`);
+  }
   const wait = Number(flags.wait);
   // `here` is a synonym for local placement, the way Orca's own CLI reads it.
   const on = flags.on === 'here' ? '' : flags.on;
@@ -453,6 +465,20 @@ export function dispatch(
     return refuse(
       'this project declares no dispatch entry point, so there is no instruction to give the child',
       'ax.config.json: { "dispatch": { "entry": "<verb>" } }   # or pass --task "<instruction>"',
+    );
+  }
+  // A project's `entry` is its SHIPPING verb by construction — the one command
+  // its agents answer to, and every one measured so far reads "take this ticket
+  // end to end". Composing it for a slice the dispatching session delivers puts
+  // "ship it" on line one of a brief whose contract says the opposite, and ax
+  // cannot invent this project's implementation-only verb. So the instruction
+  // is asked for rather than guessed.
+  if (flags.delivery === 'parent' && flags.task === '') {
+    return refuse(
+      'this project\u2019s dispatch entry is its SHIPPING verb, so --delivery parent needs --task: nothing here can invent an implementation-only instruction',
+      named
+        ? `ax worker dispatch --name ${flags.name} --delivery parent --task "<instruction>"`
+        : `ax worker dispatch --issue ${flags.issue}${slug === '' ? '' : ` --slug ${slug}`} --delivery parent --task "<instruction>"`,
     );
   }
   const instruction = named ? flags.task || `${entry} ${flags.name}`.trim() : flags.task || `${entry} ${ticket.id}`;
@@ -745,6 +771,7 @@ export function dispatch(
     landed: landed.text,
     operator,
     report,
+    delivery: flags.delivery,
   });
   note(report.path ? `the child's Report goes to ${report.path}, and the brief says so` : `no Report path for this dispatch: ${report.reason}`);
 
@@ -773,6 +800,13 @@ export function dispatch(
     '--run', runId,
     ...(flags.because === '' ? [] : ['--because', flags.because]),
     ...(trackerRepo === '' ? [] : ['--tracker-repo', trackerRepo]),
+    // The mode this dispatch chose, recorded like `--because`: the brief is
+    // written once into /tmp and the pane outlives it, so without this the one
+    // fact that says whether a missing pull request is a failure or the plan is
+    // unreadable the moment the spec file is gone. Additive, and the DEFAULT is
+    // an absence — every record written before the mode existed was delivered
+    // by its child.
+    ...(flags.delivery === 'child' ? [] : ['--delivery', flags.delivery]),
     '--kind',
     'implementation',
   ];

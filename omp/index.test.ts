@@ -408,14 +408,11 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).toMatch(/cannot establish.*read to repair, never\s+an empty frontier/s);
   // Overlap arbitration widened to every live pane, not one wave's members.
   expect(role).toMatch(/EVERY live pane/);
-  // Wake-drain, refusal routing, and the two bounds on unattended repair.
+  // Wake-drain, refusal routing, and the bound on unattended repair.
   // #189: a second technical refusal stays with the agents; the operator is
-  // not the automatic next hop. Staleness still self-repairs once; a dead
-  // route still redispatches recorded.
+  // not the automatic next hop. A dead route still redispatches recorded.
   expect(role).toMatch(/drain the whole inbox/);
   expect(role).toMatch(/gate REFUSAL is the owning worker's work/);
-  expect(role).toMatch(/second staleness refusal/);
-  expect(role).toMatch(/does not automatically interrupt the operator/);
   expect(role).toMatch(/--because gate-refusal/);
   // Learnings distillation is the orchestrator's half of the wave channel.
   expect(role).toMatch(/distill the `wave:` bullets/);

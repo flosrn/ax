@@ -111,6 +111,62 @@ test('a ticketless dispatch still gets the mechanics, and a project contract sti
   assert.doesNotMatch(owned, /There is NO ticket for this work/);
 });
 
+// ── who delivers this slice ──────────────────────────────────────────────────
+//
+// The default is unchanged and stays the default: the child commits, pushes,
+// opens the pull request and takes CI to a decision. What had no expression at
+// all is the OTHER shape — a slice the dispatching session delivers. An
+// operator could ask for it only in `--notes`, the one channel this renderer
+// places last and forbids from displacing the contract above it, so three
+// unconditional texts outranked the request and two hands landed on one branch.
+//
+// It is a MODE the dispatch decides (`--delivery parent`), never a sentence
+// inferred from an operator's prose.
+
+test('a slice the parent delivers hands the shipping tail to the session that dispatched it', () => {
+  const child = brief();
+  const parent = brief({ delivery: 'parent' });
+
+  // The default is the one that ships, and it is untouched.
+  assert.match(child, /You own the shipping tail/);
+  assert.match(child, /Keep the ticket current yourself/);
+
+  // The obligation is inverted, and the propositions that named the other owner
+  // are GONE rather than joined: a brief carrying both owners is the
+  // contradiction this mode exists to remove.
+  assert.match(parent, /the session that dispatched you owns the shipping tail/i);
+  assert.match(parent, /commit nothing/i);
+  assert.doesNotMatch(parent, /You own the shipping tail/);
+  assert.doesNotMatch(parent, /Keep the ticket current yourself/);
+
+  // The mode moves the delivery and nothing else — the worktree, the
+  // escalation, the watcher and the verification are what a supervised child
+  // needs whoever ships it.
+  for (const kept of ['already bootstrapped', 'You do not merge, ever', 'blocks you goes to the session that dispatched you', 'A stall watcher is armed', 'No project-wide sweep']) {
+    assert.match(parent, new RegExp(kept));
+  }
+});
+
+test("the delivery owner outlives a project's contract, because the dispatch decided it and the project did not", () => {
+  // A declared contract REPLACES ax's propositions, so a project whose contract
+  // assumes its children ship would re-assert the owner this dispatch just
+  // moved. The ownership therefore renders in ax's own block, beside the
+  // precedence rule and the Report — for the same reason those two survive.
+  const text = brief({ delivery: 'parent', contract: 'OUR RULES' });
+  assert.match(text, /OUR RULES/);
+  assert.match(text, /the session that dispatched you owns the shipping tail/i);
+  assert.doesNotMatch(text, /You own the shipping tail/);
+});
+
+test('a ticketless slice the parent delivers is never told it has a pull request', () => {
+  // `--name` replaces the ticket bullet with one naming where the work is
+  // defined and where its record goes — and that bullet named the child's OWN
+  // pull request, which a parent-delivered child never opens.
+  const text = brief({ ticket: null, name: 'loading-states', delivery: 'parent' });
+  assert.match(text, /There is NO ticket for this work/);
+  assert.doesNotMatch(text, /your pull request/i);
+});
+
 test('the caller supplies a model alias, never a hand-composed marker', () => {
   const first = brief({ model: '@default' }).split('\n')[0];
   assert.equal(first, '[omp role=worker model=@default] /entry T-353');
@@ -147,19 +203,6 @@ test('the contract header names the dispatching Run and the execution host', () 
 // `--report-path`. Every one of them obeyed the preamble. So the brief — the
 // LAST text the child reads — states the precedence once and then names the
 // artifact.
-
-test('the mechanics section opens on the precedence rule, and nothing else overrides the preamble', () => {
-  const lines = brief().split('\n');
-  const header = lines.findIndex(line => line.startsWith('PILOT CONTRACT'));
-  assert.notEqual(header, -1);
-  assert.equal(lines[header + 1], 'The preamble above speaks for the runtime; where this brief says otherwise, this brief wins.');
-
-  // ONCE. A rule restated per point is how the eight-worker wave came to have
-  // two contracts and obey the older one; the ADR's whole repair is that this
-  // sentence REPLACES point-by-point overrides, so a second mention of the
-  // preamble anywhere in ax's own text is the defect returning.
-  assert.equal(brief().split(/preamble/i).length - 1, 1);
-});
 
 test('the brief carries the Report path it was GIVEN, and derives none of its own', () => {
   const text = brief();

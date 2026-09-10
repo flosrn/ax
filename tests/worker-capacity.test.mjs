@@ -268,3 +268,58 @@ test('capLines label each count by its scope, and never call a machine total the
   const nameless = capLines({ live: live(5, 0, 5), repo: '', repoCap: 3, machineCap: null }).join('\n');
   assert.match(nameless, /NOT MEASURED/, 'a checkout that cannot name itself gets an absence, never a zero');
 });
+
+test('capVerdict and capLines name the occupied tree, the record, and the observed live handles', () => {
+  // Both dispatch refusals print this contract. A placeholder `--terminal <handle>`
+  // is not actionable: the operator has to guess which pane to show. The repair
+  // uses the observed extra, never the orphaned recorded handle, and never
+  // attributes Setup/shell as a worker.
+  const occupancy = [
+    {
+      handle: 'term_dead',
+      repo: 'flosrn/ax',
+      tree: '/tmp/occupancy-evidence-tree',
+      records: ['dead-worker.json'],
+      extras: ['term_setup', 'term_shell'],
+    },
+  ];
+  const liveShape = live(0, 0, 0, {
+    mine: 1,
+    machine: 1,
+    occupied: { mine: 1, machine: 1 },
+    occupancy,
+  });
+  const out = capVerdict({
+    live: liveShape,
+    adding: 1,
+    repo: 'flosrn/ax',
+    repoCap: 3,
+    machineCap: null,
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.kind, 'cannot');
+  assert.match(out.message, /worktree/, 'refusal remains occupancy, not a full cap');
+  assert.match(out.message, /\/tmp\/occupancy-evidence-tree/, 'the recorded path is named');
+  assert.match(out.message, /dead-worker\.json/, 'the record is named');
+  assert.match(out.repair, /orca terminal show --terminal term_setup --json/, 'the observed live handle, not a placeholder');
+  assert.match(out.repair, /term_shell/, 'every extra is inspectable');
+  assert.doesNotMatch(out.repair, /--terminal term_dead/, 'the orphaned recorded handle is not the show target');
+  assert.doesNotMatch(out.message, /worker term_setup|worker term_shell/, 'extras are occupancy, not workers');
+
+  const lines = capLines({ live: liveShape, repo: 'flosrn/ax', repoCap: 3, machineCap: null }).join('\n');
+  assert.match(lines, /\/tmp\/occupancy-evidence-tree/);
+  assert.match(lines, /dead-worker\.json/);
+  assert.match(lines, /term_setup/);
+  assert.match(lines, /term_shell/);
+  const mixed = capVerdict({
+    live: live(0, 0, 0, {
+      mine: 2, machine: 3, occupied: { mine: 1, machine: 2 },
+      occupancy: [...occupancy, { handle: 'unknown', repo: '', tree: '/unattributed', records: ['unknown.json'], extras: ['term_unknown'] }],
+    }),
+    adding: 1, repo: 'flosrn/ax', repoCap: 3, machineCap: null,
+  });
+  assert.match(mixed.message, /dead-worker\.json/);
+  assert.doesNotMatch(mixed.message, /unattributed|unknown\.json/);
+  assert.match(mixed.repair.split('#')[0], /orca terminal show --terminal term_setup --json/);
+  assert.doesNotMatch(mixed.repair, /term_unknown/);
+});

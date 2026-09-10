@@ -43,6 +43,8 @@
 //      with the total the endpoint announced: one page is a hundred rows, and
 //      the pages this run could not get are unread, never absent (#176). The
 //      codes themselves are unchanged.
+//      Also an explicitly requested branch update whose completion is unknown;
+//      this result is not evidence that the remote head stayed untouched.
 // A refusal outranks an inability to establish when both apply: neither merges,
 // and a named reason is the more actionable of the two.
 //
@@ -88,21 +90,30 @@
 // moved head settles the attempt and opens a new one on a freshly validated
 // head; open with the head unchanged reissues the recorded argv byte for byte.
 //
-// TWO MORE THINGS ONLY THE MERGE PATH DOES. Staleness self-repair (KTD6): when
-// base-ancestor staleness is the ONLY refusing ground, the verb updates the
-// branch from base and re-runs itself once — a merge that landed a sibling
-// makes every open PR stale, and round-tripping each one to its worker is N
-// wasted round-trips for a mechanical update. And closure verification (KTD5):
-// after a recorded merge, the linked issue is re-read with bounded retries;
-// closure is eventually consistent on GitHub's side, and a ticket that never
-// closes leaves every dependent deriving from a stale blocker — that is an
-// operator escalation (exit 3), never a silent note. The subgraph halt KTD5
-// asks for is MECHANICAL, not a marker file: an unclosed issue stays OPEN in
-// the tracker, so `ax frontier` keeps every dependent excluded `blocked-by`
-// until a human acts — fail-closed by construction, with no cached state that
-// can outlive the repair. `gh pr update-branch` is the one unrecorded mutation
-// here: it mints no identity and is idempotently re-runnable, which is exactly
-// what the record protocol exists to protect.
+// CLOSURE VERIFICATION (KTD5): after a recorded merge, the linked issue is
+// re-read with bounded retries; closure is eventually consistent on GitHub's
+// side. An issue that stays open keeps its dependents blocked in `ax frontier`.
+//
+// BRANCH REPAIR REQUIRES ITS OWN AUTHORIZATION. The former implicit staleness
+// self-repair (KTD6) called `gh pr update-branch` after printing "Nothing was
+// mutated". GitHub accepts that asynchronous request before publishing its head:
+// ofmchat #244 returned REFUSE, then gained a merge commit after work resumed.
+// `--merge` authorizes only the validated merge. `--update-branch` additionally
+// authorizes one base update and full recheck, retaining KTD6 without surprising
+// the branch owner. An accepted but unobserved update is exit 3, not a refusal
+// claiming no mutation. The recheck carries the issued mutation in its receipt.
+//
+// THE UPDATE IS RECORDED BEFORE IT MUTATES, IN ITS OWN JOURNAL. Folding a
+// `pr-update-branch` phase into `merge-<owner>-<repo>-<pr>` would make merge
+// recovery treat an update as a merge replay. The update lives under
+// `<store>/update/` as `update-<owner>-<repo>-<pr>`, keyed the same repo/PR,
+// and stores the exact `gh` argv plus the head observed before the call.
+// Recovery never blindly reissues that argv: GitHub may still commit later.
+// Inspect the current head. Moved: settle the attempt and run a full fresh
+// gate. Unchanged pending or unknown: exit 3, read-only. A known explicit
+// rejection may retry through this same protocol. An unreadable journal is
+// never permission to update.
+
 //
 // THE MERGE CALL'S EXIT 0 IS NOT A MERGE. `gh pr merge` exits 0 on three
 // different outcomes: the PR merged, auto-merge was ENABLED, or the PR was
@@ -201,9 +212,9 @@ import {
   ticketGround,
 } from './pr-grounds.mjs';
 import { physical } from './worktree/locate.mjs';
-import { acquireLock, argvValue, attemptNew, claimRecord, defaultStore, initRecord, newIdentity, phaseArgv, phaseBegin, phaseCount, phaseEnd } from './worker/record.mjs';
+import { acquireLock, argvValue, attemptNew, attemptSettle, claimRecord, defaultStore, initRecord, lastAttemptState, newIdentity, phaseArgv, phaseBegin, phaseCount, phaseEnd, phaseExit } from './worker/record.mjs';
 
-const USAGE = 'ax pr gate --pr <n> [--issue <n>] [--repo <owner/repo>] [--merge] [--ack-body] [--method squash|merge]';
+const USAGE = 'ax pr gate --pr <n> [--issue <n>] [--repo <owner/repo>] [--merge [--update-branch]] [--ack-body] [--method squash|merge]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -436,6 +447,20 @@ function boundTicket({ issue, store, root, branch, slug, invocation }) {
   return { ok: true, issue: seen[0], source: `dispatch record ${bound.get(seen[0])}` };
 }
 
+/** The head recorded on the last update phase — never recomposed from argv. */
+function updateHeadOf(path) {
+  const rec = JSON.parse(readFileSync(path, 'utf8'));
+  const attempts = rec?.attempts;
+  if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('update record has no attempts');
+  const phases = attempts[attempts.length - 1]?.phases;
+  if (!Array.isArray(phases) || phases.length === 0) throw new Error('update record has no phases');
+  const line = String(phases[phases.length - 1]?.grounds?.[0] ?? '');
+  const match = /^head ([0-9a-f]{40})$/.exec(line);
+  if (match === null) throw new Error('update record names no head observed before the call');
+  return match[1];
+}
+
+
 export function gate(
   argv = [],
   {
@@ -444,8 +469,10 @@ export function gate(
     cwd = process.cwd(),
     env = process.env,
     sleep = defaultSleep,
+    updateRequested = false,
   } = {},
 ) {
+  if (updateRequested) note('A remote branch update was already requested by this invocation; this recheck is not a read-only operation.');
   const usageError = message => {
     process.stderr.write(`ax pr gate: ${message}\n${USAGE}\n`);
     return 2;
@@ -468,6 +495,7 @@ export function gate(
   let issueArg = '';
   let issueGiven = false;
   let doMerge = false;
+  let updateBranch = false;
   /** Insertion-ordered, so a reprinted command reads the way it was typed. */
   const acks = new Set();
   /**
@@ -479,7 +507,6 @@ export function gate(
    */
   let method = 'squash';
   let methodGiven = false;
-  /** Set by the one recursive re-run the staleness self-repair issues (KTD6). */
   let staleRetried = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -493,12 +520,13 @@ export function gate(
       issueGiven = true;
       issueArg = value();
     } else if (arg === '--merge') doMerge = true;
+    else if (arg === '--update-branch') updateBranch = true;
+    else if (arg === '--stale-retried') staleRetried = true;
     else if (ACK_FLAGS.includes(arg)) acks.add(arg);
     else if (arg === '--method') {
       methodGiven = true;
       method = value();
     }
-    else if (arg === '--stale-retried') staleRetried = true;
     // Identifiers and flags only — an extra bare word is not a sentence this
     // command reads, it is an argument it does not have.
     else return usageError(`unknown argument "${arg}"`);
@@ -532,6 +560,7 @@ export function gate(
   if (!/^[1-9][0-9]{0,9}$/.test(pr)) return usageError(pr === '' ? 'no --pr given' : `--pr expects a PR number, got "${pr}"`);
   if (repoArg !== '' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repoArg)) return usageError(`--repo expects owner/repo, got "${repoArg}"`);
   if (issueGiven && !/^[1-9][0-9]{0,9}$/.test(issueArg)) return usageError(`--issue expects an issue number, got "${issueArg}"`);
+  if (updateBranch && !doMerge) return usageError('--update-branch requires --merge; a detector run never updates a branch');
   // `rebase` is deliberately absent: no policy anywhere asks for it. `merge` (a
   // real merge commit) exists for the one class that must keep upstream SHAs as
   // ancestors of main — upgrade PRs, where a squash silently severs kit ancestry
@@ -625,6 +654,10 @@ export function gate(
   const store = join(dispatchStore, 'merge');
   const requestId = `merge-${owner}-${name}-${pr}`;
   const recordPath = join(store, `${requestId}.json`);
+  const updateStore = join(dispatchStore, 'update');
+  const updateRequestId = `update-${owner}-${name}-${pr}`;
+  const updatePath = join(updateStore, `${updateRequestId}.json`);
+
 
   /**
    * THE TEXTS A MERGE OF THIS PR PUTS ON THE DEFAULT BRANCH (#86). GitHub acts
@@ -815,6 +848,73 @@ export function gate(
     }
   }
 
+  // ── Update-journal recovery. Independent of the merge record: an unsettled
+  // update is never permission to reissue gh pr update-branch. Inspect head.
+  if (doMerge && existsSync(updatePath) && statSync(updatePath).size > 0) {
+    let recordedHead = null;
+    let openPhase = null;
+    let lastExit = null;
+    try {
+      if (!lastAttemptState(updatePath).settled && phaseCount(updatePath) > 0) {
+        recordedHead = updateHeadOf(updatePath);
+        openPhase = lastAttemptState(updatePath).openPhase;
+        lastExit = phaseExit(updatePath, 'last');
+      }
+    } catch (error) {
+      bad(
+        `CANNOT ESTABLISH — the update record at ${updatePath} is unreadable (${clean(String(error.message ?? error))}); a record that cannot be read is never permission to mint a second mutation`,
+      );
+      fix(`cat ${updatePath}   # repair or remove it by hand, then re-run`);
+      return 3;
+    }
+    if (recordedHead !== null) {
+      const seen = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'headRefOid']));
+      if (!seen.ok) {
+        return cannot(
+          `the update-recovery read 'gh pr view ${pr}' ${seen.reason}`,
+          `gh pr view ${pr} --repo ${slug} --json headRefOid   # inspect the remote head before retrying`,
+        );
+      }
+      const headNow = String(seen.value?.headRefOid ?? '').trim();
+      if (!/^[0-9a-f]{40}$/.test(headNow)) {
+        return cannot('update recovery returned no valid head SHA; the remote update remains unestablished', `gh pr view ${pr} --repo ${slug} --json headRefOid`);
+      }
+      if (headNow !== recordedHead) {
+        note(`update settled — the head moved past the recorded ${recordedHead.slice(0, 12)}; continuing a fresh gate`);
+        mkdirSync(updateStore, { recursive: true, mode: 0o700 });
+        let updateLock;
+        try {
+          updateLock = acquireLock(updatePath, { suffix: '.update.lock' });
+        } catch (error) {
+          return cannot(
+            `the update lock could not be taken: ${clean(String(error.message ?? error))}`,
+            `ls -la ${updateStore}   # the lock lives beside the record; fix that path, then re-run`,
+          );
+        }
+        if (!updateLock.held) {
+          return cannot(
+            `${updateLock.reason} — a concurrent gate holds the update for ${slug}#${pr}`,
+            `rm ${updatePath}.update.lock   # ONLY once no other 'ax pr gate --pr ${pr} --merge --update-branch' is running, then: ${invocation('--merge', '--update-branch')}`,
+          );
+        }
+        try {
+          if (updateHeadOf(updatePath) !== recordedHead) return cannot('the update record changed during recovery; re-run this gate against its current record', `cat ${updatePath}`);
+          attemptSettle(updatePath);
+        } finally {
+          updateLock.release();
+        }
+      } else if (openPhase !== null || lastExit === null || lastExit === 0) {
+        return cannot(
+          `branch update accepted; completion is not established (head is still ${recordedHead}). The remote branch may still change; no merge was issued`,
+          `gh pr view ${pr} --repo ${slug} --json headRefOid   # once the update completes: ${invocation('--merge')}`,
+        );
+      }
+      // Known explicit rejection with the head unchanged: fall through and let
+      // this run's --update-branch retry through the same write-ahead protocol.
+    }
+  }
+
+
   // ── Setup. The head SHA is resolved ONCE and every ground below uses that one
   // value, so no step can validate one commit and speak about another.
   const receipt = payload(
@@ -956,55 +1056,94 @@ export function gate(
     'limits    one head and one base for the git evidence is NOT an atomic snapshot of this pull request: the head SHA, the base commit, the body, the title and the review threads are read at different moments, and an edit between two of those reads is outside this binding — the head-match on the merge closes the push race, not the read race. And the closure read after a merge DETECTS a ticket that did not close; it cannot prevent one (#177)',
   );
 
+  const repairStaleness = doMerge && updateBranch && !staleRetried && code === 1 && unknowns.length === 0 && refusals.every(entry => entry.message.startsWith('staleness:'));
+  const mutationStatus = updateRequested ? 'A remote branch update was already requested; no merge was issued by this verdict.' : 'Nothing was mutated.';
   section(
     code === 0
       ? `PASS — ${slug}#${pr} is mergeable at ${sha}.`
-      : code === 1
-        ? `REFUSE — ${refusals.length} named reason(s). Nothing was mutated.`
-        : `CANNOT ESTABLISH — ${unknowns.length} ground(s) unread. Nothing was mutated.`,
+      : repairStaleness
+        ? `STALENESS — explicit branch update authorized; the merge is not yet authorized.`
+        : code === 1
+          ? `REFUSE — ${refusals.length} named reason(s). ${mutationStatus}`
+          : `CANNOT ESTABLISH — ${unknowns.length} ground(s) unread. ${mutationStatus}`,
   );
 
-  // ── Staleness self-repair (KTD6): mechanical, once, and only on the merge
-  // path — a detector run mutates nothing, and a second staleness refusal
-  // routes to the owning worker instead of looping here.
-  //
-  // THE RECURSION STANDS ON AN OBSERVED HEAD MOVE. `gh pr update-branch` exits
-  // 0 once GitHub ACCEPTED the update, not once the head carries it, and the
-  // re-run is the ONE retry this verb has: spent on an unmoved head it
-  // re-measures the very commit that just refused, and reports that second
-  // refusal as if a repair had been attempted. So the head is re-read, and
-  // anything but a different 40-hex commit ends the run here.
-  if (doMerge && code === 1 && unknowns.length === 0 && refusals.every(entry => entry.message.startsWith('staleness:'))) {
-    if (staleRetried) {
-      note('self-repair already ran once — a second staleness refusal routes to the owning worker, not another update (KTD6)');
-    } else {
-      note('self-repair: staleness is the only refusing ground — updating the branch from base and re-running this gate once (KTD6)');
-      const updated = run(['pr', 'update-branch', pr, '--repo', slug]);
+
+  // Updating the PR head is a separate authorization from merging it. GitHub
+  // may accept the update before publishing its head; never call that refusal
+  // or claim the command was read-only after the request was issued. The argv
+  // and the observed head land on disk BEFORE the remote call.
+  if (repairStaleness) {
+    note('self-repair: staleness is the only refusing ground — explicitly updating the branch from base and re-running this gate once');
+    mkdirSync(updateStore, { recursive: true, mode: 0o700 });
+    let updateLock;
+    try {
+      updateLock = acquireLock(updatePath, { suffix: '.update.lock' });
+    } catch (error) {
+      return cannot(
+        `the update lock could not be taken: ${clean(String(error.message ?? error))}`,
+        `ls -la ${updateStore}   # the lock lives beside the record; fix that path, then re-run`,
+      );
+    }
+    if (!updateLock.held) {
+      return cannot(
+        `${updateLock.reason} — a concurrent gate holds the update for ${slug}#${pr}`,
+        `rm ${updatePath}.update.lock   # ONLY once no other 'ax pr gate --pr ${pr} --merge --update-branch' is running, then: ${invocation('--merge', '--update-branch')}`,
+      );
+    }
+    let movedHead = null;
+    try {
+      const updateArgv = ['pr', 'update-branch', pr, '--repo', slug];
+      const claim = claimRecord(updateStore, updateRequestId);
+      if (claim.claimed) {
+        initRecord(claim.path, { request: updateRequestId, orca: 'gh' });
+        phaseBegin(claim.path, { name: 'pr-update-branch', identity: newIdentity(), argv: updateArgv, grounds: [`head ${sha}`] });
+      } else {
+        const empty = statSync(claim.path).size === 0;
+        const phases = empty ? 0 : phaseCount(claim.path);
+        if (phases === 0) {
+          if (empty) initRecord(claim.path, { request: updateRequestId, orca: 'gh' });
+          phaseBegin(claim.path, { name: 'pr-update-branch', identity: newIdentity(), argv: updateArgv, grounds: [`head ${sha}`] });
+        } else {
+          // A sibling may have issued its update after this invocation's initial
+          // read. Recheck under the mutation lock before opening another attempt.
+          const state = lastAttemptState(claim.path);
+          if (!state.settled && (state.openPhase !== null || phaseExit(claim.path, 'last') === null || phaseExit(claim.path, 'last') === 0)) {
+            return cannot('an update is already recorded and may still land; no second update was issued', `gh pr view ${pr} --repo ${slug} --json headRefOid`);
+          }
+          attemptNew(claim.path);
+          phaseBegin(claim.path, { name: 'pr-update-branch', identity: newIdentity(), argv: updateArgv, grounds: [`head ${sha}`] });
+        }
+      }
+      const updated = run(updateArgv);
+      phaseEnd(claim.path, 'last', {
+        exit: updated.error ? null : (updated.status ?? null),
+        receiptText: String(updated.stdout ?? ''),
+        stderr: String(updated.stderr ?? ''),
+        error: updated.error ? String(updated.error.message ?? updated.error) : null,
+      });
       if (!succeeded(updated)) {
-        bad(`self-repair failed — ${firstLine(updated.stderr) || `exit ${updated.status}`}`);
-        fix(`gh pr update-branch ${pr} --repo ${slug}   # then: ${invocation('--merge')}`);
-        return 1;
+        return cannot(
+          `branch update was requested but its outcome is unestablished — ${firstLine(updated.stderr) || `exit ${updated.status}`}; no merge was issued`,
+          `gh pr view ${pr} --repo ${slug} --json headRefOid   # inspect the remote head before retrying`,
+        );
       }
       const after = payload(run(['pr', 'view', pr, '--repo', slug, '--json', 'headRefOid']));
       const moved = after.ok ? String(after.value?.headRefOid ?? '').trim() : '';
-      if (!/^[0-9a-f]{40}$/.test(moved)) {
+      if (!/^[0-9a-f]{40}$/.test(moved) || moved === sha) {
         return cannot(
-          `self-repair: the head after gh pr update-branch ${pr} is unread (${after.ok ? `the receipt names no 40-hex commit ("${clean(moved)}")` : after.reason}), so whether the update landed is unknown and the one retry this verb has must not be spent on the same commit`,
-          `gh pr view ${pr} --repo ${slug} --json headRefOid   # then: ${invocation('--merge')}`,
+          `branch update accepted; completion is not established (${moved === sha ? `head is still ${sha}` : 'head unread'}). The remote branch may still change; no merge was issued`,
+          `gh pr view ${pr} --repo ${slug} --json headRefOid   # once the update completes: ${invocation('--merge')}`,
         );
       }
-      if (moved === sha) {
-        bad(
-          `REFUSE — self-repair: the head is still ${sha} after gh pr update-branch ${pr}, so the update was accepted and has not landed; re-running now would re-measure the commit that just refused and spend this verb's one retry`,
-        );
-        fix(`${invocation('--merge')}   # re-run once the head carries the base`);
-        return 1;
-      }
-      note(`self-repair: the head moved ${sha.slice(0, 12)} -> ${moved.slice(0, 12)}; re-running this gate once against it (KTD6)`);
-      return gate([...argv, '--stale-retried'], { gh, git, cwd, env, sleep });
+      attemptSettle(claim.path);
+      movedHead = moved;
+    } finally {
+      updateLock.release();
     }
+    note(`self-repair: the head moved ${sha.slice(0, 12)} -> ${movedHead.slice(0, 12)}; re-running this gate once against it`);
+    return gate([...argv, '--stale-retried'], { gh, git, cwd, env, sleep, updateRequested: true });
   }
-
   if (!doMerge) {
     // A printed command is advice a caller can substitute, and
     // `--match-head-commit` only closes the push race when the exact validated
@@ -1014,7 +1153,7 @@ export function gate(
     return code;
   }
   if (code !== 0) {
-    note('--merge ignored: the verdict is not a pass, so nothing was mutated');
+    note(`--merge ignored: the verdict is not a pass. ${mutationStatus}`);
     return code;
   }
 

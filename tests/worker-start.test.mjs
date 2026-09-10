@@ -1435,6 +1435,219 @@ test('--kind is recorded, never forwarded: which proof this pane owes', () => {
   assert.match(bad.out, /invalid --kind "wizard"/);
 });
 
+test('--delivery is recorded, never forwarded: who owns this slice\u2019s shipping tail', () => {
+  // The brief is written once and the pane outlives it, so the mode a dispatch
+  // chose has to be readable from the record — otherwise the one fact that says
+  // whether a missing pull request is a failure or the plan lives only in a
+  // spec file in /tmp.
+  const home = scratch();
+  const args = freshArgs(home, 'req-delivery');
+  args.splice(args.indexOf('--'), 0, '--delivery', 'parent');
+  const r = invoke(args, { env: { HOME: home } });
+
+  assert.equal(r.code, 0, r.out);
+  const rec = JSON.parse(readFileSync(recordAt(r.env, 'req-delivery'), 'utf8'));
+  assert.equal(rec.delivery, 'parent');
+  assert.ok(
+    r.calls.every(call => !call.includes('--delivery')),
+    'ax owns this flag; Orca must never see it',
+  );
+
+  // Additive, and the default is an ABSENCE: every record written before this
+  // field existed was a child-delivered slice, and reading none as `parent`
+  // would retroactively excuse every missing pull request on the host.
+  const plain = invoke(freshArgs(home, 'req-nodelivery'), { env: { HOME: home } });
+  assert.equal(plain.code, 0, plain.out);
+  const ordinary = JSON.parse(readFileSync(recordAt(plain.env, 'req-nodelivery'), 'utf8'));
+  assert.equal('delivery' in ordinary, false);
+
+  const bad = invoke((() => {
+    const a = freshArgs(home, 'req-baddelivery');
+    a.splice(a.indexOf('--'), 0, '--delivery', 'somebody');
+    return a;
+  })(), { env: { HOME: home } });
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /invalid --delivery "somebody"/);
+});
+
+// ── Who ships the slice is a TERM of the dispatch, not a detail of the repeat ─
+//
+// `--delivery` decides who owes the pull request, and the record is the only
+// place that still says so once the brief's spec file in /tmp is gone. A repeat
+// of an existing request replays the OWNER'S recorded argv, so a repeat typed
+// with a different owner gets a child dispatched under the recorded terms while
+// the caller reads its own: the pane is then judged against the wrong
+// obligation — a parent-delivered slice looks like a child that failed to open
+// a pull request, and a child-delivered one looks like a slice the parent still
+// owes. Nothing downstream can separate the two afterwards, so the contradiction
+// is answered here, before any replay or takeover, and the answer is never
+// "mint a second worker to carry the other reading".
+
+test('a repeat start that flips the delivery owner to parent is refused before any replay', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-flip-parent'), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const path = recordAt(first.env, 'req-flip-parent');
+  const before = readFileSync(path, 'utf8');
+
+  const run = fakeRunner();
+  const args = freshArgs(home, 'req-flip-parent');
+  args.splice(args.indexOf('--'), 0, '--delivery', 'parent');
+  const r = invoke(args, { env: { HOME: home }, run });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /REFUSED/);
+  assert.match(r.out, /req-flip-parent/);
+  assert.match(r.out, /child/);
+  assert.match(r.out, /parent/);
+  assert.doesNotMatch(r.out, /CLAIM LOST/, 'the contradiction answers before the replay, not after it');
+  assert.deepEqual(run.calls, [], 'a contradicted owner issues no mutation at all');
+  assert.equal(readFileSync(path, 'utf8'), before, 'the owner record is untouched');
+  assert.match(r.out, /--show --request req-flip-parent/, 'the repair points at the record that decides');
+  assert.doesNotMatch(r.out, /--slug/, 'a second identity is never the way past a disagreement about one slice');
+});
+
+test('a repeat start that drops a recorded parent delivery back to the child is refused too', () => {
+  const home = scratch();
+  const args = freshArgs(home, 'req-flip-child');
+  args.splice(args.indexOf('--'), 0, '--delivery', 'parent');
+  const first = invoke(args, { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const path = recordAt(first.env, 'req-flip-child');
+  const before = readFileSync(path, 'utf8');
+
+  // The DEFAULT is a request: a repeat naming no `--delivery` asks for a
+  // child-delivered slice, which is exactly what this record is not.
+  const run = fakeRunner();
+  const r = invoke(freshArgs(home, 'req-flip-child'), { env: { HOME: home }, run });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /REFUSED/);
+  assert.deepEqual(run.calls, []);
+  assert.equal(readFileSync(path, 'utf8'), before);
+  assert.doesNotMatch(r.out, /--slug/);
+});
+
+test('a repeat naming the SAME delivery owner still replays the recorded argv', () => {
+  const home = scratch();
+  const withParent = () => {
+    const a = freshArgs(home, 'req-same-owner');
+    a.splice(a.indexOf('--'), 0, '--delivery', 'parent');
+    return a;
+  };
+  const first = invoke(withParent(), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const before = JSON.parse(readFileSync(recordAt(first.env, 'req-same-owner'), 'utf8'));
+
+  const run = fakeRunner();
+  const r = invoke(withParent(), { env: { HOME: home }, run });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /CLAIM LOST/);
+  const after = JSON.parse(readFileSync(recordAt(r.env, 'req-same-owner'), 'utf8'));
+  assert.deepEqual(identities(after), identities(before), 'a compatible repeat mints nothing');
+  assert.deepEqual(run.calls[0], before.attempts[0].phases[0].argv.slice(1));
+  assert.deepEqual(run.calls[1], before.attempts[0].phases[1].argv.slice(1));
+});
+
+test('an explicit --resume continues a parent-delivered record without being told the owner', () => {
+  const home = scratch();
+  const args = freshArgs(home, 'req-resume-parent');
+  args.splice(args.indexOf('--'), 0, '--delivery', 'parent');
+  const first = invoke(args, { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const before = JSON.parse(readFileSync(recordAt(first.env, 'req-resume-parent'), 'utf8'));
+
+  // A recovery replays what is on disk, byte for byte: requiring the caller to
+  // re-state a term the record already carries would make the replay depend on
+  // an operator remembering it.
+  const run = fakeRunner();
+  const r = invoke(['--resume', '--request', 'req-resume-parent'], { env: { HOME: home }, run });
+  assert.equal(r.code, 0, r.out);
+  const after = JSON.parse(readFileSync(recordAt(r.env, 'req-resume-parent'), 'utf8'));
+  assert.deepEqual(identities(after), identities(before));
+  assert.deepEqual(run.calls[0], before.attempts[0].phases[0].argv.slice(1));
+  assert.deepEqual(run.calls[1], before.attempts[0].phases[1].argv.slice(1));
+  assert.equal(after.delivery, 'parent', 'the recorded owner survives its own recovery');
+});
+
+// The takeover path is the other side effect a contradiction must precede: a
+// proved-empty foreign fence authorizes a rename plus a fresh identity (#212),
+// and doing that under an owner the historical record contradicts would mint
+// the disagreement instead of naming it.
+test('a delivery contradiction is answered BEFORE a stale foreign claim is set aside', () => {
+  const home = scratch();
+  const request = 'req-foreign-delivery';
+  const { store, path, planted } = plantForeignRefusal(home, request, {
+    ok: false,
+    error: { code: 'consumer_fenced', message: 'bound elsewhere' },
+  });
+  const run = fakeRunner();
+  const args = freshArgs(home, request);
+  args.splice(args.indexOf('--'), 0, '--delivery', 'parent');
+  const r = invoke(args, { env: { HOME: home }, run });
+
+  assert.equal(r.code, 1, r.out);
+  assert.equal(readFileSync(path, 'utf8'), planted, 'the historical record is not moved');
+  assert.deepEqual(readdirSync(store).filter(name => name.includes('.foreign-')), [], 'nothing was set aside');
+  assert.deepEqual(run.calls, [], 'and no fresh identity was minted');
+});
+
+// A `--replace` reinstates a recorded dispatch. It inherits the recorded
+// placement or refuses naming the contradiction (#11, trap 1), and the owner of
+// the shipping tail is the same kind of term: unstated means inherit, and a
+// stated one that contradicts the record is refused before the gate and before
+// the `task-update` that returns the task to `ready`.
+test('--replace inherits the recorded delivery owner, and refuses a contradicting one before any mutation', () => {
+  const home = scratch();
+  const args = freshArgs(home, 'req-replace-delivery');
+  args.splice(args.indexOf('--'), 0, '--delivery', 'parent');
+  const first = invoke(args, { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const path = recordAt(first.env, 'req-replace-delivery');
+
+  const run = fakeRunner();
+  let gated = false;
+  const contradicted = invoke(['--replace', '--request', 'req-replace-delivery', '--delivery', 'child'], {
+    env: { HOME: home },
+    run,
+    gateFn: () => { gated = true; return 0; },
+  });
+  assert.equal(contradicted.code, 1, contradicted.out);
+  assert.match(contradicted.out, /REFUSED/);
+  assert.equal(gated, false, 'a contradicted owner never reaches the live-agent gate');
+  assert.deepEqual(run.calls, [], 'and never returns the task to ready');
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).attempts.length, 1, 'no attempt was opened');
+
+  // Unstated inherits, exactly as an untyped placement does.
+  const silent = invoke(['--replace', '--request', 'req-replace-delivery'], { env: { HOME: home }, gateFn: () => 0 });
+  assert.equal(silent.code, 0, silent.out);
+  const stated = invoke(['--replace', '--request', 'req-replace-delivery', '--delivery', 'parent'], { env: { HOME: home }, gateFn: () => 0 });
+  assert.equal(stated.code, 0, stated.out);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).delivery, 'parent', 'and the recorded owner is never rewritten');
+});
+
+// Corrupted metadata is an INABILITY, never the default. `delivery: "somebody"`
+// is a record whose owner nobody can read, and reading it as the child — the
+// pre-mode default — would let a repeat replay a slice under an owner this
+// store never recorded. Named, with zero mutations, and no guess.
+test('a record whose delivery mode is unreadable cannot establish, and mints nothing', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, 'req-bad-mode'), { env: { HOME: home } });
+  assert.equal(first.code, 0, first.out);
+  const path = recordAt(first.env, 'req-bad-mode');
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  record.delivery = 'somebody';
+  writeFileSync(path, `${JSON.stringify(record)}\n`);
+
+  const run = fakeRunner();
+  const r = invoke(freshArgs(home, 'req-bad-mode'), { env: { HOME: home }, run });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /CANNOT ESTABLISH/);
+  assert.match(r.out, /somebody/, 'the unreadable value is named, so the record can be repaired');
+  assert.deepEqual(run.calls, [], 'an unreadable owner replays nothing');
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).delivery, 'somebody', 'and nothing rewrites it');
+});
+
 // ── One replace at a time, and the gate is Run-scoped ───────────────────────
 
 test('replace gates the RECORDED Run, never an unscoped task id', () => {

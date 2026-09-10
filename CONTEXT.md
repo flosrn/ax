@@ -94,8 +94,9 @@ issued and recovered by replaying that record, never by a second creation.
 _Avoid_: launch, start (plumbing), spawn.
 
 **Worker**:
-A child owning one implementation slice — one ticket, one worktree, one branch, one pull
-request. It never merges.
+A child owning one implementation slice and its verified worktree, branch and Report;
+the Dispatch assigns delivery of the slice's pull request to that child or its parent.
+The worker never merges.
 
 **Advisor**:
 An OMP reviewer attached to a Session. In its notes, `[name]` identifies which named

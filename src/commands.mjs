@@ -219,6 +219,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
         ['--name <name>', 'work no tracker owns yet; the name IS the request id and the branch'],
         ['--slug <text>', 'the branch name a Linear ref does not carry; refused with --name'],
         ['--task <text>', 'the instruction, replacing the entry ax.config.json declares'],
+        ['--delivery <owner>', 'child (default) or parent; parent requires --task'],
         ['--because <reason>', 'why this override, or why this ticket again — provenance on the record'],
         ['--notes <file>', 'wave findings the child reads; an unreadable path refuses up front'],
         ['--model <alias>', 'the model alias pinned into the child (default @default)'],
@@ -408,6 +409,7 @@ the session file:
         ['--issue <n>', 'the ticket this merge delivers; outranks the record it would read'],
         ['--repo <owner/repo>', 'assert this checkout is that repository; another one is refused'],
         ['--merge', 'MUTATES — performs the merge; without it this run decides nothing'],
+        ['--update-branch', 'MUTATES — with --merge, authorize one base update and recheck'],
         ['--method <squash|merge>', 'the method the verdict stands on (default squash)'],
         ['--ack-body', "answer THIS run's post-open commit list; never persisted or widened"],
         ['--stale-retried', "the staleness self-repair's marker on its one re-run — never typed"],
@@ -422,6 +424,11 @@ the session file:
 Git evidence — staleness, landed-by-content, the residual file, the prGate guard, the shape of
 each post-open commit — is computed on those two commits, so a local branch that has moved past
 the head this PR announces supplies no evidence for it, and this checkout must hold that head.
+
+--merge does not update a stale branch. Let its owner update it, then run the gate again.
+To authorize one automatic base update and a full recheck, add --update-branch.
+That request may complete asynchronously: exit 3 means the update's completion is not yet
+established, not that the branch stayed untouched. Inspect the head before retrying.
 
 What a pass is NOT:
 

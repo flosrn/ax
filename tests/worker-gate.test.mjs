@@ -8,7 +8,7 @@
 // injected in every test: no Orca, no network, no clock.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -177,9 +177,9 @@ const started = ({ dispatchId, handle }) => ({
  * and `stranded` the phase that never concluded — the shape `--resume` exists
  * for, and the one an outcome-unknown mutation leaves behind.
  */
-function record(dir, request, { dispatchId = 'ctx_rec', handle = 'term_rec', on = '', worktree = '', repoId = '', stranded = false } = {}) {
+function record(dir, request, { dispatchId = 'ctx_rec', handle = 'term_rec', on = '', worktree = '', repoId = '', stranded = false, delivery = '' } = {}) {
   const { path } = claimRecord(dir, request);
-  initRecord(path, { request, orca: 'orca', repo: 'acme/widgets' });
+  initRecord(path, { request, orca: 'orca', repo: 'acme/widgets', delivery });
   phaseBegin(path, { name: 'task-create', identity: `id-create-${request}`, argv: ['orca', 'orchestration', 'task-create', '--json'] });
   phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { task: { id: TASK }, mutation: { requestId: 'r', replayed: false } } }) });
   phaseBegin(path, {
@@ -648,6 +648,126 @@ test('#192: a merged pull request routes to release, an absent one to settle, an
   assert.equal(ambiguous.code, 0, ambiguous.out);
   assert.match(ambiguous.out, /undecided/);
   assert.doesNotMatch(ambiguous.out, /--replace|ax worker settle|ax worker release/, 'two PRs on one head decide nothing');
+});
+
+test('#3: a proven-dead --delivery parent pane with no pull request WITHHOLDS the authorization', () => {
+  // The gate authorises a re-dispatch on proven death. A `--delivery parent`
+  // child that opened no pull request left work its parent has not shipped
+  // yet, on a branch nothing has judged: "safe to re-dispatch" over that is
+  // how the same slice gets built twice, and the ending `settle` writes over
+  // it is how it gets thrown away. Death is proven; the disposition is not.
+  const dir = store();
+  record(dir, '3-handoff', {
+    dispatchId: 'ctx_handoff',
+    handle: 'term_handoff',
+    delivery: 'parent',
+    worktree: realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-tree-'))),
+  });
+
+  const r = verdict(
+    { workers: [dispatch('ctx_handoff', 'term_handoff')], terminals: [] },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+    {
+      exec: fakeExec({
+        answers: {
+          'git rev-parse': { status: 0, stdout: 'feat/3-handoff\n', stderr: '' },
+          'gh pr list': prList([]),
+        },
+      }).exec,
+    },
+  );
+
+  assert.equal(r.code, 3, `an unshipped parent handoff is a CANNOT ESTABLISH, never an authorisation: ${r.out}`);
+  assert.doesNotMatch(r.out, /Safe to re-dispatch/, 'the authorisation is withheld, not printed and then argued with');
+  assert.doesNotMatch(r.out, /→ ax worker settle 3-handoff/, 'and no route offers to end an attempt whose work was never shipped');
+  assert.match(r.out, /feat\/3-handoff/, 'the branch the parent still owes is named');
+  assert.match(r.out, /parent/);
+});
+
+test('parent gate withholds authorization when its PR read fails', () => {
+  const dir = store();
+  record(dir, '3-unread', { dispatchId: 'ctx_handoff', handle: 'term_handoff', delivery: 'parent', worktree: realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-tree-'))) });
+  const r = verdict({ workers: [dispatch('ctx_handoff', 'term_handoff')], terminals: [] }, [TASK], { ORCA_DISPATCH_STORE: dir }, {
+    exec: fakeExec({ answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/3-unread\n', stderr: '' },
+      'gh pr list': { status: 1, stdout: '', stderr: 'forge unavailable' },
+    } }).exec,
+  });
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /Safe to re-dispatch/);
+});
+
+test('gate withholds authorization for a malformed delivery owner', () => {
+  const dir = store();
+  record(dir, '3-malformed', { dispatchId: 'ctx_handoff', handle: 'term_handoff', delivery: 'parent', worktree: realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-tree-'))) });
+  const path = join(dir, '3-malformed.json');
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  raw.delivery = 42;
+  writeFileSync(path, JSON.stringify(raw));
+  const r = verdict({ workers: [dispatch('ctx_handoff', 'term_handoff')], terminals: [] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+  assert.equal(r.code, 3, r.out);
+  assert.doesNotMatch(r.out, /Safe to re-dispatch/);
+});
+
+test('gate cannot establish when a dead record tears after its provenance was read', () => {
+  const dir = store();
+  record(dir, '3-torn-late', { dispatchId: 'ctx_handoff', handle: 'term_handoff', delivery: 'parent', worktree: realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-tree-'))) });
+  const path = join(dir, '3-torn-late.json');
+  const run = fakeRunner({ workers: [dispatch('ctx_handoff', 'term_handoff')], terminals: [] });
+  const chunks = [];
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  let torn = false;
+  const capture = chunk => {
+    const text = String(chunk);
+    chunks.push(text);
+    if (!torn && text.includes('MORT') && text.includes('ctx_handoff')) {
+      torn = true;
+      writeFileSync(path, '{');
+    }
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  let code;
+  try {
+    code = gate([TASK], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, exec: noExec });
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  assert.equal(torn, true);
+  assert.equal(code, 3, chunks.join(''));
+  assert.doesNotMatch(chunks.join(''), /Safe to re-dispatch/);
+});
+
+test('#3: a --delivery parent pane whose pull request EXISTS still authorises, on the route its state decides', () => {
+  const dir = store();
+  record(dir, '3-parent-open', {
+    dispatchId: 'ctx_parent_open',
+    handle: 'term_parent_open',
+    delivery: 'parent',
+    worktree: realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-tree-'))),
+  });
+
+  const r = verdict(
+    { workers: [dispatch('ctx_parent_open', 'term_parent_open')], terminals: [] },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+    {
+      exec: fakeExec({
+        answers: {
+          'git rev-parse': { status: 0, stdout: 'feat/3-parent-open\n', stderr: '' },
+          'gh pr list': prList([{ number: 210, state: 'OPEN', headRefName: 'feat/3-parent-open' }]),
+        },
+      }).exec,
+    },
+  );
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /Safe to re-dispatch/, 'an opened pull request is the handoff DONE: this gate is back to its ordinary answer');
+  assert.match(r.out, /→ ax worker start --replace --request 3-parent-open/);
 });
 
 test('#192: a REMOTE record\'s branch is read on the host its placement names, never from a local homonym', () => {

@@ -25,6 +25,7 @@ import {
   phaseVerdict,
   recordedBin,
   recordedRun,
+  recordDelivery,
   report,
   requestIdOk,
   staleClaim,
@@ -782,4 +783,42 @@ test('reads are named-key strict: a mangled record raises the missing key, never
 
 test('newIdentity is a lowercase uuid — the shape Orca fingerprints', () => {
   assert.match(newIdentity(), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+});
+
+test('#3: who a record says delivers its slice — parent, the default child, and a mode nothing can read', () => {
+  // The absence IS the default (initRecord's own doctrine): a dispatch written
+  // before the mode existed was delivered by its child, and that is a fact
+  // rather than an unknown.
+  const legacy = begun();
+  assert.deepEqual(recordDelivery(legacy), { state: 'none', owner: 'child' });
+
+  const { path: parent } = claimRecord(store(), 'req-parent');
+  initRecord(parent, { request: 'req-parent', orca: 'orca', delivery: 'parent' });
+  assert.deepEqual(recordDelivery(parent), { state: 'named', owner: 'parent' });
+
+  // A record that spells the default out loud reads as the same owner, said
+  // rather than inferred.
+  const { path: child } = claimRecord(store(), 'req-child');
+  initRecord(child, { request: 'req-child', orca: 'orca' });
+  writeFileSync(child, JSON.stringify({ ...JSON.parse(readFileSync(child, 'utf8')), delivery: 'child' }));
+  assert.deepEqual(recordDelivery(child), { state: 'named', owner: 'child' });
+
+  // AND A MODE THIS CANNOT READ IS NOT A CHILD (F-028). Collapsing it would
+  // hand a caller a fabricated owner, and the owner is what decides whether an
+  // attempt with no pull request may be ENDED.
+  for (const value of ['grandparent', '  ', 7, {}, []]) {
+    const { path } = claimRecord(store(), 'req-bad');
+    initRecord(path, { request: 'req-bad', orca: 'orca' });
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), delivery: value }));
+    const read = recordDelivery(path);
+    assert.equal(read.state, 'malformed', `${JSON.stringify(value)} names no delivery mode`);
+    assert.equal(read.owner, '', 'and an unreadable mode names no owner at all');
+    assert.match(read.detail, /deliver/i, 'the detail says what could not be read');
+  }
+
+  // An unreadable record file is the caller's to distinguish, exactly as
+  // recordRepo leaves it.
+  const { path: torn } = claimRecord(store(), 'req-torn');
+  writeFileSync(torn, '{');
+  assert.throws(() => recordDelivery(torn));
 });

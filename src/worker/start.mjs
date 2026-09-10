@@ -62,6 +62,7 @@ import {
   phaseVerdict,
   recordedBin,
   recordedRun,
+  recordDelivery,
   recordRepo,
   report,
   requestIdOk,
@@ -125,6 +126,13 @@ function parse(argv) {
   // reconstruct a job from a hyphenated name. Omitted on records written
   // before this field existed.
   let kind = '';
+  // WHO owns this slice's shipping tail (`--delivery`, ax-owned like
+  // `--because`): `parent` when the dispatching session delivers it, absent
+  // when the child does — the default, and every record written before the
+  // mode existed. Recorded because the brief that carries it is a spec file in
+  // /tmp: once that is gone, this is the only place that says whether a pane
+  // with no pull request failed or did exactly what it was dispatched to do.
+  let delivery = '';
   let passthru = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -147,6 +155,7 @@ function parse(argv) {
       ['--because', value => { because = value; }],
       ['--tracker-repo', value => { trackerRepo = value; }],
       ['--kind', value => { kind = value; }],
+      ['--delivery', value => { delivery = value; }],
     ];
     const split = fields.find(([name]) => arg === name);
     if (split) {
@@ -163,7 +172,7 @@ function parse(argv) {
     passthru.push(arg);
   }
 
-  return { mode, request, runId, specFile, explicitOrca, because, trackerRepo, kind, passthru };
+  return { mode, request, runId, specFile, explicitOrca, because, trackerRepo, kind, delivery, passthru };
 }
 
 /** Refusals that must happen before binary resolution, claim or mutation. */
@@ -328,6 +337,62 @@ export function inheritPlacement(recordedArgv, typed) {
     };
   }
   return { passthru: [...splitPlacement(typed).rest, ...placement] };
+}
+
+/**
+ * WHO SHIPS THE SLICE IS A TERM OF THE DISPATCH, NOT A DETAIL OF THE REPEAT.
+ *
+ * `--delivery` decides who owes the pull request, and once the brief's spec
+ * file in /tmp is gone the record is the only place that still says so
+ * (`./record.mjs`, `initRecord`). Every recovery in this file replays the
+ * OWNER'S recorded argv, so a repeat typed with a different owner would run
+ * the recorded dispatch while the caller reads its own terms: the pane is then
+ * judged against the wrong obligation — a parent-delivered slice looks like a
+ * child that never opened a pull request, and a child-delivered one looks like
+ * a slice the parent still owes. Nothing downstream can separate the two
+ * afterwards, which is why the contradiction is answered HERE, before the
+ * replay and before the stale-foreign takeover's rename.
+ *
+ * The default is a REQUEST, not a silence: an ordinary `ax worker start` that
+ * names no `--delivery` is asking for a child-delivered slice, exactly as
+ * `ax worker dispatch` composes it. A recovery is the opposite — `--replace`
+ * and `--resume` continue a recorded dispatch, so an unstated owner INHERITS
+ * (the placement rule above, one file up: unstated is the record's own bytes)
+ * and only a stated contradiction is refused. That is what keeps a `--resume`
+ * a byte-for-byte replay an operator can type without remembering the mode.
+ *
+ * `asked` is `'child'`/`'parent'` or `null` for unstated. The answer is
+ * `null` (compatible, or a record whose owner this reader cannot be asked
+ * for), a refusal, or an inability — a `delivery` key that is present and not
+ * a mode name is corrupted metadata, and reading it as the pre-mode default
+ * would replay a slice under an owner this store never recorded.
+ *
+ * A DISAGREEMENT ABOUT ONE SLICE IS NEVER REPAIRED BY A SECOND WORKER: the
+ * repair reads the record and re-states its owner, or releases the slice. A
+ * `--slug` route here would mint the contradiction instead of resolving it,
+ * which is the whole defect.
+ */
+function deliveryClash(path, request, asked) {
+  let read;
+  try {
+    read = recordDelivery(path);
+  } catch {
+    // An unreadable record file is not this rule's finding: the readers that
+    // own that doubt (staleClaim, phaseCount, the resume's own reconstruction)
+    // answer it, and answering it twice would give one corruption two names.
+    return null;
+  }
+  if (read.state === 'malformed') {
+    return {
+      inability: `request ${request} is recorded at ${path} with a delivery mode nobody can read (${read.detail}) — who owes this slice's pull request is CORRUPTED metadata, and the pre-mode default is an absence, never a value to fall back on`,
+      repair: `ax worker start --show --request ${request}   # repair the record's "delivery" key to parent or child — its own dispatch decided which, and nothing here may guess it`,
+    };
+  }
+  if (asked === null || asked === read.owner) return null;
+  return {
+    refusal: `request ${request} is already recorded at ${path} as a ${read.owner}-delivered dispatch and this call asks for ${asked} — who ships the slice is a term of the dispatch, so replaying that record under a second reading would leave the record and the child's own brief disagreeing about who owes the pull request`,
+    repair: `ax worker start --show --request ${request}   # read the recorded owner, then repeat with --delivery ${read.owner}; a slice whose owner genuinely changed is released and dispatched again, never repeated under two readings`,
+  };
 }
 
 /**
@@ -770,6 +835,12 @@ export function start(
   if (parsed.kind !== '' && !['implementation', 'triage', 'brief', 'custom'].includes(parsed.kind)) {
     return callerBug(`invalid --kind ${JSON.stringify(parsed.kind)}`);
   }
+  // `child` is accepted and never written: the absence IS the default, so a
+  // record that names nothing and one that named the default read the same
+  // everywhere.
+  if (parsed.delivery !== '' && !['child', 'parent'].includes(parsed.delivery)) {
+    return callerBug(`invalid --delivery ${JSON.stringify(parsed.delivery)}`);
+  }
 
   const placement = placementRefusal(parsed.passthru);
   if (placement) return refuse(placement);
@@ -863,6 +934,18 @@ export function start(
   if (!ownership.held) return cannot(ownership.reason, `ax worker start --resume --request ${context.request}`);
 
   try {
+    // A RECOVERY MAY NOT RE-DECIDE WHO SHIPS. Unstated inherits — that is what
+    // makes `--resume` a replay an operator can type from the request id alone
+    // — and a stated contradiction is refused here, before the replace lock,
+    // the live-agent gate and the `task-update` that returns the task to
+    // `ready`. The recorded owner is written once by `initRecord`, before the
+    // first phase, so reading it outside the replace lock cannot catch a
+    // half-written value.
+    if (parsed.mode === 'replace' || parsed.mode === 'resume') {
+      const clash = deliveryClash(path, parsed.request, parsed.delivery === '' ? null : parsed.delivery);
+      if (clash?.inability) return cannot(clash.inability, clash.repair);
+      if (clash) return refuse(clash.refusal, clash.repair);
+    }
     if (parsed.mode === 'replace') return replace(path, parsed.passthru, context);
     if (parsed.mode === 'resume') return resume(path, context);
 
@@ -874,7 +957,7 @@ export function start(
     }
 
     if (claim.claimed) {
-      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, now });
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, delivery: parsed.delivery, now });
       return fresh(claim.path, spec, parsed.passthru, context);
     }
 
@@ -913,6 +996,19 @@ export function start(
       }
     }
 
+    // AND THE DELIVERY RULE COMES BEFORE BOTH REPLAY AND TAKEOVER. An ordinary
+    // repeat states its owner by default — no `--delivery` IS `child`, the way
+    // `ax worker dispatch` composes it — so a repeat that disagrees with the
+    // record is answered before `staleClaim` decides between replaying the
+    // owner's argv and setting a proved-empty foreign record aside: both of
+    // those run the slice, and running it under an owner the record
+    // contradicts is the defect. It follows the repository rule, because a
+    // record belonging to ANOTHER checkout is a collision first and its
+    // delivery mode is not this caller's to compare.
+    const clash = deliveryClash(claim.path, parsed.request, parsed.delivery === '' ? 'child' : parsed.delivery);
+    if (clash?.inability) return cannot(clash.inability, clash.repair);
+    if (clash) return refuse(clash.refusal, clash.repair);
+
     let stale = null;
     try {
       // Read only UNDER the lock: the winner's phases are complete by now, so
@@ -948,7 +1044,7 @@ export function start(
       if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
       // Install the new owner's identity before releasing the lock. A sibling
       // then sees a zero-phase record and cannot call it stale.
-      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, now });
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, delivery: parsed.delivery, now });
     } catch (error) {
       return cannot(`could not preserve stale foreign record: ${String(error)}`);
     }

@@ -123,7 +123,7 @@ function recordedPanes(store) {
     for (const { handle, host, tree } of found) {
       let claim = claims.get(handle);
       if (claim === undefined) {
-        claim = { names: new Map(), hosts: [], trees: [] };
+        claim = { names: new Map(), hosts: [], trees: [], files: [] };
         claims.set(handle, claim);
       }
       // A slug differing only in case is the same repository — the comparison
@@ -136,6 +136,7 @@ function recordedPanes(store) {
       // below. A union for the same reason the hosts are one: two records can
       // name one handle.
       if (tree !== '' && !claim.trees.includes(tree)) claim.trees.push(tree);
+      if (file !== '' && !claim.files.includes(file)) claim.files.push(file);
     }
   }
 
@@ -144,7 +145,7 @@ function recordedPanes(store) {
     // naming no repository says nothing, and two records naming two of them say
     // nothing this reader may choose between (F-028).
     const named = [...claim.names.values()];
-    byHandle.set(handle, { handle, repo: named.length === 1 ? named[0] : '', hosts: claim.hosts, trees: claim.trees });
+    byHandle.set(handle, { handle, repo: named.length === 1 ? named[0] : '', hosts: claim.hosts, trees: claim.trees, files: claim.files });
   }
   return { byHandle, unreadable, missing: false, reason: '' };
 }
@@ -165,7 +166,11 @@ function recordedPanes(store) {
  *                 the subset of each whose cause is a recorded worktree a live
  *                 pane no record owns still occupies, the rest being a host
  *                 that could not be asked — two causes, two repairs, and the
- *                 caps read only the totals
+ *                 caps read only the totals. `occupancy` is the identifying
+ *                 evidence for that occupied subset: recorded handle, path,
+ *                 records that named it, and the live extras at the tree.
+ *                 Extras are occupancy, never slots; they do not join
+ *                 `machine` or `mine`. An unasked remote is not a row here.
  *
  * A caller that cannot name its own repository gets `mine: 0`, which is an
  * absence to act on and never a zero to spend: `capVerdict` says so.
@@ -223,15 +228,24 @@ function countPanes({ panes, inventory, repo }) {
   // the totals and the arithmetic is untouched.
   const occupiedMachine = new Set();
   const occupiedMine = new Set();
+  const occupancy = [];
   const recorded = [...panes.byHandle.keys()];
   for (const row of panes.byHandle.values()) {
     const terminal = inventory.byHandle.get(row.handle);
     if (terminal !== undefined && terminal.orphaned !== true) continue;
     if (unmeasuredMachine.has(row.handle)) continue;
     for (const tree of Array.isArray(row.trees) ? row.trees : []) {
-      if (worktreeOccupancy({ inventory, recordedWorktree: tree, knownHandles: recorded }).ok) continue;
+      const occ = worktreeOccupancy({ inventory, recordedWorktree: tree, knownHandles: recorded });
+      if (occ.ok) continue;
       unmeasuredMachine.add(row.handle);
       occupiedMachine.add(row.handle);
+      occupancy.push({
+        handle: row.handle,
+        repo: String(row.repo ?? ''),
+        tree: occ.tree,
+        records: Array.isArray(row.files) ? [...row.files] : [],
+        extras: [...occ.extras],
+      });
       if (ours !== '' && named(row) === ours) {
         unmeasuredMine.add(row.handle);
         occupiedMine.add(row.handle);
@@ -248,6 +262,7 @@ function countPanes({ panes, inventory, repo }) {
       machine: unmeasuredMachine.size,
       mine: unmeasuredMine.size,
       occupied: { machine: occupiedMachine.size, mine: occupiedMine.size },
+      occupancy,
     },
   };
 }

@@ -28,6 +28,10 @@
 //      arriving after that completion is. ax owns this because ax derives the
 //      path and ax's receiver opens it — a project that declares its own
 //      contract replaces the propositions below, never this.
+//   6b. WHO DELIVERS this slice, when the dispatch says the parent does. Same
+//      standing as the Report and for the same reason: a project contract
+//      replaces the propositions below, and one written for children that ship
+//      would re-assert the owner this dispatch just moved.
 //   7. the contract. The project's, when it declares one; MECHANICS when it does
 //      not.
 //   8. the remote addendum, when the child runs on another host.
@@ -139,39 +143,100 @@ const BULLETS = [
 /** The bullet that only makes sense when a tracker owns the work. */
 const TICKET_BULLET = 3;
 
-export const MECHANICS = BULLETS.join('\n');
+/**
+ * The bullets that name the CHILD as the owner of the shipping tail, dropped
+ * whole when the dispatch says the parent delivers this slice.
+ *
+ * They are removed rather than joined by a second owner. A brief that carried
+ * both is the contradiction this mode exists to remove: measured in the field,
+ * an operator asking for an implementation-only slice had only `--notes` to ask
+ * in — the one channel placed LAST here and forbidden from displacing the
+ * contract above it — so the unconditional texts outranked the request and two
+ * hands landed on one branch.
+ *
+ * NEVER MERGING IS NOT ONE OF THEM. It is an invariant of being a supervised
+ * child, true whoever ships: a child that reads "the parent owns the tail" and
+ * finds nothing forbidding the merge has been handed the one decision it cannot
+ * see the whole of.
+ */
+const DELIVERED_BY_CHILD = [1, TICKET_BULLET];
 
 /**
- * The mechanics for a dispatch with NO ticket (`--name`, no tracker ref).
+ * The one bullet that names the OTHER owner.
  *
- * The ticket bullet is not merely irrelevant there — it is an instruction the
- * child cannot carry out, and the cost is exact: it tells the child the
- * dispatching session READS the ticket, so a child with none either invents one or
- * concludes its report is being read somewhere it is not. What replaces it says
- * where the work is defined and where its record goes.
+ * It is ax's own mechanic, not a fleet's doctrine, so it renders beside the
+ * precedence rule and the Report rather than inside the propositions a project
+ * contract replaces. And it says so IN THE BULLET: a declared contract is
+ * written once for a repository and cannot know which slice its parent is
+ * delivering, so one written for children that ship would otherwise re-assert
+ * the owner this dispatch just moved — and a child reading two owners picks one
+ * silently.
  */
-export const MECHANICS_UNTRACKED = BULLETS.map((bullet, index) =>
-  index === TICKET_BULLET
-    ? [
-        '- There is NO ticket for this work: this brief is its whole definition, and your board card',
-        '  plus your pull request are its only record. Do not go looking for a ticket, and do not open',
-        '  one — the session that dispatched you named this work, and that name is what it looks for.',
-      ].join('\n')
-    : bullet,
-).join('\n');
+export const PARENT_DELIVERY = [
+  '- **The session that dispatched you owns the shipping tail: the commit, the push, the pull request,',
+  '  CI and the ticket.** Stop at a working tree you have verified here, and report what you changed',
+  '  and what you exercised. You commit nothing, push nothing and open no pull request — that session',
+  '  is delivering this slice, and a second hand on the branch is how one slice becomes two.',
+  '  THIS LINE OUTRANKS THE CONTRACT BELOW: where anything under it hands you the commit, the push,',
+  '  the pull request or CI, this dispatch has already given them away, and this line is the one that',
+  '  holds. You still never merge.',
+].join('\n');
+
+/**
+ * Where the work is defined when no tracker owns it, and where its record goes.
+ *
+ * The ticket bullet is not merely irrelevant on a `--name` dispatch — it is an
+ * instruction the child cannot carry out, and the cost is exact: it tells the
+ * child the dispatching session READS the ticket, so a child with none either
+ * invents one or concludes its report is being read somewhere it is not.
+ *
+ * The record half follows the delivery: a child that opens no pull request has
+ * only its board card, and naming a pull request it will never open is the same
+ * defect one line further down.
+ */
+const untrackedBullet = delivery =>
+  [
+    '- There is NO ticket for this work: this brief is its whole definition, and your board card',
+    delivery === 'parent'
+      ? '  is its only record. Do not go looking for a ticket, and do not open'
+      : '  plus your pull request are its only record. Do not go looking for a ticket, and do not open',
+    '  one — the session that dispatched you named this work, and that name is what it looks for.',
+  ].join('\n');
+
+/**
+ * The propositions for one dispatch: whether a tracker owns the work, and who
+ * delivers the slice. `delivery` is `'child'` (the default, and every dispatch
+ * before the mode existed) or `'parent'`.
+ */
+function mechanicsFor({ tracked = true, delivery = 'child' } = {}) {
+  const parent = delivery === 'parent';
+  return BULLETS.flatMap((bullet, index) => {
+    if (index === TICKET_BULLET) return tracked ? (parent ? [] : [bullet]) : [untrackedBullet(delivery)];
+    return parent && DELIVERED_BY_CHILD.includes(index) ? [] : [bullet];
+  }).join('\n');
+}
+
+export const MECHANICS = mechanicsFor();
+
+/** The mechanics for a dispatch with NO ticket (`--name`, no tracker ref). */
+export const MECHANICS_UNTRACKED = mechanicsFor({ tracked: false });
 
 /**
  * The one sentence that makes every line below it enforceable.
  *
- * The runtime's preamble is the first user message of every dispatched pane and
- * it rules the same completion this brief rules. Measured on the 2026-09-03
- * wave (`docs/adr/0002`): eight workers, two contracts, and eight preambles
- * obeyed — the ax side was prose in a playbook the child read earlier and
- * nothing said which text won. It is stated ONCE, at the head of the mechanics,
+ * Three texts rule the same completion this brief rules: the runtime's preamble
+ * (the first user message of every dispatched pane), and the role and playbook
+ * the package hands the session before its first turn. Measured on the
+ * 2026-09-03 wave (`docs/adr/0002`): eight workers, two contracts, and eight
+ * preambles obeyed — the ax side was prose in a playbook the child read earlier
+ * and nothing said which text won. The package half is named here for the same
+ * reason: it carries the shipping tail too, so a dispatch that moves the
+ * delivery has to outrank it. Stated ONCE, at the head of the mechanics,
  * because a rule restated per point is a rule a reader has to reconcile per
  * point.
  */
-const PRECEDENCE = 'The preamble above speaks for the runtime; where this brief says otherwise, this brief wins.';
+const PRECEDENCE =
+  'The preamble above speaks for the runtime, and the role and playbook you were handed speak for the package; where this brief says otherwise, this brief wins.';
 
 /**
  * The Report: the work artifact, as against the Summary the completion carries.
@@ -311,6 +376,10 @@ function markerLine(model, instruction) {
  * included: a wave with no established landing has none to announce, and an empty
  * section under that heading would read as a read that found nothing.
  *
+ * `delivery` is who owns the shipping tail for THIS dispatch: `'child'` (the
+ * default, and every dispatch before the mode existed) or `'parent'`. It is a
+ * value the dispatch decided, never a reading of the operator's notes.
+ *
  * `ticket: null` says the dispatch HAS no ticket, which renders differently from a
  * ticket that could not be read.
  *
@@ -322,7 +391,7 @@ function markerLine(model, instruction) {
  * own receipt (`ticket <url> (<state>)` in ./verify.mjs), where a human reads it.
  * Linear answers no handle, so there the url is the only address there is.
  */
-export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', landed = '', operator = null, name = '', report = {} } = {}) {
+export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', landed = '', operator = null, name = '', report = {}, delivery = 'child' } = {}) {
   // `ticket: null` is not "a ticket I could not read" — it is a dispatch that has
   // none (`--name`). The two must not render the same: the tracked shape says
   // "read the ticket, it is canonical", and pointing that at nothing is how a
@@ -346,7 +415,13 @@ export function renderBrief({ model, instruction, ticket = {}, readCommand, run,
     PRECEDENCE,
     '',
     reportContract(report),
-    contract === '' || contract === undefined || contract === null ? (tracked ? MECHANICS : MECHANICS_UNTRACKED) : String(contract),
+    // Who delivers this slice is ax's own mechanic for the same reason: a
+    // project contract replaces the propositions wholesale, and one written for
+    // children that ship would re-assert the owner this dispatch just moved.
+    ...(delivery === 'parent' ? [PARENT_DELIVERY] : []),
+    contract === '' || contract === undefined || contract === null
+      ? mechanicsFor({ tracked, delivery })
+      : String(contract),
   ];
 
   if (host) lines.push(REMOTE);

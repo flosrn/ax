@@ -6,7 +6,7 @@
 // is where the defects live), injected runner, fully offline.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -56,9 +56,9 @@ function repo(hosts = {}, caps = {}) {
  * about (#165). A record without it names no placement at all, which is the
  * shape every test written before #165 uses.
  */
-function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets', worktree = '' } = {}) {
+function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets', worktree = '', delivery = '' } = {}) {
   const { path } = claimRecord(dir, request);
-  initRecord(path, { request, orca: 'orca', repo: named });
+  initRecord(path, { request, orca: 'orca', repo: named, delivery });
   for (const phase of phases) {
     phaseBegin(path, {
       name: phase.name,
@@ -1037,10 +1037,10 @@ function fakeExec({ slug = 'acme/widgets', answers = {} } = {}) {
  * every case below reads — with a worktree that exists on disk, because a
  * branch nobody can name is a branch nothing can be asked about.
  */
-function deadRow(request = 'dead-1', { answers = {}, terminals = [], on = '' } = {}) {
+function deadRow(request = 'dead-1', { answers = {}, terminals = [], on = '', delivery = '' } = {}) {
   const dir = store();
   const worktree = realpathSync(mkdtempSync(join(tmpdir(), `ax-ls-${request}-`)));
-  writeRecord(dir, request, [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_dead', handle: 'term_dead' }) }], { worktree, on });
+  writeRecord(dir, request, [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_dead', handle: 'term_dead' }) }], { worktree, on, delivery });
   const run = fakeRunner({ terminals, workers: [], ...(on === '' ? {} : { omittedHostIds: ['runtime:7930a317'], hosts: { [on]: { fail: 'ssh_unreachable' } } }) });
   const { exec, calls } = fakeExec({ answers });
   return { dir, worktree, run, exec, calls };
@@ -1096,6 +1096,85 @@ test('#165: a MORT pane with no pull request at all gets the settle route', () =
 
   assert.match(out, /→ ax worker settle unshipped-1/, "an attempt that shipped nothing owes an ending, which is settle's write");
   assert.doesNotMatch(out, /--replace/);
+});
+
+// ── #3: the dispatch whose child was never going to open a pull request ──────
+// `--delivery parent` moves the shipping tail to the dispatching session, and
+// the brief it composes REMOVES the bullets that tell the child to open one
+// (../src/worker/brief.mjs). So "no pull request on that branch" is the shape
+// that dispatch ASKED FOR, and reading it as "nothing shipped" sent the one
+// row holding unshipped parent work to `settle` — the verb that writes an
+// attempt's ending. The record is the only place the mode survives: the brief
+// is a spec file in a temp directory (../src/worker/record.mjs).
+
+test('#3: a --delivery parent record with no pull request is a pending shipping handoff, never an ending', () => {
+  const { dir, run, exec } = deadRow('handoff-1', {
+    delivery: 'parent',
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/handoff-1\n', stderr: '' },
+      'gh pr list': prList([]),
+    },
+  });
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(out, /handoff-1/, 'the row is SHOWN: it carries a route, so the default view may not hide it');
+  assert.doesNotMatch(out, /→ ax worker settle handoff-1/, 'the ending is not what remains: this slice was never the child\'s to ship');
+  assert.doesNotMatch(out, /--replace/, 'and nothing here re-dispatches a child whose work is done');
+  assert.match(out, /feat\/handoff-1/, 'the branch the parent now owes a pull request for is named');
+  assert.match(out, /parent/, 'and the line says whose tail it is');
+});
+
+test('#3: the default child with no pull request still settles, and a parent whose PR exists routes unchanged', () => {
+  // The blast radius of #3 is exactly one shape. Every other row keeps the
+  // verb #165 decided for it.
+  const child = deadRow('child-unshipped', {
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/child-unshipped\n', stderr: '' },
+      'gh pr list': prList([]),
+    },
+  });
+  const settled = capture(() => ls([], { runner: child.run, exec: child.exec, env: { ORCA_DISPATCH_STORE: child.dir }, cwd: repo() }));
+  assert.match(settled.out, /→ ax worker settle child-unshipped/, 'a child that shipped nothing still owes the ending');
+
+  const open = deadRow('parent-open', {
+    delivery: 'parent',
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/parent-open\n', stderr: '' },
+      'gh pr list': prList([{ number: 91, state: 'OPEN', headRefName: 'feat/parent-open' }]),
+    },
+  });
+  const opened = capture(() => ls([], { runner: open.run, exec: open.exec, env: { ORCA_DISPATCH_STORE: open.dir }, cwd: repo() }));
+  assert.match(opened.out, /→ ax worker start --replace --request parent-open/, 'an OPEN pull request is an unfinished slice whoever opened it');
+
+  const merged = deadRow('parent-merged', {
+    delivery: 'parent',
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/parent-merged\n', stderr: '' },
+      'gh pr list': prList([{ number: 92, state: 'MERGED', headRefName: 'feat/parent-merged' }]),
+    },
+  });
+  const landed = capture(() => ls([], { runner: merged.run, exec: merged.exec, env: { ORCA_DISPATCH_STORE: merged.dir }, cwd: repo() }));
+  assert.match(landed.out, /→ ax worker release --dispatch ctx_dead/, 'and a landed one is still release\'s');
+});
+
+test('#3: a delivery mode nothing can read decides no route at all, and never an ending', () => {
+  // An unreadable owner is not the default owner (F-028). Collapsing it to
+  // `child` is what would put `settle` back under a parent's unshipped branch.
+  const { dir, run, exec } = deadRow('mode-unknown', {
+    answers: {
+      'git rev-parse': { status: 0, stdout: 'feat/mode-unknown\n', stderr: '' },
+      'gh pr list': prList([]),
+    },
+  });
+  const path = join(dir, 'mode-unknown.json');
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), delivery: 'grandparent' }));
+
+  const { out } = capture(() => ls([], { runner: run, exec, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+
+  assert.match(out, /undecided/, 'the row is shown as an undecided continuation, not a silent one');
+  assert.doesNotMatch(out, /→ ax worker settle mode-unknown|--replace|ax worker release/, 'no route on an owner this cannot read');
+  assert.match(out, /grandparent|deliver/i, 'and the unreadable mode is quoted');
 });
 
 test('#165: a gh that cannot answer prints NEITHER continuation and says the read failed', () => {
@@ -1199,4 +1278,34 @@ test('#165: two records naming one worktree ask about that branch ONCE', () => {
     1,
     `one branch, one read for the listing: ${calls.join(' | ')}`,
   );
+});
+
+test('occupancy of a dead recorded worker names the tree, the record, and live Setup/shell — without counting them as workers', () => {
+  const dir = store();
+  const worktree = realpathSync(mkdtempSync(join(tmpdir(), 'ax-ls-occupancy-')));
+  writeRecord(dir, 'dead-worker', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_dead', handle: 'term_dead' }) }], { worktree });
+  writeRecord(dir, 'far-unknown', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_far', handle: 'term_far' }) }], { on: 'gapicore' });
+
+  const run = fakeRunner({
+    terminals: [
+      { handle: 'term_dead', orphaned: true, worktreePath: worktree, title: 'agent' },
+      { handle: 'term_setup', orphaned: false, worktreePath: worktree, title: 'Setup' },
+      { handle: 'term_shell', orphaned: false, worktreePath: worktree, title: 'shell' },
+    ],
+    omittedHostIds: ['runtime:7930a317'],
+    hosts: { gapicore: { fail: 'ssh_unreachable' } },
+  });
+
+  const { code, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.equal(code, 0, out);
+  assert.match(out, /0 live pane\(s\) in acme\/widgets/, 'recorded-slot live count stays zero: extras are not workers');
+  assert.ok(out.includes(worktree), 'the occupied path is named');
+  assert.match(out, /dead-worker/, 'the record is named');
+  assert.match(out, /term_setup/, 'the observed Setup handle is named');
+  assert.match(out, /term_shell/, 'the observed shell handle is named');
+  assert.match(out, /orca terminal show --terminal term_setup --json/, 'show uses the observed live handle');
+  assert.doesNotMatch(out, /orca terminal show --terminal term_dead/, 'the orphaned recorded handle is not the show target');
+  assert.doesNotMatch(out, /worker term_setup|worker term_shell|VIVANT.*term_setup|VIVANT.*term_shell/, 'auxiliaries are not attributed as workers');
+  assert.match(out, /host 'gapicore' could not be asked/, 'unknown remote stays a host fact');
+  assert.doesNotMatch(out, /far-unknown.*occup|occup.*far-unknown|term_far.*occup/, 'the unasked remote is not occupancy');
 });

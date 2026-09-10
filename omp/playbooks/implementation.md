@@ -63,21 +63,31 @@ the implementation; they pass forever and defend nothing.
 
 ## 5. Publish
 
-Commit with a message that says what changed and why it was worth changing. Push
-the branch and open the pull request.
+The pilot contract in your brief names who delivers this slice, and it outranks
+this playbook. Its default is that you do: commit with a message that says what
+changed and why it was worth changing, push the branch and open the pull
+request.
 
-Then let CI decide. A red check is yours to repair and re-push until CI reaches a
-verdict — green, or a failure you can name and cannot fix from inside this slice.
+Then, still on that default, let CI decide. A red check is yours to repair and
+re-push until CI reaches a verdict — green, or a failure you can name and cannot
+fix from inside this slice.
+
+When that contract gives the shipping tail to the dispatching session instead,
+this stage is one line: leave the change in the working tree, verified, and say
+so when you report. Commit nothing, push nothing, open no pull request — that
+session is delivering the branch, and a second hand on it is how one slice
+becomes two.
 
 ## 6. Stop
 
 Do not merge. Every check green is still not your gate; the orchestrator owns the
 merge.
 
-Report the pull request, the verification evidence you actually observed, and
-anything the orchestrator must decide. If you stopped short, report the concrete
-blocker — what you tried, and what is missing — rather than a summary that reads
-like completion.
+Report the pull request — or, when the dispatching session delivers this slice,
+the verified working tree it can now take — the verification evidence you
+actually observed, and anything the orchestrator must decide. If you stopped
+short, report the concrete blocker — what you tried, and what is missing —
+rather than a summary that reads like completion.
 
 Your completion carries two things, and they are not the same artifact. The
 **Summary** is its body: three sentences — what you did, what you found, what is

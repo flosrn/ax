@@ -273,15 +273,23 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
  * ticket's URL only as a fallback): the store is host-global, and the frontier
  * needs the name to keep one checkout's records from excluding another's.
  *
- * Both keys are ADDITIVE and omitted when empty (the shape rule in this file's
- * header): every reader here works from named keys, no recovery path branches
- * on them, and a record written by an older ax carries neither.
+ * `delivery` is WHO owns this slice's shipping tail, written only when it is
+ * not the child: the brief that carries the mode is a spec file in a temp
+ * directory, and once it is gone this is the only place that says whether a
+ * pane with no pull request failed or did exactly what it was dispatched to do.
+ *
+ * Every key here is ADDITIVE and omitted when empty (the shape rule in this
+ * file's header): every reader here works from named keys, no recovery path
+ * branches on them, and a record written by an older ax carries none of them.
+ * The absence of `delivery` is the default rather than an unknown — a dispatch
+ * written before the mode existed was delivered by its child.
  */
-export function initRecord(path, { request, orca, because = '', repo = '', kind = '', host = hostname(), now = () => new Date().toISOString() }) {
+export function initRecord(path, { request, orca, because = '', repo = '', kind = '', delivery = '', host = hostname(), now = () => new Date().toISOString() }) {
   const rec = { request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] };
   if (String(because).trim() !== '') rec.because = because;
   if (String(repo).trim() !== '') rec.repo = repo;
   if (String(kind).trim() !== '') rec.kind = String(kind).trim();
+  if (String(delivery).trim() === 'parent') rec.delivery = 'parent';
   save(rec, path);
 }
 
@@ -1234,6 +1242,39 @@ export function recordRepoNaming(path) {
     return { state: 'malformed', repo: '', detail: `\`repo\` is ${Array.isArray(repo) ? 'a list' : typeof repo}, not a repository name` };
   }
   return repo.trim() === '' ? { state: 'none', repo: '' } : { state: 'named', repo: repo.trim() };
+}
+
+/**
+ * WHO DELIVERS this dispatch's slice, read back from the record — the only
+ * place the mode survives, because the brief that carried it is a spec file in
+ * a temp directory (`initRecord` above).
+ *
+ *   named      the record spells an owner out loud: `parent` or `child`
+ *   none       the key is absent or `null` — the pre-mode shape, and the
+ *              ABSENCE IS THE DEFAULT rather than an unknown: a dispatch
+ *              written before `--delivery` existed was delivered by its child
+ *   malformed  present and not a mode name — corrupted metadata, carrying the
+ *              offending value so a caller's refusal can name it
+ *
+ * The three answers are kept apart for the reason `recordRepoNaming`'s are
+ * (F-028): the owner decides whether an attempt with NO pull request is a
+ * failure that owes an ending or a shipping tail its parent still holds
+ * (../worker/continuation.mjs). A `malformed` collapsed into `child` would be
+ * a fabricated owner authorising the one write that throws that work away, so
+ * no caller may invent one — and none of them re-normalises this reading.
+ *
+ * An unreadable record file throws, exactly as `recordRepo` leaves it: a torn
+ * record is not a delivery mode, and the caller separates the two.
+ */
+export function recordDelivery(path) {
+  const delivery = load(path).delivery;
+  if (delivery === undefined || delivery === null) return { state: 'none', owner: 'child' };
+  if (typeof delivery !== 'string') {
+    return { state: 'malformed', owner: '', detail: `\`delivery\` is ${Array.isArray(delivery) ? 'a list' : typeof delivery}, not a delivery mode` };
+  }
+  const named = delivery.trim();
+  if (named === 'parent' || named === 'child') return { state: 'named', owner: named };
+  return { state: 'malformed', owner: '', detail: `\`delivery\` is ${JSON.stringify(delivery)}, which names no delivery mode` };
 }
 
 /**

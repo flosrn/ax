@@ -9,7 +9,8 @@
 // exit-status contract and the SUPABASE_DB_PASSWORD scrub are proved rather
 // than asserted.
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -519,4 +520,77 @@ test('the named app reaches a real CLI in the first two slots', () => {
   const code = capture(() => supabase(['exit', '0'], spawning({ env: process.env }))).code;
 
   assert.equal(code, 0, 'the stand-in exits 9 when the first two slots are not the named app');
+});
+
+// --- Whose stream is stdout ------------------------------------------------
+//
+// `ax supabase gen types typescript --local > database.types.ts` is the shape
+// every one of these repositories uses, and it redirects fd 1 into a TypeScript
+// file. Anything ax says about its own machinery on that stream is written INTO
+// the generated types and the file no longer parses — reported 2026-09-09 from
+// a promoted worktree, where the guard's stack note became the first line of
+// the emitted module. The wrapper's stdout belongs to the child, byte for byte;
+// ax's own voice is stderr.
+
+const PAYLOAD = 'export type Json = string | number | boolean | null;\n';
+
+const PRINTER = `#!/usr/bin/env node
+const [flag, dir] = process.argv.slice(2);
+if (flag !== '--workdir' || typeof dir !== 'string' || !dir.startsWith('/')) process.exit(9);
+process.stdout.write(${JSON.stringify(PAYLOAD)});
+process.stderr.write('the CLI says something too\\n');
+process.exit(0);
+`;
+
+const DRIVER = `import { supabase } from ${JSON.stringify(new URL('../src/supabase-guard.mjs', import.meta.url).href)};
+const [cli, root] = process.argv.slice(2);
+process.exit(supabase(['db', 'reset'], {
+  env: { PATH: process.env.PATH },
+  cwd: root,
+  paths: { root, main: root },
+  config: { project: { name: 'demo' }, apps: { web: 'apps/web' }, ports: {} },
+  findCli: () => ({ path: cli }),
+  isPrimary: () => false,
+  isIsolated: () => true,
+}));
+`;
+
+test('a redirected run captures the child’s bytes and nothing ax said', () => {
+  // Through a REAL spawn, because that is the only place the question exists:
+  // the child inherits fd 1, so an in-process recorder cannot tell a stream ax
+  // wrote on from the one the CLI wrote on.
+  const dir = mkdtempSync(join(tmpdir(), 'ax-supabase-stdout-'));
+  mkdirSync(join(dir, 'apps', 'web', 'supabase'), { recursive: true });
+  writeFileSync(join(dir, 'apps', 'web', 'supabase', 'config.toml'), 'project_id = "demo-feature-1a2b3c4d"\n');
+
+  const cli = join(dir, 'supabase');
+  writeFileSync(cli, PRINTER);
+  chmodSync(cli, 0o755);
+  const driver = join(dir, 'driver.mjs');
+  writeFileSync(driver, DRIVER);
+
+  const run = spawnSync(process.execPath, [driver, cli, dir], { encoding: 'utf8' });
+
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, PAYLOAD, 'stdout is the child’s payload, byte for byte');
+  assert.match(run.stderr, /demo-feature-1a2b3c4d/, 'the stack ax routed to is still said, on stderr');
+  assert.match(run.stderr, /the CLI says something too/, 'and the child’s own stderr is untouched');
+});
+
+test('nothing the guard says about promotion, refusal or a bad argv reaches stdout', () => {
+  const cases = [
+    ['a promotion', () => harness(), ['db', 'reset']],
+    ['a refused promotion', () => harness({ promotes: false }), ['db', 'reset']],
+    ['the escape hatch', () => harness({ env: { [GUARD_ENV]: '0' } }), ['db', 'reset']],
+    ['an unknown flag', () => harness(), ['db', 'reset', '--not-a-flag']],
+    ['a missing CLI', () => { const h = harness(); h.deps.findCli = () => ({ error: 'no supabase CLI found' }); return h; }, ['status']],
+    ['no repository', () => { const h = harness(); h.deps.paths = { root: null, main: null }; return h; }, ['status']],
+  ];
+
+  for (const [what, build, argv] of cases) {
+    const { deps } = build();
+    const { out, err } = capture(() => supabase(argv, deps));
+    assert.equal(out, '', `${what} wrote to stdout, which a redirected run captures as payload`);
+    assert.notEqual(err, '', `${what} said nothing at all`);
+  }
 });
