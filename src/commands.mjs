@@ -215,14 +215,15 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // from the terminal is a flag they will guess wrong.
     verbOptions: {
       dispatch: [
-        ['--issue <ref>', 'the ticket this work delivers — a Linear ref (ABC-123) or a GitHub number'],
+        ['--issue <ref>', 'the ticket: a Linear ref (ABC-123) or a GitHub number'],
         ['--name <name>', 'work no tracker owns yet; the name IS the request id and the branch'],
         ['--slug <text>', 'the branch name a Linear ref does not carry; refused with --name'],
         ['--task <text>', 'the instruction, replacing the entry ax.config.json declares'],
         ['--delivery <owner>', 'child (default) or parent; parent requires --task'],
-        ['--because <reason>', 'why this override, or why this ticket again — provenance on the record'],
+        ['--because <reason>', 'record why this model assessment, override or repeated ticket'],
         ['--notes <file>', 'wave findings the child reads; an unreadable path refuses up front'],
-        ['--model <alias>', 'the model alias pinned into the child (default @default)'],
+        ['--model <alias>', 'explicit selector, overriding capability and label floors'],
+        ['--capability <class>', 'routine, standard or deep; uses dispatch.models, otherwise @default'],
         ['--agent <name>', 'the agent Orca starts in the pane (default omp)'],
         ['--on <host>', 'a host declared in dispatch.hosts; `here` is this machine'],
         ['--repo-id <id>', "the remote host's repo id, when the lookup for --on cannot answer"],
@@ -231,7 +232,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
         ['--wait <s>', 'seconds the child gets to prove role and model; 0 asks for no proof'],
         ['--probe', 'throwaway placement — setup is skipped, so the child gets no URLs'],
         ['--dry-run', 'print the dispatch it would issue; nothing is created or recorded'],
-        ['--run <id>', "refused; the Run is this pane's receiver's — another reports into silence"],
+        ['--run <id>', "refused; the Run belongs to this pane's receiver"],
       ],
     },
     // What `ax worker release --help` prints under the block. A verb whose

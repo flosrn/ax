@@ -162,6 +162,21 @@
       "additionalProperties": false,
       "description": "What `ax worker dispatch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default, with ONE exception named at `cap`: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
       "properties": {
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "OMP selectors for orchestrator-assessed worker capabilities. Missing routes retain @default; no task content is classified by AX.",
+          "properties": {
+            "routine": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "A decided solution, bounded surface and known verification." },
+            "standard": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Ordinary implementation or insufficient evidence to downgrade." },
+            "deep": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Unresolved design, difficult diagnosis or consequential changes." }
+          }
+        },
+        "modelFloors": {
+          "type": "object",
+          "description": "Exact ticket labels that raise an explicit capability assessment. With no assessment, @default is retained. Explicit --model overrides floors; host placement is unchanged.",
+          "additionalProperties": { "type": "string", "pattern": "^(standard|deep)$" }
+        },
         "cap": {
           "type": "integer",
           "minimum": 0,

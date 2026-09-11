@@ -242,6 +242,67 @@ test('a dispatched worker gets the BUNDLED worker role and its BUNDLED playbook'
   expect(second?.message).toBeUndefined();
 });
 
+test('a worker resolves its requested alias on the target and records the applied model and effort', async () => {
+  const installed = install('[omp role=worker model=@smol:low] Update the decided labels.');
+  const target = { provider: 'target-provider', id: 'target-worker-model' };
+  let current = { provider: 'boot-provider', id: 'boot-model' };
+  let effort = 'high';
+  const entries: { customType: string; data: unknown }[] = [];
+  Object.assign(installed.pi as object, {
+    setModel(model: typeof target) { current = model; },
+    setThinkingLevel(level: string) { effort = level; },
+    appendEntry(customType: string, data: unknown) { entries.push({ customType, data }); },
+    pi: { settings: { getModelRole: () => 'target-provider/target-worker-model:medium' } },
+  });
+  Object.assign(installed.ctx as object, {
+    models: { resolve: (selector: string) => selector === '@smol' ? target : undefined, current: () => current },
+  });
+
+  await turn(installed, BASE);
+  expect(current).toEqual(target);
+  expect(effort).toBe('low');
+  expect(entries).toContainEqual({
+    customType: '@flosrn/ax/model-assignment',
+    data: { requested: '@smol:low', model: 'target-provider/target-worker-model', thinking: 'low', via: 'orca' },
+  });
+});
+
+test('a rejected model change never records a successful assignment', async () => {
+  const installed = install('[omp role=worker model=@smol] Update the decided labels.');
+  const entries: string[] = [];
+  Object.assign(installed.pi as object, {
+    setModel: () => false,
+    appendEntry(customType: string) { entries.push(customType); },
+  });
+
+  await turn(installed, BASE);
+  expect(entries).not.toContain('@flosrn/ax/model-assignment');
+});
+
+test('the assignment records target-clamped effort rather than requested effort', async () => {
+  const installed = install('[omp role=worker model=@smol:xhigh] Update labels.');
+  const entries: { customType: string; data: unknown }[] = [];
+  Object.assign(installed.pi as object, {
+    setThinkingLevel: () => {},
+    getThinkingLevel: () => 'high',
+    appendEntry(customType: string, data: unknown) { entries.push({ customType, data }); },
+  });
+  await turn(installed, BASE);
+  expect(entries).toContainEqual({ customType: '@flosrn/ax/model-assignment', data: { requested: '@smol:xhigh', model: 'stub/@smol', thinking: 'high', via: 'orca' } });
+});
+
+test('a failed assignment journal does not prevent the worker role from activating', async () => {
+  const installed = install('[omp role=worker model=@smol] Update labels.');
+  const warnings: string[] = [];
+  Object.assign(installed.pi as object, {
+    appendEntry() { throw new Error('session storage unavailable'); },
+    logger: { info() {}, warn(message: string) { warnings.push(message); } },
+  });
+  const out = await turn(installed, BASE);
+  expect(out?.message?.details).toMatchObject({ role: 'worker', status: 'applied' });
+  expect(warnings.some(message => message.includes('assignment') && message.includes('session storage unavailable'))).toBe(true);
+});
+
 test('a dispatched triage worker gets its own bundled role and playbook', async () => {
   const out = await turn(install('[omp role=triage-worker model=@task]'), BASE);
   expect(out?.systemPrompt?.[2]).toContain('# Triage worker');

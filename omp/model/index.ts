@@ -93,6 +93,7 @@ export type ApplyOutcome =
   | {
       applied: true;
       model: string;
+      requested: string;
       thinking: string | null;
       source: ModelIntent['source'];
       /**
@@ -154,7 +155,9 @@ async function applyIntent(
     };
   }
 
-  await deps.setModel(resolved);
+  if (await deps.setModel(resolved) === false) {
+    return { applied: false, why: 'unresolved', detail: `${intent.spec} resolved but the target host refused the model change` };
+  }
 
   // Effort precedence, most specific first: the marker's own suffix, then the
   // suffix the role declares in config, then nothing. "Nothing" is load-bearing —
@@ -167,6 +170,7 @@ async function applyIntent(
   return {
     applied: true,
     model: describe(resolved),
+    requested: `${intent.spec}${intent.thinking === null ? '' : `:${intent.thinking}`}`,
     thinking,
     source: intent.source,
     via,
@@ -241,7 +245,9 @@ export interface ModelHost {
   on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
   setModel(model: unknown): Promise<unknown> | unknown;
   setThinkingLevel?(level: string): Promise<unknown> | unknown;
+  getThinkingLevel?(): string | undefined;
   logger?: { info?(message: string): void; warn?(message: string): void };
+  appendEntry?(customType: string, data: unknown): void;
   /**
    * The injected pi-coding-agent exports. `settings.getModelRole(role)` returns
    * a role's RAW configured spec, suffix included — the one thing
@@ -396,6 +402,16 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
     if (outcome.applied) {
       settled = true;
       taskSpec = outcome.taskSpec;
+      try {
+        pi.appendEntry?.('@flosrn/ax/model-assignment', {
+          requested: outcome.requested,
+          model: outcome.model,
+          thinking: pi.getThinkingLevel === undefined ? outcome.thinking : pi.getThinkingLevel() ?? null,
+          via: outcome.via,
+        });
+      } catch (error) {
+        pi.logger?.warn?.(`[orca-model] assignment not recorded: ${String(error)}`);
+      }
       const suffix = outcome.thinking === null ? '' : ` (thinking ${outcome.thinking})`;
       const note = outcome.detail === undefined ? '' : ` — ${outcome.detail}`;
       pi.logger?.info?.(

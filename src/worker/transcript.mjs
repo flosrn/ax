@@ -622,8 +622,9 @@ export function dispatchProof({ needle, request = '', cwd = '', env = process.en
 
   let model = null;
   let sessionRole = null;
+  let modelAssignment = null;
   for (const line of readFileSync(file, 'utf8').split('\n')) {
-    if (line === '' || (!line.includes('model_change') && !line.includes('skill-prompt') && !line.includes('role-refused'))) continue;
+    if (line === '' || (!line.includes('model_change') && !line.includes('skill-prompt') && !line.includes('role-refused') && !line.includes('@flosrn/ax/model-assignment'))) continue;
     let entry;
     try {
       entry = JSON.parse(line);
@@ -637,6 +638,13 @@ export function dispatchProof({ needle, request = '', cwd = '', env = process.en
       continue;
     }
     if (!['custom', 'custom_message'].includes(entry?.type)) continue;
+    if (entry.customType === '@flosrn/ax/model-assignment') {
+      const assignment = entry.data;
+      modelAssignment = assignment && typeof assignment.requested === 'string' && typeof assignment.model === 'string'
+        && (assignment.thinking === null || typeof assignment.thinking === 'string')
+        ? assignment : null;
+      continue;
+    }
     const details = entry?.details;
     if (entry.customType === 'skill-prompt' && details?.status === 'applied' && typeof details.role === 'string' && Array.isArray(details.skills)) {
       sessionRole = {
@@ -655,7 +663,7 @@ export function dispatchProof({ needle, request = '', cwd = '', env = process.en
       };
     }
   }
-  return { model, sessionRole };
+  return { model, sessionRole, ...(modelAssignment === null ? {} : { modelAssignment }) };
 }
 
 
