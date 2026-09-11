@@ -117,6 +117,9 @@ The existing dispatch record exposes `modelPolicy` through
 reclassifying changed tickets. The target session records its resolved model and effort
 as `@flosrn/ax/model-assignment`; an alias can resolve differently after host configuration
 changes, and a gateway pool still needs gateway attribution to identify its upstream.
+A same-repository claim from an earlier Run can be replaced only when the existing
+record proves no task was created; `worker start` rechecks that proof under its lock
+and preserves the refused record. Unknown outcomes never authorize a fresh decision.
 The dispatch verifier requires that receipt for newly recorded model-policy dispatches
 and compares it with the requested selector and current model evidence. A missing receipt
 is unproven, never a verified assignment; upgrade the target AX bundle before using it.

@@ -70,7 +70,7 @@ import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
 import { hostScopes, terminalInventory } from './pane.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
-import { defaultStore, recordRepoNaming } from './record.mjs';
+import { defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
 import { livePanes } from './slots.mjs';
 import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
@@ -425,6 +425,9 @@ export function dispatch(
         `ax worker start --show --request ${request}   # read it, then resume it or dispatch a distinct name`,
       );
     }
+    if (caller === '' || naming.state === 'none') {
+      return cannot(`matching repository ownership cannot be established for recorded dispatch ${request}`, `ax worker start --show --request ${request}   # inspect and establish both record and checkout ownership before dispatching`);
+    }
     if (naming.state === 'named' && caller !== '' && naming.repo.toLowerCase() !== caller.trim().toLowerCase()) {
       return refuse(
         `request ${request} is already recorded by another repository (${naming.repo}) — the store is host-global and request ids carry no repository, so this is a name collision, not a resume`,
@@ -433,7 +436,7 @@ export function dispatch(
           : `ax worker dispatch --issue ${flags.issue} --slug <distinct-name>   # mints a request id the other repository\u2019s record does not hold`,
       );
     }
-    // This checkout's own record, or one no name can place against it.
+    // Matching ownership is established before exposing the recorded decision.
     //
     // `--dry-run` is the READ of a dispatch, and the honest answer to "what
     // would this do" for work already recorded is the decision ON THE RECORD —
@@ -443,10 +446,21 @@ export function dispatch(
     // prints this record, and printing it a second way here would be a second
     // reading of one file that could disagree with the first.
     if (dry) return startFn(['--show', '--request', request], { env, runner });
-    // Anything that would ACT on the record is still refused: the recorded
-    // model policy and placement must not be recomputed, and only a resume may
-    // replay them.
-    return cannot(`dispatch ${request} is already recorded; its model policy and placement must not be recomputed`, `ax worker start --resume --request ${request}`);
+    // Only a positively empty claim from another Run may proceed to start(),
+    // which rechecks ownership and emptiness under its existing claim lock.
+    // This read is not takeover authority; a completed dispatch stays frozen.
+    let reclaimable = false;
+    const callerRun = peerRun(env);
+    if (callerRun !== '' && naming.state === 'named' && caller !== '') {
+      try {
+        reclaimable = staleClaim(recorded, callerRun).stale;
+      } catch {
+        // Unreadable evidence cannot authorize recomputation or takeover.
+      }
+    }
+    if (!reclaimable) {
+      return cannot(`dispatch ${request} is already recorded; its model policy and placement must not be recomputed`, `ax worker start --resume --request ${request}`);
+    }
   }
 
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });

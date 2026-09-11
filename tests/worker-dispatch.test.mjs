@@ -1537,6 +1537,58 @@ test('a --dry-run of recorded work shows what was DECIDED, never a recomputation
   assert.deepEqual(show(), original, 'the record is exactly as it was');
 });
 
+test('dispatch reclaims a same-repository foreign Run only after a proven pre-write refusal', t => {
+  const root = repo({ dispatch: { models: { routine: '@smol' } } });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  const spec = join(home, 'old-spec.txt');
+  writeFileSync(spec, '[omp role=worker model=@slow] Old refused assignment.');
+  const env = { HOME: home, ORCA_DISPATCH_STORE: store, ORCA_STALL_WATCH: '0' };
+  const fenced = createRunner({ bin: 'stub-orca', exec: () => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'consumer_fenced' } }), stderr: '' }) });
+  const previous = capture(() => start(['--request', 'policy-empty', '--run', 'run_old', '--tracker-repo', 'acme/widgets', '--spec-file', spec, '--', '--worktree', `path:${root}`, '--agent', 'omp'], { env, runner: fenced }));
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  assert.equal(previous.code, 1, previous.out);
+
+  const dispatched = run(['--name', 'policy-empty', '--task', 'Update decided labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '0'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  assert.equal(dispatched.code, 0, dispatched.out);
+  const shown = capture(() => start(['--show', '--request', 'policy-empty'], { env }));
+  const active = JSON.parse(shown.out);
+  assert.equal(active.modelPolicy.selector, '@smol');
+  assert.ok(active.attempts[0].phases[0].argv.includes('run_owner'));
+  assert.match(dispatched.out, /preserving it at/);
+});
+
+test('an unidentifiable caller cannot preview or receive replay guidance for an existing record', t => {
+  const root = repo();
+  const args = ['--name', 'policy-owner', '--task', 'Update labels', '--worktree', root, '--probe', '--wait', '0'];
+  const first = run(args, { root, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(first.home, { recursive: true, force: true }); });
+  assert.equal(first.code, 0, first.out);
+  const hidden = run([...args, '--dry-run'], { root, home: first.home, realStart: true, slug: '' });
+  assert.equal(hidden.code, 3, hidden.out);
+  assert.doesNotMatch(hidden.out, /--resume|"modelPolicy"/);
+  assert.match(hidden.out, /--show/);
+  assert.deepEqual(hidden.calls, []);
+});
+
+test('a legacy record naming no repository offers inspection rather than replay', t => {
+  const root = repo();
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  const spec = join(home, 'old-spec.txt');
+  writeFileSync(spec, '[omp role=worker model=@default] Legacy work.');
+  const env = { HOME: home, ORCA_DISPATCH_STORE: store, ORCA_STALL_WATCH: '0' };
+  const { runner } = fakeOrca();
+  const old = capture(() => start(['--request', 'policy-legacy', '--run', 'run_old', '--spec-file', spec, '--', '--worktree', `path:${root}`, '--agent', 'omp'], { env, runner }));
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  assert.equal(old.code, 0, old.out);
+  const result = run(['--name', 'policy-legacy', '--task', 'New work'], { root, home, realStart: true });
+  assert.equal(result.code, 3, result.out);
+  assert.doesNotMatch(result.out, /--resume/);
+  assert.match(result.out, /--show/);
+  assert.deepEqual(result.calls, []);
+});
+
 // ── who delivers this slice ─────────────────────────────────────────────────
 //
 // `--delivery parent` moves the shipping tail — commit, push, pull request, CI
