@@ -104,6 +104,14 @@ that a concept search before filing would have caught.
   signal to arbitrate with, never a proof.
 - Before adding a worker, read `ax worker ls`; live panes are the capacity
   signal. Follow the operator's concurrency limit, never a count from memory or task rows.
+- Choose model capacity from the Assignment already read: `routine` for a decided
+  solution with bounded surfaces and known verification, `standard` for ordinary
+  implementation, `deep` for unresolved design, difficult diagnosis or consequential
+  changes. Pass `--capability <class>` and justify it with `--because`; inspect
+  `--dry-run` when the route is uncertain. No assessment keeps `@default`.
+  `dispatch.models` and label-based `dispatch.modelFloors` govern the selection;
+  `--model` is an explicit override, not another automatic rule. Machine placement
+  stays a separate decision: a weaker model does not repair an overloaded build host.
 
 ## The wave record
 
@@ -122,7 +130,7 @@ membership derives from this record.
 Dispatch one worker per takeable ticket, under the cap:
 
 ```bash
-ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>]
+ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>] [--capability <class>] [--because <reason>]
 ```
 
 The command owns placement, setup, the recorded dispatch, role/model proof, and

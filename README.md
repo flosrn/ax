@@ -88,6 +88,43 @@ The safety properties live in executable commands rather than operator prose:
 - the merge gate runs every declared ground against the exact head SHA and performs the merge it
   validated.
 
+### Choose a worker's model capacity
+
+After reading the assignment, pass `--capability routine|standard|deep` and use
+`--because` to record the assessment. `routine` means a decided solution, a bounded
+surface and known verification; `deep` means unresolved design, difficult diagnosis
+or consequential changes. Prompt length is not an assessment.
+
+Configure OMP selectors in the project's `ax.config.json`:
+
+```json
+{
+  "dispatch": {
+    "models": { "routine": "@smol", "standard": "@default", "deep": "@slow" },
+    "modelFloors": { "domain:security": "deep" }
+  }
+}
+```
+
+The labels and selectors are project choices; the example adds no provider dependency.
+Qualify each alias and its fallbacks for worker tools and verification on the target host.
+`--model` explicitly overrides the policy, including label floors. No assessment or no
+configured route preserves `@default`; existing dispatches therefore keep their model.
+`--dry-run` explains the decision without creating a worktree, record or pane.
+
+The existing dispatch record exposes `modelPolicy` through
+`ax worker start --show --request <id>`. Recovery replays that record rather than
+reclassifying changed tickets. The target session records its resolved model and effort
+as `@flosrn/ax/model-assignment`; an alias can resolve differently after host configuration
+changes, and a gateway pool still needs gateway attribution to identify its upstream.
+A same-repository claim from an earlier Run can be replaced only when the existing
+record proves no task was created; `worker start` rechecks that proof under its lock
+and preserves the refused record. Unknown outcomes never authorize a fresh decision.
+The dispatch verifier requires that receipt for newly recorded model-policy dispatches
+and compares it with the requested selector and current model evidence. A missing receipt
+is unproven, never a verified assignment; upgrade the target AX bundle before using it.
+Host placement (`--on`), account rotation and independently pinned subagents are unchanged.
+
 ## Install globally, pin locally
 
 Install ax once so the command exists outside any project:

@@ -70,7 +70,7 @@ import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
 import { hostScopes, terminalInventory } from './pane.mjs';
 import { peerRun } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
-import { defaultStore } from './record.mjs';
+import { defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
 import { livePanes } from './slots.mjs';
 import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
@@ -86,6 +86,7 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // excludes (#195).
 import { specMembership } from '../completion.mjs';
 import { landedNotes } from './landed.mjs';
+import { MODEL_CAPABILITIES, modelPolicy } from './model-policy.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
 // injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
@@ -93,8 +94,8 @@ import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 
 const USAGE =
-  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
-  '[--delivery <child|parent>] [--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
+  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--because <reason>] [--notes <file>] ' +
+  '[--delivery <child|parent>] [--capability <routine|standard|deep>] [--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -233,7 +234,8 @@ export function dispatch(
     // displacing the contract above it.
     delivery: 'child',
     because: '',
-    model: '@default',
+    model: '',
+    capability: '',
     agent: 'omp',
     on: '',
     repoId: '',
@@ -254,6 +256,7 @@ export function dispatch(
     '--delivery': 'delivery',
     '--because': 'because',
     '--model': 'model',
+    '--capability': 'capability',
     '--agent': 'agent',
     '--on': 'on',
     '--repo-id': 'repoId',
@@ -321,6 +324,12 @@ export function dispatch(
   if (!['child', 'parent'].includes(flags.delivery)) {
     return usageError(`--delivery expects child or parent, not "${flags.delivery}"`);
   }
+  if (flags.capability !== '' && !MODEL_CAPABILITIES.includes(flags.capability)) {
+    return usageError(`--capability expects routine, standard or deep, not "${flags.capability}"`);
+  }
+  if (argv.includes('--model') && !/^[^\s\[\]]+$/.test(flags.model)) {
+    return usageError('--model expects one non-empty OMP selector without whitespace or brackets');
+  }
   const wait = Number(flags.wait);
   // `here` is a synonym for local placement, the way Orca's own CLI reads it.
   const on = flags.on === 'here' ? '' : flags.on;
@@ -382,7 +391,78 @@ export function dispatch(
     );
   }
 
+  // A name IS the request, verbatim: that is what makes distinct names distinct
+  // requests. A ticket ref goes through the normaliser, which is injective on the
+  // two ref shapes `ticketKind` accepts.
+  //
+  // WHOSE RECORD IS IT. The store is host-global and a request id carries no
+  // repository, so "a record with this name exists" does not mean "this
+  // checkout's work is already recorded". `--resume` replays the RECORDED
+  // policy, placement and Run, so handing that repair out for another
+  // repository's record aims this caller's mutation at a foreign consumer —
+  // the collision `ax worker start` already refuses at claim time
+  // (./start.mjs, measured on flosrn/ax 2026-09-03). This fence runs first, so
+  // it answers the same question the same way, and reads the caller's identity
+  // from `gh` BEFORE the configuration is parsed: a checkout whose
+  // ax.config.json is broken mid-flight must still be told to resume its own
+  // work rather than recompute it.
   const paths = repoPaths(cwd);
+  const request = named ? flags.name : requestIdFor(flags.issue, slug);
+  const recorded = join(defaultStore(env), `${request}.json`);
+  if (existsSync(recorded)) {
+    const caller = repoSlug(args => exec('gh', args, paths.root ?? cwd));
+    let naming;
+    try {
+      naming = recordRepoNaming(recorded);
+    } catch (error) {
+      naming = { state: 'unreadable', repo: '', detail: String(error) };
+    }
+    if (naming.state === 'malformed' || naming.state === 'unreadable') {
+      // Absence is not permission (F-028): a record this dispatch cannot read
+      // is an owner it cannot name, and neither repair below is true of it.
+      return cannot(
+        `dispatch ${request} is already recorded, and its record cannot be attributed: ${naming.detail}`,
+        `ax worker start --show --request ${request}   # read it, then resume it or dispatch a distinct name`,
+      );
+    }
+    if (caller === '' || naming.state === 'none') {
+      return cannot(`matching repository ownership cannot be established for recorded dispatch ${request}`, `ax worker start --show --request ${request}   # inspect and establish both record and checkout ownership before dispatching`);
+    }
+    if (naming.state === 'named' && caller !== '' && naming.repo.toLowerCase() !== caller.trim().toLowerCase()) {
+      return refuse(
+        `request ${request} is already recorded by another repository (${naming.repo}) — the store is host-global and request ids carry no repository, so this is a name collision, not a resume`,
+        named
+          ? 'ax worker dispatch --name <distinct-name>   # mints a request id the other repository\u2019s record does not hold'
+          : `ax worker dispatch --issue ${flags.issue} --slug <distinct-name>   # mints a request id the other repository\u2019s record does not hold`,
+      );
+    }
+    // Matching ownership is established before exposing the recorded decision.
+    //
+    // `--dry-run` is the READ of a dispatch, and the honest answer to "what
+    // would this do" for work already recorded is the decision ON THE RECORD —
+    // never a recomputation against a configuration that has moved, and never a
+    // refusal that hides the recorded decision behind its repair. So the read
+    // is served by the reader that already exists: `ax worker start --show`
+    // prints this record, and printing it a second way here would be a second
+    // reading of one file that could disagree with the first.
+    if (dry) return startFn(['--show', '--request', request], { env, runner });
+    // Only a positively empty claim from another Run may proceed to start(),
+    // which rechecks ownership and emptiness under its existing claim lock.
+    // This read is not takeover authority; a completed dispatch stays frozen.
+    let reclaimable = false;
+    const callerRun = peerRun(env);
+    if (callerRun !== '' && naming.state === 'named' && caller !== '') {
+      try {
+        reclaimable = staleClaim(recorded, callerRun).stale;
+      } catch {
+        // Unreadable evidence cannot authorize recomputation or takeover.
+      }
+    }
+    if (!reclaimable) {
+      return cannot(`dispatch ${request} is already recorded; its model policy and placement must not be recomputed`, `ax worker start --resume --request ${request}`);
+    }
+  }
+
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (!loaded.exists || loaded.errors.length > 0) {
     // The same refusal `ax worktree setup` prints, and the same #84 correction:
@@ -398,10 +478,6 @@ export function dispatch(
   }
   const config = loaded.config;
   const dispatchConfig = config.dispatch ?? {};
-  // A name IS the request, verbatim: that is what makes distinct names distinct
-  // requests. A ticket ref goes through the normaliser, which is injective on the
-  // two ref shapes `ticketKind` accepts.
-  const request = named ? flags.name : requestIdFor(flags.issue, slug);
 
   const bin = runner ? 'injected' : resolve({ env });
   if (!bin) {
@@ -444,6 +520,9 @@ export function dispatch(
         : `ax frontier   # the takeable set; a closed ticket is never in it`,
     );
   }
+
+  const policy = modelPolicy({ model: flags.model, capability: flags.capability, models: dispatchConfig.models, floors: dispatchConfig.modelFloors, labels: ticket?.labels, because: flags.because });
+  note(redactSecrets(`model policy: ${policy.capability} -> ${policy.selector} — ${policy.reason}`));
 
   const entry = dispatchConfig.entry ?? '';
   if (named) {
@@ -760,7 +839,7 @@ export function dispatch(
   // where the receiver does not look.
   const report = reportPathFor({ worktree: selector, request });
   const brief = renderBrief({
-    model: flags.model,
+    model: policy.selector,
     instruction,
     ticket,
     name: flags.name,
@@ -817,7 +896,7 @@ export function dispatch(
     // The preview is composed from the SAME array the dispatch would carry, so
     // it cannot drift from what runs. The Bash it replaces re-typed this line by
     // hand, which is a second implementation of the argv nobody tests.
-    note(`would run: ax worker start ${[...owned, '--spec-file', '<spec>', '--', ...place].join(' ')}`);
+    note(redactSecrets(`would run: ax worker start ${[...owned, '--spec-file', '<spec>', '--', ...place].join(' ')}`));
     return 0;
   }
 
@@ -832,7 +911,7 @@ export function dispatch(
 
   // ── 7. dispatch ────────────────────────────────────────────────────────────
   const startArgs = [...owned, '--spec-file', spec, '--orca', bin, '--', ...place];
-  let code = startFn(startArgs, { env, runner });
+  let code = startFn(startArgs, { env, runner, modelPolicy: policy });
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a
     // failure to report, it is exactly what --resume exists for, and BOTH remote
