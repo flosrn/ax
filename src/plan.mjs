@@ -62,6 +62,16 @@ import { CONFIG_FILE, PACKAGE_NAME } from './config.mjs';
 export const OMP_PACKAGE_ROOT = `./node_modules/${PACKAGE_NAME}`;
 
 /**
+ * The root key that adopts the debug-session contract, exported because a
+ * second module needs the same string: `src/debug-as/config.mjs` names it in
+ * every refusal it writes. This table is the authority on WHICH declaration
+ * adopts what, so the key lives here and that module imports it — two files
+ * spelling one root key is how a rename lands in the grader and not in the
+ * refusals, or the other way round.
+ */
+export const DEBUG_DECLARATION = 'debugAs';
+
+/**
  * The contracts a project may adopt, and the ONE declaration that adopts each.
  *
  * A contract is a domain of this package a repository opted into. `id` keys the
@@ -101,8 +111,8 @@ export const CONTRACTS = [
   {
     id: 'debug',
     name: 'debug sessions',
-    declaration: 'debugAs',
-    verb: `declare "debugAs" in ${CONFIG_FILE}`,
+    declaration: DEBUG_DECLARATION,
+    verb: `declare "${DEBUG_DECLARATION}" in ${CONFIG_FILE}`,
     covers: 'which Debug identities `ax debug-as` may open, where this project pins Playwright, and whether a Phone handoff is adopted at all',
   },
 ];

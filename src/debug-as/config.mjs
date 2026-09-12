@@ -35,8 +35,13 @@
 // able to pin the release that carries this contract before its own cutover, so
 // recognizing them is a finding, never a load failure.
 
-/** The one root key whose presence adopts this contract (`src/plan.mjs`). */
-export const DEBUG_DECLARATION = 'debugAs';
+// THE ROOT KEY IS THE PLAN'S. `src/plan.mjs` `CONTRACTS` decides which
+// declaration adopts which contract, so the string lives there and this module
+// imports it; it is re-exported because every refusal below names it, and a
+// caller reading one contract should not need two imports to do it.
+import { DEBUG_DECLARATION } from '../plan.mjs';
+
+export { DEBUG_DECLARATION };
 
 /** The fields the retired shape carried, and nothing else. */
 const HISTORICAL_KEYS = ['route', 'optInEnv'];
