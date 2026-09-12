@@ -634,7 +634,7 @@ export function dispatchProof({ needle, request = '', cwd = '', env = process.en
     // The LAST model mover wins: a quota fallback after the marker is the model
     // the child actually serves, and must not be reported as marker-applied.
     if (entry?.type === 'model_change') {
-      model = { model: String(entry.model ?? ''), role: entry.role ?? '', ...(typeof entry.provider === 'string' ? { provider: entry.provider } : {}) };
+      model = { model: String(entry.model ?? ''), role: entry.role ?? '' };
       continue;
     }
     if (!['custom', 'custom_message'].includes(entry?.type)) continue;

@@ -110,9 +110,10 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
 
   const skillNames = sessionRole?.status === 'applied' ? sessionRole.skills : [];
   note(`model     ${model === null ? 'unreadable' : `${model.model}|${model.role}`}`);
+  // `model.model` is OMP's "provider/modelId" (session-entries.ts ModelChangeEntry);
+  // the receipt's `model` may carry the provider or not, so both spellings match.
   const assignmentReady = policy === null || (assignment?.requested === policy.selector && model !== null
-    && (model.provider ? (model.model.startsWith(`${model.provider}/`) ? model.model : `${model.provider}/${model.model}`) === assignment.model
-      : assignment.model === model.model || assignment.model.slice(assignment.model.indexOf('/') + 1) === model.model)
+    && (assignment.model === model.model || assignment.model.slice(assignment.model.indexOf('/') + 1) === model.model)
     && (policy.version !== 2 || (assignment.routingVersion === 2
       && policy.candidates.includes(`${assignment.model}:${assignment.thinking}`))));
   if (policy !== null) note(`assignment ${assignment === null ? 'unreadable' : `${assignment.requested} -> ${assignment.model} (${assignment.thinking ?? 'unchanged effort'})`}`);
