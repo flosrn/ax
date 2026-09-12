@@ -104,14 +104,28 @@ that a concept search before filing would have caught.
   signal to arbitrate with, never a proof.
 - Before adding a worker, read `ax worker ls`; live panes are the capacity
   signal. Follow the operator's concurrency limit, never a count from memory or task rows.
-- Choose model capacity from the Assignment already read: `routine` for a decided
-  solution with bounded surfaces and known verification, `standard` for ordinary
-  implementation, `deep` for unresolved design, difficult diagnosis or consequential
-  changes. Pass `--capability <class>` and justify it with `--because`; inspect
-  `--dry-run` when the route is uncertain. No assessment keeps `@default`.
-  `dispatch.models` and label-based `dispatch.modelFloors` govern the selection;
-  `--model` is an explicit override, not another automatic rule. Machine placement
-  stays a separate decision: a weaker model does not repair an overloaded build host.
+- Choose model capacity from the Assignment already read: `efficient` for a decided
+  solution with bounded surfaces and known verification, `balanced` for ordinary
+  implementation, `intensive` for unresolved design or difficult, consequential work.
+  Pass `--capability <tier>` and the assessment as `--because`. Read candidate models
+  and their individual efforts from the dispatch dry-run, not from a remembered role.
+- Apply the operator's natural-language choice at its stated scope: this ticket,
+  then its Spec, then the project's `dispatch.modelMode`. Carry Spec-wide instructions
+  into each ticket's flags; an exception on one ticket does not change its siblings.
+  `auto` chooses without a question. `pinned` requires the operator's model or tier;
+  preserve an explicit effort, and clarify an ambiguous or missing choice. A model
+  pin permits account rotation but no different model; a tier pin permits its candidates.
+- In `confirm`, run `--model-mode confirm --dry-run` for EACH ticket. Call the native
+  `ask` tool with the printed `model confirmation` questions exactly, including its
+  id and model:effort choices. Explain the recommendation using `--because`. A timeout,
+  defer, cancellation or chat redirect is not permission to dispatch. For a custom
+  model or changed tier, rerun the preview and ask about that new decision.
+  After an answer, call `worker_model_confirmation` to get this session's receipt
+  reference; repeat the dispatch with `--model-confirmation <reference>` and without
+  `--dry-run`. The CLI checks the actual ask answer, not a claimed approval flag.
+- An existing dispatch replays its recorded decision without a new question. Changing
+  a mode affects only future dispatches. Model routing does not change permissions,
+  completion gates, independently pinned subagents, or execution-host placement.
 
 ## The wave record
 

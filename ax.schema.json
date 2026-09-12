@@ -165,17 +165,22 @@
         "models": {
           "type": "object",
           "additionalProperties": false,
-          "description": "OMP selectors for orchestrator-assessed worker capabilities. Missing routes retain @default; no task content is classified by AX.",
+          "description": "OMP roles defining ordered model:effort candidates per worker tier. Missing assessment uses balanced. Models are resolved on the execution host before dispatch.",
           "properties": {
-            "routine": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "A decided solution, bounded surface and known verification." },
-            "standard": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Ordinary implementation or insufficient evidence to downgrade." },
-            "deep": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Unresolved design, difficult diagnosis or consequential changes." }
+            "efficient": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "A decided solution, bounded surface and known verification." },
+            "balanced": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Ordinary implementation or insufficient evidence to downgrade." },
+            "intensive": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Unresolved design, difficult diagnosis or consequential changes." }
           }
+        },
+        "modelMode": {
+          "type": "string",
+          "pattern": "^(auto|pinned|confirm)$",
+          "description": "auto chooses from the assessed tier, pinned requires an operator choice, confirm requires a matching non-timed-out ask receipt for each ticket. Defaults to auto. Explicit --model-mode overrides this setting."
         },
         "modelFloors": {
           "type": "object",
-          "description": "Exact ticket labels that raise an explicit capability assessment. With no assessment, @default is retained. Explicit --model overrides floors; host placement is unchanged.",
-          "additionalProperties": { "type": "string", "pattern": "^(standard|deep)$" }
+          "description": "Exact ticket labels that raise an automatic tier assessment. Explicit model choices override floors; host placement is unchanged.",
+          "additionalProperties": { "type": "string", "pattern": "^(balanced|intensive)$" }
         },
         "cap": {
           "type": "integer",

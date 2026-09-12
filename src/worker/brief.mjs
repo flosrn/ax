@@ -391,7 +391,7 @@ function markerLine(model, instruction) {
  * own receipt (`ticket <url> (<state>)` in ./verify.mjs), where a human reads it.
  * Linear answers no handle, so there the url is the only address there is.
  */
-export function renderBrief({ model, instruction, ticket = {}, readCommand, run, host = '', contract = '', landed = '', operator = null, name = '', report = {}, delivery = 'child' } = {}) {
+export function renderBrief({ model, routing, instruction, ticket = {}, readCommand, run, host = '', contract = '', landed = '', operator = null, name = '', report = {}, delivery = 'child' } = {}) {
   // `ticket: null` is not "a ticket I could not read" — it is a dispatch that has
   // none (`--name`). The two must not render the same: the tracked shape says
   // "read the ticket, it is canonical", and pointing that at nothing is how a
@@ -404,7 +404,7 @@ export function renderBrief({ model, instruction, ticket = {}, readCommand, run,
     : [`# ${name}`, '', 'This dispatch carries NO ticket: what follows is the whole definition of the work.'];
 
   const lines = [
-    markerLine(model, instruction),
+    routing === undefined ? markerLine(model, instruction) : markerLine(model, instruction).replace(']', ` routing=${Buffer.from(JSON.stringify(routing)).toString('base64url')}]`),
     ...head,
     '',
     `PILOT CONTRACT — dispatching Run ${run ?? ''}, execution host ${host || 'here'}`,

@@ -31,6 +31,10 @@ import { dispatch, requestIdFor, retiredKnobs, trackerRepoOf } from '../src/work
 // reader's answer, and a suite that could only see one of them is how they
 // diverged.
 import { ls } from '../src/worker/ls.mjs';
+// The effort splitter, imported rather than retyped: this suite's injected
+// probe canonicalises candidates exactly as the real one does, and a second
+// copy of "which suffix is an effort" would drift from the module that decides.
+import { splitSelector } from '../src/worker/model-policy.mjs';
 import { reportPathFor } from '../src/worker/report.mjs';
 import { READY_LABEL as TICKET_READY_LABEL } from '../src/worker/ticket.mjs';
 import { readProof, verify } from '../src/worker/verify.mjs';
@@ -73,6 +77,136 @@ function repo({ dispatch: block = {} } = {}) {
   execFileSync('git', [...IDENTITY, 'add', 'ax.config.json'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', [...IDENTITY, 'commit', '-qm', 'fixture'], { cwd: dir, stdio: 'ignore' });
   return dir;
+}
+
+// ── the target's model inventory, answered by this suite ─────────────────────
+//
+// Candidate membership comes from ONE place in production: the OMP roles a
+// project configures, read by a probe that runs on the host that will execute
+// the work. This suite injects that probe, so nothing here reaches an `omp`
+// binary, a provider or a network — and every concrete selector below is an
+// EXAMPLE id, never a live model, because the propositions are about ordering,
+// effort and refusal, not about which subscription exists today.
+const INVENTORY = {
+  '@worker-efficient': [
+    { model: 'example/quick', effort: 'low' },
+    { model: 'example/quick-alt', effort: 'minimal' },
+  ],
+  '@worker-balanced': [
+    { model: 'example/solid', effort: 'medium' },
+    { model: 'example/solid-alt', effort: 'high' },
+  ],
+  // TWO DISTINCT MODELS, and that is the fixture's own constraint rather than a
+  // preference: a placed route approves one effort per model, so `modelPolicy`
+  // refuses one model at two efforts outside `confirm`. An intensive tier
+  // configured that way would make every ordinary `auto` dispatch below refuse
+  // on the FIXTURE instead of on the proposition under test.
+  '@worker-intensive': [
+    { model: 'example/heavy', effort: 'high' },
+    { model: 'example/heavy-alt', effort: 'max' },
+  ],
+};
+
+/**
+ * The same roles, with the intensive one configured at TWO efforts of ONE
+ * model: the shape a placed route refuses and only `--model-mode confirm` may
+ * offer. It is what makes "a bare model derives its effort", "a pin selects one
+ * effort" and "the approval named an effort, not just a model" testable, and it
+ * is a DEDICATED override because a route that cannot collapse it — anything
+ * but a confirmed choice or an explicit `--model` — must refuse on it.
+ */
+const TWO_EFFORTS = {
+  ...INVENTORY,
+  '@worker-intensive': [
+    { model: 'example/heavy', effort: 'high' },
+    { model: 'example/heavy', effort: 'max' },
+  ],
+};
+
+/** The three tier roles a project opts in with. */
+const MODELS = { efficient: '@worker-efficient', balanced: '@worker-balanced', intensive: '@worker-intensive' };
+
+/** What a target holds for one requested selector: an alias, or a concrete model with or without its effort. */
+function inventoryFor(selector, table) {
+  if (Object.hasOwn(table, selector)) return table[selector];
+  const { model, effort } = splitSelector(selector);
+  return Object.values(table).flat().filter(c => c.model === model && (effort === null || c.effort === effort));
+}
+
+/**
+ * The injected probe, shaped exactly like the real one: `(selectors, {exec,
+ * cwd, host, env}) -> {candidates, errors}`, with every candidate carrying its
+ * own effort and availability. A selector the target holds nothing for is an
+ * ERROR, not an empty list — the dispatch must be able to tell "this host does
+ * not serve that role" from "this host serves it and everything is busy".
+ */
+const probeFrom = table => selectors => {
+  const candidates = [];
+  const errors = [];
+  for (const selector of selectors) {
+    const found = inventoryFor(selector, table);
+    if (found.length === 0) {
+      errors.push(`${selector} names no configured worker role or model on the target`);
+      continue;
+    }
+    for (const c of found) {
+      candidates.push({ selector: `${c.model}:${c.effort}`, model: c.model, effort: c.effort, available: true });
+    }
+  }
+  return { candidates, errors };
+};
+
+const probeInventory = probeFrom(INVENTORY);
+
+/** The target whose intensive role is one model at two efforts (TWO_EFFORTS). */
+const probeTwoEfforts = probeFrom(TWO_EFFORTS);
+
+/** The same inventory, with every candidate reported unavailable for one named reason. */
+const probeUnavailable = reason => selectors => {
+  const { candidates, errors } = probeInventory(selectors);
+  return { errors, candidates: candidates.map(c => ({ ...c, available: false, reason })) };
+};
+
+/** The `routing=` payload the brief's first marker carries, decoded. */
+const routingOf = out => JSON.parse(Buffer.from(out.match(/routing=([A-Za-z0-9_-]+)\]/)[1], 'base64url').toString('utf8'));
+
+/** The `ask` question a `--model-mode confirm --dry-run` printed. */
+const questionOf = out => JSON.parse(out.match(/model confirmation: (\{.*\})/)[1]).questions[0];
+
+/** The session id this suite's pane publishes in the peer registry. */
+const SESSION = 'sess_dispatch';
+
+/**
+ * A REAL ask transcript: the runtime's own `session` boot header, the
+ * assistant's `ask` toolCall and the toolResult the runtime writes when a human
+ * answers it, in the shapes `readModelConfirmation` reads. The question is the
+ * one the dispatch itself printed, so nothing here re-types a question id or
+ * stubs the reader — the proof is an artifact.
+ *
+ * The HEADER is not decoration: the reader attributes the file to a session by
+ * it, and a transcript carrying none is refused however good its answer looks.
+ * `session` defaults to the one the registry publishes, so a test that wants a
+ * foreign approval passes another id rather than editing the file afterwards.
+ *
+ * `dir` must sit under the sessions root the dispatch is given (`run` returns
+ * it as `sessions`): a reference resolving outside it is refused, which is the
+ * containment the scope exists for.
+ */
+function askTranscript(dir, question, { choice, id = 'call_ask_1', session = SESSION, ...answer } = {}) {
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'ask.jsonl');
+  const header = { type: 'session', id: session, cwd: dir };
+  const call = { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id, name: 'ask', arguments: { questions: [question] } }] } };
+  const details = {
+    question: question.question,
+    options: question.options.map(option => option.label),
+    multi: false,
+    selectedOptions: choice === undefined ? [] : [choice],
+    ...answer,
+  };
+  const result = { type: 'message', message: { role: 'toolResult', toolCallId: id, toolName: 'ask', isError: false, details } };
+  writeFileSync(file, `${[header, call, result].map(entry => JSON.stringify(entry)).join('\n')}\n`);
+  return `${file}#${id}`;
 }
 
 /**
@@ -185,12 +319,18 @@ function record(store, request, handle = 'term_child') {
   );
 }
 
-/** A session transcript carrying the model mover and the session-role receipt. */
-function transcript(root, needle, role, { sessionRole = 'worker', skills = ['implementation'], refusal = null } = {}) {
+/**
+ * A session transcript carrying the model mover and the session-role receipt.
+ *
+ * `model` is the id the session is CURRENTLY on. It is a parameter because a v2
+ * dispatch's receipt is checked against it: a routing decision is only proven
+ * when the model the target says it applied is the model the session is running.
+ */
+function transcript(root, needle, role, { sessionRole = 'worker', skills = ['implementation'], refusal = null, model: current = 'claude-sonnet-5' } = {}) {
   const dir = join(root, `-x-${needle}`);
   mkdirSync(dir, { recursive: true });
   const entries = [];
-  const model = { type: 'model_change', model: 'claude-sonnet-5' };
+  const model = { type: 'model_change', model: current };
   if (role !== null) model.role = role;
   entries.push(model);
   if (sessionRole !== null) {
@@ -229,14 +369,24 @@ const run = (argv, options = {}) => {
   const sessions = join(home, 'sessions');
   mkdirSync(sessions, { recursive: true });
 
-  // The Run this session's receiver consumes, from the peer registry — never
-  // invented, and the dispatch refuses without it.
+  // The Run this session's receiver consumes AND the session it is driving,
+  // both from the peer registry — never invented, and the dispatch refuses
+  // without the Run. The SESSION is what a confirm dispatch attributes an
+  // approval to, so `sessionId: ''` writes a legacy entry that publishes none:
+  // the shape a confirm dispatch must refuse rather than read any pane's
+  // transcript as its own.
   if (options.registry !== false) {
     mkdirSync(join(home, '.omp', 'run', 'orca-peers'), { recursive: true });
-    writeFileSync(join(home, '.omp', 'run', 'orca-peers', 'term_me.json'), JSON.stringify({ run: 'run_owner' }));
+    const entry = { run: 'run_owner', sessionId: options.sessionId ?? SESSION };
+    if (entry.sessionId === '') delete entry.sessionId;
+    writeFileSync(join(home, '.omp', 'run', 'orca-peers', 'term_me.json'), JSON.stringify(entry));
   }
 
   const started = [];
+  // Every model probe this dispatch made, so "the target was read before
+  // anything was created" and "the unconfigured path reads no target at all"
+  // are asserted rather than assumed.
+  const probes = [];
   const result = capture(() =>
     dispatch([...argv], {
       runner: options.runnerOverride ?? runner,
@@ -260,13 +410,19 @@ const run = (argv, options = {}) => {
         return options.startCodes ? options.startCodes.shift() : 0;
       },
       setupFn: options.setupFn ?? (() => 0),
+      // The ONLY thing a dispatch in this suite can learn about a target's
+      // models. `probeModels` overrides the inventory; the recording stays.
+      probeModelsFn: (selectors, context) => {
+        probes.push({ selectors, cwd: context?.cwd, host: context?.host ?? null });
+        return (options.probeModels ?? probeInventory)(selectors, context);
+      },
       // The SHARED Spec-membership reader (`src/completion.mjs`), injected the
       // way the verb takes it — this suite never asks a tracker for a member set.
       ...(options.membership === undefined ? {} : { membership: options.membership }),
       sessionsRoot: sessions,
     }),
   );
-  return { ...result, calls, started, root, home, store, sessions };
+  return { ...result, calls, started, probes, root, home, store, sessions };
 };
 
 // ── arguments, before anything is read ───────────────────────────────────────
@@ -1338,64 +1494,113 @@ test('--dry-run prints the brief and mutates nothing', () => {
   assert.ok(r.calls.every(argv => !argv.includes('worktree set')), 'and sets no lineage');
 });
 
-test('a routine dispatch previews its configured model without creating a worker', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol', standard: '@default', deep: '@slow' } } });
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'routine', '--because', 'Bounded label change with known verification', '--dry-run'], { root });
+test('an efficient dispatch previews the CANDIDATE its target offers, and creates no worker', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'efficient', '--because', 'Bounded label change with known verification', '--dry-run'], { root });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
 
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /\[omp role=worker model=@smol\]/);
-  assert.match(r.out, /routine/);
+  // The marker carries the CONCRETE first candidate, never the alias: an alias
+  // is a role on the target, and no child can be launched on a role name.
+  assert.match(r.out, /\[omp role=worker model=example\/quick:low routing=/);
+  assert.match(r.out, /efficient/);
   assert.match(r.out, /Bounded label change with known verification/);
+  // The alias is what the TARGET was asked about, exactly once, for this host.
+  assert.deepEqual(r.probes.map(probe => probe.selectors), [['@worker-efficient']]);
+  assert.equal(r.probes[0].host, null, 'a local dispatch probes this host and names none');
+  // And the whole authorized set travels on the marker, effort included: the
+  // runtime enforces THIS list, so a child cannot drift onto a fourth model.
+  assert.deepEqual(routingOf(r.out), {
+    version: 2,
+    mode: 'auto',
+    selector: 'example/quick:low',
+    candidates: ['example/quick:low', 'example/quick-alt:minimal'],
+    effort: 'low',
+  });
   assert.equal(existsSync(r.store), false);
   assert.equal(existsSync(join(r.home, 'specs')), false);
   assert.equal(existsSync(join(root, '.worktrees', `${ISSUE}-${SLUG}`)), false);
 });
 
-test('an explicit model overrides the capability route even when capability is last', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol' } } });
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--model', '@slow:high', '--capability', 'routine', '--dry-run'], { root });
+test('an explicit model overrides the capability route, and is pinned to itself alone', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  // The target whose intensive role holds ONE model at two efforts: an explicit
+  // effort is what selects between them, and a pin is what makes the ambiguity
+  // legal outside confirm.
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--model', 'example/heavy:max', '--capability', 'efficient', '--dry-run'], { root, probeModels: probeTwoEfforts });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
 
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /\[omp role=worker model=@slow:high\]/);
+  assert.match(r.out, /\[omp role=worker model=example\/heavy:max routing=/);
   assert.match(r.out, /explicit model/);
+  assert.deepEqual(r.probes.map(probe => probe.selectors), [['example/heavy:max']], 'the target is asked about the model that was pinned');
+  const routing = routingOf(r.out);
+  assert.equal(routing.mode, 'pinned', 'an explicit model is a pin, not a preference');
+  assert.deepEqual(routing.candidates, ['example/heavy:max'], 'and a pin authorizes exactly one model at exactly one effort');
 });
 
-test('an unclassified dispatch keeps the existing strong default despite configured classes', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol', standard: '@fast', deep: '@slow' } } });
+test('a bare explicit model takes the effort its configured candidate carries, and invents none', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--model', 'example/heavy', '--dry-run'], { root, probeModels: probeTwoEfforts });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 0, r.out);
+  // `example/heavy` is configured at high AND max. The first configured one is
+  // the decision; a bare id never means "whatever effort you like".
+  assert.match(r.out, /\[omp role=worker model=example\/heavy:high routing=/);
+  assert.deepEqual(routingOf(r.out).candidates, ['example/heavy:high']);
+});
+
+test('an unclassified dispatch takes the configured balanced route', t => {
+  const root = repo({ dispatch: { models: MODELS } });
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
 
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /\[omp role=worker model=@default\]/);
+  assert.match(r.out, /\[omp role=worker model=example\/solid:medium routing=/);
+  assert.match(r.out, /configured balanced route/);
+  assert.deepEqual(r.probes.map(probe => probe.selectors), [['@worker-balanced']]);
 });
 
-test('labels do not replace a missing model assessment', t => {
-  const root = repo({ dispatch: { models: { deep: '@slow' }, modelFloors: { 'domain:security': 'deep' } } });
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root, orca: { labels: ['domain:security'] } });
-  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /\[omp role=worker model=@default\]/);
+test('a label floor raises even the implied assessment — and a project with no worker roles keeps @default, unprobed', t => {
+  const opted = repo({ dispatch: { models: MODELS, modelFloors: { 'domain:security': 'intensive' } } });
+  const raised = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root: opted, orca: { labels: ['domain:security'] } });
+  t.after(() => { rmSync(opted, { recursive: true, force: true }); rmSync(raised.home, { recursive: true, force: true }); });
+  assert.equal(raised.code, 0, raised.out);
+  assert.match(raised.out, /\[omp role=worker model=example\/heavy:high routing=/);
+  assert.match(raised.out, /domain:security/);
+  assert.deepEqual(raised.probes.map(probe => probe.selectors), [['@worker-intensive']]);
+
+  // The project that never opted in is the OTHER half of this, and it is
+  // unchanged: @default, no candidates, and no target read at all — a floor
+  // with no roles to route to is not an invitation to probe a host.
+  const legacy = repo({ dispatch: { modelFloors: { 'domain:security': 'intensive' } } });
+  const kept = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root: legacy, orca: { labels: ['domain:security'] } });
+  t.after(() => { rmSync(legacy, { recursive: true, force: true }); rmSync(kept.home, { recursive: true, force: true }); });
+  assert.equal(kept.code, 0, kept.out);
+  assert.match(kept.out, /\[omp role=worker model=@default\] \/entry GAP-353/);
+  assert.doesNotMatch(kept.out, /routing=/, 'no candidate list, so nothing for a runtime to enforce');
+  assert.deepEqual(kept.probes, []);
 });
 
-test('a configured risk floor raises a routine ticket to the deep route', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol', deep: '@slow' }, modelFloors: { 'domain:security': 'deep' } } });
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'routine', '--dry-run'], { root, orca: { labels: ['domain:security'] } });
+test('a configured risk floor raises an efficient ticket to the intensive route', t => {
+  const root = repo({ dispatch: { models: MODELS, modelFloors: { 'domain:security': 'intensive' } } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'efficient', '--dry-run'], { root, orca: { labels: ['domain:security'] } });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
 
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /\[omp role=worker model=@slow\]/);
+  assert.match(r.out, /\[omp role=worker model=example\/heavy:high routing=/);
   assert.match(r.out, /domain:security/);
 });
 
-test('an invalid capability is refused before any runtime read or placement', t => {
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'routnie', '--dry-run']);
+test('an invalid capability is refused before any runtime read, probe or placement', t => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'efficeint', '--dry-run']);
   t.after(() => { rmSync(r.root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
 
   assert.equal(r.code, 2);
-  assert.match(r.out, /routine.*standard.*deep/);
+  assert.match(r.out, /efficient.*balanced.*intensive/);
   assert.deepEqual(r.calls, []);
+  assert.deepEqual(r.probes, []);
 });
 
 test('an explicit model cannot inject another key into the worker marker', t => {
@@ -1406,44 +1611,292 @@ test('an explicit model cannot inject another key into the worker marker', t => 
 });
 
 test('model assessment output never exposes a dispatch authority token', t => {
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'standard', '--because', 'Known verification dcap_fixture_secret', '--dry-run']);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'balanced', '--because', 'Known verification dcap_fixture_secret', '--dry-run']);
   t.after(() => { rmSync(r.root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
   assert.equal(r.code, 0, r.out);
   assert.equal(r.out.includes('dcap_fixture_secret'), false);
 });
 
+// A target that serves the role and has nothing available is the case the
+// candidate list exists for. Answering it with `@default` would be a silent
+// downgrade to a model the operator never authorized for this work, so the
+// dispatch refuses — and, being before placement, leaves nothing behind.
+test('a target that offers no AVAILABLE candidate creates nothing, and is never downgraded', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'balanced', '--wait', '0'], {
+    root,
+    probeModels: probeUnavailable('quota exhausted on every authorized account'),
+  });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /no available candidate for @worker-balanced/);
+  assert.match(r.out, /quota exhausted on every authorized account/, 'the target said WHY, and the operator is told');
+  assert.doesNotMatch(r.out, /@default/);
+  assert.deepEqual(r.started, []);
+  assert.ok(r.calls.every(argv => !argv.startsWith('worktree create')), 'nothing is placed for a model nobody can run');
+  assert.equal(existsSync(r.store), false);
+  assert.equal(existsSync(join(root, '.worktrees', `${ISSUE}-${SLUG}`)), false);
+});
+
+// A target the requested role does not exist on is the OTHER probe outcome, and
+// it is cannot-establish rather than a refusal: the decision is unknowable from
+// here, which is a different thing from known and unavailable.
+test('a role the target does not serve cannot establish, and nothing is created', t => {
+  const root = repo({ dispatch: { models: { balanced: '@worker-absent' } } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /target model probe failed/);
+  assert.match(r.out, /@worker-absent names no configured worker role or model on the target/);
+  assert.deepEqual(r.started, []);
+  assert.equal(existsSync(r.store), false);
+});
+
+// A candidate that says `available: true` and names no effort is the probe
+// reporting half a decision, and the half it omitted is the one the route is
+// placed on. Defaulting it here would dispatch a child at an effort nobody
+// configured, under a receipt that reads as a success — so it refuses, and
+// refuses before placement.
+test('a probed candidate that reports no effort refuses rather than defaulting one', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'balanced', '--probe', '--wait', '0'], {
+    root,
+    probeModels: () => ({ errors: [], candidates: [{ model: 'example/solid', available: true }] }),
+  });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /reported no effort; the probe must report one, it is not defaulted here/);
+  assert.deepEqual(r.started, []);
+  assert.equal(existsSync(r.store), false);
+  assert.equal(existsSync(join(root, '.worktrees', `${ISSUE}-${SLUG}`)), false);
+});
+
+test('--model-mode pinned with nothing to pin to refuses before the target is read', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--model-mode', 'pinned', '--dry-run'], { root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /pinned needs --model or an explicit --capability tier/);
+  assert.deepEqual(r.probes, [], 'a decision with no subject asks no host about models');
+  assert.deepEqual(r.started, []);
+  assert.equal(existsSync(r.store), false);
+});
+
+// ── --model-mode confirm: the human chooses, and the transcript proves it ────
+
+// A CONFIRM DISPATCH is the one route allowed to offer one model at two
+// efforts, so every test below probes `probeTwoEfforts` — in the `--dry-run`
+// that asks the question AND in the dispatch that reads the answer, because the
+// question id hashes the candidates and a second inventory would be a second
+// question.
+const CONFIRM = { probeModels: probeTwoEfforts };
+
+test('--model-mode confirm --dry-run asks its question, in exact candidates, and decides nothing', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--name', 'confirm-asked', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'intensive', '--model-mode', 'confirm', '--dry-run'], { ...CONFIRM, root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 0, r.out);
+  const question = questionOf(r.out);
+  assert.match(question.id, /^ax-model:confirm-asked:[a-f0-9]{16}$/, 'a stable id, keyed to the request AND the decision');
+  // Every CHOICE is an exact model at an exact effort, because a transcript
+  // records labels and only labels — prose in a label is an unreadable approval.
+  assert.deepEqual(question.options.slice(0, 2).map(option => option.label), ['example/heavy:high', 'example/heavy:max']);
+  assert.equal(question.options.length, 3, 'and a way to decline: a question with no decline is a rubber stamp');
+  assert.equal(question.multi, false);
+  assert.equal(existsSync(r.store), false);
+  assert.deepEqual(r.started, []);
+});
+
+test('a confirm dispatch with no approval cannot establish, and nothing is placed', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'confirm-missing', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'intensive'];
+  const r = run([...args, '--model-mode', 'confirm', '--wait', '0'], { ...CONFIRM, root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /CANNOT ESTABLISH/);
+  assert.match(r.out, /model confirmation reference must be <transcript path>#<ask toolCallId>/);
+  assert.match(r.out, /--dry-run/, 'the repair names how to collect one');
+  assert.deepEqual(r.started, [], 'a dispatch nobody approved places nothing');
+  assert.equal(existsSync(r.store), false);
+});
+
+// An approval handed to a dispatch that ASKS NOTHING is an argument error on
+// every path, and it lands before the ticket is read: until it did, the v1
+// route — a project with no worker roles, which probes nothing and never asks —
+// read the flag past in silence, placed a worktree and started a child, and the
+// approval an operator had collected gated nothing at all.
+test('an approval outside confirm mode is a usage error, on the configured route AND the v1 one', t => {
+  const reference = `${join(tmpdir(), 'ask.jsonl')}#call_ask_1`;
+  const args = ['--name', 'confirm-stray', '--task', 'Update the decided labels', '--model-confirmation', reference, '--wait', '0'];
+
+  const configured = repo({ dispatch: { models: MODELS } });
+  const stray = run([...args, '--worktree', configured, '--capability', 'intensive'], { root: configured });
+  t.after(() => { rmSync(configured, { recursive: true, force: true }); rmSync(stray.home, { recursive: true, force: true }); });
+  assert.equal(stray.code, 2, stray.out);
+  assert.match(stray.out, /--model-confirmation is the answer to a --model-mode confirm question/);
+  assert.deepEqual(stray.started, []);
+  assert.deepEqual(stray.probes, [], 'and it refuses before the target is read');
+
+  // The same flag on a project that declares no worker roles at all: the route
+  // that used to ignore it.
+  const legacy = repo();
+  const v1 = run([...args, '--worktree', legacy], { root: legacy });
+  t.after(() => { rmSync(legacy, { recursive: true, force: true }); rmSync(v1.home, { recursive: true, force: true }); });
+  assert.equal(v1.code, 2, v1.out);
+  assert.match(v1.out, /--model-confirmation is the answer to a --model-mode confirm question/);
+  assert.deepEqual(v1.started, [], 'nothing was dispatched');
+  assert.deepEqual(v1.probes, []);
+  assert.equal(existsSync(v1.store), false);
+
+  // And a mode that is stated, but is not confirm, answers the same way.
+  const pinned = run([...args, '--worktree', configured, '--model', 'example/heavy:high', '--model-mode', 'pinned'], { root: configured });
+  t.after(() => rmSync(pinned.home, { recursive: true, force: true }));
+  assert.equal(pinned.code, 2, pinned.out);
+  assert.match(pinned.out, /--model-confirmation/);
+  assert.deepEqual(pinned.probes, []);
+});
+
+test('a real ask transcript approves the candidate the human chose, effort included, and authorizes it alone', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'confirm-approved', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'intensive', '--model-mode', 'confirm'];
+  const asked = run([...args, '--dry-run'], { ...CONFIRM, root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(asked.home, { recursive: true, force: true }); });
+  assert.equal(asked.code, 0, asked.out);
+
+  // The SECOND candidate, chosen by hand: an approval that could only ever
+  // return the probe's own first pick would prove nothing about the choice. The
+  // transcript sits UNDER the sessions root this dispatch is given, which is
+  // where the runtime writes one and the only place the reader will look.
+  const reference = askTranscript(join(asked.sessions, '-x-confirm-approved'), questionOf(asked.out), { choice: 'example/heavy:max' });
+  const r = run([...args, '--model-confirmation', reference, '--probe', '--wait', '0'], { ...CONFIRM, root, home: asked.home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  assert.equal(r.code, 0, r.out);
+
+  const shown = capture(() => start(['--show', '--request', 'confirm-approved'], { env: { HOME: r.home, ORCA_DISPATCH_STORE: r.store } }));
+  const decision = JSON.parse(shown.out).modelPolicy;
+  assert.equal(decision.selector, 'example/heavy:max', 'the approved candidate, not the recommended one');
+  assert.equal(decision.effort, 'max');
+  assert.equal(decision.mode, 'confirm');
+  assert.equal(decision.requestedSelector, '@worker-intensive');
+  // A CONFIRMED CHOICE IS A SINGLETON. The menu offered two efforts of one
+  // model — the ambiguity a placed route refuses — and the human's answer is
+  // what collapses it: recording both would hand the runtime the fallback map
+  // it cannot key, with a human's approval on it.
+  assert.deepEqual(decision.candidates, ['example/heavy:max']);
+  assert.equal(decision.confirmation, reference, 'and the record names the artifact that authorized it');
+});
+
+test('a timed-out ask is not an approval, however complete its selection looks', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'confirm-timeout', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'intensive', '--model-mode', 'confirm'];
+  const asked = run([...args, '--dry-run'], { ...CONFIRM, root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(asked.home, { recursive: true, force: true }); });
+  assert.equal(asked.code, 0, asked.out);
+
+  // OMP auto-selects the recommended option on timeout and writes it into
+  // `selectedOptions`, so this transcript holds a real, valid-looking choice.
+  // It is the dialog answering, not the human.
+  const reference = askTranscript(join(asked.sessions, '-x-confirm-timeout'), questionOf(asked.out), { choice: 'example/heavy:high', timedOut: true });
+  const r = run([...args, '--model-confirmation', reference, '--wait', '0'], { ...CONFIRM, root, home: asked.home });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /timed out: the auto-selected option is not an approval/);
+  assert.deepEqual(r.started, []);
+  assert.equal(existsSync(r.store), false);
+});
+
+// THE SCOPE, and it is what makes "the human approved THIS" mean "in THIS
+// session". Both halves refuse before placement: the session id is read from
+// the peer registry, not from the reference, and a transcript outside the
+// sessions root is not this runtime's transcript at all.
+test('a confirm dispatch whose pane publishes no session id refuses before it places anything', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'confirm-unscoped', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'intensive', '--model-mode', 'confirm'];
+  const asked = run([...args, '--dry-run'], { ...CONFIRM, root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(asked.home, { recursive: true, force: true }); });
+  assert.equal(asked.code, 0, asked.out);
+
+  // A real, correct approval — and a legacy registry entry that publishes no
+  // session. The approval is never even read: with no session id, ANY pane's
+  // transcript on this machine would read as this one's.
+  const reference = askTranscript(join(asked.sessions, '-x-confirm-unscoped'), questionOf(asked.out), { choice: 'example/heavy:max' });
+  const r = run([...args, '--model-confirmation', reference, '--wait', '0'], { ...CONFIRM, root, home: asked.home, sessionId: '' });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /publishes no session id/);
+  assert.deepEqual(r.started, []);
+  assert.deepEqual(r.probes, [], 'and it refuses before the target is read, let alone placed');
+  assert.equal(existsSync(r.store), false);
+});
+
+test('an approval recorded by another session, or outside the sessions root, is refused', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'confirm-foreign', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'intensive', '--model-mode', 'confirm'];
+  const asked = run([...args, '--dry-run'], { ...CONFIRM, root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(asked.home, { recursive: true, force: true }); });
+  assert.equal(asked.code, 0, asked.out);
+  const question = questionOf(asked.out);
+
+  // A sibling pane's transcript: under the sessions root, answering THIS
+  // question, chosen by a human — and recorded for another session.
+  const foreign = askTranscript(join(asked.sessions, '-x-sibling'), question, { choice: 'example/heavy:max', session: 'sess_sibling' });
+  const mismatch = run([...args, '--model-confirmation', foreign, '--wait', '0'], { ...CONFIRM, root, home: asked.home });
+  assert.equal(mismatch.code, 3, mismatch.out);
+  assert.match(mismatch.out, /was recorded for session sess_sibling, not sess_dispatch/);
+  assert.deepEqual(mismatch.started, []);
+  assert.equal(existsSync(mismatch.store), false);
+
+  // And THIS session's own answer, written somewhere the runtime never writes
+  // sessions: a path the dispatcher could have produced itself.
+  const outside = askTranscript(join(asked.home, 'elsewhere'), question, { choice: 'example/heavy:max' });
+  const escaped = run([...args, '--model-confirmation', outside, '--wait', '0'], { ...CONFIRM, root, home: asked.home });
+  assert.equal(escaped.code, 3, escaped.out);
+  assert.match(escaped.out, /resolves outside the session root/);
+  assert.deepEqual(escaped.started, []);
+  assert.equal(existsSync(escaped.store), false);
+});
+
 test('a dispatched worker exposes its routing decision through the recorded dispatch', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol:low' } } });
-  const r = run(['--name', 'policy-record', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'routine', '--because', 'Known local verification', '--probe', '--wait', '0'], { root, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  const root = repo({ dispatch: { models: MODELS } });
+  const r = run(['--name', 'policy-record', '--task', 'Update the decided labels', '--worktree', root, '--capability', 'efficient', '--because', 'Known local verification', '--probe', '--wait', '0'], { root, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
   assert.equal(r.code, 0, r.out);
 
   const shown = capture(() => start(['--show', '--request', 'policy-record'], { env: { HOME: r.home, ORCA_DISPATCH_STORE: r.store } }));
   assert.equal(shown.code, 0, shown.out);
   const decision = JSON.parse(shown.out).modelPolicy;
-  assert.equal(decision?.selector, '@smol:low');
-  assert.equal(decision.capability, 'routine');
+  assert.equal(decision?.version, 2);
+  assert.equal(decision.selector, 'example/quick:low', 'the concrete candidate the target offered');
+  assert.equal(decision.requestedSelector, '@worker-efficient', 'and the alias that was asked for, kept AS the alias');
+  assert.equal(decision.effort, 'low');
+  assert.deepEqual(decision.candidates, ['example/quick:low', 'example/quick-alt:minimal']);
+  assert.equal(decision.mode, 'auto');
+  assert.equal(decision.capability, 'efficient');
   assert.equal(decision.source, 'capability');
   assert.match(decision.reason, /Known local verification/);
   assert.match(decision.policyHash, /^[a-f0-9]{64}$/);
 });
 
 test('an explicit override does not claim that a label floor was enforced', t => {
-  const root = repo({ dispatch: { models: { deep: '@slow' }, modelFloors: { 'domain:security': 'deep' } } });
-  const r = run(['--issue', ISSUE, '--slug', SLUG, '--worktree', root, '--capability', 'routine', '--model', '@smol', '--probe', '--wait', '0'], { root, realStart: true, orca: { labels: ['domain:security'] }, env: { ORCA_STALL_WATCH: '0' } });
+  const root = repo({ dispatch: { models: MODELS, modelFloors: { 'domain:security': 'intensive' } } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--worktree', root, '--capability', 'efficient', '--model', 'example/quick-alt:minimal', '--probe', '--wait', '0'], { root, realStart: true, orca: { labels: ['domain:security'] }, env: { ORCA_STALL_WATCH: '0' } });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
   assert.equal(r.code, 0, r.out);
   const shown = capture(() => start(['--show', '--request', REQUEST], { env: { HOME: r.home, ORCA_DISPATCH_STORE: r.store } }));
   const decision = JSON.parse(shown.out).modelPolicy;
-  assert.equal(decision.selector, '@smol');
+  assert.equal(decision.selector, 'example/quick-alt:minimal');
   assert.equal(decision.source, 'explicit');
-  assert.equal(decision.capability, 'routine');
+  assert.equal(decision.capability, 'efficient');
   assert.deepEqual(decision.floorLabels, []);
+  assert.deepEqual(decision.candidates, ['example/quick-alt:minimal']);
 });
 
 test('a repeated dispatch cannot reclassify recorded work after policy and ticket changes', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol:low' } } });
-  const args = ['--name', 'policy-replay', '--task', 'Update decided labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '0'];
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'policy-replay', '--task', 'Update decided labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '0'];
   const first = run(args, { root, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(first.home, { recursive: true, force: true }); });
   assert.equal(first.code, 0, first.out);
@@ -1452,16 +1905,22 @@ test('a repeated dispatch cannot reclassify recorded work after policy and ticke
   const original = show();
   writeFileSync(join(root, 'ax.config.json'), 'configuration changed while the worker was running');
 
-  const repeated = run([...args, '--capability', 'deep'], { root, home: first.home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  const repeated = run([...args, '--capability', 'intensive'], { root, home: first.home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   assert.equal(repeated.code, 3, repeated.out);
   assert.match(repeated.out, /ax worker start --resume --request policy-replay/);
   assert.deepEqual(repeated.calls, []);
+  assert.deepEqual(repeated.probes, [], 'recorded work is not re-probed, so a moved target cannot re-decide it');
 
   const { runner } = fakeOrca();
   const resumed = capture(() => start(['--resume', '--request', 'policy-replay'], { env, runner }));
   assert.equal(resumed.code, 0, resumed.out);
   const recovered = show();
   assert.deepEqual(recovered.modelPolicy, original.modelPolicy);
+  // Named, because THIS is the guarantee: the recovered worker runs on the same
+  // candidate at the same effort, whatever the configuration now says.
+  assert.equal(recovered.modelPolicy.selector, 'example/quick:low');
+  assert.equal(recovered.modelPolicy.effort, 'low');
+  assert.deepEqual(recovered.modelPolicy.candidates, ['example/quick:low', 'example/quick-alt:minimal']);
   assert.deepEqual(recovered.attempts[0].phases.map(phase => phase.argv), original.attempts[0].phases.map(phase => phase.argv));
 });
 
@@ -1473,9 +1932,9 @@ test('a repeated dispatch cannot reclassify recorded work after policy and ticke
 // another repository"), so the guard that runs before it must not hand out the
 // repair the mutator exists to withhold.
 test('a request another repository already recorded is a name collision, never a --resume repair', t => {
-  const mine = repo({ dispatch: { models: { routine: '@smol:low' } } });
-  const theirs = repo({ dispatch: { models: { routine: '@smol:low' } } });
-  const args = ['--name', 'policy-collision', '--task', 'Update decided labels', '--capability', 'routine', '--probe', '--wait', '0'];
+  const mine = repo({ dispatch: { models: MODELS } });
+  const theirs = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'policy-collision', '--task', 'Update decided labels', '--capability', 'efficient', '--probe', '--wait', '0'];
   const first = run([...args, '--worktree', mine], { root: mine, realStart: true, slug: 'acme/widgets', env: { ORCA_STALL_WATCH: '0' } });
   t.after(() => {
     rmSync(mine, { recursive: true, force: true });
@@ -1512,33 +1971,34 @@ test('a request another repository already recorded is a name collision, never a
 // byte for byte as it found it — even when the configuration has since become
 // unreadable, which is precisely when an operator asks.
 test('a --dry-run of recorded work shows what was DECIDED, never a recomputation', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol:low' } } });
-  const args = ['--name', 'policy-dry', '--task', 'Update decided labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '0'];
+  const root = repo({ dispatch: { models: MODELS } });
+  const args = ['--name', 'policy-dry', '--task', 'Update decided labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '0'];
   const first = run(args, { root, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(first.home, { recursive: true, force: true }); });
   assert.equal(first.code, 0, first.out);
   const env = { HOME: first.home, ORCA_DISPATCH_STORE: first.store, ORCA_STALL_WATCH: '0' };
   const show = () => JSON.parse(capture(() => start(['--show', '--request', 'policy-dry'], { env })).out);
   const original = show();
-  assert.equal(original.modelPolicy.selector, '@smol:low');
+  assert.equal(original.modelPolicy.selector, 'example/quick:low');
   writeFileSync(join(root, 'ax.config.json'), 'configuration changed while the worker was running');
 
   // The same owner, the same request, a capability that WOULD route elsewhere
-  // (`deep` is unconfigured here, so a recomputation lands on `@default`) — and
-  // a configuration that can no longer be parsed at all.
-  const dry = run([...args, '--capability', 'deep', '--dry-run'], { root, home: first.home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  // (`intensive` is `example/heavy:high` here) — and a configuration that can
+  // no longer be parsed at all.
+  const dry = run([...args, '--capability', 'intensive', '--dry-run'], { root, home: first.home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   assert.equal(dry.code, 0, dry.out);
   assert.match(dry.out, /policy-dry/);
-  assert.match(dry.out, /@smol:low/, 'the RECORDED selector');
-  assert.match(dry.out, /routine/, 'and the recorded capability, not the one just asked for');
-  assert.doesNotMatch(dry.out, /@default/, 'nothing was recomputed against the configuration as it stands now');
+  assert.match(dry.out, /example\/quick:low/, 'the RECORDED selector');
+  assert.match(dry.out, /efficient/, 'and the recorded capability, not the one just asked for');
+  assert.doesNotMatch(dry.out, /example\/heavy/, 'nothing was recomputed against the configuration as it stands now');
   assert.doesNotMatch(dry.out, /ax\.config\.json/, 'and the broken configuration was never even parsed');
   assert.deepEqual(dry.calls, [], 'a read of recorded work asks the runtime nothing');
+  assert.deepEqual(dry.probes, [], 'and asks no target about models either');
   assert.deepEqual(show(), original, 'the record is exactly as it was');
 });
 
 test('dispatch reclaims a same-repository foreign Run only after a proven pre-write refusal', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol' } } });
+  const root = repo({ dispatch: { models: MODELS } });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const store = join(home, 'store');
   const spec = join(home, 'old-spec.txt');
@@ -1549,11 +2009,11 @@ test('dispatch reclaims a same-repository foreign Run only after a proven pre-wr
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
   assert.equal(previous.code, 1, previous.out);
 
-  const dispatched = run(['--name', 'policy-empty', '--task', 'Update decided labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '0'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  const dispatched = run(['--name', 'policy-empty', '--task', 'Update decided labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '0'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   assert.equal(dispatched.code, 0, dispatched.out);
   const shown = capture(() => start(['--show', '--request', 'policy-empty'], { env }));
   const active = JSON.parse(shown.out);
-  assert.equal(active.modelPolicy.selector, '@smol');
+  assert.equal(active.modelPolicy.selector, 'example/quick:low');
   assert.ok(active.attempts[0].phases[0].argv.includes('run_owner'));
   assert.match(dispatched.out, /preserving it at/);
 });
@@ -1863,42 +2323,121 @@ test('the model, worker and implementation receipts with a moving pane are a gre
 });
 
 test('a policy dispatch cannot verify without its target model assignment receipt', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol' } } });
+  const root = repo({ dispatch: { models: MODELS } });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const sessions = join(home, 'sessions');
   transcript(sessions, root.split('/').at(-1), 'default');
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
-  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   assert.equal(r.code, 3, r.out);
   assert.match(r.out, /UNPROVEN model assignment/);
 });
 
+// A v2 receipt proves FOUR things at once: the candidate that was requested, a
+// model AND effort the policy authorized, the routing version that says the
+// target enforced a candidate list at all, and agreement with the model the
+// session is actually running. Each of the tests below removes exactly one.
 test('a policy dispatch verifies the matching target assignment and prints its resolved model', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol:low' } } });
+  const root = repo({ dispatch: { models: MODELS } });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const sessions = join(home, 'sessions');
   const needle = root.split('/').at(-1);
-  transcript(sessions, needle, 'default');
+  transcript(sessions, needle, 'default', { model: 'example/quick' });
   const file = join(sessions, `-x-${needle}`, 'a.jsonl');
-  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: '@smol:low', model: 'target/claude-sonnet-5', thinking: 'low', via: 'orca' } };
+  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: 'example/quick:low', model: 'example/quick', thinking: 'low', routingVersion: 2, via: 'orca' } };
   writeFileSync(file, `${readFileSync(file, 'utf8')}${JSON.stringify(assignment)}\n`);
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
-  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /@smol:low -> target\/claude-sonnet-5 \(low\)/);
+  assert.match(r.out, /example\/quick:low -> example\/quick \(low\)/);
+});
+
+// The authorized set is the whole candidate list, not just its first entry: a
+// target that fell back to the SECOND configured candidate — at that
+// candidate's own effort — stayed inside the decision, and is proven.
+test('a receipt naming the second authorized candidate at its own effort verifies', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const sessions = join(home, 'sessions');
+  const needle = root.split('/').at(-1);
+  transcript(sessions, needle, 'default', { model: 'example/quick-alt' });
+  const file = join(sessions, `-x-${needle}`, 'a.jsonl');
+  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: 'example/quick:low', model: 'example/quick-alt', thinking: 'minimal', routingVersion: 2, via: 'orca' } };
+  writeFileSync(file, `${readFileSync(file, 'utf8')}${JSON.stringify(assignment)}\n`);
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /example\/quick-alt \(minimal\)/);
+});
+
+// THE HOLE THIS CLOSES. A receipt that agrees with the running session proves
+// only that the two agree — and a child that drifted onto a model no candidate
+// authorizes would produce exactly that agreement. The candidate list is what
+// the receipt is checked against, so a model outside it is refused even when
+// the session is demonstrably on it.
+test('a receipt naming a model NO candidate authorizes is UNPROVEN, even when the session is on it', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const sessions = join(home, 'sessions');
+  const needle = root.split('/').at(-1);
+  transcript(sessions, needle, 'default', { model: 'example/rogue' });
+  const file = join(sessions, `-x-${needle}`, 'a.jsonl');
+  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: 'example/quick:low', model: 'example/rogue', thinking: 'low', routingVersion: 2, via: 'orca' } };
+  writeFileSync(file, `${readFileSync(file, 'utf8')}${JSON.stringify(assignment)}\n`);
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /UNPROVEN model assignment/);
 });
 
 test('a policy receipt cannot verify a different currently selected model', t => {
-  const root = repo({ dispatch: { models: { routine: '@smol:low' } } });
+  const root = repo({ dispatch: { models: MODELS } });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const sessions = join(home, 'sessions');
   const needle = root.split('/').at(-1);
-  transcript(sessions, needle, 'default');
+  // The receipt claims an authorized candidate; the session is on another one.
+  transcript(sessions, needle, 'default', { model: 'example/quick-alt' });
   const file = join(sessions, `-x-${needle}`, 'a.jsonl');
-  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: '@smol:low', model: 'target/another-model', thinking: 'low', via: 'orca' } };
+  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: 'example/quick:low', model: 'example/quick', thinking: 'low', routingVersion: 2, via: 'orca' } };
   writeFileSync(file, `${readFileSync(file, 'utf8')}${JSON.stringify(assignment)}\n`);
   t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
-  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'routine', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /UNPROVEN model assignment/);
+});
+
+// Effort is half the decision — the operator authorized `example/quick` AT low,
+// and `example/quick:medium` is not a candidate. The candidate list carries
+// per-candidate effort precisely so this is a detectable mismatch.
+test('a policy receipt with an authorized model at an unauthorized effort is UNPROVEN', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const sessions = join(home, 'sessions');
+  const needle = root.split('/').at(-1);
+  transcript(sessions, needle, 'default', { model: 'example/quick' });
+  const file = join(sessions, `-x-${needle}`, 'a.jsonl');
+  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: 'example/quick:low', model: 'example/quick', thinking: 'medium', routingVersion: 2, via: 'orca' } };
+  writeFileSync(file, `${readFileSync(file, 'utf8')}${JSON.stringify(assignment)}\n`);
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /UNPROVEN model assignment/);
+});
+
+// A receipt that names the right model at the right effort but carries no
+// routing version came from a target that never enforced a candidate list. It
+// looks like proof and is not: the child could have drifted at any moment.
+test('a v2 dispatch is UNPROVEN on a receipt that never claims the routing it was dispatched with', t => {
+  const root = repo({ dispatch: { models: MODELS } });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const sessions = join(home, 'sessions');
+  const needle = root.split('/').at(-1);
+  transcript(sessions, needle, 'default', { model: 'example/quick' });
+  const file = join(sessions, `-x-${needle}`, 'a.jsonl');
+  const assignment = { type: 'custom', customType: '@flosrn/ax/model-assignment', data: { requested: 'example/quick:low', model: 'example/quick', thinking: 'low', via: 'orca' } };
+  writeFileSync(file, `${readFileSync(file, 'utf8')}${JSON.stringify(assignment)}\n`);
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  const r = run(['--name', 'policy-proof', '--task', 'Update labels', '--worktree', root, '--capability', 'efficient', '--probe', '--wait', '3'], { root, home, realStart: true, env: { ORCA_STALL_WATCH: '0' } });
   assert.equal(r.code, 3, r.out);
   assert.match(r.out, /UNPROVEN model assignment/);
 });

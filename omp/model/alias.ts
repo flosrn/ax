@@ -17,6 +17,8 @@
  * `models.resolve()` takes both and refusing one would buy nothing.
  */
 
+import { splitSelector } from '../../src/worker/model-policy.mjs';
+
 /**
  * Marker the parent writes in the Task spec. Case-insensitive, anywhere in the text.
  *
@@ -103,32 +105,25 @@ export interface ModelIntent {
   reason?: string;
 }
 
-const THINKING_LEVELS = new Set([
-  'off',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-]);
-
 /**
  * Split OMP's own `model:thinking` convention rather than inventing a second
- * one. `@task:high` is already what `--model` and `modelRoles` accept, so the
- * marker stays learnable from the docs the operator already has.
+ * one, and split it with the SAME function the dispatcher's policy uses
+ * (src/worker/model-policy.mjs `splitSelector`, which owns the level
+ * vocabulary). Two tables of level names is how a marker and the route beside
+ * it come to disagree about what `:high` means.
  *
- * A `provider/id` may itself contain no colon, but a bare id could
- * (`gpt-5.2:medium`), so the suffix is only split off when it names a real
- * thinking level. Anything else stays part of the model spec — guessing would
- * silently truncate a legitimate id.
+ * A bare id may contain a colon (`gpt-5.2:medium`), so the suffix is only
+ * split off when it names a real thinking level; anything else stays part of
+ * the spec, because guessing would silently truncate a legitimate id.
+ *
+ * The wrapper keeps this package's own field names. `splitSelector` also trims,
+ * which no caller here can observe: marker tokens are whitespace-split, role
+ * members are trimmed by the probe, and `parseCandidate` refuses an untrimmed
+ * selector before it ever gets here.
  */
 export function splitThinking(value: string): { spec: string; thinking: string | null } {
-  const cut = value.lastIndexOf(':');
-  if (cut <= 0) return { spec: value, thinking: null };
-  const tail = value.slice(cut + 1).toLowerCase();
-  if (!THINKING_LEVELS.has(tail)) return { spec: value, thinking: null };
-  return { spec: value.slice(0, cut), thinking: tail };
+  const { model, effort } = splitSelector(value);
+  return { spec: model, thinking: effort };
 }
 
 /**

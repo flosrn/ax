@@ -693,14 +693,28 @@ describe('the factory wiring, as the host actually calls it', () => {
     expect(warnings.join(' ')).toContain('no models facade');
   });
 
-  test('four registrations — two occasions, prompt capture, and the refusal fence', () => {
+  test('the registration surface — occasions, prompt capture, and the two fences', () => {
     // `input` is not a third occasion: it mutates nothing and applies no model. It
     // captures the submitted text, which is the only copy of the spec a worker on
     // another execution host can reach. `tool_call` is the independent hard fence:
     // even when the runtime refuses to hide tools, a rejected role cannot execute one.
+    //
+    // `before_provider_request` is the routing fence — the last point at which a
+    // request to an unapproved model can be stopped. `tool_result` and
+    // `session_shutdown` are the other half of the same machine: the fallback
+    // override is wound back at `tool_call` (before any tool can spawn a child
+    // that would snapshot it) and re-armed once the tool is done.
     const { pi, handlers } = fakePi();
     orcaModel(pi as never);
-    expect([...handlers.keys()].sort()).toEqual(['before_agent_start', 'input', 'session_start', 'tool_call']);
+    expect([...handlers.keys()].sort()).toEqual([
+      'before_agent_start',
+      'before_provider_request',
+      'input',
+      'session_shutdown',
+      'tool_call',
+      'tool_result',
+      'session_start',
+    ].sort());
   });
 });
 

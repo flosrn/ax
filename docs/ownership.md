@@ -25,6 +25,9 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/worker/continuation.mjs` | which verb continues a record whose pane is gone — decided once from that branch's pull request, printed by both `ls` and `tail` |
 | `src/worker/capacity.mjs` | the two caps this count is gated by: this repository's `dispatch.cap`, the opt-in `dispatch.machineCap`, and the one refusal both dispatch verbs print |
 | `src/worker/model-policy.mjs` | orchestrator-assessed model capacity, configured label floors and the selector decision recorded with each dispatch |
+| `src/worker/model-probe.mjs`, `omp/model/probe.ts` | target-host model resolution and effort support before placement |
+| `src/worker/model-confirmation.mjs`, `omp/model/confirmation.ts` | native ask transcript evidence for each confirmed dispatch |
+| `omp/model/routing.ts` | recorded candidate-set validation and request-time enforcement |
 | `src/worker/slots.mjs` | the one reader of the count a cap gates: which recorded agent pane is up, keyed on the pane and never on the dispatch that owns it |
 | `src/worker/delivered.mjs` | did the child's own session record the brief — the witness that outranks a receipt |
 | `src/worker/capability.mjs` | the dispatch capability a child was handed, read from its own preamble — and the bound that keeps a mention from passing as a grant |

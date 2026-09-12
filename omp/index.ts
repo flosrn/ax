@@ -40,6 +40,7 @@ import model from './model/index.ts';
 import peer from './peer/index.ts';
 import report from './report/index.ts';
 import type { FactorySeams, ModelHost } from './model/index.ts';
+import modelConfirmation from './model/confirmation.ts';
 
 export type { FactorySeams, ModelHost } from './model/index.ts';
 export { loadPlaybook, loadRole, listRoles, playbooksDir, rolesDir } from './model/roles.ts';
@@ -79,6 +80,7 @@ export default function ax(pi: Host, seams: FactorySeams = {}): void {
   // extension appending to the array must see the role block already in it, not
   // race it.
   model(pi, seams);
+  modelConfirmation(pi as never);
 
   // Then the channel, which binds the Run and publishes the registry entry the
   // next one delivers through.
