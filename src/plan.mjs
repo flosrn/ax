@@ -74,6 +74,14 @@ export const OMP_PACKAGE_ROOT = `./node_modules/${PACKAGE_NAME}`;
  * configuration declare" rather than one boolean about provisioning. It does
  * NOT route the gate: `src/pr-gate.mjs` reads `prGate` raw and stays the only
  * reader of it, for the reason its own header gives.
+ *
+ * The debug row is the same shape and exists for the opposite defect: that
+ * section used to carry DEFAULTED fields, so `applyDefaults` materialized it
+ * for every project that ever loaded a config and nothing could tell an
+ * adopter from a bystander. Nothing consumed it for eight releases, which is
+ * why it went unnoticed. The contract that replaced it has no default at any
+ * depth (`ax.schema.json`), so presence of the raw key is the whole signal —
+ * and `src/debug-as/config.mjs` owns what that key must CONTAIN.
  */
 export const CONTRACTS = [
   {
@@ -89,6 +97,13 @@ export const CONTRACTS = [
     declaration: 'prGate',
     verb: `declare "prGate" in ${CONFIG_FILE}`,
     covers: 'what `ax pr gate` must be able to decide before a merge',
+  },
+  {
+    id: 'debug',
+    name: 'debug sessions',
+    declaration: 'debugAs',
+    verb: `declare "debugAs" in ${CONFIG_FILE}`,
+    covers: 'which Debug identities `ax debug-as` may open, where this project pins Playwright, and whether a Phone handoff is adopted at all',
   },
 ];
 
