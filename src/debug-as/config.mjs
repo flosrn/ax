@@ -205,8 +205,12 @@ export function loadDebugContract({ raw } = {}) {
       browser: {
         playwrightDir: browser.playwrightDir,
         start: browser.start,
-        navigationTimeoutSeconds: browser.navigationTimeoutSeconds ?? null,
-        prepare: adapter === null ? null : { command: adapter.command, timeoutSeconds: adapter.timeoutSeconds ?? null },
+        // Declared, never defaulted (`ax.schema.json` requires both): a
+        // deadline AX invented would be a behavior this contract says it has
+        // no default for, and the one it would have invented is the number
+        // that kills a consumer's adapter mid-login.
+        navigationTimeoutSeconds: browser.navigationTimeoutSeconds,
+        prepare: adapter === null ? null : { command: adapter.command, timeoutSeconds: adapter.timeoutSeconds },
       },
       phone: phone === null ? null : { optInEnv: phone.optInEnv, provider: phone.provider },
       identities: resolved,

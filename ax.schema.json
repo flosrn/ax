@@ -116,7 +116,7 @@
         "browser": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["playwrightDir", "start"],
+          "required": ["playwrightDir", "start", "navigationTimeoutSeconds"],
           "description": "Where AX resolves Playwright and Chromium from, and how this application is started. AX never installs a browser and never starts the app: it names the start command as the repair when nothing answers.",
           "properties": {
             "playwrightDir": {
@@ -133,12 +133,12 @@
               "type": "integer",
               "minimum": 5,
               "maximum": 900,
-              "description": "How long the first navigation may take before the launch refuses. A cold first compile of a privileged route routinely exceeds a default 30s, and a refusal here leaves no receipt, so this is declared per project rather than fixed."
+              "description": "How long the first navigation may take before the launch refuses. Required, and defaulted nowhere: a cold first compile of a privileged route routinely exceeds Playwright's own 30s, and a refusal here leaves no receipt, so the number is this project's to state."
             },
             "prepare": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["command"],
+              "required": ["command", "timeoutSeconds"],
               "description": "The Debug adapter: the project's own way to make an authentication artifact fresh. AX passes it versioned JSON on stdin and reads one JSON object back; it never learns the login flow.",
               "properties": {
                 "command": {
@@ -151,7 +151,7 @@
                   "type": "integer",
                   "minimum": 5,
                   "maximum": 1800,
-                  "description": "The adapter's deadline. It must exceed the project's own authentication-setup budget: a cap equal to the inner test timeout kills the adapter before it can report its own failure."
+                  "description": "The adapter's deadline, required wherever an adapter is declared and defaulted nowhere. It must exceed the project's own authentication-setup budget: a cap equal to the inner test timeout kills the adapter before it can report its own failure."
                 }
               }
             }

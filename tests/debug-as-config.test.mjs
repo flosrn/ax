@@ -27,6 +27,7 @@ const browserOnly = () => ({
   browser: {
     playwrightDir: 'apps/e2e',
     start: ['pnpm', '--filter', 'web', 'dev'],
+    navigationTimeoutSeconds: 120,
     prepare: { command: ['node', 'scripts/debug-auth-adapter.mjs'], timeoutSeconds: 300 },
   },
   identities: {
@@ -119,6 +120,25 @@ test('a missing half of the browser contract is refused by the schema', () => {
   const noIdentities = browserOnly();
   delete noIdentities.identities;
   assert.match(validate({ ...base(), debugAs: noIdentities }, schema).join('\n'), /missing required key "identities"/);
+});
+
+// R25/R26: no default at any level, which for a deadline means the project
+// states it. AX inventing one would be a behavior the contract denies having —
+// and the number it would have invented is what kills a consumer's adapter
+// mid-login, since OFMChat's own setup test already budgets 120 seconds.
+test('every deadline this contract bounds is declared, never left to AX', () => {
+  const noNavigation = browserOnly();
+  delete noNavigation.browser.navigationTimeoutSeconds;
+  assert.match(validate({ ...base(), debugAs: noNavigation }, schema).join('\n'), /missing required key "navigationTimeoutSeconds"/);
+
+  const adapterWithoutDeadline = browserOnly();
+  delete adapterWithoutDeadline.browser.prepare.timeoutSeconds;
+  assert.match(validate({ ...base(), debugAs: adapterWithoutDeadline }, schema).join('\n'), /missing required key "timeoutSeconds"/);
+
+  // And what loads carries the declared numbers, not a substitute.
+  const { contract } = load(browserOnly());
+  assert.equal(contract.browser.navigationTimeoutSeconds, 120);
+  assert.equal(contract.browser.prepare.timeoutSeconds, 300);
 });
 
 // The rules a keyed map cannot express: `patternProperties` is refused by the
