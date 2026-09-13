@@ -120,6 +120,43 @@ test('the adopted contract is not a migration', () => {
   }
 });
 
+// The stripping branch only runs when a retired shape was recognized, which
+// already proves `raw` is a non-null object — but nothing pinned that, and a
+// future edit that hoists `Object.entries(raw)` out of the ternary would throw
+// a TypeError where this function's whole contract is to RETURN the finding.
+// Degenerate files are the cheapest place to hold that line.
+test('a config that is not an object still reports errors instead of throwing', () => {
+  for (const [body, expected] of [
+    ['null', /expected object, got null/],
+    ['[]', /expected object, got array/],
+    ['"text"', /expected object, got string/],
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), 'ax-migration-'));
+    try {
+      writeFileSync(join(dir, 'ax.config.json'), body);
+      const loaded = loadConfig(dir);
+      assert.equal(loaded.config, null, body);
+      assert.match(loaded.errors.join('\n'), expected, body);
+      assert.equal(loaded.migration, null, body);
+      assert.deepEqual(loaded.declared, [], body);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // And a `debugAs` that is not an object is not a migration either: the
+  // retired shape is two named fields, not "anything under that key".
+  for (const body of ['{"debugAs":null}', '{"debugAs":[]}']) {
+    const dir = mkdtempSync(join(tmpdir(), 'ax-migration-'));
+    try {
+      writeFileSync(join(dir, 'ax.config.json'), body);
+      assert.equal(loadConfig(dir).migration, null, body);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('doctor prints the migration repair without failing the checkout', () => {
   const dir = checkout(base({ debugAs: { route: '/debug-as', optInEnv: 'AX_DEBUG_AS_PHONE' } }));
   try {
