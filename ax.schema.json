@@ -111,7 +111,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["browser", "identities"],
-      "description": "The interactive-debugging contract this project adopts, by declaring it. `ax debug-as` opens one visible Chromium session on this checkout's own loopback application address as a declared Debug identity, and shares it with an agent over a loopback CDP port. There is no default at any depth on purpose: adoption is a declaration (src/plan.mjs), and the two fields this section used to carry were defaulted, so every project that loaded a config looked like it had asked for debug sessions. AX owns the mechanics; this declares only what the project knows — where its Playwright lives, how to start it, how to refresh authentication, and which identities exist.",
+      "description": "Adopt project debug sessions explicitly: declare browser and identities, plus optional phone. AX opens one visible Chromium session on this checkout's loopback application address and shares its CDP connection with agents. No defaults materialize this contract. Migration: the retired { route, optInEnv } shape is no longer a debug-session contract; remove it or replace it with this declaration. AX reports that repair without blocking version pinning and never infers identities or converts the old route into a provider.",
       "properties": {
         "browser": {
           "type": "object",
