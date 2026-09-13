@@ -64,13 +64,13 @@ function assertManagedPath(root, target) {
 
  * command registry, so it can never advertise a command the CLI does not run.
  */
-export const agentsBody = () =>
+export const agentsBody = (plan = {}) =>
   [
     '## ax tooling',
     '',
     'The `ax` CLI carries this checkout\'s reusable tooling.',
     '',
-    ...agentLines().map(line => `- ${line}`),
+    ...agentLines(plan.adopted).map(line => `- ${line}`),
     '',
     `\`${CONFIG_FILE}\` is where ax reads its ports, app paths and guarded vendor trees. A command`,
     'that needs one of those values reads it from there rather than restating it.',

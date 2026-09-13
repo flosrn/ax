@@ -22,7 +22,8 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CONFIG_FILE, loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { isMainCheckout, listWorktrees } from '../git.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { procsByCwd, reapByCwd } from '../proc.mjs';
+import { descendantsOf, procsByCwd, reapByCwd } from '../proc.mjs';
+import { claimForProcess, liveBrowserClaim, processStart, sweepDeadBrowserState } from '../debug-as/receipt.mjs';
 import { identify } from './identity.mjs';
 import { locateWorktree, physical } from './locate.mjs';
 import { KEYS, PREFIX } from './plan.mjs';
@@ -64,9 +65,9 @@ const DEV_BINARIES = /^(next|vite|turbo|vitest|playwright|jest|tsx|nodemon|remix
 /** Build output only. Never node_modules, never anything a human wrote. */
 const CACHES = ['.next', '.turbo', 'node-compile-cache'];
 
-export function clean(argv = [], { command = commandLine, reap = reapByCwd, scan = procsByCwd } = {}) {
+export function clean(argv = [], { command = commandLine, reap = reapByCwd, scan = procsByCwd, claim, paths = repoPaths, load = loadCheckoutConfig } = {}) {
   const target = argv.find(arg => !arg.startsWith('-'));
-  const { root: here, main } = repoPaths();
+  const { root: here, main } = paths();
   if (!here) {
     bad('not inside a git repository');
     return 1;
@@ -84,7 +85,7 @@ export function clean(argv = [], { command = commandLine, reap = reapByCwd, scan
   }
   const root = located.path;
 
-  const { config, exists, errors } = loadCheckoutConfig({ root, main });
+  const { config, exists, errors } = load({ root, main });
   section(`reclaiming ${root}`);
 
   // An invalid config is not "no config". It names the database stack, the cache
@@ -113,7 +114,13 @@ export function clean(argv = [], { command = commandLine, reap = reapByCwd, scan
     return 1;
   }
 
-  reclaimProcesses(root, { command, reap, scan });
+  // Proven-dead debug state only (R34): a receipt whose owner this host can
+  // disprove, and the transition lock beside it. A live or unverifiable owner
+  // keeps every file it holds — cleanup is safe on a worktree in use, and a
+  // Role browser an operator is clicking through is exactly that.
+  reclaimDebugState(root);
+
+  reclaimProcesses(root, { command, reap, scan, claim });
 
   if (!config) {
     note(`no ${CONFIG_FILE} — reclaimed processes only`);
@@ -176,9 +183,22 @@ function commandLine(pid) {
  * the worktree being cleaned cannot kill the cleanup itself. The name filter is
  * applied to the SCAN rather than passed as `pattern`, because the decision
  * needs the process's command line and not just its name.
+ *
+ * What a live Role browser owns is spared whole (`protectedProcesses` below).
+ * `claim` stays as an injected per-process predicate for the cases that want to
+ * state ownership directly rather than publish a receipt.
  */
-function reclaimProcesses(root, { command, reap, scan }) {
-  const victims = path => scan(path).filter(reapable(root, command));
+function reclaimProcesses(root, { command, reap, scan, claim, protect = protectedProcesses }) {
+  const may = reapable(root, command);
+  // Computed ONCE and reused for TERM and again for KILL: every term of it
+  // forks `ps`, and `victims` runs over every dev process in the tree twice.
+  let spared;
+  const owned = proc => {
+    if (typeof claim === 'function') return Boolean(claim(proc)?.claimed);
+    if (spared === undefined) spared = protect(root);
+    return spared.has(proc.pid);
+  };
+  const victims = path => scan(path).filter(proc => may(proc) && !owned(proc));
 
   const termed = reap(root, { signal: 'TERM', scan: victims });
   if (termed.length === 0) {
@@ -189,6 +209,85 @@ function reclaimProcesses(root, { command, reap, scan }) {
   ok(`asked ${termed.length} process(es) to stop: ${termed.map(process => process.comm).join(', ')}`);
   const killed = reap(root, { signal: 'KILL', scan: victims });
   if (killed.length > 0) note(`${killed.length} ignored TERM and was killed`);
+}
+
+/**
+ * Every pid in this worktree that a live Role browser owns, and nothing else.
+ *
+ * Three processes are one session, and sparing only the middle one killed the
+ * other two. The Chromium ROOT is what the receipt records; its helpers — GPU,
+ * zygote, every renderer — are named `chrome`/`chromium` too, so the dev-tool
+ * allow-list reaps them and the operator's window dies anyway. The Node OWNER
+ * is worse: installed the ordinary way it runs from this worktree's
+ * `node_modules`, which is exactly the provenance `reapable` reads as "a dev
+ * process of this tree", so maintenance killed the process HOLDING the browser.
+ *
+ * Sparing is a pid+start proof in both directions, never a pid alone: a receipt
+ * records numbers the kernel is free to hand to something else afterwards. The
+ * helpers are proven differently and deliberately — by LIVE ancestry from the
+ * proven root, so a recycled pid is in the set only while it really is that
+ * root's child. The process GROUP is not usable for this: `next dev` workers
+ * reparent with a group of their own and two unrelated trees launched from one
+ * shell share one, so a group test would spare a stranger's dev server.
+ *
+ * An unprovable owner is not spared, matching what `claimForProcess` already
+ * decides for the Chromium root: the files a live-or-unreadable receipt holds
+ * are kept by `sweepDeadBrowserState`, but SIGNALLING a process needs proof.
+ */
+function protectedProcesses(
+  root,
+  { receipt = liveBrowserClaim, prove = claimForProcess, start = processStart, descendants = descendantsOf } = {},
+) {
+  const spared = new Set();
+  let found;
+  try {
+    found = receipt(root);
+  } catch {
+    return spared; // Unreadable debug state protects nothing, and stops nothing.
+  }
+  if (!found?.claimed || !found.receipt) return spared;
+
+  try {
+    const owner = found.receipt.pid;
+    // `live` IS that proof already — the receipt read compares host, liveness
+    // and the start token before it answers, so re-asking `ps` here would be a
+    // second fork for an answer already in hand. `ambiguous` never compared
+    // them (another host, or a start `ps` would not give), so it must.
+    const proven = found.state === 'live' || start(owner) === found.receipt.processStart;
+    if (Number.isInteger(owner) && owner > 0 && proven) spared.add(owner);
+  } catch {
+    // `ps` could not answer for the owner; the Chromium proof below is separate.
+  }
+
+  try {
+    const chromium = found.chromiumPid;
+    if (Number.isInteger(chromium) && chromium > 0 && prove({ pid: chromium, cwd: root })?.claimed) {
+      spared.add(chromium);
+      for (const helper of descendants(chromium)) spared.add(helper);
+    }
+  } catch {
+    // Same rule: no proof, no sparing.
+  }
+  return spared;
+}
+
+/**
+ * Give back the debug state of a session that is GONE, and nothing else.
+ *
+ * `sweepDeadBrowserState` is the whole predicate: it spares a live owner, an
+ * owner on another host and an owner whose start identity cannot be read, and
+ * removes only a receipt this host can disprove plus the transition lock beside
+ * it. A stale lock is what makes the next `ax debug-as` in this worktree refuse
+ * with a holder nobody can find.
+ */
+function reclaimDebugState(root) {
+  let swept;
+  try {
+    swept = sweepDeadBrowserState(root);
+  } catch {
+    return; // Unreadable debug state is never a reason a cleanup stops.
+  }
+  if (swept.removed.length > 0) note(`removed ${swept.removed.length} proven-dead Role browser file(s)`);
 }
 
 /**

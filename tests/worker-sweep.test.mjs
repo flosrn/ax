@@ -76,7 +76,7 @@ const shape = procs => procs.map(([pid, ppid, etimes, rss, args]) => ({ pid, ppi
  * `pgid: pid => pid` puts every process in its own group, so nothing collides
  * with the caller's by accident — the own-group case names itself explicitly.
  */
-const run = (argv, { procs = GAPICORE, then, env = {}, pgid = pid => pid } = {}) => {
+const run = (argv, { procs = GAPICORE, then, env = {}, pgid = pid => pid, claim, cwdOf } = {}) => {
   const signalled = [];
   const slept = [];
   let reads = 0;
@@ -92,6 +92,8 @@ const run = (argv, { procs = GAPICORE, then, env = {}, pgid = pid => pid } = {})
       pgid,
       env,
       home: HOME,
+      claim,
+      cwdOf,
     }),
   );
   return { ...result, signalled, slept };
@@ -334,3 +336,39 @@ test('a sweep that cannot run is never why a dispatch stops', () => {
   assert.equal(run([...UNDER], { procs: [] }).code, 0);
   assert.equal(run([...UNDER, '--apply']).code, 0);
 });
+
+test('a live claimed Chromium root is spared even when older than the floor, and an unclaimed sibling is still swept', () => {
+  // R34: ordinary maintenance never signals a live Role browser. The two-hour
+  // puppeteer root is exactly the shape a Role browser has after a long review,
+  // and sweeping it is how an unrelated dispatch used to kill an authenticated
+  // session mid-click. Protection is positive evidence only: without a claim
+  // the existing age predicate still applies.
+  const claimed = run([...UNDER, '--apply'], {
+    procs: [
+      [250706, 4141019, 7302, 115712, `${PUP} --remote-debugging-port=51234`],
+      [321844, 4143712, 6257, 28672, `${PW} --headless`],
+    ],
+    claim: ({ pid }) => ({ claimed: pid === 250706 }),
+  });
+  assert.equal(claimed.code, 0);
+  assert.match(claimed.out, /skip\s+root 250706/);
+  assert.deepEqual(
+    claimed.signalled.filter(line => line.endsWith('250706')),
+    [],
+  );
+  assert.ok(claimed.signalled.some(line => line.endsWith('321844')));
+
+  const unknown = run([...UNDER, '--apply'], {
+    procs: [[250706, 4141019, 7302, 115712, `${PUP} --remote-debugging-port=51234`]],
+  });
+  assert.ok(unknown.signalled.some(line => line.endsWith('250706')), 'no claim is not a disabled sweep');
+});
+
+test('a Chromium whose pid matches a receipt but whose start identity does not is still swept', () => {
+  const r = run([...UNDER, '--apply'], {
+    procs: [[250706, 4141019, 7302, 115712, `${PUP} --remote-debugging-port=51234`]],
+    claim: () => ({ claimed: false }),
+  });
+  assert.ok(r.signalled.some(line => line.endsWith('250706')));
+});
+

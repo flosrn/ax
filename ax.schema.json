@@ -188,7 +188,7 @@
                         "path": { "type": "string", "pattern": "^/", "description": "Absolute path of the callback route." },
                         "tokenParam": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" },
                         "typeParam": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" },
-                        "typeValue": { "type": "string", "pattern": "^[a-z_]+$" },
+                        "typeValue": { "const": "magiclink" },
                         "nextParam": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" }
                       }
                     }
@@ -198,7 +198,7 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": ["type", "command"],
-                  "description": "The escape hatch: any other provider, through the same bounded adapter protocol. It must return a final URL on this worktree's own Tailscale origin.",
+                  "description": "Any other provider through the bounded JSON adapter protocol: stdin carries protocol:1, kind:phone-handoff, identity, email, path, origin and login. Return one object with protocol:1 and url, a final URL on this worktree's recorded Tailscale origin. The call runs only after confirmation and has a 15-second deadline and 64-KiB response cap.",
                   "properties": {
                     "type": { "const": "command" },
                     "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
