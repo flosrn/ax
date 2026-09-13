@@ -23,7 +23,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,7 @@ import { test } from 'node:test';
 
 import { loadConfig } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
+import { init } from '../src/init.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -167,6 +168,31 @@ test('doctor prints the migration repair without failing the checkout', () => {
     assert.doesNotMatch(graded.out, /ax\.config\.json is invalid/);
     assert.match(graded.out, /retired/, 'the finding names the shape');
     assert.match(graded.out, /"browser"/, 'and the repair names what replaces it');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The same repair, from the other verb. `doctor` and `init` share one rule —
+// neither may name a repair the other does not (src/init.mjs
+// `retiredConfigKeyFixes`) — and `init` is the likelier first contact: a
+// consumer pins the release, runs it, and provisions. It must not refuse
+// either: the section is already dropped from what `loadConfig` returns, so
+// there is nothing here for this verb to leave half-written.
+test('init names the same migration repair and still provisions', () => {
+  const dir = checkout(base({ debugAs: { route: '/debug-as', optInEnv: 'AX_DEBUG_AS_PHONE' } }));
+  try {
+    const provisioned = capture(() => init(dir));
+
+    assert.equal(provisioned.code, 0, 'a retired section is not a refusal');
+    assert.match(provisioned.out, /retired/, 'the finding names the shape');
+    assert.match(provisioned.out, /"browser"/, 'and the repair names what replaces it');
+    assert.doesNotMatch(provisioned.out, /invalid, leaving it untouched/);
+
+    // The file is the user's: the verb reports where the section went and
+    // rewrites nothing under that key.
+    const after = JSON.parse(readFileSync(join(dir, 'ax.config.json'), 'utf8'));
+    assert.deepEqual(after.debugAs, { route: '/debug-as', optInEnv: 'AX_DEBUG_AS_PHONE' });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
