@@ -246,6 +246,62 @@ test('the retired shape refuses as a contract, and still names the migration', (
   assert.match(refusal.fix, /debugAs/);
 });
 
+// R2 binds ONE path rule to every path AX consumes — the flag, the declared
+// default, and the value serialized into the phone callback. Only the declared
+// default reached it: `confirm.path` carries schema pattern `^/` alone, so
+// `//evil.example.com` loaded with zero refusals and would resolve to another
+// host the moment a URL is built on it. Found by the security lens and the
+// independent cross-model pass.
+test('the phone callback path obeys the same rule as a declared default path', () => {
+  for (const path of ['//evil.example.com', '/auth\\confirm', '/auth/confirm?next=/x', 'auth/confirm']) {
+    const contract = withPhone();
+    contract.phone.provider.confirm.path = path;
+    const [refusal, ...rest] = load(contract).refusals;
+    assert.ok(refusal, `${JSON.stringify(path)} loaded with no refusal`);
+    assert.match(refusal.at, /^debugAs\.phone\.provider\.confirm\.path$/);
+    assert.match(refusal.problem, /path/i);
+    assert.ok(refusal.fix.length > 0);
+    assert.deepEqual(rest, [], `${JSON.stringify(path)} produced more than one refusal`);
+  }
+
+  assert.deepEqual(load(withPhone()).refusals, [], 'a valid callback path still loads');
+});
+
+// `src/schema.mjs` admits `$comment` and `$schema` structurally at every object
+// level, including inside a keyed map — it has its own test there and a captured
+// learning (docs/solutions/bugs/an-admission-list-kept-per-object-drifts-per-object.md).
+// The identities loop tested every key as a name, so a project that annotated
+// its catalog got its whole contract refused for a key the validator admits.
+test('a reserved annotation in the identity map is metadata, not an identity', () => {
+  const annotated = browserOnly();
+  annotated.identities.$comment = 'super-admin lands on the admin console';
+  const loaded = load(annotated);
+
+  assert.deepEqual(loaded.schema, [], 'the validator admits the annotation');
+  assert.deepEqual(loaded.refusals, [], 'and so does the contract');
+  assert.deepEqual(Object.keys(loaded.contract.identities), ['guest', 'owner']);
+});
+
+// Every refusal branch in the identity loop `continue`s before writing to
+// `resolved`, so `.every()` over an empty set was true: one bad name on the only
+// authenticated identity added "declares a Debug adapter while no identity is
+// authenticated" — a second refusal telling the operator to delete a correct
+// adapter.
+test('a refused identity does not make the unused-adapter mirror fire', () => {
+  const contract = browserOnly();
+  contract.identities.owner.defaultPath = '//evil.example.com';
+  const refusals = load(contract).refusals;
+
+  assert.equal(refusals.length, 1, `expected one refusal, got ${refusals.map(r => r.at).join(' + ')}`);
+  assert.match(refusals[0].at, /identities\.owner\.defaultPath$/);
+});
+
+test('a null declaration says what it actually is', () => {
+  const [refusal] = loadDebugContract({ raw: { ...base(), debugAs: null } }).refusals;
+  assert.match(refusal.problem, /is null, not an object/);
+  assert.doesNotMatch(refusal.problem, /is object, not an object/);
+});
+
 test('the declaration this contract is adopted by is the root key itself', () => {
   assert.equal(DEBUG_DECLARATION, 'debugAs');
 });

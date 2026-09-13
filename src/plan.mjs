@@ -53,6 +53,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CONFIG_FILE, PACKAGE_NAME } from './config.mjs';
+import { DEBUG_DECLARATION } from './debug-as/declaration.mjs';
 
 /**
  * The package root OMP loads in a project that installed ax. The ax checkout
@@ -61,15 +62,12 @@ import { CONFIG_FILE, PACKAGE_NAME } from './config.mjs';
  */
 export const OMP_PACKAGE_ROOT = `./node_modules/${PACKAGE_NAME}`;
 
-/**
- * The root key that adopts the debug-session contract, exported because a
- * second module needs the same string: `src/debug-as/config.mjs` names it in
- * every refusal it writes. This table is the authority on WHICH declaration
- * adopts what, so the key lives here and that module imports it — two files
- * spelling one root key is how a rename lands in the grader and not in the
- * refusals, or the other way round.
- */
-export const DEBUG_DECLARATION = 'debugAs';
+// The root key that adopts debug sessions is imported, not spelled here: three
+// layers need the same string — the table below grades adoption by it,
+// `src/debug-as/config.mjs` names it in every refusal, and `src/config.mjs`
+// classifies the retired shape with it — and it lives in a module with no
+// imports of its own so that third caller cannot close an import cycle through
+// this file (./debug-as/declaration.mjs).
 
 /**
  * The contracts a project may adopt, and the ONE declaration that adopts each.

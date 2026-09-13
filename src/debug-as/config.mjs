@@ -27,24 +27,15 @@
 // triple, never a bare boolean, because a finding an operator cannot act on is
 // the F-014 state this repository has already paid for once.
 //
-// THE RETIRED SHAPE IS READ FROM RAW BYTES, before ordinary validation, and it
-// earns a migration finding rather than a conversion (R30). For eight releases
-// `debugAs` was `{ route, optInEnv }`: two defaulted fields no command ever
-// consumed. Those fields cannot express an identity, an adapter or a safe
-// provider, so there is nothing to convert them INTO — and a consumer must be
-// able to pin the release that carries this contract before its own cutover, so
-// recognizing them is a finding, never a load failure.
+// THE RETIRED SHAPE and the root key itself live one level down, in
+// `./declaration.mjs`, which imports nothing. `loadConfig` has to classify that
+// shape too, and reaching this module from there would close a cycle through
+// `../plan.mjs` that throws at import time — its own header measures it. So
+// both facts are re-exported from here, where the refusals that name them are.
+import { DEBUG_DECLARATION, historicalShape } from './declaration.mjs';
+import { ANNOTATIONS } from '../schema.mjs';
 
-// THE ROOT KEY IS THE PLAN'S. `src/plan.mjs` `CONTRACTS` decides which
-// declaration adopts which contract, so the string lives there and this module
-// imports it; it is re-exported because every refusal below names it, and a
-// caller reading one contract should not need two imports to do it.
-import { DEBUG_DECLARATION } from '../plan.mjs';
-
-export { DEBUG_DECLARATION };
-
-/** The fields the retired shape carried, and nothing else. */
-const HISTORICAL_KEYS = ['route', 'optInEnv'];
+export { DEBUG_DECLARATION, historicalShape };
 
 /**
  * An identity name usable everywhere it travels: a receipt filename, a session
@@ -78,30 +69,6 @@ export function pathProblem(value) {
 }
 
 /**
- * The retired `{ route, optInEnv }` shape, read from RAW configuration, or
- * `null`.
- *
- * Raw, and before validation, because validation of the current schema is what
- * turns those two fields into `unknown key` errors — accurate, and useless to
- * whoever wrote them. Recognizing the shape is what lets the finding say where
- * the section went instead of that it is misspelled.
- */
-export function historicalShape(raw) {
-  const declared = isObject(raw) ? raw[DEBUG_DECLARATION] : undefined;
-  if (!isObject(declared)) return null;
-
-  const keys = Object.keys(declared);
-  if (keys.length === 0 || !keys.every(key => HISTORICAL_KEYS.includes(key))) return null;
-
-  return {
-    at: DEBUG_DECLARATION,
-    keys,
-    problem: `declares the retired ${keys.map(key => `"${key}"`).join(" and ")} shape, which no command has ever consumed and which cannot express an identity, an adapter or a provider`,
-    fix: `rewrite "${DEBUG_DECLARATION}" as the adopted contract — "browser", "identities" and optional "phone" — or remove it; there is no automatic conversion, and pinning this release does not require the rewrite`,
-  };
-}
-
-/**
  * The contract this project declared, plus every refusal that names its repair.
  *
  * Takes RAW configuration rather than the validated config: adoption is the
@@ -125,7 +92,7 @@ export function loadDebugContract({ raw } = {}) {
     return {
       adopted: true,
       contract: null,
-      refusals: [{ at: DEBUG_DECLARATION, problem: `is ${Array.isArray(declared) ? 'an array' : typeof declared}, not an object`, fix: `declare "${DEBUG_DECLARATION}" as an object with "browser" and "identities"` }],
+      refusals: [{ at: DEBUG_DECLARATION, problem: `is ${declared === null ? 'null' : Array.isArray(declared) ? 'an array' : typeof declared}, not an object`, fix: `declare "${DEBUG_DECLARATION}" as an object with "browser" and "identities"` }],
     };
   }
 
@@ -137,8 +104,16 @@ export function loadDebugContract({ raw } = {}) {
 
   const resolved = {};
   for (const [name, entry] of Object.entries(identities)) {
-    const at = `${DEBUG_DECLARATION}.identities.${name || '""'}`;
+    // A reserved annotation is metadata, and `src/schema.mjs` admits it at
+    // every object level INCLUDING inside a keyed map — structurally, because
+    // hand-listing admission per object is how `prGate.$comment` loaded while
+    // `dispatch.$comment` was refused. This walker validates keys as identity
+    // NAMES, so it has to skip exactly what that file admits: a project that
+    // annotated its catalog would otherwise have its whole contract refused
+    // for a key the validator accepts.
+    if (ANNOTATIONS.has(name)) continue;
 
+    const at = `${DEBUG_DECLARATION}.identities.${name || '""'}`;
     if (!NAME.test(name)) {
       refusals.push({
         at,
@@ -189,11 +164,40 @@ export function loadDebugContract({ raw } = {}) {
     resolved[name] = { name, defaultPath: entry.defaultPath, authenticated, storageState: authenticated ? entry.browser.storageState : null, phone: wantsPhone, email: wantsPhone ? entry.phone.email : null };
   }
 
+  // The one path rule, on the other path this contract carries (R2). The flag
+  // and the declared default were checked and the callback was not: its schema
+  // pattern is `^/` alone, so `//evil.example.com` loaded with no refusal and
+  // would resolve to another host the moment a URL is built on it. The provider
+  // that builds that URL is not written yet, which is exactly why the rule is
+  // enforced here rather than trusted to arrive with it.
+  const confirm = isObject(phone?.provider?.confirm) ? phone.provider.confirm : null;
+  if (confirm !== null) {
+    const problem = pathProblem(confirm.path);
+    if (problem !== '') {
+      refusals.push({
+        at: `${DEBUG_DECLARATION}.phone.provider.confirm.path`,
+        problem: `declares a callback path that ${problem}`,
+        fix: `use an absolute path of this application, such as "/auth/confirm" — the phone callback lands on the same origin as the browser`,
+      });
+    }
+  }
+
   // The mirror of the closure above, from the project's side: an adapter is
   // declared for authentication that nothing authenticates. Reported rather
   // than ignored, because an adapter nobody invokes is a command an operator
   // believes is being run.
-  if (adapter !== null && Object.values(resolved).every(identity => !identity.authenticated)) {
+  //
+  // JUDGED FROM THE DECLARATIONS, AND ONLY ON A CLEAN PASS. Every refusal
+  // branch above `continue`s before writing to `resolved`, so reading
+  // authentication off `resolved` made `.every()` true over an empty set: one
+  // bad name or path on the only authenticated identity added this refusal too,
+  // telling the operator to delete a correct adapter. A second refusal caused
+  // by the first is worse than silence — it sends the repair in the wrong
+  // direction.
+  const declaresAuthentication = Object.entries(identities).some(
+    ([name, entry]) => !ANNOTATIONS.has(name) && isObject(entry) && isObject(entry.browser) && typeof entry.browser.storageState === 'string',
+  );
+  if (adapter !== null && refusals.length === 0 && !declaresAuthentication) {
     refusals.push({
       at: `${DEBUG_DECLARATION}.browser.prepare`,
       problem: 'declares a Debug adapter while no identity is authenticated, so nothing would ever invoke it',

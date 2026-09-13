@@ -34,10 +34,19 @@ export function doctor(cwd = process.cwd()) {
 
   note(isWorktree ? `worktree of ${main}` : 'primary checkout');
 
-  const { config, errors, exists, declared } = loadConfig(root);
+  const { config, errors, exists, declared, migration } = loadConfig(root);
   if (!exists) {
     fail(`${CONFIG_FILE} is missing — no project plan can be derived`, 'ax init');
     return failures;
+  }
+  // The retired `debugAs` shape, named before anything else is graded and
+  // NEVER as a failure: `ax pin` grades with this verb, and the release a
+  // consumer needs in order to rewrite that section is the one they would be
+  // unable to pin (R30). So it reads as a repair the operator can take when
+  // they choose to, beside a checkout that is otherwise coherent.
+  if (migration) {
+    note(`${CONFIG_FILE} — "${migration.at}" ${migration.problem}`);
+    fix(migration.fix);
   }
   if (errors.length > 0) {
     fail(`${CONFIG_FILE} is invalid`, `edit ${CONFIG_FILE}`);

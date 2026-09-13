@@ -286,6 +286,15 @@ export function init(root, { dryRun = false, vendor } = {}) {
   if (refused([CONFIG_FILE, 'package.json'])) return 1;
 
   const existing = loadConfig(root);
+  // The retired `debugAs` shape, named on the same footing `doctor` names it,
+  // so neither verb can report a repair the other does not (the rule below,
+  // one level up). It is not a refusal here either: the section is dropped
+  // from what `loadConfig` returns, so this verb provisions everything else
+  // exactly as it would have.
+  if (existing.migration) {
+    note(`${CONFIG_FILE} — "${existing.migration.at}" ${existing.migration.problem}`);
+    fix(existing.migration.fix);
+  }
   if (existing.exists && existing.errors.length > 0) {
     bad(`${CONFIG_FILE} — invalid, leaving it untouched`);
     for (const error of existing.errors) note(error);

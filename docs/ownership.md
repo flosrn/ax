@@ -9,7 +9,8 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 |---|---|
 | `src/delegation.mjs`, `bin/ax.mjs`, `src/cli.mjs` | global command → exact project version → CLI delegation |
 | `src/plan.mjs` | what a project SHOULD carry: the checkout that publishes ax, and which contracts its configuration adopted |
-| `src/debug-as/config.mjs` | the debug-session contract a project declares: identity names, capability closure, path safety, and the retired `{ route, optInEnv }` shape's migration finding |
+| `src/debug-as/declaration.mjs` | the root key that adopts debug sessions and the retired `{ route, optInEnv }` shape's migration finding — a leaf, because `src/config.mjs` classifies that shape and reaching the rules from there would close an import cycle through `src/plan.mjs` |
+| `src/debug-as/config.mjs` | the debug-session contract a project declares: identity names, capability closure, and the one path rule on every path it carries |
 | `src/init.mjs`, `src/doctor.mjs` | project inference, managed wiring, recorded state vs reality |
 | `src/worktree/plan.mjs`, `src/worktree/probes.mjs` | every worktree decision and every machine fact it consumes |
 | `src/worktree/identity.mjs`, `src/worktree/ports.mjs`, `src/worktree/supabase.mjs`, `src/worktree/addressing.mjs` | the rules composed by the plan |

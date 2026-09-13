@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyDefaults, validate } from './schema.mjs';
+import { DEBUG_DECLARATION, historicalShape } from './debug-as/declaration.mjs';
 import { mainCheckout, repoRoot } from './git.mjs';
 
 export const CONFIG_FILE = 'ax.config.json';
@@ -51,9 +52,9 @@ export function repoPaths(from = process.cwd()) {
 /**
  * Read and validate `ax.config.json`.
  *
- * Returns `{ path, exists, config, declared, errors }` rather than throwing:
- * `ax doctor` has to report an invalid config as a finding with a fix, not die
- * on it.
+ * Returns `{ path, exists, config, declared, errors, migration }` rather than
+ * throwing: `ax doctor` has to report an invalid config as a finding with a
+ * fix, not die on it.
  *
  * `declared` is the root keys the FILE carries, before `applyDefaults` — which
  * is a different question from what `config` holds, and the only one that can
@@ -65,25 +66,44 @@ export function repoPaths(from = process.cwd()) {
  * absent file declares nothing rather than declaring nothing knowably (F-028
  * cuts the other way here: there is no receipt to be missing, only a file that
  * is not there).
+ *
+ * `migration` is the RETIRED `debugAs` shape, classified before the schema gets
+ * to call its two fields unknown keys — and it is why this function reads a
+ * leaf module (`./debug-as/declaration.mjs`) rather than the rules module that
+ * owns the rest of that contract: reaching the rules from here would close an
+ * import cycle through `./plan.mjs` that throws before any command parses an
+ * argument.
+ *
+ * THE RETIRED SECTION IS DROPPED, NOT CARRIED. Two fields cannot express an
+ * identity, an adapter or a provider, so there is nothing to convert them into
+ * (R30) — and a load failure would be worse than the gap it replaced: every
+ * verb refusing on a section no command ever consumed, with `ax pin` among
+ * them, which is precisely the release a consumer needs in order to rewrite it.
+ * So the rest of the file loads, the section does not reach `config`, its key
+ * does not count as an adoption, and the finding travels beside the config for
+ * `doctor` and `init` to print.
  */
 export function loadConfig(repoRoot) {
   const path = join(repoRoot, CONFIG_FILE);
-  if (!existsSync(path)) return { path, exists: false, config: null, declared: [], errors: [] };
+  if (!existsSync(path)) return { path, exists: false, config: null, declared: [], errors: [], migration: null };
 
   let raw;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
-    return { path, exists: true, config: null, declared: [], errors: [`${CONFIG_FILE}: not valid JSON (${error.message})`] };
+    return { path, exists: true, config: null, declared: [], errors: [`${CONFIG_FILE}: not valid JSON (${error.message})`], migration: null };
   }
 
-  const errors = validate(raw, schema);
-  const declared = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw) : [];
-  if (errors.length > 0) return { path, exists: true, config: null, declared, errors };
+  const migration = historicalShape(raw);
+  const graded = migration === null ? raw : Object.fromEntries(Object.entries(raw).filter(([key]) => key !== DEBUG_DECLARATION));
 
-  const config = applyDefaults(raw, schema);
+  const errors = validate(graded, schema);
+  const declared = graded !== null && typeof graded === 'object' && !Array.isArray(graded) ? Object.keys(graded) : [];
+  if (errors.length > 0) return { path, exists: true, config: null, declared, errors, migration };
+
+  const config = applyDefaults(graded, schema);
   config.project.display ??= config.project.name;
-  return { path, exists: true, config, declared, errors: [] };
+  return { path, exists: true, config, declared, errors: [], migration };
 }
 
 /**
