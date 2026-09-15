@@ -17,7 +17,6 @@
  * release/retain/read keep working) and the session corrects its own model from
  * inside, reading the intent its parent wrote into the Task spec.
  *
- * WHAT IT DELIBERATELY DOES NOT DO
  * It never touches a session that is not a supervised worker. An operator's
  * interactive session keeps whatever model the operator chose — a tool that
  * silently overrides a human's deliberate choice teaches the human to distrust
@@ -42,6 +41,7 @@ import {
   resolveOrcaBin,
   type OrcaRunner,
 } from './self.ts';
+import { ownSessionFile } from './own-record.ts';
 import { isSubagentSession } from '../shared/session.ts';
 
 /**
@@ -372,6 +372,12 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
 
     const handle = seams.handle !== undefined ? seams.handle : (process.env.ORCA_TERMINAL_HANDLE ?? null);
     const run = seams.run ?? createRunner(resolveOrcaBin().bin);
+    // THE ONE SHAPE THE SILENCE MUST NOT COVER, set by `localSpec` below when
+    // ax's own record names this pane. An operator's session owns no such
+    // record, so this stays null for it and the `absent` branch stays as quiet
+    // as it has to be — which is what a discriminator on the handle alone could
+    // not do, since an operator pane has a handle too.
+    let recordOwned: string | null = null;
     const outcome = await applyDispatchedModel({
       run,
       handle,
@@ -381,16 +387,34 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       configuredRole: (role) => pi.pi?.settings?.getModelRole?.(role),
       // Only reached on `absent`, and only acted on when it carries a marker.
       //
-      // Two sources, in this order and for one reason each. The submitted prompt
-      // is authoritative and race-free, but it exists only in the process that
-      // received it. The transcript covers what that misses: a session RESUMED
-      // into an existing worktree never sees an `input` event for the spec that
-      // started it. `session_start` finds neither, which is why
-      // `before_agent_start` is the occasion that makes a cross-host worker work.
-      localSpec: () =>
-        firstInput !== null
-          ? { spec: firstInput }
-          : readSpecFromTranscript((ctx as HandlerContext | null)?.sessionManager?.getSessionFile?.()),
+      // THREE SOURCES, in this order and for one reason each. The submitted
+      // prompt is authoritative and race-free, but it exists only in the
+      // process that received it. The session file the HOST names covers what
+      // that misses: a session RESUMED into an existing worktree never sees an
+      // `input` event for the spec that started it.
+      //
+      // And ax's own DISPATCH RECORD covers what both miss, which is the case
+      // that cost three children on 2026-09-15 (goodluckagency/ofmchat
+      // #253-#257). An injected brief fires no `input`, so `firstInput` is
+      // null; if the host then names no session file, the marker its parent
+      // wrote is never read, the child keeps its boot model with no role and no
+      // tool fence, and `absent` settles SILENTLY because that silence is what
+      // keeps a warning off every operator pane. The record was written before
+      // the mutation was issued and names the pane, the worktree and the
+      // dispatch id, so a child can find its own transcript with no Orca call,
+      // no `worker-list` row and no host seam (./own-record.ts). That is
+      // F-048's own lesson — count and read by PANE and by RECORD, never by
+      // that index — applied to the one reader still trusting it.
+      localSpec: () => {
+        if (firstInput !== null) return { spec: firstInput };
+        const named = (ctx as HandlerContext | null)?.sessionManager?.getSessionFile?.();
+        if (named !== undefined && named !== null && named !== '') return readSpecFromTranscript(named);
+        const own = ownSessionFile(handle);
+        recordOwned = own.request;
+        // An absent record is an operator's own pane, and stays as quiet as it
+        // was: `absentFallback` acts on a marker, never on a reason.
+        return own.file === null ? { spec: null, reason: own.reason } : readSpecFromTranscript(own.file);
+      },
     });
 
     if (outcome.applied) {
@@ -418,7 +442,23 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       // final occasion it means this is an ordinary interactive session in an
       // Orca pane, which is the common case and must stay SILENT: warning here
       // would fire on every session the operator opens.
-      if (final) settled = true;
+      //
+      // EXCEPT WHEN AX'S OWN RECORD NAMES THIS PANE. Then this is not an
+      // operator's session: it is a child ax dispatched, its spec could not be
+      // read through any of the three sources, and it is about to implement a
+      // ticket with no role, no playbook and no tool fence. Measured 2026-09-15
+      // on goodluckagency/ofmchat #253-#257, where three children did exactly
+      // that and the only party that knew said nothing — so the dispatch verb
+      // reported UNPROVEN with no cause, correctly and uselessly. The record is
+      // what separates the two populations; a handle cannot, because an
+      // operator pane has one too.
+      if (final) {
+        settled = true;
+        if (recordOwned !== null)
+          pi.logger?.warn?.(
+            `[orca-model] ${instance} ${occasion}: this pane is the child of dispatch record ${recordOwned}, and its spec could not be read from the submitted prompt, the host's session file or that record${outcome.detail === undefined ? '' : ` — ${outcome.detail}`}. It stays on its BOOT model with no role and no tool fence; a dispatch verb will report it UNPROVEN, correctly.`,
+          );
+      }
       return;
     }
 
