@@ -328,7 +328,7 @@ describe('a worker whose Run lives on another host', () => {
     const outcome = await applyDispatchedModel({
       run: fakeRunner({ 'worker-list': noWorkerHere }),
       handle: HANDLE,
-      localSpec: () => ({ spec: 'Read the brief.\n[omp model=@smol:low]' }),
+      localSpec: () => ({ spec: 'Read the brief.\n[omp model=@smol:low]', via: 'transcript' }),
       ...asDeps(d),
     });
     expect(outcome).toMatchObject({ applied: true, model: 'stub/smol', source: 'marker', via: 'transcript' });
@@ -341,7 +341,7 @@ describe('a worker whose Run lives on another host', () => {
     const outcome = await applyDispatchedModel({
       run: fakeRunner({ 'worker-list': noWorkerHere }),
       handle: HANDLE,
-      localSpec: () => ({ spec: 'fix the login bug please' }),
+      localSpec: () => ({ spec: 'fix the login bug please', via: 'transcript' }),
       ...asDeps(d),
     });
     expect(outcome.applied).toBe(false);

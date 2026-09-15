@@ -1,82 +1,70 @@
 // @ts-nocheck — runs under OMP's Bun runtime, not the repo TypeScript project.
 /**
- * "WHICH SESSION FILE IS MINE?", answered from ax's own write-ahead record
- * rather than from the host or from Orca.
+ * "WHICH RECORDED BRIEF IS MINE?", answered from ax's own write-ahead record
+ * rather than from the host, Orca, or the child's session file.
  *
  * WHY THIS EXISTS (measured 2026-09-15, goodluckagency/ofmchat #253-#257).
  * Three children were dispatched carrying a correct `[omp role=… model=…]`
  * marker in their own first user message, and all three kept their BOOT model,
- * took no role and wrote no receipt. Their process log named the branch: twelve
- * `[orca-model]` lines, every one `factory instance …`, and not one outcome
- * line — the signature of the two SILENT branches, with `not-supervised`
- * excluded because the child held a pane handle. So `absent`, which means both
- * halves of the equipment path failed together:
+ * took no role and wrote no receipt. The first repair joined `worker-list`'s
+ * absent row to ax's dispatch record and found the child's own transcript. It
+ * fixed WHICH file to read, but still trusted WHEN that file held the brief.
  *
- *   `worker-list` carried no row for the handle — F-048's own drift, measured
- *   the same day as `worker-list reports 0 entry(ies)` on this machine — and
- *   the transcript fallback, reached because of it, could only read the file
- *   the HOST names. Nothing named one, so the marker was never read and the
- *   child implemented its ticket unequipped, in silence, by design.
+ * That final trust races. On #257 the child's transcript recorded its BOOT
+ * `model_change` at 15:08:29.047 and did not flush the marker-bearing first user
+ * turn until 15:08:33.337. `before_agent_start` had already spent its final
+ * fallback on the partial file, read no marker and stayed silent by design. A
+ * second child produced the same model/role absence under the same release.
  *
- * THE FIX IS TO STOP ASKING EITHER OF THEM. ax wrote the dispatch record before
- * it issued the mutation, and that record names the pane, the worktree and the
- * dispatch id. A child therefore holds everything needed to find its own
- * transcript offline: no Orca call, no `worker-list`, no host seam. That is
- * F-048's own lesson — `ax worker ls` was hardened to count by PANE rather than
- * by that index — applied to the one reader still trusting it.
+ * THE RECORD IS THE SOURCE, NOT A POINTER TO A LATER SOURCE. ax writes
+ * `task-create --spec` before it opens the pane, byte-for-byte from the parent
+ * brief. The same record names the pane. Joining pane -> record -> task spec is
+ * therefore complete before the child's first hook can run: no Orca call, no
+ * `worker-list`, no host seam and no session flush race.
  *
- * A JOIN, NOT A NEW DERIVATION, and that distinction is the whole design. Two
- * readers already answer the two halves, each with its own tests and refusals:
+ * A JOIN, NOT A NEW DERIVATION. `dispatchIndex` owns which readable record a
+ * pane belongs to, and `workerSpec` owns which `task-create --spec` value that
+ * record dispatched. Every refusal is inherited rather than re-decided.
+ * Nothing here guesses. Two records naming one pane is an inability, not a
+ * pick: a repair can reuse an agent terminal, and choosing would apply another
+ * child's role to this session (F-028).
  *
- *   handle -> request       `dispatchIndex`, the same query `../../src/worker/
- *                           tail.mjs` makes to name a pane's owner. Its
- *                           authority rule is unmoved: only a `worker-start`
- *                           phase may name a dispatch.
- *   record -> session file  `briefDelivered`, which selects by DISPATCH ID and
- *                           never newest-wins, refuses two worktrees, refuses a
- *                           session older than the dispatch, and refuses zero
- *                           or two candidates (#204, #126).
- *
- * So every refusal here is inherited rather than re-decided, and NOTHING here
- * guesses. Two records naming one pane is an inability, not a pick: a repair
- * reuses the agent terminal, so that shape is real, and choosing between them
- * would apply another child's role to this session. An ambiguity is not an
- * answer (F-028).
- *
- * WHAT IT MUST NOT DO, stated because the tempting version is wrong: it must
- * never fall back to "the newest session in this directory". An operator who
- * opens a pane in a worktree that has run a child would then inherit that
- * child's role and tool fence. The record is what makes this exact instead of
- * plausible, and an absent record is an operator pane behaving normally — which
- * is why `no dispatch record` is a distinct, quiet reason rather than a fault.
+ * WHAT IT MUST NOT DO. Never fall back to the newest record or session in a
+ * directory. An operator who opens a pane in a worktree that has run a child
+ * would then inherit that child's role. An absent matching record is an
+ * operator pane behaving normally — a distinct, quiet reason.
  */
 
 import { join } from 'node:path';
 
-import { briefDelivered } from '../../src/worker/delivered.mjs';
-import { defaultStore, dispatchIndex } from '../../src/worker/record.mjs';
+import { defaultStore, dispatchIndex, workerSpec } from '../../src/worker/record.mjs';
 
-export interface OwnSession {
-  /** The child's own transcript, or `null` when it could not be established. */
-  file: string | null;
-  /** The request whose record names this pane, when one does. */
+export interface OwnDispatch {
+  /** The exact task-create --spec text recorded before the pane was opened. */
+  spec: string | null;
+  /** The request whose record uniquely names this pane, when one does. */
   request: string | null;
-  /** Why no file — absent whenever one was found, never a reassurance. */
+  /** Whether at least one readable record names this pane, even ambiguously. */
+  owned: boolean;
+  /** Why no spec — absent whenever one was found, never a reassurance. */
   reason?: string;
 }
 
 /**
- * The session file of the dispatch that placed THIS pane, or a named inability.
+ * The recorded task spec of the dispatch that placed THIS pane, or a named
+ * inability. The write-ahead record is the authority here: unlike the child's
+ * session file, it already carries `task-create --spec` before the child's
+ * first `before_agent_start` can fire.
  *
- * `request` is reported even when `file` is not, because the two halves fail
- * for different reasons and the repairs differ: no record at all is an ordinary
- * interactive pane, while a record whose session cannot be established is a
- * dispatched child whose transcript is missing, moved or ambiguous.
+ * `owned` stays true when matching records are ambiguous: refusing to pick is
+ * correct, but that dispatched child still needs a loud equipment warning.
+ * `request` is present only when one record can be established. No matching
+ * record is an ordinary interactive pane and remains quiet.
  */
-export function ownSessionFile(handle: string | null | undefined, env: Record<string, string | undefined> = process.env): OwnSession {
+export function ownDispatchSpec(handle: string | null | undefined, env: Record<string, string | undefined> = process.env): OwnDispatch {
   const pane = String(handle ?? '').trim();
   if (pane === '') {
-    return { file: null, request: null, reason: 'this session has no pane handle, so no dispatch record can be matched to it' };
+    return { spec: null, request: null, owned: false, reason: 'this session has no pane handle, so no dispatch record can be matched to it' };
   }
 
   const store = defaultStore(env);
@@ -90,20 +78,22 @@ export function ownSessionFile(handle: string | null | undefined, env: Record<st
   // second discipline.
   const index = dispatchIndex(store);
   if (index.missing === true) {
-    return { file: null, request: null, reason: `the dispatch store ${store} does not exist, so nothing here can name pane ${pane}` };
+    return { spec: null, request: null, owned: false, reason: `the dispatch store ${store} does not exist, so nothing here can name pane ${pane}` };
   }
   if (typeof index.reason === 'string' && index.reason !== '') {
-    return { file: null, request: null, reason: `the dispatch store ${store} could not be read, so whether a record names pane ${pane} is UNKNOWN: ${index.reason}` };
+    return { spec: null, request: null, owned: false, reason: `the dispatch store ${store} could not be read, so whether a record names pane ${pane} is UNKNOWN: ${index.reason}` };
   }
 
-  const requests = [...new Set([...index.byDispatch.values()].filter((row) => row.handle === pane).map((row) => row.request))].sort();
+  const named = [...index.byDispatch.values()].filter((row) => row.handle === pane);
+  const requests = [...new Set(named.map((row) => row.request))].sort();
   if (requests.length === 0) {
     // An unreadable record is not a record that does not name this pane. The
     // count travels so the reason cannot be read as an established absence.
     const unread = Array.isArray(index.unreadable) ? index.unreadable.length : 0;
     return {
-      file: null,
+      spec: null,
       request: null,
+      owned: false,
       reason:
         unread > 0
           ? `no READABLE record in ${store} names ${pane} as its pane, and ${unread} record(s) there could not be read, so this is unestablished rather than absent`
@@ -112,15 +102,16 @@ export function ownSessionFile(handle: string | null | undefined, env: Record<st
   }
   if (requests.length > 1) {
     return {
-      file: null,
+      spec: null,
       request: null,
+      owned: true,
       reason: `${requests.length} dispatch records name ${pane} as their pane (${requests.join(', ')}), so none of them is established as this session's`,
     };
   }
   const request = requests[0] as string;
-  const seen = briefDelivered(join(store, `${request}.json`), { env });
-  if (seen.known !== true || typeof seen.file !== 'string' || seen.file === '') {
-    return { file: null, request, reason: seen.reason ?? `the record for ${request} names no readable session for this pane` };
+  try {
+    return { spec: workerSpec(join(store, `${request}.json`)), request, owned: true };
+  } catch (error) {
+    return { spec: null, request, owned: true, reason: `the record for ${request} carries no readable task spec: ${String(error)}` };
   }
-  return { file: seen.file, request };
 }

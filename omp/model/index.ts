@@ -41,7 +41,7 @@ import {
   resolveOrcaBin,
   type OrcaRunner,
 } from './self.ts';
-import { ownSessionFile } from './own-record.ts';
+import { ownDispatchSpec } from './own-record.ts';
 import { isSubagentSession } from '../shared/session.ts';
 
 /**
@@ -54,6 +54,8 @@ import { isSubagentSession } from '../shared/session.ts';
  * no-op — it read `pi.models?.resolve?.()`, got `undefined` every time, and
  * refused with a warning nobody was reading.
  */
+type SpecSource = 'orca' | 'input' | 'transcript' | 'record';
+
 export interface ApplyDeps {
   run: OrcaRunner;
   handle: string | null;
@@ -71,12 +73,11 @@ export interface ApplyDeps {
    */
   configuredRole?(role: string): string | undefined;
   /**
-   * The spec as this session received it, read from its own transcript.
-   *
-   * Consulted ONLY when Orca answers `absent` — a worker whose Run lives on
-   * another execution host. Omitted by a caller that has no transcript to offer.
+   * The local spec this session can establish when Orca does not list it: the
+   * submitted prompt, the host-named session file, or its own write-ahead
+   * dispatch record. Omitted only when the caller has none of those sources.
    */
-  localSpec?(): { spec: string | null; reason?: string };
+  localSpec?(): { spec: string | null; via: Exclude<SpecSource, 'orca'>; reason?: string };
 }
 
 export type ApplyOutcome =
@@ -113,7 +114,7 @@ export type ApplyOutcome =
        * record; `transcript` is the session's own first user message, the only
        * copy a cross-host worker can reach.
        */
-      via: 'orca' | 'transcript';
+      via: SpecSource;
       detail?: string;
       /** The Task spec this outcome was read from, so the role reuses one lookup. */
       taskSpec: string | null;
@@ -152,7 +153,7 @@ async function applyIntent(
   deps: ApplyDeps,
   intent: ModelIntent,
   spec: string | null,
-  via: 'orca' | 'transcript',
+  via: SpecSource,
   readReason: string | undefined,
 ): Promise<ApplyOutcome> {
   // The parent's own decision, carried on every refusal below. `marker` is the
@@ -256,7 +257,7 @@ async function absentFallback(deps: ApplyDeps): Promise<ApplyOutcome> {
       why: 'absent',
       detail: local.reason ?? 'no marker in this session own first message',
     };
-  return applyIntent(deps, intent, local.spec, 'transcript', local.reason);
+  return applyIntent(deps, intent, local.spec, local.via, local.reason);
 }
 
 /** Minimal shape of the factory object and of the handler context. */
@@ -444,7 +445,7 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
     // record, so this stays null for it and the `absent` branch stays as quiet
     // as it has to be — which is what a discriminator on the handle alone could
     // not do, since an operator pane has a handle too.
-    let recordOwned: string | null = null;
+    let recordOwned = false;
     const outcome = await applyDispatchedModel({
       run,
       handle,
@@ -460,27 +461,34 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       // that misses: a session RESUMED into an existing worktree never sees an
       // `input` event for the spec that started it.
       //
-      // And ax's own DISPATCH RECORD covers what both miss, which is the case
-      // that cost three children on 2026-09-15 (goodluckagency/ofmchat
-      // #253-#257). An injected brief fires no `input`, so `firstInput` is
-      // null; if the host then names no session file, the marker its parent
-      // wrote is never read, the child keeps its boot model with no role and no
-      // tool fence, and `absent` settles SILENTLY because that silence is what
-      // keeps a warning off every operator pane. The record was written before
-      // the mutation was issued and names the pane, the worktree and the
-      // dispatch id, so a child can find its own transcript with no Orca call,
-      // no `worker-list` row and no host seam (./own-record.ts). That is
-      // F-048's own lesson — count and read by PANE and by RECORD, never by
-      // that index — applied to the one reader still trusting it.
+      // And ax's own DISPATCH RECORD covers a cold child before either source
+      // exists. The first repair found the child's transcript through that
+      // record, but still read the marker FROM the transcript; measured on
+      // goodluckagency/ofmchat #255/#257, `before_agent_start` ran before the
+      // marker-bearing first user turn was flushed, so the right file contained
+      // only the BOOT model and the child again stayed unequipped in silence.
+      // `task-create --spec` is byte-for-byte the parent brief and was recorded
+      // before the pane was opened. Read it directly: no Orca call, no
+      // `worker-list`, no host seam, and no session flush race
+      // (./own-record.ts).
       localSpec: () => {
-        if (firstInput !== null) return { spec: firstInput };
+        if (firstInput !== null) return { spec: firstInput, via: 'input' };
         const named = (ctx as HandlerContext | null)?.sessionManager?.getSessionFile?.();
-        if (named !== undefined && named !== null && named !== '') return readSpecFromTranscript(named);
-        const own = ownSessionFile(handle);
-        recordOwned = own.request;
+        if (named !== undefined && named !== null && named !== '') {
+          const transcript = readSpecFromTranscript(named);
+          if (transcript.spec !== null) return { ...transcript, via: 'transcript' };
+        }
+        // A historical dispatch record can keep naming a pane after Orca reuses
+        // that terminal for an operator. At session_start no input exists yet,
+        // so the record cannot distinguish them. Spend the record only on the
+        // final occasion: an operator's first input wins above; an injected
+        // child fires no input and reaches the race-free record here.
+        if (!final) return { spec: null, via: 'record', reason: 'write-ahead record deferred until before_agent_start' };
+        const own = ownDispatchSpec(handle);
+        recordOwned = own.owned;
         // An absent record is an operator's own pane, and stays as quiet as it
         // was: `absentFallback` acts on a marker, never on a reason.
-        return own.file === null ? { spec: null, reason: own.reason } : readSpecFromTranscript(own.file);
+        return { spec: own.spec, via: 'record', reason: own.reason };
       },
     });
 
@@ -523,17 +531,17 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       // EXCEPT WHEN AX'S OWN RECORD NAMES THIS PANE. Then this is not an
       // operator's session: it is a child ax dispatched, its spec could not be
       // read through any of the three sources, and it is about to implement a
-      // ticket with no role, no playbook and no tool fence. Measured 2026-09-15
-      // on goodluckagency/ofmchat #253-#257, where three children did exactly
-      // that and the only party that knew said nothing — so the dispatch verb
+      // ticket with no role or playbook. Measured 2026-09-15 on
+      // goodluckagency/ofmchat #253-#257, where three children did exactly that
+      // and the only party that knew said nothing — so the dispatch verb
       // reported UNPROVEN with no cause, correctly and uselessly. The record is
       // what separates the two populations; a handle cannot, because an
       // operator pane has one too.
       if (final) {
         settled = true;
-        if (recordOwned !== null)
+        if (recordOwned)
           pi.logger?.warn?.(
-            `[orca-model] ${instance} ${occasion}: this pane is the child of dispatch record ${recordOwned}, and its spec could not be read from the submitted prompt, the host's session file or that record${outcome.detail === undefined ? '' : ` — ${outcome.detail}`}. It stays on its BOOT model with no role and no tool fence; a dispatch verb will report it UNPROVEN, correctly.`,
+            `[orca-model] ${instance} ${occasion}: this pane belongs to a dispatch record, and its spec could not provide an equipment marker through the submitted prompt, the host's session file or that record${outcome.detail === undefined ? '' : ` — ${outcome.detail}`}. It stays on its BOOT model with no role or playbook; a dispatch verb will report it UNPROVEN, correctly.`,
           );
       }
       return;
