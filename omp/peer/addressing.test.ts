@@ -588,14 +588,30 @@ test('the registered peer_reply tool relays an answer and preserves the next ans
 // Measured 2026-09-15, three messages into one session: `peer_send` answered
 // `Sent to 01a0a380.` and the recipient announced `unattributed:term_592136d2-`
 // with no reply route, so an ownership question left no way back and the
-// answer had to arrive out of band. Orca decides that field from ONE input —
+// answer had to arrive out of band. Orca stamps that field from ONE input —
 // `senderPaneKey: process.env.ORCA_PANE_KEY || undefined`
 // (`src/cli/handlers/orchestration/orchestration/message-send-handler.ts`) —
-// and a pane that publishes none is unattributable by construction, whatever
-// it typed. This transport never passes `--from`, so it cannot be the cause;
-// what it CAN do is stop reporting an unanswerable send as a plain delivery.
+// so a pane that publishes none is unattributable by construction, whatever it
+// typed. This transport never passes `--from`, so it is never the cause; what
+// it CAN do is stop reporting an unanswerable send as a plain delivery.
 //
-// The send still happens: the words arrive, and saying so is the point (the
+// AND THAT IS NOT WHAT HAPPENED IN THE INCIDENT ABOVE, which this comment
+// claimed for one commit. Corrected the same day, by id: `msg_b0ced64eb0a1`,
+// `msg_0af97fefc8f0` and `msg_51349c5b8861` are recorded as unattributed by
+// the receiving session AND carry a present `sender_pane_key` in
+// `orca orchestration inbox --json`. The field survives every layer that can
+// be read: insert sets it, every mailbox query is `SELECT *`, `check --wait
+// --json` returns whole rows, the receive loop parses `result.messages` and
+// hands the row straight to `senderIdentity`, which attributes any non-empty
+// key. What that establishes is a CONTRADICTION between a persisted diagnostic
+// and this path as written — not a location, and not even that the loss is in
+// this checkout: nothing here identifies which receiver, or which build of it,
+// emitted those three lines. The next step is one live delivery observed at
+// `senderIdentity`'s entry, never another source read.
+//
+// What this test pins is therefore the narrow half that is decidable at send
+// time: no key in this pane's environment, no attribution, said out loud. The
+// send still happens — the words arrive, and saying so is the point (the
 // receipt names a degradation, never a failure that did not occur).
 function sendTools(deliverFn: unknown): Map<string, {
   parameters: { parse: (value: unknown) => Record<string, unknown> };
