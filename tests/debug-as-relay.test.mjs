@@ -274,33 +274,40 @@ test('a nonce is single-use: the second submission returns to a fresh GET withou
 // file died with "Unable to deserialize cloned data due to invalid or
 // unsupported version" — 43 tests lost, while `--test-reporter=spec` passed all
 // 43 on the same machine. The refusal is an operator line; it belongs on stderr.
+// The teardown is in a `finally` because THIS test patches both streams: when
+// its own assertions failed during development the listener stayed bound and
+// `node --test` never exited, so the run died on a 60-second timeout with the
+// captured output swallowed instead of naming the regression.
 test('a request-time refusal is an operator line on stderr, never a byte of the payload stream', async () => {
   const server = await relay();
-  const nonce = nonceFrom((await rawRequest(server.port, { headers: allowed })).body);
-  await rawRequest(server.port, { method: 'POST', headers: allowed, body: `nonce=${nonce}` });
-
-  const out = [];
-  const err = [];
-  const streams = [
-    [process.stdout, process.stdout.write.bind(process.stdout), out],
-    [process.stderr, process.stderr.write.bind(process.stderr), err],
-  ];
-  for (const [stream, , sink] of streams) {
-    stream.write = chunk => {
-      sink.push(String(chunk));
-      return true;
-    };
-  }
   try {
-    const replay = await rawRequest(server.port, { method: 'POST', headers: allowed, body: `nonce=${nonce}` });
-    assert.equal(replay.status, 303);
-  } finally {
-    for (const [stream, original] of streams) stream.write = original;
-  }
+    const nonce = nonceFrom((await rawRequest(server.port, { headers: allowed })).body);
+    await rawRequest(server.port, { method: 'POST', headers: allowed, body: `nonce=${nonce}` });
 
-  assert.equal(out.join(''), '', 'the payload stream carries nothing a live listener said');
-  assert.match(err.join(''), /phone confirmation refused \(unknown nonce, [0-9a-f]+\)/);
-  await server.close();
+    const out = [];
+    const err = [];
+    const streams = [
+      [process.stdout, process.stdout.write.bind(process.stdout), out],
+      [process.stderr, process.stderr.write.bind(process.stderr), err],
+    ];
+    for (const [stream, , sink] of streams) {
+      stream.write = chunk => {
+        sink.push(String(chunk));
+        return true;
+      };
+    }
+    try {
+      const replay = await rawRequest(server.port, { method: 'POST', headers: allowed, body: `nonce=${nonce}` });
+      assert.equal(replay.status, 303);
+    } finally {
+      for (const [stream, original] of streams) stream.write = original;
+    }
+
+    assert.equal(out.join(''), '', 'the payload stream carries nothing a live listener said');
+    assert.match(err.join(''), /phone confirmation refused \(unknown nonce, [0-9a-f]+\)/);
+  } finally {
+    await server.close();
+  }
 });
 
 test('an expired nonce, another user\'s nonce and an unknown nonce all return to a fresh GET', async () => {
