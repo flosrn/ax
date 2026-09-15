@@ -185,7 +185,6 @@ test('installing the adapter twice on one host registers every handler and tool 
   expect([...installed.commands.keys()]).toEqual(before.commands);
 });
 
-
 // ── the dispatched path: `[omp role=worker …]` ───────────────────────────────
 
 test('a dispatched worker gets the BUNDLED worker role and its BUNDLED playbook', async () => {
@@ -602,18 +601,9 @@ test('an unknown dispatched role locks the session before its first turn', async
   // see the directory the marker was written against.
   expect(String(out?.message?.content)).toContain('triage-worker');
 
-  // `setActiveTools([])` is cosmetic; the fence is the hard boundary. The host
-  // runs EVERY `tool_call` handler, and this adapter now registers two (the
-  // routing guard before the role guard), so the question a test may ask is the
-  // one the runtime asks: did any of them block?
-  const chain = installed.handlers.get('tool_call') ?? [];
-  const answers: unknown[] = [];
-  for (const handler of chain) answers.push(await handler({ toolName: 'bash' }, installed.ctx));
-  expect(
-    answers.some(
-      (answer) => answer !== null && typeof answer === 'object' && 'block' in answer && answer.block === true,
-    ),
-  ).toBe(true);
+  // `setActiveTools([])` is cosmetic; the fence is the hard boundary.
+  const fence = installed.handlers.get('tool_call')?.[0];
+  expect(await fence?.({ toolName: 'bash' }, installed.ctx)).toMatchObject({ block: true });
 });
 
 test('/role on an unknown name refuses out loud and leaves the session alone', async () => {

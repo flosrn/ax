@@ -43,17 +43,6 @@ import {
   type OrcaRunner,
 } from './self.ts';
 import { isSubagentSession } from '../shared/session.ts';
-import {
-  candidateFor,
-  mergeFallbackChains,
-  modelIdentity,
-  readRouting,
-  resolveRouting,
-  sanitizeChains,
-  type ResolvedCandidate,
-  type RoutingCandidate,
-  type RoutingPlan,
-} from './routing.ts';
 
 /**
  * The pieces of the host this needs, injected so the decision table is testable
@@ -98,8 +87,20 @@ export type ApplyOutcome =
        * handle was not in the list, which at `session_start` may only mean the
        * Dispatch is not recorded YET. The caller decides whether that is final.
        */
-      why: 'not-supervised' | 'absent' | 'unresolved' | 'lookup-failed' | 'routing-refused';
+      why: 'not-supervised' | 'absent' | 'unresolved' | 'lookup-failed';
       detail?: string;
+      /**
+       * The role or model the PARENT decided for this worker, present only when
+       * a marker named one.
+       *
+       * It is what separates "a dispatched worker whose approved role cannot be
+       * served" from "an interactive pane with nothing to serve". The first is
+       * terminal: this session was dispatched to run a class of work on a role
+       * the fleet routes, and continuing on whatever model it booted with would
+       * be the silent substitution the dispatcher refuses at every other step.
+       * The second must stay a warning — the common case is a human's own pane.
+       */
+      requested?: string;
     }
   | {
       applied: true;
@@ -116,12 +117,6 @@ export type ApplyOutcome =
       detail?: string;
       /** The Task spec this outcome was read from, so the role reuses one lookup. */
       taskSpec: string | null;
-      /**
-       * The approved route this session is now bound to, when its marker carried
-       * one. `undefined` is a legacy dispatch: no candidate set, no enforcement,
-       * exactly the behaviour that shipped before routing existed.
-       */
-      routing?: RoutingPlan;
     };
 
 function describe(model: unknown): string {
@@ -160,30 +155,27 @@ async function applyIntent(
   via: 'orca' | 'transcript',
   readReason: string | undefined,
 ): Promise<ApplyOutcome> {
-  const routing = readRouting(spec);
-  if (routing.kind === 'refused') {
-    // A route we cannot read is not a route we may ignore: the parent decided
-    // something specific and this session cannot tell an encoding bug from a
-    // tampered payload. Refuse before touching the model.
-    return { applied: false, why: 'routing-refused', detail: routing.detail };
-  }
-
-  if (routing.kind === 'plan') return applyRoute(deps, intent, routing.plan, spec, via, readReason);
-
+  // The parent's own decision, carried on every refusal below. `marker` is the
+  // only source a parent WROTE: a supervised default is this package's guess for
+  // a session whose parent wrote nothing, and guessing wrong must not silence a
+  // pane the way an unserved dispatch has to.
+  const decided = intent.source === 'marker' ? { requested: `${intent.spec}${intent.thinking === null ? '' : `:${intent.thinking}`}` } : {};
   const resolved = deps.resolve(intent.spec);
   if (resolved === undefined || resolved === null) {
-    // Refusing loudly beats serving a model nobody asked for: an alias that does
-    // not resolve is a config error the operator must see, and the session still
-    // works on whatever it booted with.
+    // An alias that does not resolve is a config error on the host that was
+    // supposed to serve it — the role is missing, or its gateway is not
+    // configured. Naming it is the whole point: the caller decides whether this
+    // session may still act, and for a dispatched worker it may not.
     return {
       applied: false,
       why: 'unresolved',
       detail: `${intent.spec} did not resolve (${intent.source} via ${via}${readReason === undefined ? '' : `; ${readReason}`})`,
+      ...decided,
     };
   }
 
   if (await deps.setModel(resolved) === false) {
-    return { applied: false, why: 'unresolved', detail: `${intent.spec} resolved but the target host refused the model change` };
+    return { applied: false, why: 'unresolved', detail: `${intent.spec} resolved but the target host refused the model change`, ...decided };
   }
 
   // Effort precedence, most specific first: the marker's own suffix, then the
@@ -203,74 +195,6 @@ async function applyIntent(
     via,
     detail: readReason ?? intent.reason,
     taskSpec: spec,
-  };
-}
-
-/**
- * Apply a v2 route: validate the WHOLE approved set, then serve the SELECTED
- * candidate at the effort approved with it.
- *
- * Order is the contract. Every candidate is resolved and effort-checked BEFORE
- * the first `setModel`, because the fallback chain armed from this plan can move
- * the session onto any of them with nobody left to ask — so a candidate that
- * cannot serve its approved effort must cost a refusal now, not a silent clamp
- * three hours into a run.
- */
-async function applyRoute(
-  deps: ApplyDeps,
-  intent: ModelIntent,
-  plan: RoutingPlan,
-  spec: string | null,
-  via: 'orca' | 'transcript',
-  readReason: string | undefined,
-): Promise<ApplyOutcome> {
-  const refuse = (detail: string): ApplyOutcome => ({ applied: false, why: 'routing-refused', detail });
-
-  // Effort is half of an approved candidate. A host that cannot set a thinking
-  // level cannot honour the route, and serving the model alone would satisfy the
-  // half of the contract that is cheap to check and drop the half that costs.
-  if (deps.setThinkingLevel === undefined)
-    return refuse('host exposes no setThinkingLevel — the approved effort cannot be applied');
-
-  const resolution = resolveRouting(plan, (candidate) => deps.resolve(candidate));
-  if (!resolution.ok) return refuse(resolution.detail);
-
-  // The two copies of the parent's choice must agree. `model=` is what a human
-  // reads in the marker and `routing=` is what this runtime enforces; a
-  // disagreement means one of them was edited, and guessing which is authoritative
-  // is how an unapproved model gets served under an approved name.
-  const requested = modelRoleOf(intent.spec) === null ? intent.spec : null;
-  if (requested !== null && requested !== plan.selected.model)
-    return refuse(`marker model ${requested} disagrees with routing selector ${plan.selector}`);
-  if (intent.thinking !== null && intent.thinking !== plan.effort)
-    return refuse(`marker effort ${intent.thinking} disagrees with routing effort ${plan.effort}`);
-
-  // The CHOSEN candidate, which is not necessarily the first: a confirmed route
-  // carries the operator's pick, and a tier may approve several.
-  const chosen = resolution.resolved.find(
-    (entry: ResolvedCandidate) => entry.candidate.selector === plan.selector,
-  ) as ResolvedCandidate;
-  if (await deps.setModel(chosen.model) === false)
-    return refuse(`${chosen.candidate.model} resolved but the target host refused the model change`);
-  // A refused or throwing effort apply is a refused ROUTE: the model half of an
-  // approved candidate without its effort is not the candidate.
-  try {
-    if (await deps.setThinkingLevel(plan.effort) === false)
-      return refuse(`the target host refused effort ${plan.effort} for ${chosen.candidate.model}`);
-  } catch (error) {
-    return refuse(`effort ${plan.effort} could not be applied: ${String(error)}`);
-  }
-
-  return {
-    applied: true,
-    model: describe(chosen.model),
-    requested: plan.selector,
-    thinking: plan.effort,
-    source: intent.source,
-    via,
-    detail: readReason ?? intent.reason,
-    taskSpec: spec,
-    routing: plan,
   };
 }
 
@@ -348,25 +272,9 @@ export interface ModelHost {
    * a role's RAW configured spec, suffix included — the one thing
    * `ctx.models.resolve()` throws away. Verified live inside a dispatched
    * session: `getModelRole('smol')` → `anthropic/claude-sonnet-5:medium`.
-   *
-   * `get`/`override` are the SAME pair OMP uses on itself to bound a subagent's
-   * fallback (`task/executor.ts` installs `retry.fallbackChains` this way).
-   * `override` writes the in-memory runtime layer only — never a config file.
-   *
-   * SCOPE, which decides the whole arming protocol below: the exported
-   * `settings` is a proxy over ONE process-global instance, created at CLI boot
-   * and never reassigned. A `task` subagent does not use it — it gets an
-   * isolated `Settings` built by snapshotting the merged view AT SPAWN TIME — so
-   * an override left armed while a child is spawned is inherited by that child,
-   * and an override armed after it is invisible to it. Hence: arm for the
-   * request, restore before any tool can spawn anything.
    */
   pi?: {
-    settings?: {
-      getModelRole?(role: string): string | undefined;
-      get?(path: string): unknown;
-      override?(path: string, value: unknown): void;
-    };
+    settings?: { getModelRole?(role: string): string | undefined };
   };
   //
   // `discoverAgents`, `loadSkills` and `buildSkillPromptMessage` used to be read
@@ -469,135 +377,20 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
    * costs no second pair of Orca subprocess calls.
    */
   let taskSpec: string | null = null;
+  /**
+   * Terminal role-activation refusal.
+   *
+   * A worker dispatched onto a role its host cannot serve does not get to act.
+   * The dispatcher chose a CLASS of work and the fleet routes that class to one
+   * role; if the role does not resolve there, the honest answers are "refuse"
+   * and "run whatever this session happened to boot with", and the second is
+   * the silent substitution every other step of the dispatch refuses. So it is
+   * refused here — before the first provider request and before any tool.
+   */
+  let refusal: { detail: string; requested: string | null } | null = null;
 
   /**
-   * The route this session is bound to, once one has been applied.
-   *
-   * Closure state, not settings state, on purpose: it is read by the
-   * pre-provider fence on every request, and a settings read would answer with
-   * whatever the last override left behind.
-   */
-  let route: RoutingPlan | null = null;
-  /**
-   * The retry settings as this PROCESS held them before this session armed
-   * anything, captured once at the first arm.
-   *
-   * Captured rather than cleared because the baseline may itself live in the
-   * runtime override layer — OMP arms that layer at startup for `--model`
-   * pattern fallback, and `task` arms it per subagent — and `clearOverride`
-   * would delete the operator's own routing along with ours. Restoration writes
-   * these values back.
-   */
-  let retryBaseline: { chains: Record<string, string[]>; modelFallback: unknown } | null = null;
-  /** Whether the plan's chains are currently armed in the process settings. */
-  let chainArmed = false;
-  /**
-   * Whether the master switch was forced on by THIS session, so restoration
-   * writes back only a value it actually replaced.
-   */
-  let fallbackForced = false;
-  /**
-   * `provider/id:effort` this session was last observed about to serve.
-   *
-   * Its only job is to make a MOVE inside the approved set visible: OMP's
-   * fallback publishes nothing an extension can hear (`model_changed` maps to no
-   * extension hook), so the pre-provider fence is the only place a hop can be
-   * noticed, and a receipt per hop is the only durable trace of which approved
-   * candidate actually produced the work.
-   */
-  let served: string | null = null;
-  /**
-   * Terminal routing refusal. A session that cannot prove it is serving an
-   * approved model does not get to act: every tool call is blocked and every
-   * provider request is aborted for the rest of its life.
-   */
-  let refusal: { detail: string; requested: string | null; actual: string | null } | null = null;
-  /**
-   * How many of this session's tools are running right now.
-   *
-   * A turn can run several at once, so "a tool finished" is not "no tool is
-   * running": re-arming on the first result would put this session's route back
-   * into the process settings while a sibling `task` is still live and about to
-   * spawn a child that snapshots them.
-   *
-   * Counts can go UNMATCHED: a blocked or cancelled tool call reports no
-   * `tool_result`, and a counter stuck above zero would keep the chains down for
-   * the rest of the session. `before_agent_start` clears it, because a new
-   * top-level turn cannot begin while a tool from the previous one is still
-   * running — that is the only boundary at which a leftover count is provably
-   * stale rather than a live batch.
-   */
-  let toolsInFlight = 0;
-
-  /**
-   * Put the plan's fallback policy into the process settings.
-   *
-   * Keyed by `provider/id` so no ROLE is touched — not `default`, not `task`,
-   * and not the role a pinned subagent persona resolves through. An exact model
-   * key beats a role key in OMP's own chain resolution, so this narrows the
-   * worker's own model and nothing else.
-   *
-   * `retry.modelFallback` is forced on ONLY for a multi-candidate route: the
-   * operator approved the siblings, and leaving the master switch off would turn
-   * an approved in-set hop into a dead turn. A pinned singleton arms an EMPTY
-   * chain instead, which OMP reads as "no fallbacks" rather than "inherit the
-   * default chain" — so the master switch is left exactly as configured.
-   *
-   * TIMING is the whole safety argument. Armed at points that each precede a
-   * model call (`before_agent_start`, `tool_result`, and the pre-provider hook
-   * itself), because the usage-aware preflight that can hop models runs BEFORE
-   * the payload hook and must see the narrowed chains. Restored at `tool_call`,
-   * which is the one moment a tool — `task`, `eval` — can spawn a child that
-   * snapshots the process-global settings.
-   */
-  const armRetry = (): void => {
-    if (route === null || chainArmed || toolsInFlight > 0) return;
-    const store = pi.pi?.settings;
-    if (store?.override === undefined || store.get === undefined) return;
-    retryBaseline ??= {
-      chains: sanitizeChains(store.get('retry.fallbackChains')),
-      modelFallback: store.get('retry.modelFallback'),
-    };
-    try {
-      store.override('retry.fallbackChains', mergeFallbackChains(retryBaseline.chains, route));
-      if (route.candidates.length > 1 && retryBaseline.modelFallback !== true) {
-        store.override('retry.modelFallback', true);
-        fallbackForced = true;
-      }
-      chainArmed = true;
-    } catch (error) {
-      pi.logger?.warn?.(`[orca-model] ${instance} fallback policy not armed: ${String(error)}`);
-    }
-  };
-
-  /**
-   * Put the captured baseline back. Idempotent, and a no-op when nothing was armed.
-   *
-   * The master switch is written back only when THIS session forced it, and then
-   * with the captured value even if that value is `undefined`: `Settings.override`
-   * writes the runtime layer and its merge skips `undefined` keys, so writing the
-   * capture back removes our entry and the effective value returns to the config
-   * layers or the schema default. Skipping the write instead would leave a forced
-   * `true` behind on exactly the session that never configured one.
-   */
-  const restoreRetry = (why: string): void => {
-    if (!chainArmed || retryBaseline === null) return;
-    const store = pi.pi?.settings;
-    if (store?.override === undefined) return;
-    try {
-      store.override('retry.fallbackChains', retryBaseline.chains);
-      if (fallbackForced) {
-        store.override('retry.modelFallback', retryBaseline.modelFallback);
-        fallbackForced = false;
-      }
-      chainArmed = false;
-    } catch (error) {
-      pi.logger?.warn?.(`[orca-model] ${instance} fallback policy not restored (${why}): ${String(error)}`);
-    }
-  };
-
-  /**
-   * Refuse the route, terminally.
+   * Refuse, terminally.
    *
    * Three levers, because no single one of them is a fence:
    *   - the tool surface is emptied, so a compliant model sees nothing to call;
@@ -605,18 +398,17 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
    *     is the only hook that is fail-closed (its dispatcher passes an
    *     `onFailure` that blocks on a throw or timeout);
    *   - the next provider request is aborted before it is sent.
-   * The armed chains are dropped too: a refused session must not leave its
-   * routing in the settings a later subagent would snapshot.
+   * The receipt is appended too: a refusal nobody can read afterwards is
+   * indistinguishable from a worker that did nothing, and `ax worker verify`
+   * reads this session's own journal.
    */
-  const refuse = async (detail: string, requested: string | null, actual: string | null): Promise<void> => {
+  const refuse = async (detail: string, requested: string | null): Promise<void> => {
     const first = refusal === null;
-    refusal = { detail, requested, actual };
-    route = null;
-    restoreRetry('routing refused');
+    refusal = { detail, requested };
     if (!first) return;
-    pi.logger?.warn?.(`[orca-model] ${instance} routing refused: ${detail}`);
+    pi.logger?.warn?.(`[orca-model] ${instance} role activation refused: ${detail}`);
     try {
-      pi.appendEntry?.('@flosrn/ax/routing-refused', { detail, requested, actual });
+      pi.appendEntry?.('@flosrn/ax/model-refused', { detail, requested });
     } catch (error) {
       pi.logger?.warn?.(`[orca-model] ${instance} refusal not recorded: ${String(error)}`);
     }
@@ -671,94 +463,21 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
     if (outcome.applied) {
       settled = true;
       taskSpec = outcome.taskSpec;
-      if (outcome.routing !== undefined) {
-        // Effort is enforced per candidate, and the only thing that can say what
-        // effort the session is ACTUALLY carrying into a request is
-        // `getThinkingLevel`. `setThinkingLevel` returns void and validates
-        // nothing, so a successful call is not proof. A host without the reader
-        // cannot be held to the contract — refuse rather than pretend.
-        if (pi.getThinkingLevel === undefined) {
-          await refuse(
-            'host exposes no getThinkingLevel — the served effort cannot be verified before a request',
-            outcome.requested,
-            outcome.model,
-          );
-          return;
-        }
-        // `ctx.abort()` is the ONLY lever that stops a request before it is sent
-        // (a throw from the payload hook is swallowed by the runner). A runtime
-        // without it cannot enforce the candidate set at all, so the route is
-        // refused HERE — before the first request — rather than at a fence that
-        // would be theatre.
-        if (typeof (ctx as { abort?: unknown } | null)?.abort !== 'function') {
-          await refuse(
-            'runtime exposes no ctx.abort — an out-of-set provider request could not be prevented',
-            outcome.requested,
-            outcome.model,
-          );
-          return;
-        }
-        // The apply must be OBSERVABLY true before it is journaled. A receipt
-        // saying "serving at high" while the session carries `medium` is the
-        // fiction this whole fence exists to remove, and `setThinkingLevel`
-        // reports nothing — so read it back and refuse a disagreement.
-        const applied = pi.getThinkingLevel() ?? null;
-        if (applied !== outcome.routing.effort) {
-          await refuse(
-            `effort ${outcome.routing.effort} was requested but the session reports ${applied ?? '<unset>'}`,
-            outcome.routing.selector,
-            `${outcome.model}:${applied ?? 'unset'}`,
-          );
-          return;
-        }
-        route = outcome.routing;
-        served = `${outcome.model}:${applied}`;
-        // Armed now, before the first model call: the usage-aware preflight that
-        // can move the model runs earlier than the payload hook.
-        armRetry();
-      }
       try {
         pi.appendEntry?.('@flosrn/ax/model-assignment', {
           requested: outcome.requested,
           model: outcome.model,
           thinking: pi.getThinkingLevel === undefined ? outcome.thinking : pi.getThinkingLevel() ?? null,
           via: outcome.via,
-          ...(outcome.routing === undefined
-            ? {}
-            : {
-                // Flat, because a consumer checking "is this the enforced
-                // contract?" should not have to know the nesting.
-                routingVersion: outcome.routing.version,
-                routing: {
-                  version: outcome.routing.version,
-                  mode: outcome.routing.mode,
-                  selector: outcome.routing.selector,
-                  candidates: outcome.routing.candidates.map((candidate) => candidate.selector),
-                  requestedEffort: outcome.routing.effort,
-                },
-              }),
         });
       } catch (error) {
         pi.logger?.warn?.(`[orca-model] assignment not recorded: ${String(error)}`);
       }
       const suffix = outcome.thinking === null ? '' : ` (thinking ${outcome.thinking})`;
       const note = outcome.detail === undefined ? '' : ` — ${outcome.detail}`;
-      const bound =
-        outcome.routing === undefined
-          ? ''
-          : ` bound to ${outcome.routing.mode} route [${outcome.routing.candidates.map((c) => c.selector).join(' > ')}]`;
       pi.logger?.info?.(
-        `[orca-model] ${instance} ${occasion}: serving ${outcome.model}${suffix} from ${outcome.source} via ${outcome.via}${bound}${note}`,
+        `[orca-model] ${instance} ${occasion}: serving ${outcome.model}${suffix} from ${outcome.source} via ${outcome.via}${note}`,
       );
-      return;
-    }
-
-    if (outcome.why === 'routing-refused') {
-      // Never provisional. A malformed or unenforceable route is the same answer
-      // at every occasion, and a worker that keeps retrying it would keep acting
-      // in between.
-      settled = true;
-      await refuse(outcome.detail ?? 'no detail', null, null);
       return;
     }
 
@@ -790,6 +509,17 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
     // identical. Measured: 11 lookups and 11 warn lines for one session and ten
     // prompts. Say it once, then stop.
     if (final) settled = true;
+    // AND AT THE FINAL OCCASION, AN UNSERVED DECIDED ROLE IS TERMINAL. The
+    // marker named the role this worker's class routes to, and this host could
+    // not serve it: the role is unconfigured, its gateway is absent, or the host
+    // refused the change. Acting anyway would run the assignment on an
+    // unapproved model and report it as the dispatch's work. `lookup-failed`
+    // is NOT this: it is Orca that did not answer, so the parent's decision was
+    // never read and there is nothing to have violated.
+    if (final && outcome.why === 'unresolved' && outcome.requested !== undefined) {
+      await refuse(outcome.detail ?? 'the decided role could not be served on this host', outcome.requested);
+      return;
+    }
     pi.logger?.warn?.(`[orca-model] ${instance} ${occasion}: ${outcome.why} — ${outcome.detail ?? 'no detail'}`);
   };
 
@@ -807,186 +537,6 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       running = null;
     }
   };
-
-  /**
-   * The pre-provider fence — the LAST point at which a request can be stopped.
-   *
-   * Two facts about this hook decide its shape, both read off the installed
-   * runtime rather than assumed:
-   *
-   *   1. A THROW HERE IS SWALLOWED. `emitBeforeProviderRequest` dispatches
-   *      through `#runHandlerWithTimeout` with no `onFailure`, so a rejected
-   *      handler resolves to `undefined`, the payload is kept unchanged and the
-   *      request is sent anyway. Enforcement by exception would be fiction.
-   *   2. `ctx.abort()` REACHES THE WIRE. It runs `AgentSession.abort()`, whose
-   *      statements up to `agent.abort(reason)` are synchronous, aborting the
-   *      loop `AbortController` whose signal is composed into the request signal
-   *      the provider hands its SDK immediately after this hook returns. An
-   *      already-aborted signal at request creation means the bytes never leave.
-   *      The abort is flavoured as an interrupt, which turn-recovery explicitly
-   *      excludes from fallback replay — so a refusal cannot be "recovered" onto
-   *      another model.
-   *
-   * The payload is returned untouched in every branch: this hook decides whether
-   * the request happens, never what it says.
-   */
-  pi.on('before_provider_request', (event, ctx) => {
-    const payload = (event as { payload?: unknown } | null)?.payload;
-    // A `task` child is its own session with its own pinned model. Its requests
-    // are none of this session's business, and its settings are a separate
-    // instance anyway.
-    if (isSubagentSession(ctx)) return payload;
-    // The hot path: an unrouted, unrefused session (a legacy marker, an ordinary
-    // interactive pane) has nothing to enforce, so it does not pay for the bind.
-    if (refusal === null && route === null) return payload;
-    // `typeof`, not `!== undefined`: a truthy non-function would throw inside
-    // this handler, and the runner SWALLOWS that — the request would then go out
-    // while the log claimed a refusal.
-    const raw = (ctx as { abort?: unknown } | null)?.abort;
-    const abort = typeof raw === 'function' ? (raw as () => void).bind(ctx) : null;
-
-    if (refusal !== null) {
-      abort?.();
-      return payload;
-    }
-    if (abort === null) {
-      // Enforcement is impossible on this runtime and saying so is the only
-      // honest move: the tool fence still stops the session from acting, but
-      // this particular request cannot be stopped, and pretending otherwise is
-      // the fail-open fiction this fence exists to replace.
-      void refuse(
-        'runtime exposes no ctx.abort at before_provider_request — this request could not be prevented',
-        route.selector,
-        modelIdentity((ctx as { model?: unknown } | null)?.model),
-      );
-      return payload;
-    }
-
-    const identity = modelIdentity((ctx as { model?: unknown } | null)?.model);
-    const candidate: RoutingCandidate | null = candidateFor(route, identity);
-    if (candidate === null) {
-      // Out of the approved set. This is the case the whole payload exists for:
-      // a quota or error fallback that escaped the chain, a `/model` switch, a
-      // provider-side reroute. Refuse the session, not just the request — the
-      // next one would be identical.
-      void refuse(
-        `request would go to ${identity ?? '<unnamed>'}, which is not in the approved set [${route.candidates
-          .map((entry) => entry.selector)
-          .join(', ')}]`,
-        route.selector,
-        identity,
-      );
-      abort?.();
-      return payload;
-    }
-
-    const serving = pi.getThinkingLevel?.() ?? null;
-    if (serving !== candidate.effort) {
-      // The model is approved; the effort it is about to serve at is not. The
-      // payload is already built by the provider from the session level, in a
-      // provider-native shape, so correcting it here would mean reimplementing
-      // pi-ai's effort mapping per API — a second copy of a table that rots.
-      // Correct the session level (which the NEXT request will build from) and
-      // refuse this one.
-      void (async () => {
-        try {
-          await pi.setThinkingLevel?.(candidate.effort);
-        } catch (error) {
-          pi.logger?.warn?.(`[orca-model] ${instance} effort not corrected: ${String(error)}`);
-        }
-      })();
-      void refuse(
-        `${candidate.model} is approved at effort ${candidate.effort} but the session would serve ${serving ?? '<unset>'}`,
-        candidate.selector,
-        `${candidate.model}:${serving ?? 'unset'}`,
-      );
-      abort?.();
-      return payload;
-    }
-
-    // Approved, at the approved effort.
-    const current = `${candidate.model}:${candidate.effort}`;
-    if (current !== served) {
-      // A move inside the approved set — OMP's own fallback walking the chain
-      // this session armed. The receipt keeps the parent's ORIGINAL requested
-      // selector so the dispatch it belongs to stays identifiable, and names the
-      // candidate now serving, which is the pair an auditor needs.
-      served = current;
-      try {
-        pi.appendEntry?.('@flosrn/ax/model-assignment', {
-          requested: route.selector,
-          model: candidate.model,
-          thinking: candidate.effort,
-          via: 'fallback',
-          routingVersion: route.version,
-          routing: {
-            version: route.version,
-            mode: route.mode,
-            selector: route.selector,
-            candidates: route.candidates.map((entry) => entry.selector),
-            requestedEffort: route.effort,
-          },
-        });
-      } catch (error) {
-        pi.logger?.warn?.(`[orca-model] ${instance} fallback receipt not recorded: ${String(error)}`);
-      }
-      pi.logger?.info?.(`[orca-model] ${instance} serving approved candidate ${current} for route ${route.selector}`);
-    }
-
-    // Arm the chains for THIS request so a fallback chosen during it walks the
-    // approved order and carries each candidate's own effort.
-    armRetry();
-    return payload;
-  });
-
-  /**
-   * The tool fence, and the one place the settings override is wound back.
-   *
-   * Both jobs belong on this hook because both are about what a tool is allowed
-   * to do next. `task` and `eval` spawn children, and a child snapshots the
-   * process-global settings AT SPAWN TIME — so the armed route must be gone
-   * before any tool runs, or a subagent inherits it as its own fallback policy.
-   * Blocking is fail-closed here: `emitToolCall` passes an `onFailure` that
-   * blocks the tool if this handler throws or times out.
-   *
-   * COUNTED, not toggled. A turn can run several tools at once, and a single
-   * flag would re-arm on the FIRST result while a sibling `task` is still
-   * running and may spawn a child a moment later. The override stays down until
-   * the last in-flight tool has reported.
-   */
-  pi.on('tool_call', (_event, ctx) => {
-    if (isSubagentSession(ctx)) return undefined;
-    toolsInFlight += 1;
-    restoreRetry('tool call');
-    return refusal === null
-      ? undefined
-      : { block: true, reason: `approved model route refused: ${refusal.detail}` };
-  });
-
-  /**
-   * Re-arm once no tool is still running.
-   *
-   * `tool_call` unwinds the override, which leaves the loop unarmed until the
-   * next model call — and the usage-aware preflight on that call runs EARLIER
-   * than the payload hook, so the window has to be closed before it. Closing it
-   * at zero in-flight tools is the earliest moment no spawn can still inherit.
-   * A result with no matching call (a runtime that reports one without the
-   * other) floors the counter rather than driving it negative.
-   */
-  pi.on('tool_result', (_event, ctx) => {
-    if (isSubagentSession(ctx)) return undefined;
-    toolsInFlight = Math.max(0, toolsInFlight - 1);
-    if (toolsInFlight === 0) armRetry();
-    return undefined;
-  });
-
-  // Last resort. The tool hook covers every in-session spawn; this covers the
-  // session ending mid-request, so nothing outlives the process holding an
-  // override this session installed.
-  pi.on('session_shutdown', (_event, ctx) => {
-    if (isSubagentSession(ctx)) return;
-    restoreRetry('shutdown');
-  });
 
   /** The second machine: role activation, fed the spec the model half resolved. */
   const roles = roleActivation({ pi, instance, seams, taskSpecOf: () => taskSpec });
@@ -1016,22 +566,49 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
 
   pi.on('session_start', (_event, ctx) => attempt('session_start', ctx, false));
 
+  /**
+   * The request fence. `ctx.abort()` is the ONLY lever that stops a request
+   * before it is sent — a throw from this hook is swallowed by the runner — and
+   * it reaches the wire: it aborts the loop controller whose signal is composed
+   * into the request signal the provider hands its SDK immediately after this
+   * hook returns, flavoured as an interrupt, which turn recovery excludes from
+   * fallback replay. So a refused session cannot be "recovered" onto another
+   * model. The payload is returned untouched: this hook decides whether the
+   * request happens, never what it contains.
+   */
+  pi.on('before_provider_request', (event, ctx) => {
+    const payload = (event as { payload?: unknown } | null)?.payload;
+    // A `task` child is its own session with its own pinned model, and its
+    // parent's marker was never addressed to it.
+    if (refusal === null || isSubagentSession(ctx)) return payload;
+    // `typeof`, not `!== undefined`: a truthy non-function would throw inside
+    // this handler, and the runner SWALLOWS that — the request would then go out
+    // while the log claimed a refusal.
+    const raw = (ctx as { abort?: unknown } | null)?.abort;
+    if (typeof raw === 'function') (raw as () => void).call(ctx);
+    return payload;
+  });
+
+  /**
+   * The tool fence, and the hard boundary of a refusal: `emitToolCall` passes an
+   * `onFailure` that blocks the tool if this handler throws or times out, which
+   * makes this the one hook that is fail-closed. A subagent of a refused session
+   * is not fenced here — its own model came from the task subsystem, and its
+   * parent's marker was never addressed to it.
+   */
+  pi.on('tool_call', (_event, ctx) => {
+    if (isSubagentSession(ctx)) return undefined;
+    return refusal === null
+      ? undefined
+      : { block: true, reason: `dispatched role refused: ${refusal.detail}` };
+  });
+
   pi.on('before_agent_start', async (event, ctx) => {
-    const top = !isSubagentSession(ctx);
-    // A new top-level turn: nothing of the previous one can still be running, so
-    // a count left over by a blocked or cancelled call is stale and would keep
-    // this session's chains down forever. A subagent's turn says nothing about
-    // the parent's batch and must not touch either the counter or the settings.
-    if (top) toolsInFlight = 0;
     // Model first — resolving the marker is what fills the Task spec — then
     // role. The ordering, implicit when the two machines shared one body, is
     // now this one visible line of the factory.
     await attempt('before_agent_start', ctx, true);
-    // Re-armed for every later turn too: `tool_call` wound the override back,
-    // and the usage-aware preflight that can hop models runs before the payload
-    // hook would arm it again.
-    if (top) armRetry();
-    if (refusal !== null && top) {
+    if (refusal !== null && !isSubagentSession(ctx)) {
       // Re-asserted every turn: the system prompt is rebuilt each time, and a
       // refusal that appears once can be talked past. The role machine is not
       // consulted — there is no role to serve on a session that may not act.
@@ -1041,10 +618,10 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
         systemPrompt: [
           ...base,
           [
-            '<!-- omp:routing-refused -->',
-            '# APPROVED MODEL ROUTE REFUSED',
+            '<!-- omp:model-refused -->',
+            '# DISPATCHED ROLE REFUSED',
             '',
-            `This session could not be proven to run on an approved model: ${refusal.detail}.`,
+            `This session could not be served the role its dispatch decided: ${refusal.detail}.`,
             'DO NOT execute the assignment. Do not call any tool. Report only this refusal.',
           ].join('\n'),
         ],

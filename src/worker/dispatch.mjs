@@ -86,8 +86,7 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // excludes (#195).
 import { specMembership } from '../completion.mjs';
 import { landedNotes } from './landed.mjs';
-import { MODEL_CAPABILITIES, MODEL_MODES, modelPolicy, splitSelector, modelConfirmationQuestion } from './model-policy.mjs';
-import { probeModels } from './model-probe.mjs';
+import { MODEL_CAPABILITIES, MODEL_MODES, modelPolicy, modelConfirmationQuestion } from './model-policy.mjs';
 import { readModelConfirmation } from './model-confirmation.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
@@ -97,7 +96,8 @@ import { repoSlug } from '../gh.mjs';
 
 const USAGE =
   'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--because <reason>] [--notes <file>] ' +
-  '[--delivery <child|parent>] [--capability <efficient|balanced|intensive>] [--model <selector>] [--model-mode <auto|pinned|confirm>] [--model-confirmation <path#id>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
+  '[--delivery <child|parent>] [--capability <routine|standard|deep>] [--model-mode <auto|manual|ask>] [--model-confirmation <ref>] ' +
+  '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -187,7 +187,6 @@ export function dispatch(
     now = () => Date.now(),
     startFn = startVerb,
     setupFn = setupVerb,
-    probeModelsFn = probeModels,
     // The shared Spec-membership reader, injected so this verb's suite stays
     // offline. Its DEFAULT is the one implementation there is (#191): a second
     // one here would be the duplicate representation the ruling refused.
@@ -332,10 +331,10 @@ export function dispatch(
     return usageError(`--delivery expects child or parent, not "${flags.delivery}"`);
   }
   if (flags.capability !== '' && !MODEL_CAPABILITIES.includes(flags.capability)) {
-    return usageError(`--capability expects efficient, balanced or intensive, not "${flags.capability}"`);
+    return usageError(`--capability expects routine, standard or deep, not "${flags.capability}"`);
   }
   if (flags.modelMode !== '' && !MODEL_MODES.includes(flags.modelMode)) {
-    return usageError('--model-mode expects auto, pinned or confirm');
+    return usageError(`--model-mode expects ${MODEL_MODES.join(', ')}, not "${flags.modelMode}"`);
   }
   if (argv.includes('--model') && !/^[^\s\[\]]+$/.test(flags.model)) {
     return usageError('--model expects one non-empty OMP selector without whitespace or brackets');
@@ -489,47 +488,41 @@ export function dispatch(
   const config = loaded.config;
   const dispatchConfig = config.dispatch ?? {};
 
-  // ── the confirmation, decided HERE rather than after the probe ─────────────
-  // The mode is knowable from the flag and this project's config alone:
-  // `modelPolicy` resolves `confirm` from nothing else (a named `--model` can
-  // only ever downgrade it to `pinned`), so both answers below are argument
-  // errors and both belong before the ticket is read and before anything is
-  // placed.
+  // ── the ask mode's own two grounds, established BEFORE anything is created ──
+  // The mode is knowable from the flag and this project's config alone, so both
+  // answers below are argument errors and both belong before the ticket is read
+  // and before a worktree, a record or a pane exists.
   //
-  // A STRAY APPROVAL IS A USAGE ERROR, on EVERY path. It used to be refused
-  // only inside the v2 branch, so a project with no worker roles — or an
-  // operator who mistyped `--model-mode` — got a dispatch that placed a
-  // worktree, started a child and read the approval they had collected exactly
-  // nowhere. An input this verb cannot honour is never read past in silence
-  // (the same rule as the retired knobs above).
+  // A STRAY APPROVAL IS A USAGE ERROR, on EVERY path. An approval reference in
+  // any other mode is an input this verb cannot honour, and reading past it in
+  // silence would file a dispatch as though a question had gated it.
   const effectiveMode = flags.modelMode || String(dispatchConfig.modelMode ?? '');
-  if (flags.modelConfirmation !== '' && effectiveMode !== 'confirm') {
+  if (flags.modelConfirmation !== '' && effectiveMode !== 'ask') {
     return usageError(
-      `--model-confirmation is the answer to a --model-mode confirm question, and this dispatch is ${effectiveMode === '' ? 'in no confirm mode' : `in ${effectiveMode} mode`} — an approval no question gated would be filed as though it had`,
-      'ax worker dispatch … --model-mode confirm --model-confirmation <session.jsonl#toolCallId>',
+      `--model-confirmation is the answer to a --model-mode ask question, and this dispatch is ${effectiveMode === '' ? 'in no ask mode' : `in ${effectiveMode} mode`} — an approval no question gated would be filed as though it had`,
+      'ax worker dispatch … --model-mode ask --model-confirmation <session.jsonl#toolCallId>',
     );
   }
-  // AND THE SCOPE THE APPROVAL WILL BE READ UNDER, established before placement
-  // for the same reason. `readModelConfirmation` binds the reference to THIS
-  // session's own transcript, which takes two grounds it cannot invent: where
-  // the runtime writes sessions, and which session is ours. Neither is
-  // discoverable later — the sessions root is this verb's injected seam or the
-  // environment, and the session id is the peer registry's (./peers.mjs) — so a
-  // confirm dispatch that cannot name its own session refuses now, with nothing
-  // created, rather than after a worktree exists.
+  // AND THE SCOPE THE ANSWER WILL BE READ UNDER. `readModelConfirmation` binds
+  // the reference to THIS session's own transcript, which takes two grounds it
+  // cannot invent: where the runtime writes sessions, and which session is ours.
+  // Neither is discoverable later — the sessions root is this verb's injected
+  // seam or the environment, and the session id is the peer registry's
+  // (./peers.mjs) — so an ask dispatch that cannot name its own session refuses
+  // now, with nothing created, rather than after a worktree exists.
   let confirmationScope = null;
-  if (effectiveMode === 'confirm' && !dry) {
+  if (effectiveMode === 'ask' && !dry) {
     const root = sessionsRoot || env.AX_SESSIONS_ROOT || (env.HOME ? join(env.HOME, '.omp', 'agent', 'sessions') : '');
     if (root === '') {
       return cannot(
-        'confirm mode reads the approval out of a transcript under the runtime\u2019s sessions directory, and no HOME names one here',
-        'AX_SESSIONS_ROOT=<dir> ax worker dispatch … --model-mode confirm',
+        'ask mode reads the answer out of a transcript under the runtime\u2019s sessions directory, and no HOME names one here',
+        'AX_SESSIONS_ROOT=<dir> ax worker dispatch … --model-mode ask',
       );
     }
     const sessionId = peerSessionId(env);
     if (sessionId === '') {
       return cannot(
-        'confirm mode attributes the approval to THIS session, and this pane publishes no session id — so an approval collected in any pane on this machine would read as this one\u2019s',
+        'ask mode attributes the answer to THIS session, and this pane publishes no session id — so a choice made in any pane on this machine would read as this one\u2019s',
         'ax init   # register the installed adapter in .omp/settings.json, then RESTART this session so its pane publishes its session id',
       );
     }
@@ -578,86 +571,61 @@ export function dispatch(
     );
   }
 
+  // ── the class, and who decided it ──────────────────────────────────────────
+  // `auto` is the default, so a project that states no mode dispatches exactly
+  // as it did before modes existed. `manual` carries the class the operator
+  // named. `ask` decides nothing here: it prints the question, and only a
+  // verified answer from THIS session's own transcript authorizes a class.
   const policyOptions = {
-    model: flags.model, capability: flags.capability, models: dispatchConfig.models,
-    floors: dispatchConfig.modelFloors, labels: ticket?.labels, because: flags.because,
-    mode: flags.modelMode || dispatchConfig.modelMode || undefined,
+    model: flags.model,
+    capability: flags.capability,
+    models: dispatchConfig.models,
+    floors: dispatchConfig.modelFloors,
+    labels: ticket?.labels,
+    because: flags.because,
+    mode: effectiveMode || undefined,
   };
   let policy;
-  let modelTarget;
   try {
     policy = modelPolicy(policyOptions);
-    if (policy.version === 2) {
-      const target = on === '' ? null : hostFor(config, on);
-      if (target !== null && !target.ok) return refuse(target.reason);
-      let remotePath;
-      if (on !== '') {
-        let repoId = flags.repoId;
-        if (!repoId) {
-          const identity = repoIdFor(basename(paths.root || cwd), { run, env: on });
-          if (!identity.ok) return cannot(identity.reason);
-          repoId = identity.id;
-        } else if (!repoId.startsWith('id:')) repoId = `id:${repoId}`;
-        let remoteSelector = flags.worktree;
-        if (remoteSelector) {
-          const exact = remoteSelectorFor(remoteSelector);
-          if (!exact.ok) return refuse(exact.reason, exact.repair);
-        } else {
-          // The preflight read of the host's own trees, and the ONLY one: the
-          // placement below reuses `modelTarget.selector` rather than asking
-          // again, so notes dropped here are notes nobody ever prints — and
-          // they are the two facts a remote reuse turns on (which tree is being
-          // lent, and that nothing here proves it provisioned). They are
-          // emitted where the read happened, on the refusal path too, because a
-          // `cannot` whose grounds went unprinted sends its reader guessing.
-          const placed = placeRemote({ repoId, env: on, request, issue: flags.issue, named, run });
-          for (const line of placed.notes) note(line);
-          if (placed.cannot) return cannot(placed.cannot, placed.repair);
-          remoteSelector = placed.selector || 'new-top-level';
+    if (policy.pending === true) {
+      const question = modelConfirmationQuestion(request, policy);
+      if (dry) {
+        // The READ of an ask dispatch is the question it would pose. Printed as
+        // the native tool's own argument shape, so the orchestrator asks the
+        // question ax built rather than retyping one that would hash differently.
+        raw(`model confirmation: ${JSON.stringify({ questions: [question] })}`);
+        note('model policy: ask — undecided; no class chosen and no worker created');
+        return 0;
+      } else {
+        // THE WHOLE QUESTION, not just its id: the id hashes the decision and
+        // none of the words, so an ask that carried it while asking something
+        // else — other prose, a superset menu, another recommendation — would
+        // otherwise read as approval of this dispatch.
+        const approval = readModelConfirmation(flags.modelConfirmation, {
+          questionId: question.id, choices: policy.classes, expectedQuestion: question, ...confirmationScope,
+        });
+        if (!approval.ok) {
+          return cannot(approval.reason, 'run this dispatch with --dry-run, ask its question with the ask tool, then pass --model-confirmation <session.jsonl#toolCallId>');
         }
-        if (remoteSelector !== 'new-top-level') {
-          const selected = run(['worktree', 'show', '--environment', on, '--worktree', remoteSelector, '--json']);
-          if (selected.status === 0 && selected.receipt?.ok === true) remotePath = selected.receipt.result?.worktree?.path;
-        } else {
-          const listed = run(['repo', 'list', '--environment', on, '--json']);
-          const repos = listed.status === 0 && listed.receipt?.ok === true ? listed.receipt.result?.repos : null;
-          if (Array.isArray(repos)) remotePath = repos.find(row => row?.id === repoId.replace(/^id:/, ''))?.path;
-        }
-        if (typeof remotePath !== 'string' || !remotePath.startsWith('/')) {
-          return cannot('the execution host did not establish a checkout path for model resolution', `orca worktree list --environment ${on} --repo ${repoId} --json`);
-        }
-        modelTarget = { repoId, selector: remoteSelector, path: remotePath };
-      }
-      const bareModel = flags.model && !flags.model.startsWith('@') && splitSelector(flags.model).effort === null;
-      const probeSelectors = bareModel ? Object.values(dispatchConfig.models ?? {}) : [policy.requestedSelector];
-      if (probeSelectors.length === 0) return refuse('a bare model has no configured effort; name the model with an explicit :effort suffix');
-      const observed = probeModelsFn(probeSelectors, {
-        cwd: on === '' ? flags.worktree || paths.root : paths.root, host: target?.host, remotePath, env,
-      });
-      if (observed.errors?.length || !Array.isArray(observed.candidates)) {
-        return cannot(`target model probe failed: ${(observed.errors ?? ['no candidate receipt']).join('; ')}`, 'install the current AX bundle and configure the requested OMP role on the execution host');
-      }
-      policy = modelPolicy({ ...policyOptions, candidates: observed.candidates });
-      if (policy.mode === 'confirm') {
-        const question = modelConfirmationQuestion(request, policy);
-        if (dry) {
-          raw(`model confirmation: ${JSON.stringify({ questions: [question] })}`);
-        } else {
-          const approval = readModelConfirmation(flags.modelConfirmation, {
-            questionId: question.id, candidates: policy.candidates, ...confirmationScope,
-          });
-          if (!approval.ok) {
-            return cannot(approval.reason, 'run this dispatch with --dry-run, ask its model confirmation question with ask, then pass --model-confirmation <session.jsonl#toolCallId>');
-          }
-          policy = { ...policy, selector: approval.selector, effort: splitSelector(approval.selector).effort,
-            candidates: [approval.selector], confirmation: approval.reference };
-        }
+        policy = modelPolicy({ ...policyOptions, approval: { capability: approval.choice, reference: approval.reference } });
       }
     }
   } catch (error) {
-    return refuse(String(error.message ?? error), 'check dispatch.models and the selected model, tier and effort');
+    return refuse(String(error.message ?? error), 'check dispatch.models, the mode and the class this dispatch asks for');
   }
-  note(redactSecrets(`model policy: ${policy.mode ?? 'auto'} ${policy.capability} -> ${policy.selector} — ${policy.reason}`));
+  // FAIL-CLOSED AT THE BOUNDARY. `--dry-run` is the only path that may hold an
+  // undecided policy, and it creates nothing. Anything else reaching placement
+  // with a pending decision would place on the RECOMMENDATION — the one outcome
+  // ask mode exists to prevent — so the state is refused rather than trusted to
+  // be unreachable.
+  if (policy.pending === true && !dry) {
+    return cannot(
+      `the class for ${request} was never chosen: ask mode places nothing without a verified answer`,
+      'ax worker dispatch … --model-mode ask --model-confirmation <session.jsonl#toolCallId>',
+    );
+  }
+  note(redactSecrets(`model policy: ${policy.mode} ${policy.capability} -> ${policy.selector} — ${policy.reason}`));
 
   const entry = dispatchConfig.entry ?? '';
   if (named) {
@@ -831,7 +799,7 @@ export function dispatch(
     const declared = hostFor(config, on);
     if (!declared.ok) return refuse(declared.reason, `ax.config.json: dispatch.hosts.${on}.ssh "<target>"`);
 
-    let repoId = modelTarget?.repoId || flags.repoId;
+    let repoId = flags.repoId;
     if (repoId === '') {
       const resolved = repoIdFor(basename(paths.root || cwd), { run, env: on });
       if (!resolved.ok) return cannot(resolved.reason, `orca repo list --environment ${on} --json`);
@@ -851,12 +819,12 @@ export function dispatch(
     // for byte. An explicit `--worktree` is the operator having discovered that
     // selector themselves — it is the second repair every remote refusal names,
     // so it asks the host nothing and is taken as given.
-    let remote = modelTarget?.selector || 'new-top-level';
+    let remote = 'new-top-level';
     if (flags.worktree !== '') {
       const exact = remoteSelectorFor(flags.worktree);
       if (!exact.ok) return refuse(exact.reason, exact.repair);
       remote = exact.selector;
-    } else if (modelTarget === undefined) {
+    } else {
       const placed = placeRemote({ repoId, env: on, request, issue: flags.issue, named, run });
       for (const line of placed.notes) note(line);
       if (placed.cannot) return cannot(placed.cannot, placed.repair);
@@ -975,7 +943,6 @@ export function dispatch(
   const report = reportPathFor({ worktree: selector, request });
   const brief = renderBrief({
     model: policy.selector,
-    routing: policy.version === 2 ? { version: 2, mode: policy.mode, selector: policy.selector, candidates: policy.candidates, effort: policy.effort } : undefined,
     instruction,
     ticket,
     name: flags.name,

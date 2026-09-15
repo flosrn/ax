@@ -1,9 +1,9 @@
-// The human's answer to a `--model-mode confirm` question, read from the
-// transcript where OMP itself wrote it — never from prose an agent reports. An
-// orchestrator that could pass `--model-confirmed` would be authorizing itself,
-// so the proof is the artifact the runtime produced:
-// `<session>.jsonl#<ask toolCallId>`. This module reads that pair and answers
-// one question — did THIS human approve THIS decision — and writes nothing.
+// The human's answer to a `--model-mode ask` question, read from the transcript
+// where OMP itself wrote it — never from prose an agent reports. An orchestrator
+// that could pass `--model-approved` would be authorizing itself, so the proof
+// is the artifact the runtime produced: `<session>.jsonl#<ask toolCallId>`. This
+// module reads that pair and answers one question — did THIS human choose THIS
+// class, here, for this decision — and writes nothing.
 //
 // THE SHAPES ARE MEASURED (omp's ask tool `execute`, 2026-09-13, cross-checked
 // against 487 real ask results under ~/.omp/agent/sessions):
@@ -23,18 +23,24 @@
 // Hence three guards. IDENTITY LIVES IN THE CALL: the single-question result
 // carries no question id, so the id comes from the originating toolCall and the
 // result is bound to it by `toolCallId`, the one field the runtime rather than
-// the model controls. A SELECTION IS A LABEL, so a candidate selector must BE
-// the label and prose lives in `description`. STALENESS IS DETECTABLE ONLY BY
-// RE-READING THE QUESTION, so the asked options are compared against the
-// CURRENT candidates and the result's echoed question/options against the
-// call's; an approval of a different menu is refused, never translated.
+// the model controls. A SELECTION IS A LABEL, so a work class must BE the label
+// and prose lives in `description`. STALENESS IS DETECTABLE ONLY BY RE-READING
+// THE QUESTION, so the asked menu must be EXACTLY the classes this decision
+// offers followed by the decline — no extra option, no missing decline, no
+// re-ordering — and, when the caller supplies the question its own builder
+// produced, every word of the dialog is compared too: text, header, multi, the
+// recommended index and each option's description. The id is a hash of the
+// DECISION, not of the prose, so two asks carrying one id can word the dialog
+// differently, and a human who answered other words answered another dialog.
+// The result's echoed question/options are compared against the call's as
+// well; an answer to a different menu is refused, never translated.
 //
 // WHAT IS NOT AN APPROVAL: `timedOut` (OMP auto-selects the recommended option
 // and still writes a non-empty `selectedOptions` — the dialog answering, not
 // the human), `customInput` (the free-text editor cannot be disabled, and typed
-// text is never parsed for a candidate, even an exactly typed selector),
-// `isError`, `chatRedirect`, zero or several selections, `multi`, and a MISSING
-// result — which refuses rather than defaulting to the first candidate.
+// text is never parsed for a class, even an exactly typed one), `isError`,
+// `chatRedirect`, zero or several selections, `multi`, and a MISSING result —
+// which refuses rather than defaulting to the recommended class.
 //
 // FAIL-CLOSED AND NON-THROWING. Every inability is `{ok:false, reason}`: an
 // unreadable file, a truncated line, a forged id, a menu that no longer
@@ -44,14 +50,14 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative } from 'node:path';
 
 /**
- * The one option that is NOT a candidate: the human declining to pick now.
+ * The one option that is NOT a choice: the human declining to pick now.
  *
  * ONE CONSTANT, owned here and imported by the question builder in
  * ./model-policy.mjs. Two spellings would make the builder offer a decline this
  * reader does not recognise, and a deferred decision would come back as "not a
- * current candidate" — a forged-answer refusal for a human who chose to wait.
+ * current choice" — a forged-answer refusal for a human who chose to wait.
  * Prose rather than a bare `defer` because a human reads it in the dialog, and
- * it cannot collide with a candidate's `provider/id:effort` label.
+ * it cannot collide with a class label.
  */
 export const DEFER_LABEL = 'Defer — do not dispatch yet';
 
@@ -77,6 +83,74 @@ function labelOf(option) {
 
 /** Element-wise string equality — the echoed menu against the asked one. */
 const sameLabels = (a, b) => a.length === b.length && a.every((label, i) => label === b[i]);
+
+/** The prose of an option, or null when it carries none. */
+function descriptionOf(option) {
+  if (option && typeof option === 'object' && typeof option.description === 'string') return option.description;
+  return null;
+}
+
+/**
+ * Does the question this transcript recorded differ from the one THIS decision
+ * builds — field by field, prose included?
+ *
+ * Comparing the id alone was the hole: it hashes the mode, the classes, the
+ * recommendation and the policy hash, and NONE of the words. An ask carrying
+ * the right id could therefore pose any question at all — "Ship it?", a
+ * description recommending the expensive class, a header naming another
+ * request — and its answer read as approval of this dispatch. So the canonical
+ * question is compared whole, and a difference names the field that differs so
+ * the repair is to re-ask the built question rather than to guess.
+ *
+ * @returns {string|null} the refusal reason, or null when it is the same question
+ */
+function questionMismatch(asked, expected, questionId, callId) {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
+    return `model confirmation needs the question this decision builds, to compare against ask ${callId}`;
+  }
+  if (expected.id !== questionId) {
+    return `the question this decision builds is ${String(expected.id)}, not ${questionId}: the comparison would be against another decision`;
+  }
+  const expectedOptions = Array.isArray(expected.options) ? expected.options : [];
+  if (expectedOptions.length === 0) {
+    return `the question this decision builds offers no options: there is nothing to compare ask ${callId} against`;
+  }
+  if (Object.keys(asked).some(key => !Object.hasOwn(expected, key))) {
+    return `question ${questionId} in ${callId} carries fields absent from the expected question`;
+  }
+  if (asked.question !== expected.question) {
+    return `question ${questionId} in ${callId} does not ask what this decision asks: the human answered ${JSON.stringify(asked.question)}, not ${JSON.stringify(expected.question)}`;
+  }
+  if ((asked.header ?? null) !== (expected.header ?? null)) {
+    return `question ${questionId} in ${callId} was headed ${JSON.stringify(asked.header ?? null)}, not ${JSON.stringify(expected.header ?? null)}: the dialog framed another decision`;
+  }
+  if ((asked.multi ?? false) !== (expected.multi ?? false)) {
+    return `question ${questionId} in ${callId} was asked with multi ${String(asked.multi ?? false)}, not ${String(expected.multi ?? false)}`;
+  }
+  if ((asked.recommended ?? null) !== (expected.recommended ?? null)) {
+    return `question ${questionId} in ${callId} recommended option ${String(asked.recommended ?? null)}, not ${String(expected.recommended ?? null)}: the human was steered towards another class`;
+  }
+  const askedOptions = Array.isArray(asked.options) ? asked.options : [];
+  if (askedOptions.length !== expectedOptions.length) {
+    return `question ${questionId} in ${callId} offered ${askedOptions.length} options, not the ${expectedOptions.length} this decision offers`;
+  }
+  for (let i = 0; i < expectedOptions.length; i += 1) {
+    const label = labelOf(expectedOptions[i]);
+    if (labelOf(askedOptions[i]) !== label) {
+      return `option ${i + 1} of question ${questionId} in ${callId} is ${JSON.stringify(labelOf(askedOptions[i]))}, not ${JSON.stringify(label)}`;
+    }
+    if (descriptionOf(askedOptions[i]) !== descriptionOf(expectedOptions[i])) {
+      return `option ${JSON.stringify(label)} of question ${questionId} in ${callId} describes itself as ${JSON.stringify(descriptionOf(askedOptions[i]))}, not as ${JSON.stringify(descriptionOf(expectedOptions[i]))}: the human read other prose than this decision writes`;
+    }
+    if ((askedOptions[i]?.preview ?? null) !== (expectedOptions[i]?.preview ?? null)) {
+      return `option ${JSON.stringify(label)} of question ${questionId} in ${callId} carries a different preview`;
+    }
+    if (typeof askedOptions[i] === 'object' && Object.keys(askedOptions[i]).some(key => !Object.hasOwn(expectedOptions[i], key))) {
+      return `option ${JSON.stringify(label)} of question ${questionId} in ${callId} carries fields absent from the expected option`;
+    }
+  }
+  return null;
+}
 
 /**
  * Every parseable JSONL entry of `text`, with the unparseable ones counted.
@@ -107,27 +181,33 @@ function partsOf(entry, role) {
 }
 
 /**
- * Was THIS decision, with THESE candidates, approved by the human at
+ * Was THIS decision, over THESE classes, answered by the human at
  * `<path>#<ask toolCallId>`?
  *
  * @param {string} reference `<session jsonl path>#<ask toolCallId>`.
  * @param {object} options
  * @param {string} options.questionId The id the current decision produces
  *   (`ax-model:<request>:<hash>`). An answer to any other question refuses.
- * @param {string[]} options.candidates The current candidate selectors
- *   (`provider/id:effort`), in policy order. Every one of them must have been
- *   on the menu, and the selection must be one of them.
+ * @param {string[]} options.choices The classes this project configures, in
+ *   class order. Every one of them must have been on the menu, and the
+ *   selection must be one of them.
  * @param {string} [options.sessionsRoot] The runtime's sessions directory. With
  *   `sessionId`, binds the reference to THIS session's own transcript. Both or
  *   neither: a half-supplied scope refuses.
  * @param {string} [options.sessionId] The dispatcher's session id, as the peer
  *   registry records it. The transcript's `session` header must carry it.
  * @param {Function} [options.read] `readFileSync`, injected by the tests.
- * @returns {{ok: true, selector: string, reference: string}|{ok: false, reason: string}}
+ * @param {object} [options.expectedQuestion] The question `modelConfirmationQuestion`
+ *   builds for this decision. Supplied, the asked question must match it
+ *   exactly — text, header, multi, recommended index and every option label and
+ *   description. Production MUST supply it: the id alone hashes no prose, so
+ *   without it a rewritten dialog carrying the right id reads as approval. It
+ *   stays optional only so the low-level guards can be exercised one at a time.
+ * @returns {{ok: true, choice: string, reference: string}|{ok: false, reason: string}}
  */
 export function readModelConfirmation(
   reference,
-  { questionId, candidates, sessionsRoot, sessionId, read = readFileSync } = {},
+  { questionId, choices, sessionsRoot, sessionId, expectedQuestion, read = readFileSync } = {},
 ) {
   const target = splitReference(reference);
   if (target === null) {
@@ -136,14 +216,14 @@ export function readModelConfirmation(
   if (typeof questionId !== 'string' || questionId.trim() === '') {
     return refuse('model confirmation needs the question id the current decision produces');
   }
-  if (!Array.isArray(candidates) || candidates.length === 0 || candidates.some(c => typeof c !== 'string' || c.trim() === '')) {
-    return refuse('model confirmation needs the current candidate selectors');
+  if (!Array.isArray(choices) || choices.length === 0 || choices.some(c => typeof c !== 'string' || c.trim() === '')) {
+    return refuse('model confirmation needs the classes the current decision offers');
   }
-  if (new Set(candidates).size !== candidates.length) {
-    return refuse('candidate selectors must be unique: a repeated label cannot identify a choice');
+  if (new Set(choices).size !== choices.length) {
+    return refuse('classes must be unique: a repeated label cannot identify a choice');
   }
-  if (candidates.includes(DEFER_LABEL)) {
-    return refuse(`no candidate may be labelled ${DEFER_LABEL}: it is the reserved decline`);
+  if (choices.includes(DEFER_LABEL)) {
+    return refuse(`no class may be labelled ${DEFER_LABEL}: it is the reserved decline`);
   }
 
   // THE SCOPE GUARD. Integrity, not authentication: anything running as this
@@ -232,22 +312,29 @@ export function readModelConfirmation(
     return refuse(`question ${questionId} in ${target.id} carries no question text`);
   }
   if (question.multi === true) {
-    return refuse(`question ${questionId} was asked as multi-select: a model decision is one choice`);
+    return refuse(`question ${questionId} was asked as multi-select: a work-class decision is one choice`);
   }
   const askedLabels = (Array.isArray(question.options) ? question.options : []).map(labelOf);
   if (askedLabels.length === 0 || askedLabels.some(label => label === null)) {
     return refuse(`question ${questionId} in ${target.id} has no readable option labels`);
   }
-  // THE STALENESS GUARD. The menu the human saw must still be the decision
-  // being placed: a candidate added, dropped, re-ordered or re-tuned to another
-  // effort means this approval was given to a different set of models.
-  const missing = candidates.filter(candidate => !askedLabels.includes(candidate));
-  if (missing.length > 0) {
-    return refuse(`question ${questionId} did not offer ${missing.join(', ')}: the decision changed since it was asked`);
+  // THE STALENESS GUARD, EXACTLY. The menu the human saw must BE the menu this
+  // decision builds: the configured classes in class order, then the decline.
+  // A subset check passed a superset menu — an ask offering a class this
+  // project does not configure — and passed a menu with no way to decline,
+  // which is a rubber stamp, so the comparison is ordered and total.
+  const expectedLabels = [...choices, DEFER_LABEL];
+  if (!sameLabels(askedLabels, expectedLabels)) {
+    return refuse(`question ${questionId} offered ${askedLabels.join(', ')}, not ${expectedLabels.join(', ')}: the decision changed since it was asked`);
+  }
+  // AND THE WORDS, when the caller brought the question it built.
+  if (expectedQuestion !== undefined) {
+    const mismatch = questionMismatch(question, expectedQuestion, questionId, target.id);
+    if (mismatch !== null) return refuse(mismatch);
   }
 
   // PASS TWO: the answer. A question with no result is unanswered — never a
-  // silent default to the first candidate.
+  // silent default to the recommended class.
   if (results.length === 0) {
     return refuse(`ask call ${target.id} has no result in ${target.path}: the question was asked and not answered`);
   }
@@ -297,7 +384,7 @@ export function readModelConfirmation(
     return refuse(`the answer for ${questionId} echoes a different option list than ask ${target.id} offered`);
   }
   if (record.multi === true) {
-    return refuse(`the answer for ${questionId} was recorded as multi-select: a model decision is one choice`);
+    return refuse(`the answer for ${questionId} was recorded as multi-select: a work-class decision is one choice`);
   }
   // A timeout auto-selects the recommended option and still writes it into
   // `selectedOptions`; refused BEFORE the selection is read, because the
@@ -306,19 +393,19 @@ export function readModelConfirmation(
     return refuse(`ask ${target.id} timed out: the auto-selected option is not an approval`);
   }
   if (record.customInput !== undefined) {
-    return refuse(`ask ${target.id} was answered with custom input: typed text is not one of the proposed candidates`);
+    return refuse(`ask ${target.id} was answered with custom input: typed text is not one of the offered classes`);
   }
   const selected = Array.isArray(record.selectedOptions) ? record.selectedOptions : [];
   if (selected.length !== 1 || typeof selected[0] !== 'string') {
     return refuse(`ask ${target.id} recorded ${selected.length} selected options for ${questionId}: exactly one is required`);
   }
-  const selector = selected[0];
-  if (selector === DEFER_LABEL) {
-    return refuse(`the model choice for ${questionId} was deferred: no candidate was approved`);
+  const choice = selected[0];
+  if (choice === DEFER_LABEL) {
+    return refuse(`the class for ${questionId} was deferred: no class was chosen`);
   }
-  if (!candidates.includes(selector)) {
-    return refuse(`the selected option for ${questionId} is not a current candidate: ${selector}`);
+  if (!choices.includes(choice)) {
+    return refuse(`the selected option for ${questionId} is not a class this decision offers: ${choice}`);
   }
 
-  return { ok: true, selector, reference: `${target.path}#${target.id}` };
+  return { ok: true, choice, reference: `${target.path}#${target.id}` };
 }

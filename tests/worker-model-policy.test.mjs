@@ -1,60 +1,46 @@
-// What a worker is allowed to run on, one proposition per rule.
+// Which ROLE a worker runs on, one proposition per rule.
 //
 // The policy is pure, so every test here is the real function against real
-// inputs — no temp repo, no probe subprocess, no host. The probe's OUTPUT is
-// what this module consumes, and that is supplied directly: the shape
-// `{selector, model, effort, available, reason?}` is the contract between this
-// file and the target extension, and it is exercised verbatim.
+// inputs — no temp repo, no host, no subprocess. What a role expands to is
+// nobody's business here: the propositions worth asserting are which CLASS a
+// dispatch is, which configured role that class hands the child, and who was
+// allowed to decide it.
 //
-// The two properties worth the most here are negative. A candidate list that
-// found nothing available must THROW rather than route to `@default` — a silent
-// downgrade would put a worker on a model nobody chose, under a green suite.
-// And an unsupported effort must be refused rather than clamped, because
-// clamping invents the one decision the operator spelled out.
+// The properties worth the most are negative. A mode whose decider said nothing
+// must refuse rather than route: `manual` with no class named, and `ask` with no
+// verified answer, both place nothing. A class a human chose must survive a
+// label floor that would have raised it, because a floor overriding a human is
+// the decision they were asked for being spent on one they declined.
 //
-// The model ids below are invented strings (`vendor-a/…`). Naming a real
-// provider here would smuggle a provider dependency into a module whose whole
-// point is that it has none.
+// The role names below are invented strings (`@worker-…`). Naming a model, a
+// provider or an effort here would smuggle exactly the dependency this module
+// exists not to have.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { DEFER_LABEL } from '../src/worker/model-confirmation.mjs';
 import {
+  DEFAULT_CAPABILITY,
   MODEL_CAPABILITIES,
   MODEL_MODES,
   confirmationQuestionId,
   modelConfirmationQuestion,
   modelPolicy,
-  splitSelector,
 } from '../src/worker/model-policy.mjs';
 
-/** A project that opted in: three tier roles, one label floor. */
+/** A project that opted in: one role per class, one label floor. */
 const MODELS = {
-  efficient: '@worker-efficient',
-  balanced: '@worker-balanced',
-  intensive: '@worker-intensive',
+  routine: '@worker-routine',
+  standard: '@worker-standard',
+  deep: '@worker-deep',
 };
-const FLOORS = { 'domain:security': 'intensive' };
-
-/** One probe entry. `available` defaults to true; the selector is canonical. */
-const found = (model, effort, extra = {}) => ({
-  selector: `${model}:${effort}`,
-  model,
-  effort,
-  available: true,
-  ...extra,
-});
-
-const BALANCED_PROBE = [
-  found('vendor-a/mid', 'medium'),
-  found('vendor-b/mid', 'high'),
-];
+const FLOORS = { 'domain:security': 'deep' };
 
 /**
  * The refusal a call threw, for the tests that assert what it SAYS.
  * `assert.throws` returns undefined, so a message assertion needs the error
- * itself — and an operator who is told "no" without being told which candidate
- * failed and why has to go read the probe by hand.
+ * itself — and an operator told "no" without being told which class or which
+ * mode refused has nothing to act on.
  */
 const refusal = call => {
   try {
@@ -65,497 +51,239 @@ const refusal = call => {
   return assert.fail('expected a refusal, got a policy');
 };
 
-// ── the two policies ─────────────────────────────────────────────────────────
+// ── the vocabulary ───────────────────────────────────────────────────────────
 
-test('a project that configured no worker roles keeps the old decision, with no routing on it', () => {
-  const policy = modelPolicy({ models: {}, floors: {} });
 
-  assert.equal(policy.version, 1);
-  assert.equal(policy.selector, '@default');
-  assert.equal(policy.source, 'default');
-  assert.match(policy.reason, /preserving @default/);
-  // The v2 fields are ABSENT, not null: a record written before this routing
-  // existed reads back identically, and the transport has nothing to attach.
-  for (const field of ['mode', 'requestedSelector', 'candidates', 'effort']) {
-    assert.equal(Object.hasOwn(policy, field), false, field);
-  }
+test('a typo in either vocabulary refuses, and names what was expected', () => {
+  assert.match(refusal(() => modelPolicy({ models: MODELS, mode: 'confirm' })).message, /auto, manual, ask/);
+  assert.match(refusal(() => modelPolicy({ models: MODELS, capability: 'intensive' })).message, /routine, standard, deep/);
 });
 
-test('an unconfigured project still honours an explicit model, and still records no candidates', () => {
-  const policy = modelPolicy({ model: 'vendor-a/mid:medium', models: {} });
+// ── auto: the orchestrator assesses ──────────────────────────────────────────
 
-  assert.equal(policy.version, 1);
-  assert.equal(policy.selector, 'vendor-a/mid:medium');
-  assert.equal(policy.source, 'explicit');
-  assert.equal(Object.hasOwn(policy, 'candidates'), false);
-});
-
-test('a stated mode opts an unconfigured project INTO the strict path, model and all', () => {
-  // `--model-mode pinned` reading as "v1, unrestricted" would be the opposite
-  // of pinning: the flag would weaken the very guarantee it asks for.
-  const pinned = modelPolicy({ models: {}, mode: 'pinned', model: 'vendor-a/mid:medium' });
-
-  assert.equal(pinned.version, 2);
-  assert.equal(pinned.mode, 'pinned');
-  assert.equal(pinned.requestedSelector, 'vendor-a/mid:medium');
-  assert.deepEqual(pinned.candidates, []);
-
-  const probed = modelPolicy({
-    models: {},
-    mode: 'pinned',
-    model: 'vendor-a/mid:medium',
-    candidates: BALANCED_PROBE,
-  });
-
-  assert.deepEqual(probed.candidates, ['vendor-a/mid:medium']);
-  assert.equal(probed.effort, 'medium');
-});
-
-test('an unconfigured project cannot route a tier it never configured, whatever the mode', () => {
-  assert.throws(() => modelPolicy({ models: {}, mode: 'confirm' }), /declares no balanced role/);
-  assert.throws(() => modelPolicy({ models: {}, mode: 'pinned' }), /nothing to pin to/);
-  assert.throws(() => modelPolicy({ models: {}, candidates: BALANCED_PROBE }), /probes nothing/);
-});
-
-test('a configured project with no assessment routes to its balanced role rather than @default', () => {
+test('auto with no assessment routes the conservative standard role, not the cheapest', () => {
   const policy = modelPolicy({ models: MODELS, floors: FLOORS });
 
-  assert.equal(policy.version, 2);
-  assert.equal(policy.requestedSelector, '@worker-balanced');
-  assert.equal(policy.selector, '@worker-balanced');
-  assert.equal(policy.capability, 'balanced');
-  assert.equal(policy.requestedCapability, null);
-  assert.equal(policy.source, 'default');
   assert.equal(policy.mode, 'auto');
-  // Pre-probe: dispatch asks for the selector first, probes it, then asks again.
-  assert.deepEqual(policy.candidates, []);
-  assert.equal(policy.effort, null);
+  assert.equal(policy.requestedCapability, null, 'nothing was assessed, and the record says so');
+  assert.equal(policy.capability, 'standard');
+  assert.equal(policy.selector, '@worker-standard');
+  assert.equal(policy.source, 'default');
+  assert.equal(policy.confirmation, null);
+  assert.equal(policy.pending, undefined, 'auto decides here: there is nothing to wait for');
+  assert.match(policy.reason, /conservative standard route/);
 });
 
-test('a preliminary decision carries the effort an alias spells out', () => {
-  const policy = modelPolicy({ models: { balanced: '@worker-balanced:high' } });
+test('auto routes the class the orchestrator assessed, with its reason on the record', () => {
+  const policy = modelPolicy({ models: MODELS, capability: 'routine', because: 'decided fix, one file' });
 
-  assert.equal(policy.selector, '@worker-balanced:high');
-  assert.equal(policy.effort, 'high');
-});
-
-// ── what the probe decides ───────────────────────────────────────────────────
-
-test('the chosen candidate carries the effort the probe reported, not one derived here', () => {
-  const policy = modelPolicy({ capability: 'balanced', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.equal(policy.selector, 'vendor-a/mid:medium');
-  assert.equal(policy.effort, 'medium');
-  assert.deepEqual(policy.candidates, ['vendor-a/mid:medium', 'vendor-b/mid:high']);
-  assert.equal(policy.requestedSelector, '@worker-balanced');
+  assert.equal(policy.capability, 'routine');
+  assert.equal(policy.selector, '@worker-routine');
   assert.equal(policy.source, 'capability');
+  assert.equal(policy.reason, 'orchestrator capability: routine — decided fix, one file');
 });
 
-test('the probe order is the authority: the same two models reversed change the selector', () => {
-  const policy = modelPolicy({
-    capability: 'balanced',
-    models: MODELS,
-    candidates: [...BALANCED_PROBE].reverse(),
-  });
+test('a label floor raises an assessment, and names the label that did it', () => {
+  const policy = modelPolicy({ models: MODELS, floors: FLOORS, capability: 'routine', labels: ['domain:security'] });
 
-  assert.equal(policy.selector, 'vendor-b/mid:high');
-  assert.equal(policy.effort, 'high');
-});
-
-test('one model at two efforts cannot be PLACED, because the runtime approves one effort per model', () => {
-  // omp/model/routing.ts keys the enforcement map by model identity, so two
-  // efforts for one model is an ambiguous approval and is refused at
-  // enforcement. Refusing it here names the configuration that caused it.
-  const twice = [found('vendor-a/mid', 'low'), found('vendor-a/mid', 'high')];
-  const boom = refusal(() => modelPolicy({ capability: 'balanced', models: MODELS, candidates: twice }));
-
-  assert.match(boom.message, /vendor-a\/mid at both low and high/);
-  assert.match(boom.message, /one effort per model/);
-  assert.throws(
-    () => modelPolicy({ mode: 'pinned', capability: 'balanced', models: MODELS, candidates: twice }),
-    /at both low and high/,
-  );
-
-  // `confirm` may OFFER both: the operator's answer collapses the menu to one
-  // candidate (dispatch freezes `candidates` to the approved selector) before
-  // anything is placed, so the ambiguity never reaches the runtime.
-  const menu = modelPolicy({ mode: 'confirm', capability: 'balanced', models: MODELS, candidates: twice });
-
-  assert.deepEqual(menu.candidates, ['vendor-a/mid:low', 'vendor-a/mid:high']);
-  assert.equal(menu.effort, 'low');
-});
-
-test('an unavailable candidate is dropped, and its reason is not needed to keep going', () => {
-  const policy = modelPolicy({
-    capability: 'balanced',
-    models: MODELS,
-    candidates: [
-      found('vendor-a/mid', 'medium', { available: false, reason: 'no authenticated account' }),
-      found('vendor-b/mid', 'high'),
-    ],
-  });
-
-  assert.deepEqual(policy.candidates, ['vendor-b/mid:high']);
-  assert.equal(policy.selector, 'vendor-b/mid:high');
-});
-
-test('nothing available is a refusal, never a quiet fall back to @default', () => {
-  const boom = refusal(() => modelPolicy({
-    capability: 'balanced',
-    models: MODELS,
-    candidates: [
-      found('vendor-a/mid', 'medium', { available: false, reason: 'quota exhausted' }),
-      found('vendor-b/mid', 'high', { available: false, reason: 'not authenticated' }),
-    ],
-  }));
-
-  assert.match(boom.message, /no available candidate for @worker-balanced/);
-  assert.match(boom.message, /quota exhausted/);
-  assert.match(boom.message, /not authenticated/);
-  assert.doesNotMatch(boom.message, /@default/);
-});
-
-test('a probe that returned an empty list dispatches nothing', () => {
-  assert.throws(
-    () => modelPolicy({ capability: 'balanced', models: MODELS, candidates: [] }),
-    /returned no candidate/,
-  );
-});
-
-test('a probe entry with no effort, or an unknown one, is the probe error it is', () => {
-  assert.throws(
-    () => modelPolicy({ models: MODELS, candidates: [{ model: 'vendor-a/mid', selector: 'vendor-a/mid' }] }),
-    /reported no effort/,
-  );
-  const boom = refusal(() => modelPolicy({ models: MODELS, candidates: [{ model: 'vendor-a/mid', effort: 'ultra' }] }));
-  assert.match(boom.message, /effort "ultra"/);
-  assert.match(boom.message, /never clamped/);
-});
-
-test('a probe entry whose selector contradicts its own model and effort is refused', () => {
-  assert.throws(
-    () => modelPolicy({
-      models: MODELS,
-      candidates: [{ selector: 'vendor-a/mid:high', model: 'vendor-a/mid', effort: 'low', available: true }],
-    }),
-    /disagrees with itself/,
-  );
-});
-
-// ── tiers, floors and refusals ───────────────────────────────────────────────
-
-test('a label floor raises the assessed tier and names the label that did it', () => {
-  const policy = modelPolicy({
-    capability: 'efficient',
-    models: MODELS,
-    floors: FLOORS,
-    labels: ['area:api', 'domain:security'],
-    candidates: [found('vendor-c/big', 'xhigh')],
-  });
-
-  assert.equal(policy.capability, 'intensive');
-  assert.equal(policy.requestedCapability, 'efficient');
-  assert.equal(policy.requestedSelector, '@worker-intensive');
-  assert.deepEqual(policy.floorLabels, ['domain:security']);
+  assert.equal(policy.capability, 'deep');
+  assert.equal(policy.selector, '@worker-deep');
   assert.equal(policy.source, 'floor');
   assert.match(policy.reason, /risk floor: domain:security/);
 });
 
-test('a floor raises an unstated assessment too — the implied balanced is still automatic', () => {
-  const policy = modelPolicy({
-    models: MODELS,
-    floors: FLOORS,
-    labels: ['domain:security'],
-    candidates: [found('vendor-c/big', 'xhigh')],
-  });
+test('a project that configured no roles keeps @default, in every direction', () => {
+  // The opt-out, and the one place `@default` is still an answer: a repository
+  // that never declared a class must dispatch exactly as it did before classes
+  // existed.
+  const unassessed = modelPolicy({ models: {}, floors: FLOORS, labels: ['domain:security'] });
+  assert.equal(unassessed.selector, '@default');
+  assert.equal(unassessed.classes.length, 0);
+  assert.match(unassessed.reason, /preserving @default/);
 
-  assert.equal(policy.capability, 'intensive');
-  assert.equal(policy.requestedSelector, '@worker-intensive');
+  const assessed = modelPolicy({ models: {}, capability: 'deep' });
+  assert.equal(assessed.selector, '@default', 'with nothing configured there is no deep role to route to');
+  assert.equal(assessed.capability, 'deep');
 });
 
-test('an explicit model outranks a floor', () => {
-  const policy = modelPolicy({
-    model: 'vendor-a/mid:medium',
-    models: MODELS,
-    floors: FLOORS,
-    labels: ['domain:security'],
-    candidates: BALANCED_PROBE,
-  });
+test('a class this project half-configured is named, never quietly downgraded', () => {
+  const boom = refusal(() => modelPolicy({ models: { routine: '@worker-routine' }, capability: 'deep' }));
 
-  assert.deepEqual(policy.floorLabels, []);
+  assert.match(boom.message, /declares no deep role/);
+  assert.match(boom.message, /configure it, assess another class, or name a --model/);
+});
+
+// ── the legacy explicit selector ─────────────────────────────────────────────
+
+test('an explicit --model is still honoured in auto, and outranks a label floor', () => {
+  const policy = modelPolicy({ models: MODELS, floors: FLOORS, model: '@operator-pick', labels: ['domain:security'] });
+
+  assert.equal(policy.selector, '@operator-pick');
   assert.equal(policy.source, 'explicit');
-  assert.equal(policy.selector, 'vendor-a/mid:medium');
+  assert.deepEqual(policy.floorLabels, [], 'a floor does not raise a selector the operator named');
 });
 
-test('a tier with no configured role is a configuration refusal, not a downgrade', () => {
-  const boom = refusal(() => modelPolicy({
-    models: { balanced: '@worker-balanced' },
-    floors: FLOORS,
-    labels: ['domain:security'],
-  }));
-
-  assert.match(boom.message, /declares no intensive role/);
-  assert.match(boom.message, /domain:security/);
+test('an explicit --model cannot stand in for a class a human was asked to choose', () => {
+  // Honouring it in either mode would spend a decision somebody made — or was
+  // about to make — on one they never saw, with the mode still recorded.
+  for (const mode of ['manual', 'ask']) {
+    const boom = refusal(() => modelPolicy({ models: MODELS, mode, model: '@operator-pick', capability: 'routine' }));
+    assert.match(boom.message, /only honoured in auto mode/);
+  }
 });
 
-test('an unsupported tier or mode is refused by name', () => {
-  assert.throws(() => modelPolicy({ capability: 'deep', models: MODELS }), /--capability expects/);
-  assert.throws(() => modelPolicy({ mode: 'ask', models: MODELS }), /--model-mode expects/);
-});
+// ── manual: the operator names the class ─────────────────────────────────────
 
-// ── modes ────────────────────────────────────────────────────────────────────
-
-test('an explicit model implies pinned when the caller named no mode', () => {
-  const policy = modelPolicy({ model: 'vendor-a/mid:medium', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.equal(policy.mode, 'pinned');
-  // Pinned to one exact selector: the sibling the probe also found is NOT a
-  // place this worker may land, so it is not in the list the runtime enforces.
-  assert.deepEqual(policy.candidates, ['vendor-a/mid:medium']);
-  assert.equal(policy.effort, 'medium');
-});
-
-test('a stated auto does not unpin a named model — only confirm survives it', () => {
-  // The CLI may well pass its own `auto` default alongside `--model`. If that
-  // read as "route freely", naming a model would silently authorize the OTHER
-  // probed candidate, and the runtime would enforce a set the operator never
-  // approved.
-  const pinned = modelPolicy({ mode: 'auto', model: 'vendor-a/mid:medium', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.equal(pinned.mode, 'pinned');
-  assert.deepEqual(pinned.candidates, ['vendor-a/mid:medium']);
-
-  const confirmed = modelPolicy({ mode: 'confirm', model: 'vendor-a/mid:medium', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.equal(confirmed.mode, 'confirm');
-  assert.deepEqual(confirmed.candidates, ['vendor-a/mid:medium']);
-});
-
-test('a pinned model with no effort suffix derives it from the configured candidate', () => {
+test('manual routes the class the operator named, and a label floor does not override it', () => {
   const policy = modelPolicy({
-    model: 'vendor-b/mid',
-    models: MODELS,
-    candidates: BALANCED_PROBE,
+    models: MODELS, floors: FLOORS, mode: 'manual', capability: 'routine',
+    labels: ['domain:security'], because: 'operator: the fix is decided',
   });
 
-  assert.deepEqual(policy.candidates, ['vendor-b/mid:high']);
-  assert.equal(policy.effort, 'high');
-});
-
-test('an explicit ALIAS is pinned to what the probe expanded it to', () => {
-  // The alias is the string the probe was ASKED about, so its candidates are
-  // its expansion. Comparing `@sol-5.6` to a concrete `vendor-a/mid` finds no
-  // match and refused every `--model @alias` dispatch outright.
-  const policy = modelPolicy({ model: '@sol-5.6', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.equal(policy.mode, 'pinned');
-  assert.equal(policy.requestedSelector, '@sol-5.6');
-  assert.deepEqual(policy.candidates, ['vendor-a/mid:medium']);
-  assert.equal(policy.effort, 'medium');
-});
-
-test('an alias skips past an unavailable expansion instead of refusing', () => {
-  const policy = modelPolicy({
-    model: '@sol-5.6',
-    models: MODELS,
-    candidates: [found('vendor-a/mid', 'medium', { available: false, reason: 'quota exhausted' }), found('vendor-b/mid', 'high')],
-  });
-
-  assert.deepEqual(policy.candidates, ['vendor-b/mid:high']);
-});
-
-test('an alias with an effort suffix selects that effort among its expansion', () => {
-  const policy = modelPolicy({ model: '@sol-5.6:high', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.deepEqual(policy.candidates, ['vendor-b/mid:high']);
-
-  const boom = refusal(() => modelPolicy({ model: '@sol-5.6:max', models: MODELS, candidates: BALANCED_PROBE }));
-
-  assert.match(boom.message, /none at effort max/);
-  assert.match(boom.message, /never clamped/);
-});
-
-test('confirm over an alias offers its whole available expansion', () => {
-  const policy = modelPolicy({ mode: 'confirm', model: '@sol-5.6', models: MODELS, candidates: BALANCED_PROBE });
-
-  assert.equal(policy.mode, 'confirm');
-  assert.deepEqual(policy.candidates, ['vendor-a/mid:medium', 'vendor-b/mid:high']);
-});
-
-test('a model outside the configured candidates has no effort to derive and is refused', () => {
-  const boom = refusal(() => modelPolicy({ model: 'vendor-z/unknown', models: MODELS, candidates: BALANCED_PROBE }));
-
-  assert.match(boom.message, /is not among the candidates configured/);
-  assert.match(boom.message, /no effort to derive/);
-});
-
-test('an explicit effort the configured candidates do not offer is refused, not rounded', () => {
-  const boom = refusal(() => modelPolicy({ model: 'vendor-a/mid:max', models: MODELS, candidates: BALANCED_PROBE }));
-
-  assert.match(boom.message, /configured at medium/);
-  assert.match(boom.message, /never clamped/);
-});
-
-test('pinned with neither a model nor a stated tier has nothing to pin to', () => {
-  assert.throws(() => modelPolicy({ mode: 'pinned', models: MODELS }), /nothing to pin to/);
-});
-
-test('pinned to a tier keeps every candidate that tier offers', () => {
-  const policy = modelPolicy({
-    mode: 'pinned',
-    capability: 'balanced',
-    models: MODELS,
-    candidates: BALANCED_PROBE,
-  });
-
-  assert.equal(policy.mode, 'pinned');
-  assert.deepEqual(policy.candidates, ['vendor-a/mid:medium', 'vendor-b/mid:high']);
-});
-
-test('a label floor does not raise a PINNED tier — the operator already decided', () => {
-  // A floor is a recommendation about routing this ticket automatically. Letting
-  // one push an explicitly pinned tier upward would spend the operator's pin on
-  // the model they declined, and the dispatch would land on @worker-intensive
-  // after being told to hold at efficient.
-  const policy = modelPolicy({
-    mode: 'pinned',
-    capability: 'efficient',
-    models: MODELS,
-    floors: FLOORS,
-    labels: ['domain:security'],
-    candidates: [found('vendor-a/small', 'low')],
-  });
-
-  assert.equal(policy.capability, 'efficient');
-  assert.equal(policy.requestedSelector, '@worker-efficient');
+  assert.equal(policy.mode, 'manual');
+  assert.equal(policy.capability, 'routine', 'the floor would have raised this to deep');
+  assert.equal(policy.selector, '@worker-routine');
+  assert.equal(policy.source, 'manual');
   assert.deepEqual(policy.floorLabels, []);
-  assert.equal(policy.source, 'capability');
+  assert.match(policy.reason, /operator named routine — operator: the fix is decided/);
+});
 
-  // auto and confirm are recommendations, so the same labels still raise them.
-  for (const mode of ['auto', 'confirm']) {
-    const raised = modelPolicy({
-      mode,
-      capability: 'efficient',
-      models: MODELS,
-      floors: FLOORS,
-      labels: ['domain:security'],
-      candidates: [found('vendor-c/big', 'xhigh')],
-    });
+test('manual with no class named refuses: there is nothing to route and nothing to assess', () => {
+  const boom = refusal(() => modelPolicy({ models: MODELS, mode: 'manual' }));
 
-    assert.equal(raised.capability, 'intensive', mode);
-    assert.equal(raised.requestedSelector, '@worker-intensive', mode);
-    assert.deepEqual(raised.floorLabels, ['domain:security'], mode);
+  assert.match(boom.message, /routes the class the operator named/);
+  assert.match(boom.message, /--capability routine, standard or deep/);
+});
+
+test('manual and ask refuse on a project with no configured class at all', () => {
+  for (const mode of ['manual', 'ask']) {
+    const boom = refusal(() => modelPolicy({ models: {}, mode, capability: 'standard' }));
+    assert.match(boom.message, /configures no worker roles/);
   }
 });
 
-test('confirm with a bare model offers that model at every available effort', () => {
-  const policy = modelPolicy({
-    mode: 'confirm',
-    model: 'vendor-a/mid',
-    models: MODELS,
-    candidates: [found('vendor-a/mid', 'low'), found('vendor-a/mid', 'high'), found('vendor-b/mid', 'high')],
+// ── ask: a human chooses, in this session, for this request ──────────────────
+
+test('ask decides nothing on its own: the preliminary policy is pending, with the menu on it', () => {
+  const policy = modelPolicy({ models: MODELS, floors: FLOORS, mode: 'ask', capability: 'routine' });
+
+  assert.equal(policy.pending, true, 'nothing may be placed on this');
+  assert.deepEqual(policy.classes, ['routine', 'standard', 'deep']);
+  assert.equal(policy.recommended, 'routine');
+  assert.equal(policy.confirmation, null);
+});
+
+test('ask can offer configured classes when the assessed class is unavailable', () => {
+  const models = { routine: '@worker-routine', deep: '@worker-deep' };
+  const pending = modelPolicy({ models, mode: 'ask' });
+  assert.equal(pending.pending, true);
+  assert.equal(pending.selector, '');
+  const question = modelConfirmationQuestion('partial-menu', pending);
+  assert.deepEqual(question.options.map(option => option.label), ['routine', 'deep', DEFER_LABEL]);
+  assert.equal(question.recommended, undefined);
+  const approved = modelPolicy({ models, mode: 'ask', approval: { capability: 'deep', reference: '/s/a.jsonl#answer' } });
+  assert.equal(approved.selector, '@worker-deep');
+});
+
+test('the ask question offers CLASSES, a decline, and no model or effort anywhere', () => {
+  const policy = modelPolicy({ models: MODELS, mode: 'ask', capability: 'deep', because: 'unresolved lock design' });
+  const question = modelConfirmationQuestion('ofmchat-412', policy);
+
+  assert.deepEqual(question.options.map(option => option.label), ['routine', 'standard', 'deep', DEFER_LABEL]);
+  assert.equal(question.multi, false);
+  assert.equal(question.options[question.recommended].label, 'deep');
+  // The whole point of the correction: a human is asked which CLASS of work
+  // this is, never which model or effort serves it.
+  const rendered = JSON.stringify(question);
+  for (const role of Object.values(MODELS)) assert.ok(!rendered.includes(role), `${role} has no business on this menu`);
+  for (const effort of ['medium', 'high', 'xhigh', 'max']) assert.ok(!rendered.includes(effort));
+  // The native tool is strict: an extra field is a rejected call.
+  assert.deepEqual(Object.keys(question).sort(), ['header', 'id', 'multi', 'options', 'question', 'recommended']);
+});
+
+test('the question id binds the request AND the configuration behind the menu', () => {
+  const base = { models: MODELS, floors: FLOORS, mode: 'ask', capability: 'standard' };
+  const policy = modelPolicy(base);
+  const id = confirmationQuestionId('ofmchat-412', policy);
+
+  assert.match(id, /^ax-model:ofmchat-412:[0-9a-f]{16}$/);
+  assert.equal(id, confirmationQuestionId('ofmchat-412', modelPolicy(base)), 'the same decision asks the same question');
+  assert.notEqual(id, confirmationQuestionId('ofmchat-413', policy), 'another request is another question');
+  // Re-routing a class invalidates an answer collected for the old routing: the
+  // human approved a class in a project that routed it somewhere specific.
+  const rerouted = modelPolicy({ ...base, models: { ...MODELS, deep: '@worker-deep-2' } });
+  assert.notEqual(id, confirmationQuestionId('ofmchat-412', rerouted));
+  // And so does adding a class the human never saw on the menu.
+  const narrowed = modelPolicy({ ...base, models: { standard: '@worker-standard', deep: '@worker-deep' } });
+  assert.notEqual(id, confirmationQuestionId('ofmchat-412', narrowed));
+});
+
+test('a question can only be built from an ask decision over configured classes', () => {
+  assert.match(refusal(() => confirmationQuestionId('', modelPolicy({ models: MODELS, mode: 'ask' }))).message, /request id/);
+  assert.match(
+    refusal(() => confirmationQuestionId('ofmchat-412', modelPolicy({ models: MODELS, capability: 'deep' }))).message,
+    /ask-mode policy/,
+  );
+});
+
+test('the class a human chose is the decision, and it outranks recommendation and floor alike', () => {
+  const chosen = modelPolicy({
+    models: MODELS, floors: FLOORS, mode: 'ask', capability: 'deep', labels: ['domain:security'],
+    approval: { capability: 'routine', reference: '/s/session.jsonl#call_1' },
   });
 
-  assert.equal(policy.mode, 'confirm');
-  assert.deepEqual(policy.candidates, ['vendor-a/mid:low', 'vendor-a/mid:high']);
+  assert.equal(chosen.pending, undefined, 'answered: this one places');
+  assert.equal(chosen.capability, 'routine', 'the human went BELOW both the assessment and the floor');
+  assert.equal(chosen.selector, '@worker-routine');
+  assert.equal(chosen.source, 'approved');
+  assert.deepEqual(chosen.floorLabels, []);
+  assert.equal(chosen.recommended, 'deep', 'and the record keeps what was recommended instead');
+  assert.equal(chosen.confirmation, '/s/session.jsonl#call_1', 'the artifact that authorized it, on the record');
+  assert.match(chosen.reason, /operator chose routine in this session’s ask/);
 });
 
-// ── the confirmation question ────────────────────────────────────────────────
-
-const CONFIRMABLE = () => modelPolicy({
-  mode: 'confirm',
-  capability: 'balanced',
-  models: MODELS,
-  candidates: BALANCED_PROBE,
-  because: 'a decided surface',
-});
-
-test('the question id is stable for one decision and scoped to its request', () => {
-  const first = confirmationQuestionId('req-7', CONFIRMABLE());
-  const again = confirmationQuestionId('req-7', CONFIRMABLE());
-
-  assert.equal(first, again);
-  assert.match(first, /^ax-model:req-7:[0-9a-f]{16}$/);
-  assert.notEqual(first, confirmationQuestionId('req-8', CONFIRMABLE()));
-});
-
-test('a candidate whose effort changed invalidates the approval collected before it', () => {
-  const approved = confirmationQuestionId('req-7', CONFIRMABLE());
-  const retuned = confirmationQuestionId('req-7', modelPolicy({
-    mode: 'confirm',
-    capability: 'balanced',
-    models: MODELS,
-    // Same model, same order, same availability. Only the effort moved.
-    candidates: [found('vendor-a/mid', 'high'), found('vendor-b/mid', 'high')],
-    because: 'a decided surface',
+test('an answer is only usable where a question was asked, and only for a configured class', () => {
+  const outside = refusal(() => modelPolicy({
+    models: MODELS, capability: 'routine', approval: { capability: 'routine', reference: '/s/session.jsonl#call_1' },
   }));
+  assert.match(outside.message, /answer to an ask question/);
 
-  assert.notEqual(approved, retuned);
-});
-
-test('a dropped alternative also invalidates it — the menu is part of the decision', () => {
-  const approved = confirmationQuestionId('req-7', CONFIRMABLE());
-  const narrowed = confirmationQuestionId('req-7', modelPolicy({
-    mode: 'confirm',
-    capability: 'balanced',
-    models: MODELS,
-    candidates: [found('vendor-a/mid', 'medium')],
-    because: 'a decided surface',
-  }));
-
-  assert.notEqual(approved, narrowed);
-});
-
-test('no question is offered for a decision no probe stood behind', () => {
-  assert.throws(() => confirmationQuestionId('req-7', modelPolicy({ models: MODELS })), /probed on the target/);
-  assert.throws(() => confirmationQuestionId('req-7', modelPolicy({ models: {} })), /v2 policy/);
-  assert.throws(() => confirmationQuestionId('', CONFIRMABLE()), /needs the request id/);
-});
-
-test('the question is one native ask Question whose labels are the exact selectors', () => {
-  const policy = CONFIRMABLE();
-  const question = modelConfirmationQuestion('req-7', policy);
-
-  assert.equal(question.id, confirmationQuestionId('req-7', policy));
-  assert.equal(question.multi, false);
-  assert.equal(question.recommended, 0);
-  // Labels and labels only: the transcript records the chosen LABEL, so every
-  // candidate must be readable back as a selector, prose kept in `description`.
-  assert.deepEqual(
-    question.options.map(option => option.label),
-    ['vendor-a/mid:medium', 'vendor-b/mid:high', DEFER_LABEL],
-  );
-  for (const selector of policy.candidates) {
-    assert.ok(question.options.some(option => option.label === selector), selector);
+  for (const capability of ['', 'intensive', 'balanced']) {
+    const boom = refusal(() => modelPolicy({
+      models: MODELS, mode: 'ask', approval: { capability, reference: '/s/session.jsonl#call_1' },
+    }));
+    assert.match(boom.message, /not one this project configures/);
   }
-  assert.equal(question.options[0].label, policy.selector);
-  assert.ok(question.options.every(option => option.description !== ''));
-  // Strict tool: an unknown field is a rejected call, so the keys are pinned.
-  assert.deepEqual(Object.keys(question).sort(), ['header', 'id', 'multi', 'options', 'question', 'recommended']);
-  assert.ok(question.question.includes('req-7'));
-  assert.ok(question.question.includes(policy.selector));
 });
 
-test('the declined option is the reader\'s own label, so a defer is never read as a forgery', () => {
-  const question = modelConfirmationQuestion('req-7', CONFIRMABLE());
+// ── the recorded decision ────────────────────────────────────────────────────
 
-  assert.equal(question.options.at(-1).label, DEFER_LABEL);
-  assert.equal(question.options.filter(option => option.label === DEFER_LABEL).length, 1);
+test('the decision records the mode, the class, the role and who decided — and nothing about a model', () => {
+  const policy = modelPolicy({ models: MODELS, floors: FLOORS, mode: 'ask', capability: 'standard',
+    approval: { capability: 'deep', reference: '/s/session.jsonl#call_1' } });
+
+  // Recovery replays THIS object rather than reclassifying a changed ticket, so
+  // every field a later reader needs has to be on it.
+  assert.deepEqual(Object.keys(policy).sort(), [
+    'capability', 'classes', 'confirmation', 'floorLabels', 'mode', 'policyHash',
+    'reason', 'recommended', 'requestedCapability', 'selector', 'source', 'version',
+  ]);
+  assert.equal(policy.version, 1);
+  assert.match(policy.policyHash, /^[0-9a-f]{64}$/);
 });
 
-// ── the selector convention ──────────────────────────────────────────────────
+test('the policy hash covers the roles and the floors, and only those', () => {
+  const hash = models => modelPolicy({ models, floors: FLOORS }).policyHash;
 
-test('a selector splits only on an effort that names a real thinking level', () => {
-  assert.deepEqual(splitSelector('vendor-a/mid:medium'), { model: 'vendor-a/mid', effort: 'medium' });
-  assert.deepEqual(splitSelector('@worker-balanced'), { model: '@worker-balanced', effort: null });
-  // A version tag is part of the id. Truncating it would silently reroute.
-  assert.deepEqual(splitSelector('vendor-a/mid:latest'), { model: 'vendor-a/mid:latest', effort: null });
-  assert.deepEqual(splitSelector('vendor-a/gpt-9.1:2026-01:high'), { model: 'vendor-a/gpt-9.1:2026-01', effort: 'high' });
-  assert.deepEqual(splitSelector(''), { model: '', effort: null });
-});
-
-test('the tier vocabulary is ordered cheapest-first, which IS the floor comparison', () => {
-  assert.deepEqual(MODEL_CAPABILITIES, ['efficient', 'balanced', 'intensive']);
-  assert.deepEqual(MODEL_MODES, ['auto', 'pinned', 'confirm']);
-  assert.ok(MODEL_CAPABILITIES.indexOf('intensive') > MODEL_CAPABILITIES.indexOf('balanced'));
+  assert.equal(hash(MODELS), hash({ ...MODELS }));
+  assert.notEqual(hash(MODELS), hash({ ...MODELS, deep: '@worker-deep-2' }));
+  assert.notEqual(
+    modelPolicy({ models: MODELS, floors: FLOORS }).policyHash,
+    modelPolicy({ models: MODELS, floors: { 'domain:security': 'standard' } }).policyHash,
+  );
+  assert.equal(
+    modelPolicy({ models: MODELS, floors: FLOORS, capability: 'deep', because: 'x' }).policyHash,
+    modelPolicy({ models: MODELS, floors: FLOORS }).policyHash,
+    'the assessment is not the configuration',
+  );
 });

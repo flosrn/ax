@@ -1,10 +1,10 @@
-// The confirmation reader: did THIS human approve THIS model decision?
+// The confirmation reader: did THIS human choose THIS class?
 //
-// The propositions under test are the ways a transcript can look like consent
-// without being any: a timeout that auto-selects the recommended candidate and
+// The propositions under test are the ways a transcript can look like a choice
+// without being one: a timeout that auto-selects the recommended class and
 // writes it into `selectedOptions`; typed free text that says yes; a cancelled
 // or chat-redirected ask; an answer to a question id that no longer describes
-// the decision; a menu that was drawn before an effort changed; a result that
+// the decision; a menu drawn before the project's classes changed; a result that
 // was never written at all. Every one of them must refuse, and none of them may
 // throw — the caller refuses before placement, and a throw there is a crash.
 //
@@ -15,6 +15,9 @@
 // answer is flat details with no id, a 2+-question answer is `details.results[]`
 // with ids, a cancel is `details:{}` with `isError`, and a chat redirect is
 // `details:{chatRedirect:true}`.
+//
+// The option labels are WORK CLASSES, because that is all this question ever
+// offers: no model, no effort and no provider is named on either side of it.
 //
 // Real files, no mocked filesystem: every case writes a JSONL into a tmpdir and
 // reads it through the module's own default `readFileSync`. The injected `read`
@@ -29,21 +32,22 @@ import { DEFER_LABEL, readModelConfirmation } from '../src/worker/model-confirma
 
 const ASK_ID = 'call_bC7rTd0hZ1qFhPq9wQ2mXk4T';
 const QID = 'ax-model:ofmchat-412:9f2c1d7b41e6';
-const TEXT = 'Which model should the worker for ofmchat-412 run on?';
-const SONNET = 'anthropic/claude-sonnet-5:medium';
-const CODEX = 'openai/gpt-6-codex:high';
-const CANDIDATES = [SONNET, CODEX];
+const TEXT = 'Which class should ofmchat-412 be dispatched as? Recommended standard (capability).';
+const ROUTINE = 'routine';
+const STANDARD = 'standard';
+const DEEP = 'deep';
+const CLASSES = [ROUTINE, STANDARD, DEEP];
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-model-confirmation-'));
 
-/** A native ask Question, as ./model-policy.mjs builds it: label IS the selector. */
-const question = ({ id = QID, text = TEXT, labels = [...CANDIDATES, DEFER_LABEL], multi } = {}) => ({
+/** A native ask Question, as ./model-policy.mjs builds it: the label IS the class. */
+const question = ({ id = QID, text = TEXT, labels = [...CLASSES, DEFER_LABEL], multi } = {}) => ({
   id,
   question: text,
-  header: 'Worker model',
-  options: labels.map(label => ({ label, description: `run the worker on ${label}` })),
+  header: 'worker class for ofmchat-412',
+  options: labels.map(label => ({ label, description: `dispatch this as ${label}` })),
   ...(multi === undefined ? { multi: false } : { multi }),
-  recommended: 0,
+  recommended: 1,
 });
 
 /** The originating assistant turn, with the fields a real one carries. */
@@ -58,9 +62,9 @@ const call = ({ id = ASK_ID, questions = [question()] } = {}) => JSON.stringify(
       type: 'toolCall',
       id,
       name: 'ask',
-      arguments: { i: 'Confirming the worker model', questions },
+      arguments: { i: 'Choosing the worker class', questions },
       streamIndex: 0,
-      intent: 'Confirming the worker model',
+      intent: 'Choosing the worker class',
     }],
     api: 'openai-completions',
     provider: 'omniroute-oai',
@@ -74,8 +78,8 @@ const call = ({ id = ASK_ID, questions = [question()] } = {}) => JSON.stringify(
 const flat = ({
   id = ASK_ID,
   text = TEXT,
-  labels = [...CANDIDATES, DEFER_LABEL],
-  selectedOptions = [SONNET],
+  labels = [...CLASSES, DEFER_LABEL],
+  selectedOptions = [STANDARD],
   customInput,
   note,
   timedOut,
@@ -135,64 +139,65 @@ const boot = JSON.stringify({ type: 'session', version: 3, id: 'sess', cwd: '/Us
 const readWith = (lines, options, fixture = {}) => {
   const { dir, path, reference } = transcriptOf(lines, fixture);
   try {
-    return { ...readModelConfirmation(reference, { questionId: QID, candidates: CANDIDATES, ...options }), path, reference };
+    return { ...readModelConfirmation(reference, { questionId: QID, choices: CLASSES, ...options }), path, reference };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 };
 
-test('a chosen candidate is the approval, and the answer is the selector itself', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [CODEX] })]);
+test('a chosen class is the answer, and the answer is that class itself', () => {
+  const got = readWith([boot, call(), flat({ selectedOptions: [DEEP] })]);
   assert.equal(got.ok, true);
-  assert.equal(got.selector, CODEX);
+  assert.equal(got.choice, DEEP);
   assert.equal(got.reference, `${got.path}#${ASK_ID}`);
   assert.equal(got.reason, undefined);
 });
 
-test('any proposed candidate can be chosen, not only the recommended one', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [SONNET] })]);
-  assert.deepEqual({ ok: got.ok, selector: got.selector }, { ok: true, selector: SONNET });
+test('any offered class can be chosen, not only the recommended one', () => {
+  // The whole point of asking: the human may go BELOW what was recommended.
+  const got = readWith([boot, call(), flat({ selectedOptions: [ROUTINE] })]);
+  assert.deepEqual({ ok: got.ok, choice: got.choice }, { ok: true, choice: ROUTINE });
 });
 
 test('a note alongside the selection does not disturb it', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [CODEX], note: 'use the cheap one next time' })]);
-  assert.deepEqual({ ok: got.ok, selector: got.selector }, { ok: true, selector: CODEX });
+  const got = readWith([boot, call(), flat({ selectedOptions: [DEEP], note: 'the lock design is still open' })]);
+  assert.deepEqual({ ok: got.ok, choice: got.choice }, { ok: true, choice: DEEP });
 });
 
 test('a grouped answer is attributed by question id, not by position', () => {
   const questions = [question({ id: 'unrelated', text: 'Ship it?', labels: ['yes', 'no'] }), question()];
   const results = [
     { id: 'unrelated', question: 'Ship it?', options: ['yes', 'no'], multi: false, selectedOptions: ['yes'] },
-    { id: QID, question: TEXT, options: [...CANDIDATES, DEFER_LABEL], multi: false, selectedOptions: [CODEX] },
+    { id: QID, question: TEXT, options: [...CLASSES, DEFER_LABEL], multi: false, selectedOptions: [DEEP] },
   ];
   const got = readWith([boot, call({ questions }), grouped({ results })]);
-  assert.deepEqual({ ok: got.ok, selector: got.selector }, { ok: true, selector: CODEX });
+  assert.deepEqual({ ok: got.ok, choice: got.choice }, { ok: true, choice: DEEP });
 });
 
 test('a timeout auto-selection is refused even though it records a real selection', () => {
   // This is the measured shape: OMP picks the recommended option and writes it.
-  const got = readWith([boot, call(), flat({ selectedOptions: [SONNET], timedOut: true })]);
+  const got = readWith([boot, call(), flat({ selectedOptions: [STANDARD], timedOut: true })]);
   assert.equal(got.ok, false);
   assert.match(got.reason, /timed out/);
-  assert.equal(got.selector, undefined);
+  assert.equal(got.choice, undefined);
 });
 
 test('a timeout inside a grouped answer is refused too', () => {
-  const results = [{ id: QID, question: TEXT, options: [...CANDIDATES, DEFER_LABEL], multi: false, selectedOptions: [SONNET], timedOut: true }];
+  const results = [{ id: QID, question: TEXT, options: [...CLASSES, DEFER_LABEL], multi: false, selectedOptions: [STANDARD], timedOut: true }];
   const got = readWith([boot, call(), grouped({ results })]);
   assert.equal(got.ok, false);
   assert.match(got.reason, /timed out/);
 });
 
-test('typed text is never parsed as an approval, not even an exact selector', () => {
-  const yes = readWith([boot, call(), flat({ selectedOptions: [], customInput: 'yes, go with sonnet' })]);
+test('typed text is never parsed as a choice, not even an exactly typed class', () => {
+  const yes = readWith([boot, call(), flat({ selectedOptions: [], customInput: 'yes, the cheap one' })]);
   assert.equal(yes.ok, false);
   assert.match(yes.reason, /custom input/);
 
-  const typed = readWith([boot, call(), flat({ selectedOptions: [], customInput: CODEX })]);
+  const typed = readWith([boot, call(), flat({ selectedOptions: [], customInput: DEEP })]);
   assert.equal(typed.ok, false);
   assert.match(typed.reason, /custom input/);
-  assert.equal(typed.selector, undefined);
+  assert.equal(typed.choice, undefined);
 });
 
 test('a cancelled ask is a refusal, whatever a caller hoped it meant', () => {
@@ -213,11 +218,11 @@ test('choosing to chat instead of answering is not an answer', () => {
   assert.match(got.reason, /chatting/);
 });
 
-test('an unanswered question never defaults to the first candidate', () => {
+test('an unanswered question never defaults to the recommended class', () => {
   const got = readWith([boot, call()]);
   assert.equal(got.ok, false);
   assert.match(got.reason, /no result/);
-  assert.equal(got.selector, undefined);
+  assert.equal(got.choice, undefined);
 });
 
 test('a deferred decision is named as a defer, not as a forged answer', () => {
@@ -238,54 +243,138 @@ test('a result bolted onto an ask this transcript never made refuses', () => {
   assert.match(got.reason, /did not make/);
 });
 
-test('an effort change staled the approval: the asked menu no longer offers the candidate', () => {
-  // The stored answer is intact; the decision moved to :high underneath it.
-  const moved = ['anthropic/claude-sonnet-5:high', CODEX];
-  const got = readWith([boot, call(), flat({ selectedOptions: [CODEX] })], { candidates: moved });
+test('a class the project added since the ask stales the answer', () => {
+  // The stored answer is intact; the menu the human saw no longer describes the
+  // decision, so it is refused rather than translated onto the new set.
+  const grown = [...CLASSES, 'exploratory'];
+  const got = readWith([boot, call(), flat({ selectedOptions: [DEEP] })], { choices: grown });
   assert.equal(got.ok, false);
   assert.match(got.reason, /decision changed since it was asked/);
-  assert.match(got.reason, /claude-sonnet-5:high/);
+  assert.match(got.reason, /exploratory/);
 });
 
-test('an added candidate stales the approval as well', () => {
-  const grown = [...CANDIDATES, 'xai/grok-5:medium'];
-  const got = readWith([boot, call(), flat({ selectedOptions: [CODEX] })], { candidates: grown });
-  assert.equal(got.ok, false);
-  assert.match(got.reason, /decision changed since it was asked/);
-});
+test('a class dropped from the project stales the menu, and a fabricated selection is not a class', () => {
+  const dropped = readWith([boot, call(), flat({ selectedOptions: [ROUTINE] })], { choices: [STANDARD, DEEP] });
+  assert.equal(dropped.ok, false);
+  assert.match(dropped.reason, /decision changed since it was asked/);
+  assert.match(dropped.reason, /offered routine, standard, deep/);
 
-test('a candidate dropped from the policy cannot be the selection', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [SONNET] })], { candidates: [CODEX] });
-  assert.equal(got.ok, false);
-  assert.match(got.reason, /not a current candidate/);
+  // The menu is this decision's own here, and the recorded selection is still
+  // not on it: a label nothing offered is never translated into a class.
+  const invented = readWith([boot, call(), flat({ selectedOptions: ['exploratory'] })]);
+  assert.equal(invented.ok, false);
+  assert.match(invented.reason, /not a class this decision offers: exploratory/);
 });
 
 test('a result echoing another question or another menu refuses', () => {
-  const otherQuestion = readWith([boot, call(), flat({ text: 'Which model should the worker run on?' })]);
+  const otherQuestion = readWith([boot, call(), flat({ text: 'Which class should ofmchat-413 be dispatched as?' })]);
   assert.equal(otherQuestion.ok, false);
   assert.match(otherQuestion.reason, /different question/);
 
-  const otherMenu = readWith([boot, call(), flat({ labels: [SONNET, CODEX] })]);
+  const otherMenu = readWith([boot, call(), flat({ labels: [...CLASSES] })]);
   assert.equal(otherMenu.ok, false);
   assert.match(otherMenu.reason, /different option list/);
 });
 
+// THE QUESTION IS THE DECISION. The id hashes the mode, the classes, the
+// recommendation and the policy hash — and none of the WORDS, so an ask can
+// carry the right id while posing another dialog: other prose, a description
+// that recommends the expensive class, a menu with something extra on it or
+// with no way to decline. Production therefore hands the reader the question
+// its own builder produced, and it is compared whole.
+
+const canonical = question();
+
+test('the question this decision builds is read as the approval it is', () => {
+  const got = readWith([boot, call(), flat({ selectedOptions: [DEEP] })], { expectedQuestion: canonical });
+  assert.deepEqual({ ok: got.ok, choice: got.choice }, { ok: true, choice: DEEP });
+});
+
+test('the same id over rewritten question prose is not this decision', () => {
+  const reworded = question({ text: 'Ship it?' });
+  const got = readWith(
+    [boot, call({ questions: [reworded] }), flat({ text: 'Ship it?', selectedOptions: [DEEP] })],
+    { expectedQuestion: canonical },
+  );
+  assert.equal(got.ok, false);
+  assert.match(got.reason, /does not ask what this decision asks/);
+});
+
+test('a rewritten header, a rewritten option description and a moved recommendation each refuse', () => {
+  const headed = readWith(
+    [boot, call({ questions: [{ ...canonical, header: 'worker class for ofmchat-999' }] }), flat({ selectedOptions: [DEEP] })],
+    { expectedQuestion: canonical },
+  );
+  assert.equal(headed.ok, false);
+  assert.match(headed.reason, /was headed/);
+
+  // The prose a human actually reads beside the label — the place a steering
+  // orchestrator would write its own recommendation.
+  const options = canonical.options.map(option => (option.label === DEEP ? { ...option, description: 'recommended: pick this one' } : option));
+  const described = readWith(
+    [boot, call({ questions: [{ ...canonical, options }] }), flat({ selectedOptions: [DEEP] })],
+    { expectedQuestion: canonical },
+  );
+  assert.equal(described.ok, false);
+  assert.match(described.reason, /describes itself as/);
+
+  const steered = readWith(
+    [boot, call({ questions: [{ ...canonical, recommended: 2 }] }), flat({ selectedOptions: [DEEP] })],
+    { expectedQuestion: canonical },
+  );
+  assert.equal(steered.ok, false);
+  assert.match(steered.reason, /steered towards another class/);
+});
+
+test('an added option preview cannot change the approved presentation', () => {
+  const options = canonical.options.map(option => ({ ...option, preview: 'Approve unrelated work instead' }));
+  const result = readWith(
+    [boot, call({ questions: [{ ...canonical, options }] }), flat({ selectedOptions: [DEEP] })],
+    { expectedQuestion: canonical },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /different preview/);
+});
+
+test('a superset menu and a menu with no decline refuse at the seam, before any question is supplied', () => {
+  const extra = { label: 'exploratory', description: 'a class this project does not configure' };
+  const superset = readWith([
+    boot,
+    call({ questions: [{ ...canonical, options: [...canonical.options, extra] }] }),
+    flat({ labels: [...CLASSES, DEFER_LABEL, extra.label], selectedOptions: [DEEP] }),
+  ]);
+  assert.equal(superset.ok, false);
+  assert.match(superset.reason, /decision changed since it was asked/);
+  assert.match(superset.reason, /exploratory/);
+
+  // A question with no decline is a rubber stamp, and the decline is required
+  // of the menu itself — not inferred from the answer.
+  const stamp = readWith([
+    boot,
+    call({ questions: [question({ labels: [...CLASSES] })] }),
+    flat({ labels: [...CLASSES], selectedOptions: [DEEP] }),
+  ]);
+  assert.equal(stamp.ok, false);
+  assert.match(stamp.reason, /decision changed since it was asked/);
+  assert.ok(stamp.reason.includes(DEFER_LABEL), stamp.reason);
+});
+
 test('two results for one ask id are ambiguous, and neither is chosen', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [SONNET] }), flat({ selectedOptions: [CODEX] })]);
+  const got = readWith([boot, call(), flat({ selectedOptions: [ROUTINE] }), flat({ selectedOptions: [DEEP] })]);
   assert.equal(got.ok, false);
   assert.match(got.reason, /2 results/);
 });
 
 test('two calls carrying one ask id are ambiguous', () => {
-  const got = readWith([boot, call(), call({ questions: [question({ labels: [CODEX, DEFER_LABEL] })] }), flat()]);
+  const got = readWith([boot, call(), call({ questions: [question({ labels: [DEEP, DEFER_LABEL] })] }), flat()]);
   assert.equal(got.ok, false);
   assert.match(got.reason, /appears 2 times/);
 });
 
 test('two answers for one question id inside a grouped result refuse', () => {
   const results = [
-    { id: QID, question: TEXT, options: [...CANDIDATES, DEFER_LABEL], multi: false, selectedOptions: [SONNET] },
-    { id: QID, question: TEXT, options: [...CANDIDATES, DEFER_LABEL], multi: false, selectedOptions: [CODEX] },
+    { id: QID, question: TEXT, options: [...CLASSES, DEFER_LABEL], multi: false, selectedOptions: [ROUTINE] },
+    { id: QID, question: TEXT, options: [...CLASSES, DEFER_LABEL], multi: false, selectedOptions: [DEEP] },
   ];
   const got = readWith([boot, call(), grouped({ results })]);
   assert.equal(got.ok, false);
@@ -297,17 +386,17 @@ test('no selection, and several selections, are both refused', () => {
   assert.equal(none.ok, false);
   assert.match(none.reason, /0 selected options/);
 
-  const many = readWith([boot, call(), flat({ selectedOptions: [SONNET, CODEX] })]);
+  const many = readWith([boot, call(), flat({ selectedOptions: [ROUTINE, DEEP] })]);
   assert.equal(many.ok, false);
   assert.match(many.reason, /2 selected options/);
 });
 
-test('a multi-select answer is not a model decision, on either side of the pair', () => {
-  const askedMulti = readWith([boot, call({ questions: [question({ multi: true })] }), flat({ multi: true, selectedOptions: [SONNET] })]);
+test('a multi-select answer is not one decision, on either side of the pair', () => {
+  const askedMulti = readWith([boot, call({ questions: [question({ multi: true })] }), flat({ multi: true, selectedOptions: [ROUTINE] })]);
   assert.equal(askedMulti.ok, false);
   assert.match(askedMulti.reason, /multi-select/);
 
-  const answeredMulti = readWith([boot, call(), flat({ multi: true, selectedOptions: [SONNET] })]);
+  const answeredMulti = readWith([boot, call(), flat({ multi: true, selectedOptions: [ROUTINE] })]);
   assert.equal(answeredMulti.ok, false);
   assert.match(answeredMulti.reason, /multi-select/);
 });
@@ -322,7 +411,7 @@ test('an unnamed flat answer to a multi-question ask cannot be attributed', () =
 test('a result from another tool wearing the ask id refuses', () => {
   const alien = JSON.stringify({
     type: 'message',
-    message: { role: 'toolResult', toolCallId: ASK_ID, toolName: 'bash', content: [], details: { selectedOptions: [SONNET] }, isError: false },
+    message: { role: 'toolResult', toolCallId: ASK_ID, toolName: 'bash', content: [], details: { selectedOptions: [ROUTINE] }, isError: false },
   });
   const got = readWith([boot, call(), alien]);
   assert.equal(got.ok, false);
@@ -330,14 +419,14 @@ test('a result from another tool wearing the ask id refuses', () => {
 });
 
 test('a truncated final line does not hide the answer written before it', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [CODEX] }), '{"type":"message","message":{"role":"assis']);
-  assert.deepEqual({ ok: got.ok, selector: got.selector }, { ok: true, selector: CODEX });
+  const got = readWith([boot, call(), flat({ selectedOptions: [DEEP] }), '{"type":"message","message":{"role":"assis']);
+  assert.deepEqual({ ok: got.ok, choice: got.choice }, { ok: true, choice: DEEP });
 });
 
 test('an unreadable transcript refuses and never throws', () => {
   const dir = scratch();
   try {
-    const got = readModelConfirmation(`${join(dir, 'absent.jsonl')}#${ASK_ID}`, { questionId: QID, candidates: CANDIDATES });
+    const got = readModelConfirmation(`${join(dir, 'absent.jsonl')}#${ASK_ID}`, { questionId: QID, choices: CLASSES });
     assert.equal(got.ok, false);
     assert.match(got.reason, /cannot read the confirmation transcript/);
   } finally {
@@ -350,55 +439,40 @@ test('a malformed reference is refused before any read is attempted', () => {
     throw new Error('must not be read');
   };
   for (const reference of ['', 'session.jsonl', '#call_x', 'session.jsonl#', undefined, 42]) {
-    const got = readModelConfirmation(reference, { questionId: QID, candidates: CANDIDATES, read });
+    const got = readModelConfirmation(reference, { questionId: QID, choices: CLASSES, read });
     assert.equal(got.ok, false, `${String(reference)} must refuse`);
     assert.match(got.reason, /<transcript path>#<ask toolCallId>/);
   }
 });
 
 test('a path holding a # still resolves: the split is on the last one', () => {
-  const got = readWith([boot, call(), flat({ selectedOptions: [SONNET] })], {}, { name: 'run#3.jsonl' });
-  assert.deepEqual({ ok: got.ok, selector: got.selector }, { ok: true, selector: SONNET });
+  const got = readWith([boot, call(), flat({ selectedOptions: [ROUTINE] })], {}, { name: 'run#3.jsonl' });
+  assert.deepEqual({ ok: got.ok, choice: got.choice }, { ok: true, choice: ROUTINE });
 });
 
-test('the injected read is what is used, and is handed the path and utf8', () => {
-  const seen = [];
-  const lines = [boot, call(), flat({ selectedOptions: [CODEX] })].join('\n');
-  const got = readModelConfirmation(`/nowhere/session.jsonl#${ASK_ID}`, {
-    questionId: QID,
-    candidates: CANDIDATES,
-    read: (path, encoding) => (seen.push([path, encoding]), lines),
-  });
-  assert.deepEqual({ ok: got.ok, selector: got.selector }, { ok: true, selector: CODEX });
-  assert.deepEqual(seen, [['/nowhere/session.jsonl', 'utf8']]);
-});
 
 test('a caller that supplies no decision to check is refused, not served', () => {
   const read = () => {
     throw new Error('must not be read');
   };
-  const base = { candidates: CANDIDATES, read };
+  const base = { choices: CLASSES, read };
   const noId = readModelConfirmation(`a.jsonl#${ASK_ID}`, { ...base, questionId: '  ' });
   assert.equal(noId.ok, false);
   assert.match(noId.reason, /question id/);
 
-  const noCandidates = readModelConfirmation(`a.jsonl#${ASK_ID}`, { questionId: QID, candidates: [], read });
-  assert.equal(noCandidates.ok, false);
-  assert.match(noCandidates.reason, /candidate selectors/);
+  const noChoices = readModelConfirmation(`a.jsonl#${ASK_ID}`, { questionId: QID, choices: [], read });
+  assert.equal(noChoices.ok, false);
+  assert.match(noChoices.reason, /classes the current decision offers/);
 
-  const repeated = readModelConfirmation(`a.jsonl#${ASK_ID}`, { questionId: QID, candidates: [SONNET, SONNET], read });
+  const repeated = readModelConfirmation(`a.jsonl#${ASK_ID}`, { questionId: QID, choices: [ROUTINE, ROUTINE], read });
   assert.equal(repeated.ok, false);
   assert.match(repeated.reason, /unique/);
 
-  const deferAsCandidate = readModelConfirmation(`a.jsonl#${ASK_ID}`, { questionId: QID, candidates: [SONNET, DEFER_LABEL], read });
-  assert.equal(deferAsCandidate.ok, false);
-  assert.match(deferAsCandidate.reason, /reserved decline/);
+  const deferAsChoice = readModelConfirmation(`a.jsonl#${ASK_ID}`, { questionId: QID, choices: [ROUTINE, DEFER_LABEL], read });
+  assert.equal(deferAsChoice.ok, false);
+  assert.match(deferAsChoice.reason, /reserved decline/);
 });
 
-test('the defer label is prose and can never be mistaken for a selector', () => {
-  assert.equal(DEFER_LABEL.includes('/'), false);
-  assert.equal(DEFER_LABEL.includes(':'), false);
-});
 
 // THE SCOPE GUARD. The reference is a path an orchestrator hands in, so on its
 // own it can name any transcript on the disk. Scoped, it must name one this
@@ -422,12 +496,12 @@ function sessionTree(files) {
   return { dir, sessionsRoot, paths };
 }
 
-const answered = (id = 'sess') => [bootOf(id), call(), flat({ selectedOptions: [CODEX] })];
+const answered = (id = 'sess') => [bootOf(id), call(), flat({ selectedOptions: [DEEP] })];
 
 const scopedRead = (tree, path, options = {}) =>
   readModelConfirmation(`${path}#${ASK_ID}`, {
     questionId: QID,
-    candidates: CANDIDATES,
+    choices: CLASSES,
     sessionsRoot: tree.sessionsRoot,
     sessionId: 'sess',
     ...options,
@@ -438,7 +512,7 @@ test('the session that asked reads its own answer, and the reference names the r
   try {
     const got = scopedRead(tree, tree.paths.mine);
     assert.equal(got.ok, true);
-    assert.equal(got.selector, CODEX);
+    assert.equal(got.choice, DEEP);
     assert.equal(got.reference, `${realpathSync(tree.paths.mine)}#${ASK_ID}`);
   } finally {
     rmSync(tree.dir, { recursive: true, force: true });
@@ -457,7 +531,7 @@ test('a foreign transcript copied into the session root is not this session answ
 });
 
 test('a transcript with no session header cannot be attributed to this session', () => {
-  const tree = sessionTree({ bare: { at: 'sessions/bare.jsonl', lines: [call(), flat({ selectedOptions: [CODEX] })] } });
+  const tree = sessionTree({ bare: { at: 'sessions/bare.jsonl', lines: [call(), flat({ selectedOptions: [DEEP] })] } });
   try {
     const got = scopedRead(tree, tree.paths.bare);
     assert.equal(got.ok, false);
