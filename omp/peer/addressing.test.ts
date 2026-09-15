@@ -96,10 +96,15 @@ beforeEach(() => {
     ORCA_BIN: process.env.ORCA_BIN,
     ORCA_TERMINAL_HANDLE: process.env.ORCA_TERMINAL_HANDLE,
     ORCA_PEER_REGISTRY_DIR: process.env.ORCA_PEER_REGISTRY_DIR,
+    // Pinned per case, because the machine running the suite has one: a
+    // developer's own pane key would decide whether the attribution
+    // disclosure below fires.
+    ORCA_PANE_KEY: process.env.ORCA_PANE_KEY,
   };
   process.env.ORCA_BIN = installFakeOrca();
   process.env.ORCA_TERMINAL_HANDLE = 'term_aaaa1111';
   process.env.ORCA_PEER_REGISTRY_DIR = peersDir;
+  process.env.ORCA_PANE_KEY = 'tab_a:leaf_a';
   setTerminals([]);
 });
 
@@ -578,6 +583,66 @@ test('the registered peer_reply tool relays an answer and preserves the next ans
   // sender. That is the second half of the two-way contract, not merely "one
   // send returned ok".
   expect(envelope.replyTo).toBe('run:run_self');
+});
+
+// Measured 2026-09-15, three messages into one session: `peer_send` answered
+// `Sent to 01a0a380.` and the recipient announced `unattributed:term_592136d2-`
+// with no reply route, so an ownership question left no way back and the
+// answer had to arrive out of band. Orca decides that field from ONE input —
+// `senderPaneKey: process.env.ORCA_PANE_KEY || undefined`
+// (`src/cli/handlers/orchestration/orchestration/message-send-handler.ts`) —
+// and a pane that publishes none is unattributable by construction, whatever
+// it typed. This transport never passes `--from`, so it cannot be the cause;
+// what it CAN do is stop reporting an unanswerable send as a plain delivery.
+//
+// The send still happens: the words arrive, and saying so is the point (the
+// receipt names a degradation, never a failure that did not occur).
+function sendTools(deliverFn: unknown): Map<string, {
+  parameters: { parse: (value: unknown) => Record<string, unknown> };
+  execute: (id: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+}> {
+  const tools = new Map();
+  peerExtension(
+    {
+      zod: z,
+      registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
+      on: () => {},
+      registerCommand: () => {},
+      addTool: () => {},
+      sendMessage: () => {},
+      appendEntry: () => {},
+    } as never,
+    { deliver: deliverFn as never },
+  );
+  return tools;
+}
+
+test('a send from a pane publishing no pane key is reported as unattributable, not as a plain delivery', async () => {
+  setTerminals([
+    { handle: 'term_aaaa1111', worktreePath: WT_A },
+    { handle: 'term_bbbb2222', worktreePath: WT_B },
+  ]);
+  publishEntry('term_aaaa1111', 'run_self');
+  publishEntry('term_bbbb2222', 'run_target');
+  const raw = () => ({ parsed: { ok: true }, text: '', stdout: '' });
+  const { deliver } = await load();
+  const tools = sendTools((request: never) => deliver(request, { runOrcaRaw: raw as never }));
+
+  delete process.env.ORCA_PANE_KEY;
+  const tool = tools.get('peer_send');
+  expect(tool).toBeDefined();
+  const params = tool!.parameters.parse({ peer: 't7-canal-de-scene', text: 'who owns #253?' });
+  const blind = await tool!.execute('call-1', params);
+
+  expect(blind.isError).toBeUndefined();
+  expect(blind.content[0]?.text).toContain('Sent to t7-canal-de-scene');
+  expect(blind.content[0]?.text).toContain('unattributed');
+  expect(blind.content[0]?.text).toContain('no reply route');
+  expect(blind.content[0]?.text).toContain('ORCA_PANE_KEY');
+
+  process.env.ORCA_PANE_KEY = 'tab_a:leaf_a';
+  const witnessed = await tool!.execute('call-2', params);
+  expect(witnessed.content[0]?.text).toBe('Sent to t7-canal-de-scene.');
 });
 
 // ── #220 at the tool surface: an unread inventory is not an empty machine ─────
