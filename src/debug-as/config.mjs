@@ -2,7 +2,7 @@
 // cannot state.
 //
 // `ax.schema.json` owns the SHAPE: which keys exist, which are required, which
-// are closed. Three rules live here instead, and each is here for a reason the
+// are closed. Four rules live here instead, and each is here for a reason the
 // validator's own header gives:
 //
 // IDENTITY NAMES. `identities` is a keyed map, and a keyed map cannot pattern
@@ -22,6 +22,13 @@
 // declared `defaultPath`, and the value serialized into a phone callback. The
 // schema gates the coarse shape (`^/`) and this file owns the whole rule, so
 // the three callers share one truth instead of three regexes that drift.
+//
+// ARGV ENTRIES. `minItems: 1` bounds an argv array and says nothing about its
+// items; the keyword that would bound an item (`minLength`) is one the
+// validator refuses by name. So a blank entry is refused here, at LOAD, naming
+// the entry an operator edits — because the alternative was measured: a
+// `prepare.command: [""]` loaded as a valid contract and only failed at the
+// next authenticated launch, inside `runAdapter`.
 //
 // EVERY REFUSAL NAMES ITS REPAIR (`src/log.mjs`): a `{ at, problem, fix }`
 // triple, never a bare boolean, because a finding an operator cannot act on is
@@ -69,6 +76,18 @@ export function pathProblem(value) {
 }
 
 /**
+ * Every argv array this contract declares, paired with the declaration path an
+ * operator edits. `browser.start` is named as a repair and the other two are
+ * spawned, and a blank entry is the same defect in all three.
+ */
+const argvDeclarations = (browser, phone) => {
+  const declared = [[`${DEBUG_DECLARATION}.browser.start`, browser.start]];
+  if (isObject(browser.prepare)) declared.push([`${DEBUG_DECLARATION}.browser.prepare.command`, browser.prepare.command]);
+  if (isObject(phone?.provider)) declared.push([`${DEBUG_DECLARATION}.phone.provider.command`, phone.provider.command]);
+  return declared.filter(([, argv]) => Array.isArray(argv));
+};
+
+/**
  * The contract this project declared, plus every refusal that names its repair.
  *
  * Takes RAW configuration rather than the validated config: adoption is the
@@ -101,6 +120,25 @@ export function loadDebugContract({ raw } = {}) {
   const phone = isObject(declared.phone) ? declared.phone : null;
   const identities = isObject(declared.identities) ? declared.identities : {};
   const adapter = isObject(browser.prepare) ? browser.prepare : null;
+
+  // A blank argv entry, refused where it is DECLARED. The schema bounds each
+  // of these arrays with `minItems: 1`, which says nothing about their items,
+  // and the keyword that would (`minLength`) is one `src/schema.mjs` refuses
+  // by name — so `prepare.command: [""]` loaded as a valid project contract,
+  // `debug-as doctor` read the empty executable as a PATH directory, and every
+  // authenticated launch failed far later inside `runAdapter`, which requires
+  // non-empty argv. A launch is the wrong place to learn a declaration is
+  // unusable, and the only repair is an edit to this file.
+  for (const [at, argv] of argvDeclarations(browser, phone)) {
+    argv.forEach((part, index) => {
+      if (typeof part !== 'string' || part.trim() !== '') return;
+      refusals.push({
+        at: `${at}[${index}]`,
+        problem: 'is a blank argv entry, and AX spawns project commands without a shell, so it would reach the child as an empty argument',
+        fix: `remove the entry, or give it the argument it is missing — "${at}" is argv, never a shell string`,
+      });
+    });
+  }
 
   const resolved = {};
   for (const [name, entry] of Object.entries(identities)) {

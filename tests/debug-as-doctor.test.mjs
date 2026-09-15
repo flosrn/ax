@@ -264,20 +264,6 @@ test('receipt ignore status is graded, and a malformed receipt is a finding rath
   assert.equal(malformed.code > 0, true);
   assert.match(malformed.out, /→ rm \.agent\/debug-as\.local\.json/);
 
-  // A live record whose CDP endpoint answers nothing is the state `drive`
-  // would fail on: reported, with the launch that replaces it.
-  const dead = await captured(() =>
-    debugDoctor(
-      context(),
-      deps({
-        readReceipt: () => ({ state: 'live', receipt: { identity: 'owner', cdpPort: 51234, generation: 'a'.repeat(32) }, refusal: null }),
-        probeCdp: async () => ({ alive: false, why: 'ECONNREFUSED' }),
-      }),
-    ),
-  );
-  assert.match(dead.out, /51234/);
-  assert.match(dead.out, /→ ax debug-as --as owner/);
-
   // An owner this machine cannot disprove: another host's record, or a live pid
   // whose start identity is unreadable. It is NAMED, with the host the receipt
   // recorded — and the repair is the one runnable read, never a launch and
@@ -293,6 +279,30 @@ test('receipt ignore status is graded, and a malformed receipt is a finding rath
   assert.match(ambiguous.out, /→ ax debug-as status$/m);
   assert.doesNotMatch(ambiguous.out, /→ ax debug-as --as/, 'an owner nobody can disprove must not be told to launch a rival');
   assert.doesNotMatch(ambiguous.out, /→ rm /);
+});
+
+test('a live receipt whose CDP port answers nothing is a finding, while an absent receipt is not', async () => {
+  // `drive` refuses this state, so a diagnosis that exits 0 tells automation a
+  // session it cannot use is coherent. The probe's reason is the only evidence
+  // an operator has for WHY nothing answered, so it travels with the finding.
+  const unanswering = await captured(() =>
+    debugDoctor(
+      context(),
+      deps({
+        readReceipt: () => ({ state: 'live', receipt: { identity: 'owner', cdpPort: 51234, generation: 'a'.repeat(32) }, refusal: null }),
+        probeCdp: async () => ({ alive: false, why: 'ECONNREFUSED' }),
+      }),
+    ),
+  );
+  assert.equal(unanswering.code > 0, true, unanswering.out);
+  assert.match(unanswering.out, /51234/);
+  assert.match(unanswering.out, /ECONNREFUSED/);
+  assert.match(unanswering.out, /→ ax debug-as --as owner$/m);
+
+  // Nothing running in this worktree is not a breakage.
+  const absent = await captured(() => debugDoctor(context(), deps({ readReceipt: () => ({ state: 'absent', receipt: null, refusal: null }) })));
+  assert.equal(absent.code, 0, absent.out);
+  assert.match(absent.out, /nothing is running here/);
 });
 
 // ── the optional phone half ──────────────────────────────────────────────────

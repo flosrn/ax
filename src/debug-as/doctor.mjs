@@ -245,8 +245,15 @@ export async function doctor(context, deps = {}) {
     const probe = await cdp(port);
     if (probe.alive) emit.ok(`live Role browser "${receipt.receipt.identity}" on loopback CDP port ${port}`);
     else {
-      emit.note(`the receipt for "${receipt.receipt.identity}" claims loopback CDP port ${port} and nothing answers there (${probe.why}) — "ax debug-as drive" refuses this state`);
-      emit.fix(`ax debug-as --as ${receipt.receipt.identity}`);
+      // A FINDING, not a note. The receipt names a live owner and a port that
+      // answers nothing, which is the state `drive` refuses — grading it as a
+      // note made this verb exit 0 and report coherence for a session no agent
+      // can attach to. The probe's reason travels with it because it is the
+      // only evidence an operator has for why nothing answered.
+      fail(
+        `the receipt for "${receipt.receipt.identity}" claims loopback CDP port ${port} and nothing answers there (${probe.why}) — "ax debug-as drive" refuses this state`,
+        `ax debug-as --as ${receipt.receipt.identity}`,
+      );
     }
   } else if (receipt.state === 'dead') {
     emit.note(`a stale receipt from "${receipt.receipt.identity}" — its owner is proven dead, so the next launch replaces it`);

@@ -8,8 +8,9 @@
 //
 // The receipt, the CDP probe and the relay reader are injected: the cases that
 // decide the Verdict — a live owner whose CDP is dead, a superseded relay, an
-// owner on another host — cannot be staged with a real Chromium and would be
-// untestable at the moment they matter.
+// owner on another host, a relay whose publisher died under a still-live
+// browser — cannot be staged with a real Chromium or a real corpse, and would
+// be untestable at the moment they matter.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -18,6 +19,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 
 import { publishReceipt } from '../src/debug-as/receipt.mjs';
+import { relayOwnedBy, relayOwnership, relayUrl } from '../src/debug-as/relay-receipt.mjs';
 import { status, statusPayload } from '../src/debug-as/status.mjs';
 
 const fixtures = [];
@@ -88,12 +90,29 @@ const emitStub = () => {
   };
 };
 
-const matchingRelay = root => ({
+const matchingRelay = (root, overrides = {}) => ({
   version: 1,
   generation: GENERATION,
   worktree: root,
-  serveHost: 'mac.tailnet.ts.net',
+  host: HOST,
+  pid: 4242,
+  processStart: START,
   port: 1300,
+  serveHost: 'mac.tailnet.ts.net',
+  serveTarget: 'http://127.0.0.1:52341',
+  ...overrides,
+});
+
+/**
+ * The real ownership and URL functions: what must be pinned here is the
+ * liveness notion `status` applies, not a restatement of it.
+ */
+const relayDeps = (record, overrides = {}) => ({
+  readRelay: () => record,
+  relayOwnedBy,
+  relayOwnership,
+  relayUrl,
+  ...overrides,
 });
 
 test('a live same-generation owner with a live CDP is VIVANT, and the payload names only what an agent may know', async () => {
@@ -105,9 +124,7 @@ test('a live same-generation owner with a live CDP is VIVANT, and the payload na
     {
       ...receiptDeps(),
       probe: async () => ({ alive: true }),
-      readRelay: () => matchingRelay(root),
-      relayOwnedBy: (record, { root: at, generation }) => record.worktree === at && record.generation === generation,
-      relayUrl: record => `https://${record.serveHost}:${record.port}/go?g=${record.generation}`,
+      ...relayDeps(matchingRelay(root)),
     },
   );
 
@@ -122,6 +139,7 @@ test('a live same-generation owner with a live CDP is VIVANT, and the payload na
   assert.deepEqual(payload.viewport, { width: 1280, height: 800 });
   assert.equal(payload.relay, true);
   assert.equal(payload.relayUrl, `https://mac.tailnet.ts.net:1300/go?g=${GENERATION}`);
+  assert.equal(payload.relayState, 'live');
   assert.ok(!('pid' in payload));
   assert.ok(!('processStart' in payload));
   assert.ok(!('chromiumPid' in payload));
@@ -190,6 +208,68 @@ test('relay presence is false for a superseded or other-worktree publication, an
   );
   assert.equal(superseded.payload.relay, false);
   assert.equal(superseded.payload.relayUrl, null);
+});
+
+test('a relay whose owner is proven dead is not a live relay and carries no handoff URL', async () => {
+  const root = worktree();
+  publishReceipt({ root, fields: fields(root) }, receiptDeps());
+
+  // The browser owner (4242) is alive; the relay publisher (5555) is gone.
+  const gone = await statusPayload(
+    { root },
+    {
+      ...receiptDeps({ alive: pid => pid === 4242 }),
+      probe: async () => ({ alive: true }),
+      ...relayDeps(matchingRelay(root, { pid: 5555 })),
+    },
+  );
+  assert.equal(gone.verdict, 'VIVANT', 'the Role browser outlives its relay');
+  assert.equal(gone.payload.relay, false);
+  assert.equal(gone.payload.relayUrl, null);
+  assert.equal(gone.payload.relayState, 'dead-owner');
+
+  // Same pid, different process: the recorded start identity disproves it.
+  const recycled = await statusPayload(
+    { root },
+    {
+      ...receiptDeps(),
+      probe: async () => ({ alive: true }),
+      ...relayDeps(matchingRelay(root, { processStart: 'Tue Sep 14 09:00:00 2026' })),
+    },
+  );
+  assert.equal(recycled.payload.relay, false);
+  assert.equal(recycled.payload.relayUrl, null);
+  assert.equal(recycled.payload.relayState, 'dead-owner');
+});
+
+test('an owner this machine cannot disprove is reported as its own state, never as dead', async () => {
+  const root = worktree();
+  publishReceipt({ root, fields: fields(root) }, receiptDeps());
+
+  const elsewhere = await statusPayload(
+    { root },
+    {
+      ...receiptDeps(),
+      probe: async () => ({ alive: true }),
+      ...relayDeps(matchingRelay(root, { host: 'other-mac' })),
+    },
+  );
+  assert.equal(elsewhere.payload.relayState, 'other-host');
+  assert.notEqual(elsewhere.payload.relayState, 'dead-owner');
+  assert.equal(elsewhere.payload.relayUrl, null);
+
+  // The relay pid is alive but `ps` gives no start identity for it.
+  const unreadable = await statusPayload(
+    { root },
+    {
+      ...receiptDeps({ start: pid => (pid === 4242 ? START : null) }),
+      probe: async () => ({ alive: true }),
+      ...relayDeps(matchingRelay(root, { pid: 5555 })),
+    },
+  );
+  assert.equal(unreadable.payload.relayState, 'ambiguous');
+  assert.notEqual(unreadable.payload.relayState, 'dead-owner');
+  assert.equal(unreadable.payload.relayUrl, null);
 });
 
 test('status writes one JSON line on stdout and only a missing worktree refuses', async () => {

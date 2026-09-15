@@ -104,6 +104,42 @@ test('a command provider is the declared escape hatch, and an unknown provider t
   assert.equal(validate({ ...base(), debugAs: invented }, schema).length, 1);
 });
 
+// `minItems: 1` bounds the ARRAY, not its items, and `minLength` is a keyword
+// `src/schema.mjs` refuses by name — so `prepare.command: [""]` loaded as a
+// valid project contract, `debug-as doctor` read the empty executable as a
+// PATH directory, and every authenticated launch failed far later inside
+// `runAdapter`, whose own rule is that every argv entry is a non-empty string.
+// The defect belongs to the declaration, so the refusal names the entry.
+test('a blank argv entry is refused at load, wherever the contract declares one', () => {
+  const start = browserOnly();
+  start.browser.start = ['pnpm', '', 'dev'];
+  assert.deepEqual(validate({ ...base(), debugAs: start }, schema), [], 'the schema cannot state this rule');
+  const [blankStart] = load(start).refusals;
+  assert.equal(blankStart.at, 'debugAs.browser.start[1]');
+  assert.match(blankStart.problem, /blank/);
+  assert.match(blankStart.fix, /remove the entry/);
+
+  const adapter = browserOnly();
+  adapter.browser.prepare.command = [''];
+  const [blankAdapter] = load(adapter).refusals;
+  assert.equal(blankAdapter.at, 'debugAs.browser.prepare.command[0]');
+
+  const provider = withPhone();
+  provider.phone.provider = { type: 'command', command: ['node', '   '] };
+  const [blankProvider] = load(provider).refusals;
+  assert.equal(blankProvider.at, 'debugAs.phone.provider.command[1]');
+});
+
+test('a valid argv array is still accepted unchanged', () => {
+  const provider = withPhone();
+  provider.phone.provider = { type: 'command', command: ['node', 'scripts/phone-provider.mjs'] };
+  const loaded = load(provider);
+  assert.deepEqual(loaded.refusals, []);
+  assert.deepEqual(loaded.contract.browser.start, ['pnpm', '--filter', 'web', 'dev']);
+  assert.deepEqual(loaded.contract.browser.prepare.command, ['node', 'scripts/debug-auth-adapter.mjs']);
+  assert.deepEqual(loaded.contract.phone.provider.command, ['node', 'scripts/phone-provider.mjs']);
+});
+
 test('a typo inside the contract is a schema error, never a silently ignored key', () => {
   const typo = browserOnly();
   typo.browser.playwrightDirectory = 'apps/e2e';

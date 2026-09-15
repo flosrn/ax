@@ -10,13 +10,13 @@
 // receives (R9): between validation and launch, anything may rewrite that file.
 
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import { run } from '../src/exec.mjs';
-import { loadStorageState, LOCAL_HOSTS } from '../src/debug-as/auth-state.mjs';
+import { loadStorageState, LOCAL_HOSTS, MAX_STORAGE_STATE } from '../src/debug-as/auth-state.mjs';
 
 const ARTIFACT = 'apps/e2e/.auth/owner@example.com.json';
 const ORIGIN = 'http://localhost:3110';
@@ -225,6 +225,55 @@ test('swapping the file after validation cannot change the value Chromium receiv
 
   assert.equal(answer.state.cookies[0].domain, 'localhost');
   assert.equal(answer.state.cookies.length, 1);
+});
+
+/** A well-formed local artifact padded to at least `bytes` on disk. */
+const padded = bytes => {
+  const state = local();
+  state.cookies[0].value = 'x'.repeat(Math.max(1, bytes - JSON.stringify(state).length));
+  return state;
+};
+
+test('an artifact larger than the cap refuses by size, naming the size and the cap, before its bytes are read', async () => {
+  const root = worktree();
+  const file = write(root, local());
+  writeFileSync(file, `{ not json ${'x'.repeat(4096)}`);
+  chmodSync(file, 0o600);
+  const { size } = statSync(file);
+
+  await assert.rejects(load(root, { maxBytes: 1024 }), error => {
+    assert.match(error.message, /apps\/e2e\/\.auth\/owner@example\.com\.json/);
+    assert.match(error.message, new RegExp(`${size} bytes`));
+    assert.match(error.message, /1 KiB/);
+    assert.doesNotMatch(error.message, /JSON/, 'the cap is graded before the bytes are read, so a parse refusal proves it was read');
+    assert.match(error.fix, /Debug adapter/);
+    return true;
+  });
+});
+
+test('the declared 256 KiB cap is the one an undeclared call uses', async () => {
+  assert.equal(MAX_STORAGE_STATE, 256 * 1024);
+  const root = worktree();
+  const file = write(root, local());
+  writeFileSync(file, `{ not json ${'x'.repeat(MAX_STORAGE_STATE)}`);
+  chmodSync(file, 0o600);
+
+  await assert.rejects(load(root), error => {
+    assert.match(error.message, /256 KiB/);
+    assert.doesNotMatch(error.message, /JSON/);
+    return true;
+  });
+});
+
+test('an artifact just under the cap is still read and parsed as before', async () => {
+  const root = worktree();
+  const state = padded(4000);
+  const file = write(root, state);
+  const { size } = statSync(file);
+
+  const answer = await load(root, { maxBytes: size });
+  assert.equal(answer.refreshNeeded, false);
+  assert.equal(answer.state.cookies[0].value, state.cookies[0].value);
 });
 
 test('the local address vocabulary is the shared one', () => {
