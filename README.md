@@ -26,6 +26,84 @@ Every failure names the command that repairs it. `clean` and `rm` reclaim only w
 ownership ax can prove. `ax supabase` promotes the current checkout before a Supabase command may
 write shared local data.
 
+### Share a Role browser
+
+Declare `debugAs` in `ax.config.json` to open one visible Chromium session per checkout.
+The project supplies Playwright, its Debug identities and an authentication adapter where needed;
+ax neither installs a browser nor starts the application.
+
+```bash
+ax debug-as doctor
+ax debug-as --as owner --no-phone
+```
+
+Launch is an interactive operator gesture: keep it running until the window closes. From another
+terminal, an agent inspects or co-drives that same window:
+
+```bash
+ax debug-as status
+ax debug-as drive --as owner -- snapshot
+```
+
+`--device` reads the project's Playwright device catalog; `--viewport 1280x800` selects desktop
+dimensions instead. A matching launch reuses the window and may navigate with `--path`; changing
+identity, origin or emulation refuses until the operator closes it. CDP stays on loopback.
+
+The smallest browser-only declaration is:
+
+```json
+{
+  "debugAs": {
+    "browser": {
+      "playwrightDir": "apps/e2e",
+      "start": ["pnpm", "dev"],
+      "navigationTimeoutSeconds": 120
+    },
+    "identities": { "guest": { "defaultPath": "/" } }
+  }
+}
+```
+
+For an authenticated Debug identity, declare `browser.storageState` on the identity and
+`browser.prepare` on the contract (`command` argv and `timeoutSeconds`). AX runs that adapter
+on every fresh authenticated launch, from the checkout root, with one JSON request on stdin:
+
+```json
+{"protocol":1,"operation":"prepare","identity":"owner","origin":"http://localhost:3000","storageState":"apps/e2e/.auth/owner.json"}
+```
+
+The adapter refreshes that declared file, sets mode `0600`, and prints one JSON object with
+`"protocol":1` on stdout; progress belongs on stderr. The artifact must be Git-ignored, inside the
+checkout without symlinks, and contain only local cookies and origins. AX passes its parsed value
+to Chromium and never writes interactive browser state back. Variable lookup uses process env,
+then the web app's `.env.local`, then the checkout's `.env.local`; resolved values stay out of
+adapter environments.
+
+Phone handoff is separately optional: declare `debugAs.phone` and the identity's `phone.email`,
+then create the private machine contract at `~/.config/ax/debug-as.json` (or under
+`XDG_CONFIG_HOME`). It names a stable `relayPort`, an exact `allowedTailscaleLogins` list, optional
+`allowedSupabaseHosts`, and an optional notifier argv. Use mode `0600` and owner-controlled
+parents. `ax debug-as --help` explains `--phone` and `--no-phone`; the schema documents provider
+fields. The relay serves a confirmation page through Tailscale Serve and creates authentication
+only after confirmation. Existing unowned Serve mappings are refused, never adopted.
+
+Command providers receive `{"protocol":1,"kind":"phone-handoff","identity":"owner",
+"email":"owner@example.com","path":"/home","origin":"https://machine.example:3110",
+"login":"operator@example.com"}` on stdin and must return
+`{"protocol":1,"url":"https://machine.example:3110/auth/confirm?..."}`. The URL must stay on
+the recorded Tailscale origin. This call occurs only after confirmation and has a 15-second
+deadline and a 64-KiB response cap.
+
+The optional notifier uses the same bounded process protocol, with `kind: "phone-handoff"`,
+`project`, `worktree`, `identity`, `path`, `generation` and `url` fields. Its URL is the relay's
+confirmation page, never an authentication link. It answers `{"protocol":1,"ok":true}`;
+failure leaves the handoff usable and a later matching launch retries delivery.
+
+**Migration:** the former `debugAs: { route, optInEnv }` shape is retired. Remove it or replace it
+with `browser`, `identities` and optional `phone`. `init` and `doctor` print the migration repair
+without blocking pinning; no route, identity or provider is inferred. Projects that omit `debugAs`
+receive no debug-session instruction in their managed agent block.
+
 ## 2. Equip the agent that enters it
 
 `ax init` installs a small project-scoped OMP extension. A session started in the repo receives the

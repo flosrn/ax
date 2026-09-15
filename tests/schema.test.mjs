@@ -60,8 +60,17 @@ test('a minimal config validates and gains every default', () => {
   assert.deepEqual(config.ports.dev, [3100, 3999]);
   assert.equal(config.ports.proxy, 1355);
   assert.equal(config.ports.supabaseBase, 54320);
-  assert.equal(config.debugAs.route, '/debug-as');
-  assert.equal(config.debugAs.optInEnv, 'AX_DEBUG_AS_PHONE');
+});
+
+// Adoption is a DECLARATION (src/plan.mjs), so the debug-session contract must
+// have no default at any depth: `applyDefaults` materializes any object holding
+// a nested default, and the two fields this section used to carry were exactly
+// that — every project that loaded a config looked like it had asked for debug
+// sessions. Nothing consumed them for eight releases, which is why it went
+// unnoticed; the contract that replaces them is consumed, so it would not.
+test('the debug-session contract materializes for nobody who did not declare it', () => {
+  const config = applyDefaults(minimal(), schema);
+  assert.equal(config.debugAs, undefined);
 });
 
 test('an explicit value survives the defaults pass', () => {

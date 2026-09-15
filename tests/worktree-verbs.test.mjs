@@ -15,13 +15,14 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
-import { reapable } from '../src/worktree/clean.mjs';
+import { processStart } from '../src/debug-as/receipt.mjs';
+import { clean, reapable } from '../src/worktree/clean.mjs';
 import { locateWorktree, withinPath } from '../src/worktree/locate.mjs';
 
 const PACKAGE = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -348,3 +349,188 @@ test('a recorded block whose config names a foreign stack stops nothing', () => 
   assert.doesNotMatch(out, /stopped isolated stack/);
   assert.doesNotMatch(out, /restored to the committed version/);
 });
+
+test('clean does not signal a Chromium claimed by a live Browser receipt, and still reaps a sibling next-server', () => {
+  const { fixture, main } = repo();
+  const tree = worktree(main, join(fixture, 'debuglive'), 'debuglive');
+  const signalled = [];
+  const code = clean([tree], {
+    paths: () => ({ root: tree, main }),
+    load: () => ({ config: null, exists: false, errors: [] }),
+    scan: () => [
+      { pid: 9001, comm: 'chromium' },
+      { pid: 50, comm: 'next-server' },
+    ],
+    reap: (path, { scan: victims }) => {
+      const found = victims(path);
+      for (const process of found) signalled.push(process.pid);
+      return found.map(process => ({ ...process, signal: 'SIGTERM' }));
+    },
+    claim: ({ pid }) => ({ claimed: pid === 9001 }),
+    command: () => '',
+  });
+  assert.equal(code, 0);
+  assert.ok(signalled.every(pid => pid === 50));
+  assert.equal(signalled.includes(9001), false);
+});
+
+test('clean still reaps a Chromium that no live receipt claims', () => {
+  const { fixture, main } = repo();
+  const tree = worktree(main, join(fixture, 'debugdead'), 'debugdead');
+  const signalled = [];
+  const code = clean([tree], {
+    paths: () => ({ root: tree, main }),
+    load: () => ({ config: null, exists: false, errors: [] }),
+    scan: () => [{ pid: 9001, comm: 'chromium' }],
+    reap: (path, { scan: victims }) => {
+      const found = victims(path);
+      for (const process of found) signalled.push(process.pid);
+      return found.map(process => ({ ...process, signal: 'SIGTERM' }));
+    },
+    claim: () => ({ claimed: false }),
+    command: () => '',
+  });
+  assert.equal(code, 0);
+  assert.ok(signalled.every(pid => pid === 9001));
+  assert.ok(signalled.length > 0);
+});
+
+/**
+ * A detached process that itself forks a child — a Chromium in SHAPE: a root
+ * holding the port, with helpers hanging off it by real ancestry.
+ */
+async function browserTree(cwd, script, pidFile) {
+  file(
+    script,
+    [
+      "import { spawn } from 'node:child_process';",
+      "import { writeFileSync } from 'node:fs';",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      'setInterval(() => {}, 1000);',
+      '',
+    ].join('\n'),
+  );
+  const root = spawn(process.execPath, [script], { cwd, detached: true, stdio: 'ignore' });
+  root.unref();
+  victims.push(root.pid);
+  await sleep(600);
+  const helper = Number(readFileSync(pidFile, 'utf8').trim());
+  victims.push(helper);
+  assert.equal(alive(root.pid), true, 'the Chromium stand-in did not start');
+  assert.equal(alive(helper), true, 'the helper stand-in did not start');
+  return { pid: root.pid, helper };
+}
+
+/** A version-1 Browser receipt on disk, exactly as `publishReceipt` writes one. */
+const publish = (tree, fields) =>
+  file(
+    join(tree, '.agent', 'debug-as.local.json'),
+    `${JSON.stringify({
+      version: 1,
+      generation: 'a'.repeat(32),
+      host: hostname(),
+      identity: 'debug',
+      origin: 'http://127.0.0.1:3000',
+      path: '/home',
+      cdpPort: 9222,
+      sessionName: 'debug',
+      device: null,
+      viewport: null,
+      ...fields,
+    })}\n`,
+  );
+
+/**
+ * The REAL composition, with no `claim` override: a receipt on disk, live
+ * processes, and the host's own ancestry deciding what a live session owns.
+ *
+ * The two survivors here are the ones the pid-only guard killed. A Chromium
+ * helper is named `chromium` too, so the dev-tool allow-list reaped every
+ * renderer of a window the operator was clicking through; and an `ax` installed
+ * the ordinary way runs from this worktree's node_modules, which is exactly the
+ * provenance that marks a node process as this tree's dev tooling — so cleanup
+ * killed the process HOLDING the browser and reported success.
+ */
+test('clean spares the live Role browser it owns whole — owner, Chromium root and helpers — and still reaps a stranger', async () => {
+  const { fixture, main } = repo();
+  const tree = worktree(main, join(fixture, 'debugowned'), 'debugowned');
+  const owner = await victim(tree, join(tree, 'owner.js'));
+  const chromium = await browserTree(tree, join(tree, 'chromium.mjs'), join(fixture, 'helper.pid'));
+  const stranger = await victim(tree, join(tree, 'node_modules', '.bin', 'devserver.mjs'));
+
+  publish(tree, {
+    pid: owner,
+    processStart: processStart(owner),
+    chromiumPid: chromium.pid,
+    chromiumStart: processStart(chromium.pid),
+  });
+
+  const signalled = [];
+  const code = clean([tree], {
+    paths: () => ({ root: tree, main }),
+    load: () => ({ config: null, exists: false, errors: [] }),
+    scan: () => [
+      { pid: owner, comm: 'node' },
+      { pid: chromium.pid, comm: 'chromium' },
+      { pid: chromium.helper, comm: 'chromium' },
+      { pid: stranger, comm: 'next-server' },
+    ],
+    reap: (path, { scan: found }) => {
+      const targets = found(path);
+      for (const target of targets) signalled.push(target.pid);
+      return targets.map(target => ({ ...target, signal: 'SIGTERM' }));
+    },
+    // The owner is an `ax` under this tree's node_modules, which is what makes
+    // it reapable in the first place.
+    command: pid => (pid === owner ? `${process.execPath} ${join(tree, 'node_modules', '@flosrn', 'ax', 'bin', 'ax.mjs')} debug-as` : ''),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(signalled.includes(owner), false, 'the Node process holding the Role browser was signalled');
+  assert.equal(signalled.includes(chromium.pid), false, 'the claimed Chromium root was signalled');
+  assert.equal(signalled.includes(chromium.helper), false, 'a helper of the claimed Chromium was signalled');
+  assert.deepEqual([...new Set(signalled)], [stranger], 'the unrelated dev server was not reaped');
+  assert.equal(existsSync(join(tree, '.agent', 'debug-as.local.json')), true, 'a live receipt was swept');
+});
+
+/**
+ * Sparing is a pid+start proof, never a pid: the recorded number can have been
+ * handed to something else since. A root that fails it takes its helpers with
+ * it — they are spared only as descendants of a root that PASSED.
+ */
+test('clean reaps a recorded Chromium whose start identity says the pid was recycled, helpers included', async () => {
+  const { fixture, main } = repo();
+  const tree = worktree(main, join(fixture, 'debugrecycled'), 'debugrecycled');
+  const owner = await victim(tree, join(tree, 'owner.js'));
+  const chromium = await browserTree(tree, join(tree, 'chromium.mjs'), join(fixture, 'helper.pid'));
+
+  publish(tree, {
+    pid: owner,
+    processStart: processStart(owner),
+    chromiumPid: chromium.pid,
+    chromiumStart: 'Thu Jan  1 00:00:00 1970',
+  });
+
+  const signalled = [];
+  const code = clean([tree], {
+    paths: () => ({ root: tree, main }),
+    load: () => ({ config: null, exists: false, errors: [] }),
+    scan: () => [
+      { pid: owner, comm: 'node' },
+      { pid: chromium.pid, comm: 'chromium' },
+      { pid: chromium.helper, comm: 'chromium' },
+    ],
+    reap: (path, { scan: found }) => {
+      const targets = found(path);
+      for (const target of targets) signalled.push(target.pid);
+      return targets.map(target => ({ ...target, signal: 'SIGTERM' }));
+    },
+    command: pid => (pid === owner ? `${process.execPath} ${join(tree, 'node_modules', '@flosrn', 'ax', 'bin', 'ax.mjs')} debug-as` : ''),
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual([...new Set(signalled)].sort(), [chromium.pid, chromium.helper].sort(), 'a recycled Chromium pid was spared');
+  assert.equal(signalled.includes(owner), false, 'the proven live owner was signalled');
+});
+

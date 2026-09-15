@@ -9,6 +9,19 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 |---|---|
 | `src/delegation.mjs`, `bin/ax.mjs`, `src/cli.mjs` | global command → exact project version → CLI delegation |
 | `src/plan.mjs` | what a project SHOULD carry: the checkout that publishes ax, and which contracts its configuration adopted |
+| `src/debug-as/declaration.mjs` | the root key that adopts debug sessions and the retired `{ route, optInEnv }` shape's migration finding — a leaf, because `src/config.mjs` classifies that shape and reaching the rules from there would close an import cycle through `src/plan.mjs` |
+| `src/debug-as/config.mjs` | the debug-session contract a project declares: identity names, capability closure, and the one path rule on every path it carries |
+| `src/debug-as/index.mjs`, `src/debug-as/args.mjs` | command grammar and launch ordering: required handoff before Chromium, automatic handoff after publication |
+| `src/debug-as/address.mjs` | recorded loopback and tailnet addresses, layered opt-in and bounded application liveness |
+| `src/debug-as/adapter.mjs`, `src/debug-as/auth-state.mjs` | bounded project adapter protocol and private, ignored, local-origin authentication artifacts |
+| `src/debug-as/browser.mjs` | project Playwright, visible Chromium, compatible reuse and foreground owner teardown |
+| `src/debug-as/receipt.mjs`, `src/debug-as/lock.mjs` | private generation-owned browser records and locks, process identity and maintenance claims |
+| `src/debug-as/status.mjs`, `src/debug-as/drive.mjs` | liveness payload and authority-preserving agent-browser delegation |
+| `src/debug-as/doctor.mjs` | runtime prerequisite diagnosis without browser or authentication creation |
+| `src/debug-as/emit.mjs` | debug output redaction before the shared log boundary |
+| `src/debug-as/machine-config.mjs`, `src/debug-as/relay-receipt.mjs` | private machine policy and distinct Phone relay ownership |
+| `src/debug-as/relay.mjs`, `src/debug-as/tailscale.mjs`, `src/debug-as/notifier.mjs` | confirmed phone publication, Serve lifecycle and optional intent-only delivery |
+| `src/debug-as/provider.mjs`, `src/debug-as/supabase.mjs` | bounded handoff providers and local-origin Auth Admin callback construction |
 | `src/init.mjs`, `src/doctor.mjs` | project inference, managed wiring, recorded state vs reality |
 | `src/worktree/plan.mjs`, `src/worktree/probes.mjs` | every worktree decision and every machine fact it consumes |
 | `src/worktree/identity.mjs`, `src/worktree/ports.mjs`, `src/worktree/supabase.mjs`, `src/worktree/addressing.mjs` | the rules composed by the plan |

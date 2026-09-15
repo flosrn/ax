@@ -8,4 +8,4 @@ import { resolveDelegation, runDelegated } from '../src/delegation.mjs';
 const argv = process.argv.slice(2);
 const decision = resolveDelegation();
 
-process.exitCode = decision.mode === 'self' ? runCli(argv) : await runDelegated(decision, argv);
+process.exitCode = decision.mode === 'self' ? await runCli(argv) : await runDelegated(decision, argv);

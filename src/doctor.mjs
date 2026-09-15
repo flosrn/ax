@@ -4,6 +4,12 @@ import { join } from 'node:path';
 import { getJsonPath, readBlock, styleFor } from './blocks.mjs';
 import { CONFIG_FILE, PACKAGE_NAME, assetPath, loadConfig, repoPaths, vendorRemote, version } from './config.mjs';
 import { EXACT_VERSION } from './delegation.mjs';
+// The RULES module, not `./debug-as/doctor.mjs`: it is synchronous and imports
+// only a leaf plus the validator, so grading the tracked contract here costs
+// this verb nothing it did not already load. The runtime half of the same
+// contract reaches Playwright, Tailscale and a CDP probe, and `ax doctor`
+// never loads it.
+import { DEBUG_DECLARATION, loadDebugContract } from './debug-as/config.mjs';
 import { BLOCK_BODIES, LEGACY_OMP_LOADER, OMP_SETTINGS, retiredConfigKeyFixes } from './init.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { CONTRACTS, planProject, readManifest } from './plan.mjs';
@@ -34,10 +40,19 @@ export function doctor(cwd = process.cwd()) {
 
   note(isWorktree ? `worktree of ${main}` : 'primary checkout');
 
-  const { config, errors, exists, declared } = loadConfig(root);
+  const { config, errors, exists, declared, migration } = loadConfig(root);
   if (!exists) {
     fail(`${CONFIG_FILE} is missing — no project plan can be derived`, 'ax init');
     return failures;
+  }
+  // The retired `debugAs` shape, named before anything else is graded and
+  // NEVER as a failure: `ax pin` grades with this verb, and the release a
+  // consumer needs in order to rewrite that section is the one they would be
+  // unable to pin (R30). So it reads as a repair the operator can take when
+  // they choose to, beside a checkout that is otherwise coherent.
+  if (migration) {
+    note(`${CONFIG_FILE} — "${migration.at}" ${migration.problem}`);
+    fix(migration.fix);
   }
   if (errors.length > 0) {
     fail(`${CONFIG_FILE} is invalid`, `edit ${CONFIG_FILE}`);
@@ -71,6 +86,61 @@ export function doctor(cwd = process.cwd()) {
   // this package demanding a line it does not own.
   if (config.$schema !== undefined && config.$schema !== plan.schemaRef) {
     fail(`${CONFIG_FILE}: $schema points at ${config.$schema}, and the plan for this checkout is ${plan.schemaRef}`, 'ax init');
+  }
+
+  // The debug-session contract, graded on what the FILE declares and nothing
+  // else. It sits ABOVE the provisioning gate on purpose: a project may adopt
+  // debug sessions and ask ax for nothing it provisions (`prGate` alone is a
+  // shipped configuration here), and returning before this would leave that
+  // project's contract ungraded by both verbs.
+  //
+  // WHAT THIS VERB MAY MEASURE is the tracked half: the declarations and the
+  // paths they name (R29). Not a GUI, not a resolved Playwright, not a Serve
+  // mapping, and above all NOT the machine Phone contract — an optional
+  // capability nobody enabled on this laptop must not make a coherent checkout
+  // report as incoherent, and `ax debug-as doctor` owns every one of those
+  // machine facts. That split is also why the rules module is imported here
+  // and `./debug-as/doctor.mjs` is not: the runtime half reaches Playwright,
+  // Tailscale and a CDP probe, and no `ax doctor` run should load them.
+  if (plan.adopted.debug) {
+    const { contract, refusals } = loadDebugContract({ raw: config });
+    for (const refusal of refusals) fail(`${CONFIG_FILE} — "${refusal.at}" ${refusal.problem}`, refusal.fix);
+    if (contract !== null) {
+      const identities = Object.values(contract.identities);
+      const debug = CONTRACTS.find(entry => entry.id === 'debug');
+      ok(`${debug.name}: ${identities.length} Debug identit${identities.length === 1 ? 'y' : 'ies'} (${identities.map(identity => identity.name).join(', ')})`);
+
+      // The one path in this contract that names a TRACKED location: the
+      // package whose Playwright and device catalog a launch resolves. A
+      // directory that does not exist is a declaration nobody can satisfy, and
+      // it is legible here — the resolution itself, its version and its
+      // Chromium belong to the machine verb.
+      const playwrightDir = contract.browser.playwrightDir;
+      if (!existsSync(join(root, playwrightDir))) {
+        fail(
+          `${CONFIG_FILE}: "${DEBUG_DECLARATION}.browser.playwrightDir" names ${playwrightDir}, which does not exist in this checkout`,
+          `point "${DEBUG_DECLARATION}.browser.playwrightDir" at the package that pins @playwright/test`,
+        );
+      }
+
+      // A declared artifact is graded on CONTAINMENT only — a repo-relative
+      // path that cannot leave the checkout. Its existence, its mode, its
+      // git-ignore status and its origin scope are the launch's proofs
+      // (`./debug-as/auth-state.mjs`), and every one of them is a fact about a
+      // file this verb must not require to be there: the adapter creates it,
+      // and a fresh clone is coherent without it.
+      for (const identity of identities.filter(identity => identity.authenticated)) {
+        const at = `${DEBUG_DECLARATION}.identities.${identity.name}.browser.storageState`;
+        const declared = identity.storageState;
+        const escapes = declared.startsWith('/') || declared.split('/').includes('..') || declared.includes('\\');
+        if (escapes) {
+          fail(
+            `${CONFIG_FILE}: "${at}" declares ${declared}, which leaves this checkout — an authentication artifact lives inside the worktree that owns it`,
+            `declare a repo-relative path under this checkout, such as "apps/e2e/.auth/${identity.name}.json"`,
+          );
+        }
+      }
+    }
   }
 
   // NOT ADOPTED IS NOT A FINDING. gapila declares `prGate` and nothing else, by
