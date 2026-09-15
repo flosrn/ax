@@ -310,7 +310,7 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
     }
     const needle = argv[proofAt + 1];
     if (needle === undefined || needle.startsWith('-')) {
-      bad('ax worker transcript --dispatch-proof expects the session needle (a worktree directory name)');
+      bad('ax worker transcript --dispatch-proof expects a checkout or worktree PATH, or the session needle (a worktree directory name)');
       return 2;
     }
     // Refused rather than consumed, on the same grounds as the needle above: a
@@ -342,12 +342,23 @@ export function transcript(argv = [], { resolve = resolveOrca, runner, env = pro
     // empty streams and could not tell an ambiguous needle from a request with
     // no record from a dispatch with no owner.
     //
-    // NO `cwd` HERE, deliberately. The operator typed a needle, and honouring
-    // it exactly is the whole of what they asked; preferring this process's own
-    // checkout would answer a question that was not put. The callers that hold
-    // an owning path pass it themselves.
+    // THIS PROCESS'S OWN CHECKOUT IS NEVER SUBSTITUTED, deliberately: the
+    // operator named a target, and preferring our cwd would answer a question
+    // that was not put. A target that IS a path is that same rule the other way
+    // round — it was typed, so it is honoured exactly, and `slugOf` names one
+    // session directory by construction rather than tail-matching a name two
+    // checkouts can share (#204's rule, and the shape this verb's own help
+    // prescribes: `--dispatch-proof <checkout>`).
+    //
+    // Measured 2026-09-15 on goodluckagency/ofmchat #253–#257: an orchestrator
+    // typed the checkout the help names, and every session on the host refused
+    // it, because no slug ends in an absolute path. Two recoveries lost, over
+    // proof that was readable the whole time. A path whose slug names no
+    // directory still falls through to the tail match (`selectSessionFile`), so
+    // this widens what resolves and settles nothing differently.
     const found = dispatchProof({
       needle,
+      cwd: needle.includes('/') ? needle : '',
       request: requestAt === -1 ? '' : argv[requestAt + 1],
       env,
       sessionsRoot: rootAt === -1 ? sessionsRoot : argv[rootAt + 1],
