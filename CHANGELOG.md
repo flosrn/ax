@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.26.0](https://github.com/flosrn/ax/compare/v0.25.2...v0.26.0) (2026-09-15)
+
+
+### Features
+
+* **worker:** select work classes with auto, manual and ask modes ([92aac3b](https://github.com/flosrn/ax/commit/92aac3b7b16e631802b7e3aeecff009a99fb3463))
+
 ## [0.25.2](https://github.com/flosrn/ax/compare/v0.25.1...v0.25.2) (2026-09-15)
 
 
