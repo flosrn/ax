@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { readModelIntent, splitThinking, SUPERVISED_DEFAULT } from './alias.ts';
 import orcaModel, { applyDispatchedModel, type ApplyDeps } from './index.ts';
@@ -1388,6 +1391,45 @@ describe('an absent handle stops being looked up', () => {
       customType: '@flosrn/ax/model-assignment',
       data: expect.objectContaining({ via: 'transcript' }),
     }));
+  });
+
+  test('a throwing active-branch read falls back to the marker-bearing session file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ax-model-branch-fallback-'));
+    const file = join(dir, 'child.jsonl');
+    writeFileSync(file, `${JSON.stringify({
+      type: 'message',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Preamble.\n[omp role=worker model=@default] Ship it.' }],
+      },
+    })}\n`);
+
+    try {
+      const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
+      const applied: unknown[] = [];
+      const pi = {
+        on: (event: string, handler: (e: unknown, c: unknown) => unknown) => handlers.set(event, handler),
+        setModel: (model: unknown) => applied.push(model),
+        setThinkingLevel: () => {},
+        logger: { info: () => {}, warn: () => {} },
+      };
+      orcaModel(pi as never, { handle: HANDLE, run: absentRun() });
+      const ctx = {
+        models: { resolve: (spec: string) => ({ provider: 'stub', id: spec }) },
+        sessionManager: {
+          getBranch: () => {
+            throw new Error('branch unavailable');
+          },
+          getSessionFile: () => file,
+        },
+      };
+
+      await handlers.get('session_start')?.({ type: 'session_start' }, ctx);
+
+      expect(applied).toEqual([{ provider: 'stub', id: '@default' }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

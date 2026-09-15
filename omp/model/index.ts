@@ -479,9 +479,8 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
           active = readSpecFromEntries(entries);
           if (active.spec !== null) return { ...active, via: 'transcript' };
         } catch (error) {
-          return {
+          active = {
             spec: null,
-            via: 'transcript',
             reason: `active session entries unreadable: ${error instanceof Error ? error.message : String(error)}`,
           };
         }
