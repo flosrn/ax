@@ -22,6 +22,7 @@ import { triage } from './triage/index.mjs';
 import { pr } from './pr/index.mjs';
 import { frontier } from './frontier.mjs';
 import { pin } from './pin.mjs';
+import { debugAs } from './debug-as/index.mjs';
 
 /**
  * Every command's entry point, keyed by the name declared in the registry. A
@@ -40,6 +41,7 @@ const runners = argv => ({
   // Verbs of one noun get the remaining argv, unparsed: `rm <name> --force`
   // needs its own positional, and the flag helpers below are whole-command.
   worktree: () => worktree(argv.slice(1)),
+  'debug-as': () => debugAs(argv.slice(1)),
   // Hand argv to the guard intact: it owns target validation, while this
   // dispatcher must not interpret the Supabase CLI's flags.
   supabase: () => supabase(argv.slice(1)),
@@ -68,7 +70,7 @@ function assertRunners(table) {
   }
 }
 
-/** Run one ax invocation. Returns the exit code; never calls process.exit. */
+/** Run one ax invocation. Returns an exit code or its promise; never exits. */
 export function runCli(argv = []) {
   const table = runners(argv);
   assertRunners(table);

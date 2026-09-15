@@ -151,6 +151,95 @@ export function pgidOf(pid) {
 }
 
 /**
+ * Every process on this host as a `pid → ppid` map, from ONE pass.
+ *
+ * Ancestry, never the process group: a dev server reparented by its exited
+ * package manager keeps a group of its own, and two unrelated trees started
+ * from one shell share a group — so a group says nothing about who launched
+ * whom, while `ppid` is the kernel's own answer.
+ *
+ * Platform-split for the reason the cwd scan is, and read ONCE because the
+ * caller asks it about a whole scan: a fork per pid is a fork per process in
+ * the tree, twice (TERM, then KILL).
+ *
+ * An empty map is "cannot tell". Callers spare on positive proof only, so it
+ * degrades to protecting nothing extra rather than to sparing everything.
+ */
+export function parentsByPid() {
+  const parents = new Map();
+  if (existsSync('/proc')) {
+    let names;
+    try {
+      names = readdirSync('/proc');
+    } catch {
+      return parents;
+    }
+    for (const name of names) {
+      if (!/^\d+$/.test(name)) continue;
+      let stat;
+      try {
+        stat = readFileSync(`/proc/${name}/stat`, 'utf8');
+      } catch {
+        continue; // exited mid-scan, or owned by another user
+      }
+      // Same field arithmetic as `pgidOf`: after the LAST ')' come state, ppid.
+      const ppid = Number(stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[1]);
+      if (Number.isInteger(ppid)) parents.set(Number(name), ppid);
+    }
+    return parents;
+  }
+
+  const result = spawnSync('ps', ['-eo', 'pid=,ppid='], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (typeof result.stdout !== 'string') return parents; // ps absent
+  for (const line of result.stdout.split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (Number.isInteger(pid) && pid > 0 && Number.isInteger(ppid)) parents.set(pid, ppid);
+  }
+  return parents;
+}
+
+/**
+ * The pids descended from `pid` RIGHT NOW, as a Set — children, their children,
+ * and so on.
+ *
+ * A Chromium is a tree: the root holds the profile and the CDP port, and the
+ * GPU process, the zygotes and every renderer hang off it. Killing a helper is
+ * killing the window, so a root that maintenance spares is only spared if its
+ * helpers are too.
+ *
+ * Membership is read from the LIVE kernel, which is what makes a recycled pid
+ * safe here: a pid is in this set because it is a child of that root now, not
+ * because something recorded it earlier.
+ */
+export function descendantsOf(pid, { parents = parentsByPid } = {}) {
+  const found = new Set();
+  if (!Number.isInteger(pid) || pid <= 0) return found;
+
+  const map = typeof parents === 'function' ? parents() : parents;
+  const children = new Map();
+  for (const [child, parent] of map) {
+    if (child === parent) continue; // init reports itself on some hosts
+    const siblings = children.get(parent);
+    if (siblings) siblings.push(child);
+    else children.set(parent, [child]);
+  }
+
+  const queue = [pid];
+  while (queue.length > 0) {
+    for (const child of children.get(queue.pop()) ?? []) {
+      if (child === pid || found.has(child)) continue;
+      found.add(child);
+      queue.push(child);
+    }
+  }
+  return found;
+}
+
+/**
  * Signal the worktree's leftover processes, and report what was signalled.
  *
  * The caller's own process group is skipped, which is the entire reason `pgidOf`

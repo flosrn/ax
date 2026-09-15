@@ -67,6 +67,42 @@ _Avoid_: report, executive summary.
 The orchestrator's recorded answer to one `Q<n>:` question a blocked child sent.
 _Avoid_: escalation (the exception, not the mechanism).
 
+## Interactive debugging
+
+**Role browser**:
+A visible local browser session authenticated as one declared Debug identity and shared between
+the operator and an agent. It never implies access from another device.
+_Avoid_: debug browser, impersonation.
+
+**Phone handoff**:
+The optional transfer of one declared Debug identity's authenticated screen from a Role browser
+run to a physical phone. It is a separate capability; a project may adopt Role browser without it.
+_Avoid_: mobile route, mobile login.
+
+**Debug identity**:
+A project-declared authentication persona with its own source and default destination. It is
+closed-world: an undeclared name never becomes a Debug identity by inference.
+_Avoid_: role (ambiguous with Session role), account, user, fixture.
+
+**Debug adapter**:
+A project-owned boundary that prepares or returns authentication material for one Debug identity.
+Ax invokes it without learning the project's login flow.
+
+**Phone relay**:
+The machine-global owner of the latest Phone handoff. One published handoff supersedes the prior
+one across every project and worktree; only the current owner may change or withdraw it.
+_Avoid_: bookmark route, `/api/go`, latest session.
+
+**Co-drive**:
+An agent controlling the operator's live Role browser through its AX-owned CDP connection. It
+shares the operator's window rather than creating another browser session.
+_Avoid_: agent browser session, browser automation.
+
+**Browser receipt**:
+The private worktree record identifying one Role browser's owner, generation and observable
+connection state. It carries no authentication material.
+_Avoid_: session file, CDP file.
+
 ## Orchestration
 
 **Orchestrator**:

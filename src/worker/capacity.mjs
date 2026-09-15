@@ -215,13 +215,22 @@ function causeOf(total, occupied, occupancy = []) {
  * ONE label, three readers. `ls` used to name a machine-wide total "the cap
  * count" while nothing gated on it; the fix is not a better sentence in `ls`,
  * it is that the sentence and the fence come from the same place.
+ *
+ * AND THE SCOPE IS PART OF THE LABEL, because the count cannot see every live
+ * pane: `./slots.mjs` counts RECORDED panes, so an operator's own session in
+ * one of this repository's worktrees holds no slot in this number. Measured
+ * 2026-09-15 on goodluckagency/ofmchat #253–#257 — `0 live pane(s) in
+ * goodluckagency/ofmchat` beside a working pane in that repository's own
+ * worktree. The number was right; read as "this repository is idle" it
+ * authorises a second agent onto an occupied slice, and an orchestrator spent
+ * a dispatch resolving the ambiguity instead.
  */
 export function capLines({ live, repo = '', repoCap, machineCap }) {
   const lines = [];
   lines.push(
     repo === ''
       ? `live pane(s) in this repository: NOT MEASURED — nothing here names this checkout, so dispatch.cap ${repoCap} cannot be counted (F-028)`
-      : `${live.mine} live pane(s) in ${repo} — the count dispatch.cap ${repoCap} gates`,
+      : `${live.mine} live pane(s) in ${repo} — the count dispatch.cap ${repoCap} gates; RECORDED panes only, so a session nobody dispatched holds no slot here`,
   );
   lines.push(
     `${live.machine} live pane(s) on this machine — ${

@@ -45,6 +45,32 @@ export interface DeliveryResult {
   via?: 'direct' | 'relay';
   queued?: { run: string };
   error?: string;
+  /**
+   * Why this delivery cannot be answered, when it cannot — absent whenever
+   * attribution is provable, never a reassurance that it is.
+   *
+   * Orca stamps the one unforgeable sender field from `ORCA_PANE_KEY`
+   * (`senderPaneKey: process.env.ORCA_PANE_KEY || undefined`, its
+   * `message-send-handler.ts`), and `./attribution.ts` refuses a reply route to
+   * a sender that carries none. So a pane publishing no key is unanswerable BY
+   * CONSTRUCTION, and the send that looked ordinary is where that is knowable:
+   * measured 2026-09-15, an ownership question left three times over a channel
+   * whose receipt said `Sent to 01a0a380.` while the recipient was announcing
+   * an unattributed sender with no way back.
+   */
+  unattributed?: string;
+}
+
+/**
+ * The sender field Orca will stamp, read where it is decided rather than
+ * inferred from an outcome. Empty is unattributable; present proves only that
+ * a key was sent, never that the runtime verified its lifecycle ownership — so
+ * this disclosure widens what a caller knows and promises nothing.
+ */
+function attributionGap(env: Record<string, string | undefined> = process.env): string | undefined {
+  const key = (env.ORCA_PANE_KEY ?? '').trim();
+  if (key !== '') return undefined;
+  return 'this pane publishes no ORCA_PANE_KEY, so Orca stamps no sender_pane_key: the recipient sees an unattributed sender and gets no reply route from this message. A dispatched worker is answered through its DISPATCH — `ax triage ask`, the report channel — never a lateral send; an operator pane is handed a key by Orca when Orca launches it, so a session started from a bare shell has none.';
 }
 
 /**
@@ -100,9 +126,14 @@ export function deliver(o: Delivery, seams: SendSeams = {}): DeliveryResult {
     ...environment,
     '--json',
   ]);
+  // The gap is read once, here, and attached to whichever path delivered: both
+  // carry the same envelope, and the relay is worse off rather than better —
+  // the parent's receiver requires a pane-witnessed sender before it lends its
+  // own authority to a repost.
+  const unattributed = attributionGap();
   if (prop(attempt.parsed, 'ok') === true) {
     seq.commit();
-    return { ok: true, via: 'direct' };
+    return unattributed === undefined ? { ok: true, via: 'direct' } : { ok: true, via: 'direct', unattributed };
   }
 
   if (!attempt.text.includes('dispatch_run_mismatch'))
@@ -147,9 +178,10 @@ export function deliver(o: Delivery, seams: SendSeams = {}): DeliveryResult {
   ]);
   if (prop(relay.parsed, 'ok') === true) {
     seq.commit();
+    const gap = unattributed === undefined ? {} : { unattributed };
     return parent.queued
-      ? { ok: true, via: 'relay', queued: { run: parent.queued.run } }
-      : { ok: true, via: 'relay' };
+      ? { ok: true, via: 'relay', queued: { run: parent.queued.run }, ...gap }
+      : { ok: true, via: 'relay', ...gap };
   }
   return { ok: false, error: `relay via parent failed: ${sendError(relay)}` };
 }

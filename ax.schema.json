@@ -110,17 +110,138 @@
     "debugAs": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["browser", "identities"],
+      "description": "Adopt project debug sessions explicitly: declare browser and identities, plus optional phone. AX opens one visible Chromium session on this checkout's loopback application address and shares its CDP connection with agents. No defaults materialize this contract. Migration: the retired { route, optInEnv } shape is no longer a debug-session contract; remove it or replace it with this declaration. AX reports that repair without blocking version pinning and never infers identities or converts the old route into a provider.",
       "properties": {
-        "route": {
-          "type": "string",
-          "pattern": "^/",
-          "default": "/debug-as",
-          "description": "Mount path of the handoff route."
+        "browser": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["playwrightDir", "start", "navigationTimeoutSeconds"],
+          "description": "Where AX resolves Playwright and Chromium from, and how this application is started. AX never installs a browser and never starts the app: it names the start command as the repair when nothing answers.",
+          "properties": {
+            "playwrightDir": {
+              "type": "string",
+              "description": "Repo-relative package that pins Playwright — `@playwright/test` or `playwright` — and whose version's device catalog `--device` reads."
+            },
+            "start": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1,
+              "description": "The argv that starts this application, named as a repair and never executed by AX."
+            },
+            "navigationTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 900,
+              "description": "How long the first navigation may take before the launch refuses. Required, and defaulted nowhere: a cold first compile of a privileged route routinely exceeds Playwright's own 30s, and a refusal here leaves no receipt, so the number is this project's to state."
+            },
+            "prepare": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["command", "timeoutSeconds"],
+              "description": "The Debug adapter: the project's own way to make an authentication artifact fresh. AX passes it versioned JSON on stdin and reads one JSON object back; it never learns the login flow.",
+              "properties": {
+                "command": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "Argv, never a shell string, run from the worktree root."
+                },
+                "timeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 5,
+                  "maximum": 1800,
+                  "description": "The adapter's deadline, required wherever an adapter is declared and defaulted nowhere. It must exceed the project's own authentication-setup budget: a cap equal to the inner test timeout kills the adapter before it can report its own failure."
+                }
+              }
+            }
+          }
         },
-        "optInEnv": {
-          "type": "string",
-          "default": "AX_DEBUG_AS_PHONE",
-          "description": "Env var that must be truthy for the handoff route to answer. Absent means 404."
+        "phone": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["optInEnv", "provider"],
+          "description": "The optional Phone handoff half. Declaring it adopts the capability for this project; each identity still declares whether it supports it. Absent means the Role browser is the whole feature here.",
+          "properties": {
+            "optInEnv": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*$",
+              "description": "The variable that must resolve true before an automatic handoff runs. A name only: AX reads the value from the environment and the project's local env files, never from this file."
+            },
+            "provider": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "urlEnv", "serviceRoleKeyEnv", "confirm"],
+                  "description": "The built-in Supabase provider: the documented Auth Admin link-generation call, made directly so AX stays dependency-free.",
+                  "properties": {
+                    "type": { "const": "supabase" },
+                    "urlEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "Variable naming the Supabase URL. Loopback by default; any other host needs a machine-private allowlist entry and HTTPS." },
+                    "serviceRoleKeyEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "Variable naming the service-role key. The value never enters this file, a receipt, or a child process AX spawns." },
+                    "confirm": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["path", "tokenParam", "typeParam", "typeValue", "nextParam"],
+                      "description": "This application's own auth callback, described so AX can build the URL with validated parameter names instead of a free-form template.",
+                      "properties": {
+                        "path": { "type": "string", "pattern": "^/", "description": "Absolute path of the callback route." },
+                        "tokenParam": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" },
+                        "typeParam": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" },
+                        "typeValue": { "const": "magiclink" },
+                        "nextParam": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "command"],
+                  "description": "Any other provider through the bounded JSON adapter protocol: stdin carries protocol:1, kind:phone-handoff, identity, email, path, origin and login. Return one object with protocol:1 and url, a final URL on this worktree's recorded Tailscale origin. The call runs only after confirmation and has a 15-second deadline and 64-KiB response cap.",
+                  "properties": {
+                    "type": { "const": "command" },
+                    "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "identities": {
+          "type": "object",
+          "description": "The closed catalog of Debug identities, keyed by the name `--as` takes. Closed because a filename cannot establish intent: AX never infers an identity from a fixture, a package shape or a MakerKit convention. Names and capability closure are refused with a repair by src/debug-as/config.mjs — a keyed map cannot pattern its own keys without a keyword this validator refuses by name.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["defaultPath"],
+            "properties": {
+              "defaultPath": {
+                "type": "string",
+                "pattern": "^/",
+                "description": "Where this identity lands with no `--path`. An absolute path component of this application, never a URL; the full safety rule and its repair live in src/debug-as/config.mjs."
+              },
+              "browser": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["storageState"],
+                "description": "Present when this identity is authenticated. Absent declares an unauthenticated identity, which needs no adapter.",
+                "properties": {
+                  "storageState": {
+                    "type": "string",
+                    "description": "Repo-relative Playwright storage state. AX proves it is private, ignored, inside the worktree and scoped to this checkout's own addresses; the adapter owns its freshness and its mode."
+                  }
+                }
+              },
+              "phone": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["email"],
+                "description": "Present when this identity supports Phone handoff. Requires the project-level `phone` section and an authenticated identity.",
+                "properties": { "email": { "type": "string", "description": "The account the provider mints a one-shot login for." } }
+              }
+            }
+          }
         }
       }
     },

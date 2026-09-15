@@ -269,6 +269,33 @@ test('capLines label each count by its scope, and never call a machine total the
   assert.match(nameless, /NOT MEASURED/, 'a checkout that cannot name itself gets an absence, never a zero');
 });
 
+// Measured 2026-09-15 on goodluckagency/ofmchat #253–#257. `ax worker ls`
+// ended `0 live pane(s) in goodluckagency/ofmchat — the count dispatch.cap 3
+// gates` while a live Orca pane was working in that repository's own worktree
+// `.worktrees/webhook-a-re-delivered-message_sent-event-reache`. The number
+// was CORRECT — that session was nobody's dispatch, so no record names its
+// pane and `livePanes` cannot see it — and the label said none of that. The
+// reading it invites is "this repository is idle", which is the reading that
+// authorises a second agent onto an occupied slice; the orchestrator that met
+// it stopped and asked, and paid a dispatch for the ambiguity.
+//
+// So the scope appears in the label, on the same line as the count (#88's own
+// rule: a scope that appears in the label appears in the count). Appended, not
+// prefixed: every verb pins `N live pane(s) in <repo>` as the head of this
+// sentence.
+test('capLines names the scope of the count: recorded panes, never every live pane', () => {
+  const idle = capLines({ live: live(0, 0), repo: 'goodluckagency/ofmchat', repoCap: 3, machineCap: null }).join('\n');
+  assert.match(idle, /0 live pane\(s\) in goodluckagency\/ofmchat/, 'the head of the line is untouched');
+  assert.match(idle, /RECORDED/, 'and the count says which panes it can see');
+  assert.match(idle, /nobody dispatched/, 'naming the session this number does not carry');
+
+  const busy = capLines({ live: live(3, 3), repo: 'flosrn/ax', repoCap: 3, machineCap: null }).join('\n');
+  assert.match(busy, /3 live pane\(s\) in flosrn\/ax — the count dispatch\.cap 3 gates; RECORDED/, 'one sentence, whatever the count');
+
+  const nameless = capLines({ live: live(2, 0, 2), repo: '', repoCap: 3, machineCap: null }).join('\n');
+  assert.match(nameless, /NOT MEASURED/, 'an unmeasurable cap still gets its absence, not a scope clause');
+});
+
 test('capVerdict and capLines name the occupied tree, the record, and the observed live handles', () => {
   // Both dispatch refusals print this contract. A placeholder `--terminal <handle>`
   // is not actionable: the operator has to guess which pane to show. The repair

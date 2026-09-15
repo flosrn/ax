@@ -1,0 +1,43 @@
+---
+status: accepted
+---
+
+# AX owns project-adapted debug sessions
+
+AX owns interactive debugging as two independently adopted capabilities: a **Role browser** opens one local, headful Chromium session as a declared **Debug identity** and exposes its loopback CDP port to agents; an optional **Phone handoff** transfers that identity to a physical phone through a machine-global **Phone relay** owned by that session. Projects declare identities and keep their own login knowledge behind a **Debug adapter**. They no longer own a `debug-as` launcher, CDP wrapper, handoff route, Phone relay route, notification code, or session lifecycle.
+
+## Boundary
+
+AX owns `ax debug-as`, Chromium lifecycle, CDP co-drive, worktree addressing, fail-closed receipts, Tailscale Serve publication, phone confirmation, provider invocation and machine notification. The consuming project supplies Playwright, a closed catalog of Debug identities, each identity's default path and authentication artifact, and a Debug adapter that prepares that artifact. A project may adopt the Role browser without Phone handoff, and each identity declares which capabilities it supports.
+
+The Debug adapter is a versioned, single-operation JSON protocol over standard input and output. AX invokes its argv without a shell from the worktree root, inherits only the ambient worktree environment — never a value AX resolved from an environment file — bounds runtime by a declared deadline and output by size, redacts diagnostics, and treats any invalid result as a refusal. For authenticated browser identities, the configured adapter owns freshness, regeneration and owner-only file mode of the configured Playwright `storageState`; AX verifies only that the resulting regular file is contained by the worktree, private, ignored, and scoped to the checkout's own local addresses, with the browser origin present among its recorded origins. A missing browser origin is a refresh, not a refusal. AX never writes browser mutations back to that artifact.
+
+Phone authentication has two providers. The generic provider is another command implementing the same bounded JSON protocol. The built-in Supabase provider reads only the configured environment-variable names and a structured callback declaration; it calls the documented Auth Admin `generate_link` HTTP endpoint directly, accepts the returned token hash at the response root, and builds the application's local Tailscale callback from it. A non-loopback provider host requires a machine-private allowlist entry and HTTPS. MakerKit callback shape, seeded accounts, TOTP and login forms are never assumptions in AX.
+
+## Security and lifecycle
+
+Interactive debugging is local development authority, never deployment authority. The Role browser opens on the checkout's own loopback application address — the recorded direct address of an AX worktree, or the project's declared port in the primary checkout — because the authentication artifacts projects already mint are scoped to that origin. Proxy and Tailscale addresses are never the browser origin; the recorded Tailscale address is used only for a phone callback, which additionally requires an explicit opt-in. Production, arbitrary and cross-origin targets are refused. Every path AX consumes — flag, declared default and callback — is one absolute path component beginning with a single `/`, never a URL: `//`, backslashes and any scheme are invalid.
+
+The Phone relay listens only on loopback and is exposed privately through Tailscale Serve on one stable machine port. Every request on every interface requires a Tailscale identity header present in a machine-local allowlist, and a foreign `Host` or cross-site submission is refused the same way; absent or unauthorized identity returns `404`. Local processes remain inside the machine trust boundary. The relay shows project, worktree, Debug identity, path and publication time before authentication. A target-bound, user-bound, generation-bound, one-use in-memory nonce authorizes a `POST`; only then does AX create the one-shot login URL. No magic link, token, service credential, storage state or adapter output is persisted or sent through notifications.
+
+One Role browser may exist per worktree. A compatible invocation reuses it and may change only the path. A different identity, origin, device or viewport refuses rather than opening a rival session. The owning foreground process ends when Chromium closes or it receives an ordinary stop signal. It withdraws its own Serve mapping before releasing its listener and removes only receipts and relay state bearing its process identity and random generation; a mapping left behind by a crashed owner is withdrawn at the next launch or diagnosis, before anything rebinds that port. Stale state is recoverable only after AX proves the recorded process is no longer the same; an ambiguous live process is never killed or replaced. Because AX already reaps browsers by age and by working directory during worker dispatch and worktree cleanup, those paths must leave a Chromium root claimed by a live Browser receipt untouched.
+
+The Phone relay is machine-global and last completed publication wins across projects and worktrees. Transitions are serialized. A superseded process cannot alter or withdraw the current generation, and a link addressed to a superseded generation is refused rather than silently retargeted. The relay is session-scoped: with no live Role browser it answers nothing, so a permanently live phone bookmark is not part of this decision and consumer documentation promising one is rewritten. A machine-private notifier may receive project, worktree, identity, path and the generation-addressed relay URL, which AX also prints; AX has no built-in Messages recipient and notifications never carry login authority.
+
+## Command and configuration contract
+
+The operator surface is `ax debug-as --as <identity>`, with optional same-origin path and Playwright device or viewport, plus mutually exclusive phone enable/disable flags. `ax debug-as drive -- <agent-browser argv>` injects the owned session name and CDP port and removes ambient `AGENT_BROWSER_*` overrides; callers cannot override them. `ax debug-as status` emits one machine-readable payload for agents. `ax debug-as doctor` checks the adopted project contract and current machine capabilities without opening a browser. AX does not start the application, install Playwright, install Chromium, install `agent-browser`, or create Tailscale configuration silently; every absence names its repair.
+
+`debugAs` in `ax.config.json` becomes the adopted contract for browser settings, optional phone provider and explicit identities. Project commands are argv arrays, not shell strings. Secrets remain in the process environment or the project's local environment files; configuration stores variable names only. Machine-global relay port, Tailscale allowlist and optional notifier live in AX's private user configuration, not a repository.
+
+The former `{ route, optInEnv }` schema shape is retired with a migration diagnostic, not an automatic conversion. It cannot express identities, adapters or a safe provider. The canonical command changes cleanly to `ax debug-as`; project `pnpm debug-as` aliases and compatibility routes are removed after real browser and phone proof. Because a published release reaches every consumer automatically, the generated agent instruction renders only where a configuration adopts the contract, so an unadopted repository is unchanged by the release.
+
+## Why not generate an application route?
+
+A generated route would make AX write framework- and auth-specific privileged code into each project. A shared application adapter would still leave `/debug-as` as a project-owned deployment surface. The local relay removes both while keeping application login knowledge at the project boundary. It also creates one security and lifecycle contract instead of letting project routes drift.
+
+## Consequences
+
+AX remains dependency-free at runtime. It resolves Chromium and Playwright devices from the project package declared by the browser contract and refuses when they are unavailable. Chromium is headful, non-persistent and loopback-CDP only; Firefox, WebKit, persistent profiles, headless mode and simultaneous identities in one worktree are outside this decision.
+
+Migration proceeds AX first, then OFMChat as the Role-browser-only consumer, then Gapila with Phone handoff. Each consumer is exercised against a linked AX checkout before release pinning and removal of its old implementation. Gapila's application `/debug-as/[role]` and `/api/go` routes disappear only after the replacement is observed on a physical phone.

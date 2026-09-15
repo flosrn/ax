@@ -49,9 +49,11 @@
 //      floor. Bad usage is the one thing that is not a sweep.
 
 import { spawnSync } from 'node:child_process';
+import { readlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { sep } from 'node:path';
 
+import { claimForProcess } from '../debug-as/receipt.mjs';
 import { bad, fix, note, section } from '../log.mjs';
 import { pgidOf } from '../proc.mjs';
 
@@ -121,6 +123,41 @@ function psSnapshot() {
 }
 
 /**
+ * The cwd of one pid, platform-split exactly as `src/proc.mjs` splits it: Linux
+ * answers through /proc, macOS only through lsof.
+ *
+ * Asked per ROOT, never per process, and memoized: `classify` runs twice per
+ * apply. lsof is scoped to the one pid because the host-wide `-d cwd` pass costs
+ * ~600 ms on this Mac against ~15 ms for a single process, and a sweep judges a
+ * handful of roots.
+ *
+ * `null` is "cannot tell", which the claim predicate reads as no evidence: a
+ * Role browser is spared on positive proof only.
+ */
+function cwdReader() {
+  const seen = new Map();
+  const lsofCwd = pid => {
+    const result = spawnSync('lsof', ['-a', '-d', 'cwd', '-p', String(pid), '-Fn'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    if (typeof result.stdout !== 'string') return null; // lsof absent
+    for (const line of result.stdout.split('\n')) {
+      if (line.startsWith('n')) return line.slice(1);
+    }
+    return null;
+  };
+  return pid => {
+    if (seen.has(pid)) return seen.get(pid);
+    let cwd = null;
+    try {
+      cwd = readlinkSync(`/proc/${pid}/cwd`).replace(/ \(deleted\)$/, '');
+    } catch {
+      cwd = lsofCwd(pid); // Not Linux, or the process is gone.
+    }
+    seen.set(pid, cwd);
+    return cwd;
+  };
+}
+
+/**
  * Whole non-negative minutes, or a named refusal.
  *
  * The Bash computed `$(( $2 * 60 ))`, and shell arithmetic reads `lots` as 0: the
@@ -171,17 +208,11 @@ const verdictLine = (verdict, root, why) =>
  * against a freshly read host, so a pid that changed hands between the two
  * signals is judged as what it is NOW, not as what it was.
  */
-function classify(rows, { prefixes, maxAgeS, floorMin, pgid, report = false }) {
+function classify(rows, { prefixes, maxAgeS, floorMin, pgid, report = false, claim }) {
   const candidates = rows.filter(row => prefixes.some(prefix => row.args.includes(prefix)));
-  // A ROOT is a candidate whose parent is NOT itself a candidate: the browser
-  // process proper, whose descendants are its zygotes, renderers and utilities.
-  // Signalling a root takes the tree, which is why the age test belongs here and
-  // nowhere else.
   const owned = new Set(candidates.map(row => row.pid));
   const roots = candidates.filter(row => !owned.has(row.ppid));
 
-  // A sweep that kills the group it runs in dies halfway through — the defect
-  // `reapByCwd` already carries a guard for, on this same machine.
   const ownGroup = pgid(process.pid);
   const targets = [];
   let kept = 0;
@@ -191,8 +222,10 @@ function classify(rows, { prefixes, maxAgeS, floorMin, pgid, report = false }) {
       if (report) verdictLine('skip', root, 'in this sweep\u2019s own process group');
       continue;
     }
-    // An orphan is swept at any age: `ppid=1` means the session that owned it is
-    // gone, so nobody is left who could still be driving it.
+    if (claim?.(root)?.claimed) {
+      if (report) verdictLine('skip', root, 'live Role browser receipt');
+      continue;
+    }
     if (root.ppid === 1) {
       targets.push(root.pid);
       if (report) verdictLine('sweep', root, 'orphan (ppid=1)');
@@ -208,7 +241,16 @@ function classify(rows, { prefixes, maxAgeS, floorMin, pgid, report = false }) {
 }
 export function sweep(
   argv = [],
-  { snapshot = psSnapshot, kill = process.kill.bind(process), sleep = sleepDefault, pgid = pgidOf, env = process.env, home = homedir() } = {},
+  {
+    snapshot = psSnapshot,
+    kill = process.kill.bind(process),
+    sleep = sleepDefault,
+    pgid = pgidOf,
+    env = process.env,
+    home = homedir(),
+    cwdOf = cwdReader(),
+    claim,
+  } = {},
 ) {
   const refuse = (message, repair) => (bad(message), repair && fix(repair), 2);
 
@@ -260,7 +302,12 @@ export function sweep(
   }
 
   const prefixes = under.map(path => path.replace(/\/+$/, '') + sep);
-  const rules = { prefixes, maxAgeS, floorMin: floor.value, pgid };
+  // A root is spared only on POSITIVE evidence: its cwd walks up to a Browser
+  // receipt whose Chromium pid AND start identity are this very process. The
+  // receipt may live in any checkout, which is why the walk starts at the cwd
+  // rather than at the declared `--under` paths.
+  const claimOf = claim ?? (root => claimForProcess({ pid: root.pid, cwd: cwdOf(root.pid) }));
+  const rules = { prefixes, maxAgeS, floorMin: floor.value, pgid, claim: claimOf };
 
   const before = classify(rows, { ...rules, report: true });
   if (before.candidates.length === 0) {

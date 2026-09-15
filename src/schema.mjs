@@ -45,8 +45,14 @@ const SUPPORTED = new Set([
  *
  * An annotation that is not a string is refused by name rather than admitted:
  * `$comment: {...}` is a section someone meant to nest and did not.
+ *
+ * EXPORTED because a second walker needs the same vocabulary: the identity map
+ * in `src/debug-as/config.mjs` is a keyed map whose keys are validated as
+ * identity NAMES, and it must skip exactly what this file admits. Hand-listing
+ * `$comment` there is how `prGate.$comment` and `dispatch.$comment` came to
+ * disagree in the first place — one vocabulary, one source.
  */
-const ANNOTATIONS = new Set(['$comment', '$schema']);
+export const ANNOTATIONS = new Set(['$comment', '$schema']);
 
 const typeOf = value => {
   if (value === null) return 'null';

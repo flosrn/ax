@@ -196,6 +196,11 @@ test('the CLI runs where the CALLER stood, and the app is NAMED rather than move
   // against the PROCESS cwd, never against the workdir).
   const { deps, calls } = harness();
   deps.cwd = '/repo/.worktrees/209-slice';
+  // The path this case is about now has to EXIST from that cwd, because a
+  // `.sql` positional that names no file is refused before promotion (the #253
+  // case below). What is under test here is unchanged: where the CLI runs from,
+  // and that the caller's spelling reaches it verbatim.
+  deps.pathExists = path => path === '/repo/.worktrees/209-slice/apps/web/supabase/tests/database/engine.test.sql';
 
   assert.equal(capture(() => supabase(['test', 'db', 'apps/web/supabase/tests/database/engine.test.sql'], deps)).code, 0);
   assert.deepEqual(calls, [
@@ -203,6 +208,86 @@ test('the CLI runs where the CALLER stood, and the app is NAMED rather than move
     'run --workdir /repo/apps/web test db apps/web/supabase/tests/database/engine.test.sql',
     'cwd /repo/.worktrees/209-slice',
   ]);
+});
+
+
+// Measured 2026-09-15 on goodluckagency/ofmchat#253, from
+// `.worktrees/253-fix-253-webhook-cross-thread-refusal/apps/web`:
+//
+//   pnpm -w ax supabase db test supabase/tests/database/chatting-takeover.test.sql
+//
+// `pnpm -w` runs the workspace-root script, so ax's process cwd was the
+// WORKTREE ROOT while the caller was typing a path relative to `apps/web`.
+// Path arguments resolve against the process cwd — that is this file's own
+// rule, and the right one — so the path named no file. What followed was a
+// promoted stack, a started container, `Files=0, Tests=0, Result: NOTESTS`,
+// and a Perl `Cannot detect source of '<a 50-character prefix of the worktree
+// path>'` from inside the container. The operator fell back to the whole
+// 88-file suite, which is the gesture pointing at ONE file exists to avoid.
+//
+// Nothing downstream can give that back, and ax holds the one fact that
+// settles it before a container starts: whether the path exists from the cwd
+// the caller is actually in. Refused there, with the spelling that would have
+// worked — ax knows the app dir, so it can tell a caller which of the two
+// they meant.
+test('a pgTAP path that names no file from the process cwd is refused before anything is promoted', () => {
+  const { calls, deps } = harness();
+  deps.pathExists = path => path === '/repo/apps/web/supabase/tests/database/takeover.test.sql';
+
+  const { code, err } = capture(() =>
+    supabase(['db', 'test', 'supabase/tests/database/takeover.test.sql'], deps),
+  );
+
+  assert.equal(code, 1);
+  assert.deepEqual(calls, [], 'no promotion, no stack, no container for a file that is not there');
+  assert.match(err, /\/repo\/supabase\/tests\/database\/takeover\.test\.sql/, 'the path as it actually resolved');
+  assert.match(err, /apps\/web\/supabase\/tests\/database\/takeover\.test\.sql/, 'and the spelling that exists');
+  assert.match(err, /cwd|workspace root|pnpm -w/i, 'naming why the two differ');
+});
+
+test('the same path typed from the app directory runs untouched', () => {
+  const { calls, deps } = harness();
+  deps.cwd = '/repo/apps/web';
+  deps.pathExists = path => path === '/repo/apps/web/supabase/tests/database/takeover.test.sql';
+
+  assert.equal(capture(() => supabase(['db', 'test', 'supabase/tests/database/takeover.test.sql'], deps)).code, 0);
+  assert.deepEqual(calls, [
+    'promote',
+    'run --workdir /repo/apps/web db test supabase/tests/database/takeover.test.sql',
+    'cwd /repo/apps/web',
+  ]);
+});
+
+test('what is NOT a path positional is never checked as one', () => {
+  const { calls, deps } = harness();
+  deps.pathExists = () => false;
+
+  // `test db` with no path at all is the whole-suite gesture, and it must stay
+  // one even while every path check is failing.
+  assert.equal(capture(() => supabase(['test', 'db'], deps)).code, 0);
+  assert.deepEqual(calls, ['promote', 'run --workdir /repo/apps/web test db', 'cwd /repo']);
+
+  // A flag carrying its value in ONE token is skipped by the leading `-`, even
+  // when that value looks exactly like a path positional. No promotion either:
+  // `--db-url` names an explicit database, which ax's own classifier already
+  // reads as "not this checkout's local stack".
+  const joined = harness();
+  joined.deps.pathExists = () => false;
+  assert.equal(capture(() => supabase(['db', 'test', '--db-url=/tmp/seed.sql'], joined.deps)).code, 0);
+  assert.deepEqual(joined.calls, [
+    'run --workdir /repo/apps/web db test --db-url=/tmp/seed.sql',
+    'cwd /repo',
+  ]);
+
+  // And the limit of that rule, pinned rather than implied: a SEPARATED value
+  // ending in `.sql` is indistinguishable from a path here, so it is checked
+  // like one. No documented `test` flag takes such a value; if one ever does,
+  // this is the case that will say so instead of a caller discovering it.
+  const separated = harness();
+  separated.deps.pathExists = () => false;
+  const out = capture(() => supabase(['db', 'test', '--db-url', 'weird.sql'], separated.deps));
+  assert.equal(out.code, 1, 'read as a path, and said out loud rather than silently forwarded');
+  assert.deepEqual(separated.calls, []);
 });
 
 test('an environment workdir cannot redirect the CLI or the promotion subprocess', () => {

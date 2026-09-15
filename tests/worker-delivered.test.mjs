@@ -59,13 +59,48 @@ function dispatched({ sibling = true } = {}) {
   return { root, store, record: path, worktree, own, env };
 }
 
-/** A session as Orca writes one: its first user turn is the brief it delivered. */
-function session(dir, { at = '2026-09-05T09:00:00.000Z', text } = {}) {
+/**
+ * A session as Orca writes one: its first user turn is the brief it delivered,
+ * and `peers` is how a steering sent with `peer_send` actually lands there —
+ * a `custom_message` of type `peer-message`, never another user turn.
+ */
+function session(dir, { at = '2026-09-05T09:00:00.000Z', text, peers = [] } = {}) {
   mkdirSync(dir, { recursive: true });
   const entries = [{ type: 'session', version: 3, timestamp: at, cwd: dirname(dir) }];
   if (text !== undefined) entries.push({ type: 'message', timestamp: at, message: { role: 'user', content: [{ type: 'text', text }] } });
+  for (const peer of peers) {
+    entries.push({ type: 'custom_message', customType: 'peer-message', timestamp: peer.at, content: peer.text ?? 'steering' });
+  }
   writeFileSync(join(dir, `${at.replace(/[:.]/g, '-')}_child.jsonl`), `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`);
 }
+
+// Measured 2026-09-15 on goodluckagency/ofmchat#257. `ax worker tail` printed
+// `the child's session records ONLY its brief … Nothing sent since has been
+// recorded — check before assuming a steering landed` while that child's own
+// transcript, in the same receipt, showed it reading and answering the steering
+// it had been sent. The sentence asks about STEERING and the count only saw
+// `role: 'user'` entries: a steering delivered by `peer_send` lands as a
+// `custom_message` of type `peer-message`, so the one shape the line warns
+// about was the one shape it could not see. F-028 again, and the third of this
+// class in one session: an absence asserted as a verdict about the channel.
+//
+// `at` stays the FIRST USER message — the brief, which is what makes an
+// `agent_prompt_stalled` verdict falsifiable — while the count and `lastAt`
+// answer "did anything reach it since", whichever shape carried it.
+test('a steering delivered as a peer-message is counted — the line warns about exactly that shape', () => {
+  const { root, record, own, env } = dispatched();
+  session(own, {
+    text: `You are a dispatched worker. Your dispatch is ${DISPATCH}.`,
+    peers: [{ at: '2026-09-05T09:30:00.000Z', text: 'hold the DB mutation' }],
+  });
+
+  const witness = briefDelivered(record, { env, sessionsRoot: root });
+  assert.equal(witness.known, true);
+  assert.equal(witness.delivered, true);
+  assert.equal(witness.count, 2, 'the brief and the steering that reached it');
+  assert.equal(witness.at, '2026-09-05T09:00:00.000Z', 'the brief keeps its own timestamp');
+  assert.equal(witness.lastAt, '2026-09-05T09:30:00.000Z', 'and the last thing to arrive is the steering');
+});
 
 test('#204 the witness testifies from the worktree the record names, never a checkout sharing its basename', () => {
   const { root, record, own, env } = dispatched();

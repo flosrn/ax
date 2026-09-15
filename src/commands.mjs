@@ -147,6 +147,32 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       '`ax worktree setup` — make a fresh worktree runnable, `ax worktree ls` to see the port and database each one holds, and `ax worktree reclaim <name>` once a slice has landed.',
   },
   {
+    name: 'debug-as',
+    section: 'WORKTREE',
+    summary: 'open a Role browser; inspect and drive its shared session',
+    subcommands: [
+      ['doctor', 'diagnose prerequisites without opening Chromium'],
+      ['status', 'one JSON receipt with the liveness Verdict'],
+      ['drive', 'drive the live browser; child argv follows --'],
+    ],
+    options: [
+      ['--as <identity>', 'declared identity to open'],
+      ['--path <path>', 'same-origin destination'],
+      ['--device <name>', 'project Playwright device'],
+      ['--viewport <WxH>', 'desktop size, each side 200-10000'],
+      ['--phone', 'require handoff before browser launch'],
+      ['--no-phone', 'suppress phone authentication and publication'],
+    ],
+    verbOptions: { drive: [['--as <identity>', 'assert the live identity before driving']] },
+    helpBody: {
+      drive: 'Use: ax debug-as drive [--as <identity>] -- <agent-browser argv>\nAX owns the session and CDP port. Arguments after -- belong to agent-browser.\nExit: child exit code after delegation; 1 refusal; 2 AX usage error.',
+      doctor: 'Read-only browser diagnosis; proven-dead Phone relay mappings are withdrawn.\nNo browser, project server, adapter or authentication provider is started.\nExit: 0 coherent; 1 findings; 2 usage error.',
+    },
+    helpBoundary: ['drive'],
+    agentContract: 'debug',
+    agentLine: '`ax debug-as status` — inspect the Role browser; `ax debug-as doctor` diagnoses it and `ax debug-as drive -- <argv>` co-drives it. Launch (`ax debug-as --as <identity>`) is an interactive operator gesture.',
+  },
+  {
     name: 'supabase',
     section: 'WORKTREE',
     summary: 'run the Supabase CLI against THIS checkout’s database',
@@ -493,7 +519,9 @@ export const commandNames = COMMANDS.map(command => command.name);
 export const visibleCommands = ({ orca = orcaAvailable() } = {}) => COMMANDS.filter(command => command.gated !== 'orca' || orca);
 
 /** The lines an agent sees in a project's AGENTS.md, in registry order. */
-export const agentLines = () => COMMANDS.filter(command => command.agentLine).map(command => command.agentLine);
+export const agentLines = (adopted = {}) => COMMANDS
+  .filter(command => command.agentLine && (!command.agentContract || adopted[command.agentContract] === true))
+  .map(command => command.agentLine);
 
 /**
  * The verbs declared for one command, as bare names (`rm <name> [--force]` is
@@ -588,6 +616,7 @@ export function helpAsked(name, args = []) {
 
   const values = valueFlags(command);
   for (let index = 0; index < args.length; index += 1) {
+    if (command.helpBoundary?.includes(args[0]) && args[index] === '--') break;
     if (asks(args[index])) return true;
     if (values.has(args[index])) index += 1;
   }
