@@ -68,9 +68,9 @@ import { checkoutSkew, installCommand } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
 import { hostScopes, terminalInventory } from './pane.mjs';
-import { peerRun } from './peers.mjs';
+import { peerRun, peerSessionId } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
-import { defaultStore } from './record.mjs';
+import { defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
 import { livePanes } from './slots.mjs';
 import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
@@ -86,6 +86,8 @@ import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // excludes (#195).
 import { specMembership } from '../completion.mjs';
 import { landedNotes } from './landed.mjs';
+import { MODEL_CAPABILITIES, MODEL_MODES, modelPolicy, modelConfirmationQuestion } from './model-policy.mjs';
+import { readModelConfirmation } from './model-confirmation.mjs';
 // `gh` and `git`, run for real. Imported rather than re-declared: this exact
 // default was dropped in a refactor once and no test noticed, because every test
 // injects `exec` — so there is ONE of them (src/exec.mjs), and it has its own test.
@@ -93,8 +95,9 @@ import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 
 const USAGE =
-  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text> [--because <reason>]] [--notes <file>] ' +
-  '[--delivery <child|parent>] [--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
+  'ax worker dispatch (--issue <ref> [--slug <s>] | --name <name>) [--task <text>] [--because <reason>] [--notes <file>] ' +
+  '[--delivery <child|parent>] [--capability <routine|standard|deep>] [--model-mode <auto|manual|ask>] [--model-confirmation <ref>] ' +
+  '[--model <alias>] [--agent <name>] [--on <host>] [--repo-id <id>] [--worktree <abs>] ' +
   '[--needs-ref <ref>] [--wait <s>] [--probe] [--dry-run]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
@@ -233,7 +236,10 @@ export function dispatch(
     // displacing the contract above it.
     delivery: 'child',
     because: '',
-    model: '@default',
+    model: '',
+    capability: '',
+    modelMode: '',
+    modelConfirmation: '',
     agent: 'omp',
     on: '',
     repoId: '',
@@ -254,6 +260,9 @@ export function dispatch(
     '--delivery': 'delivery',
     '--because': 'because',
     '--model': 'model',
+    '--capability': 'capability',
+    '--model-mode': 'modelMode',
+    '--model-confirmation': 'modelConfirmation',
     '--agent': 'agent',
     '--on': 'on',
     '--repo-id': 'repoId',
@@ -321,6 +330,15 @@ export function dispatch(
   if (!['child', 'parent'].includes(flags.delivery)) {
     return usageError(`--delivery expects child or parent, not "${flags.delivery}"`);
   }
+  if (flags.capability !== '' && !MODEL_CAPABILITIES.includes(flags.capability)) {
+    return usageError(`--capability expects routine, standard or deep, not "${flags.capability}"`);
+  }
+  if (flags.modelMode !== '' && !MODEL_MODES.includes(flags.modelMode)) {
+    return usageError(`--model-mode expects ${MODEL_MODES.join(', ')}, not "${flags.modelMode}"`);
+  }
+  if (argv.includes('--model') && !/^[^\s\[\]]+$/.test(flags.model)) {
+    return usageError('--model expects one non-empty OMP selector without whitespace or brackets');
+  }
   const wait = Number(flags.wait);
   // `here` is a synonym for local placement, the way Orca's own CLI reads it.
   const on = flags.on === 'here' ? '' : flags.on;
@@ -382,7 +400,78 @@ export function dispatch(
     );
   }
 
+  // A name IS the request, verbatim: that is what makes distinct names distinct
+  // requests. A ticket ref goes through the normaliser, which is injective on the
+  // two ref shapes `ticketKind` accepts.
+  //
+  // WHOSE RECORD IS IT. The store is host-global and a request id carries no
+  // repository, so "a record with this name exists" does not mean "this
+  // checkout's work is already recorded". `--resume` replays the RECORDED
+  // policy, placement and Run, so handing that repair out for another
+  // repository's record aims this caller's mutation at a foreign consumer —
+  // the collision `ax worker start` already refuses at claim time
+  // (./start.mjs, measured on flosrn/ax 2026-09-03). This fence runs first, so
+  // it answers the same question the same way, and reads the caller's identity
+  // from `gh` BEFORE the configuration is parsed: a checkout whose
+  // ax.config.json is broken mid-flight must still be told to resume its own
+  // work rather than recompute it.
   const paths = repoPaths(cwd);
+  const request = named ? flags.name : requestIdFor(flags.issue, slug);
+  const recorded = join(defaultStore(env), `${request}.json`);
+  if (existsSync(recorded)) {
+    const caller = repoSlug(args => exec('gh', args, paths.root ?? cwd));
+    let naming;
+    try {
+      naming = recordRepoNaming(recorded);
+    } catch (error) {
+      naming = { state: 'unreadable', repo: '', detail: String(error) };
+    }
+    if (naming.state === 'malformed' || naming.state === 'unreadable') {
+      // Absence is not permission (F-028): a record this dispatch cannot read
+      // is an owner it cannot name, and neither repair below is true of it.
+      return cannot(
+        `dispatch ${request} is already recorded, and its record cannot be attributed: ${naming.detail}`,
+        `ax worker start --show --request ${request}   # read it, then resume it or dispatch a distinct name`,
+      );
+    }
+    if (caller === '' || naming.state === 'none') {
+      return cannot(`matching repository ownership cannot be established for recorded dispatch ${request}`, `ax worker start --show --request ${request}   # inspect and establish both record and checkout ownership before dispatching`);
+    }
+    if (naming.state === 'named' && caller !== '' && naming.repo.toLowerCase() !== caller.trim().toLowerCase()) {
+      return refuse(
+        `request ${request} is already recorded by another repository (${naming.repo}) — the store is host-global and request ids carry no repository, so this is a name collision, not a resume`,
+        named
+          ? 'ax worker dispatch --name <distinct-name>   # mints a request id the other repository\u2019s record does not hold'
+          : `ax worker dispatch --issue ${flags.issue} --slug <distinct-name>   # mints a request id the other repository\u2019s record does not hold`,
+      );
+    }
+    // Matching ownership is established before exposing the recorded decision.
+    //
+    // `--dry-run` is the READ of a dispatch, and the honest answer to "what
+    // would this do" for work already recorded is the decision ON THE RECORD —
+    // never a recomputation against a configuration that has moved, and never a
+    // refusal that hides the recorded decision behind its repair. So the read
+    // is served by the reader that already exists: `ax worker start --show`
+    // prints this record, and printing it a second way here would be a second
+    // reading of one file that could disagree with the first.
+    if (dry) return startFn(['--show', '--request', request], { env, runner });
+    // Only a positively empty claim from another Run may proceed to start(),
+    // which rechecks ownership and emptiness under its existing claim lock.
+    // This read is not takeover authority; a completed dispatch stays frozen.
+    let reclaimable = false;
+    const callerRun = peerRun(env);
+    if (callerRun !== '' && naming.state === 'named' && caller !== '') {
+      try {
+        reclaimable = staleClaim(recorded, callerRun).stale;
+      } catch {
+        // Unreadable evidence cannot authorize recomputation or takeover.
+      }
+    }
+    if (!reclaimable) {
+      return cannot(`dispatch ${request} is already recorded; its model policy and placement must not be recomputed`, `ax worker start --resume --request ${request}`);
+    }
+  }
+
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
   if (!loaded.exists || loaded.errors.length > 0) {
     // The same refusal `ax worktree setup` prints, and the same #84 correction:
@@ -398,10 +487,47 @@ export function dispatch(
   }
   const config = loaded.config;
   const dispatchConfig = config.dispatch ?? {};
-  // A name IS the request, verbatim: that is what makes distinct names distinct
-  // requests. A ticket ref goes through the normaliser, which is injective on the
-  // two ref shapes `ticketKind` accepts.
-  const request = named ? flags.name : requestIdFor(flags.issue, slug);
+
+  // ── the ask mode's own two grounds, established BEFORE anything is created ──
+  // The mode is knowable from the flag and this project's config alone, so both
+  // answers below are argument errors and both belong before the ticket is read
+  // and before a worktree, a record or a pane exists.
+  //
+  // A STRAY APPROVAL IS A USAGE ERROR, on EVERY path. An approval reference in
+  // any other mode is an input this verb cannot honour, and reading past it in
+  // silence would file a dispatch as though a question had gated it.
+  const effectiveMode = flags.modelMode || String(dispatchConfig.modelMode ?? '');
+  if (flags.modelConfirmation !== '' && effectiveMode !== 'ask') {
+    return usageError(
+      `--model-confirmation is the answer to a --model-mode ask question, and this dispatch is ${effectiveMode === '' ? 'in no ask mode' : `in ${effectiveMode} mode`} — an approval no question gated would be filed as though it had`,
+      'ax worker dispatch … --model-mode ask --model-confirmation <session.jsonl#toolCallId>',
+    );
+  }
+  // AND THE SCOPE THE ANSWER WILL BE READ UNDER. `readModelConfirmation` binds
+  // the reference to THIS session's own transcript, which takes two grounds it
+  // cannot invent: where the runtime writes sessions, and which session is ours.
+  // Neither is discoverable later — the sessions root is this verb's injected
+  // seam or the environment, and the session id is the peer registry's
+  // (./peers.mjs) — so an ask dispatch that cannot name its own session refuses
+  // now, with nothing created, rather than after a worktree exists.
+  let confirmationScope = null;
+  if (effectiveMode === 'ask' && !dry) {
+    const root = sessionsRoot || env.AX_SESSIONS_ROOT || (env.HOME ? join(env.HOME, '.omp', 'agent', 'sessions') : '');
+    if (root === '') {
+      return cannot(
+        'ask mode reads the answer out of a transcript under the runtime\u2019s sessions directory, and no HOME names one here',
+        'AX_SESSIONS_ROOT=<dir> ax worker dispatch … --model-mode ask',
+      );
+    }
+    const sessionId = peerSessionId(env);
+    if (sessionId === '') {
+      return cannot(
+        'ask mode attributes the answer to THIS session, and this pane publishes no session id — so a choice made in any pane on this machine would read as this one\u2019s',
+        'ax init   # register the installed adapter in .omp/settings.json, then RESTART this session so its pane publishes its session id',
+      );
+    }
+    confirmationScope = { sessionsRoot: root, sessionId };
+  }
 
   const bin = runner ? 'injected' : resolve({ env });
   if (!bin) {
@@ -444,6 +570,62 @@ export function dispatch(
         : `ax frontier   # the takeable set; a closed ticket is never in it`,
     );
   }
+
+  // ── the class, and who decided it ──────────────────────────────────────────
+  // `auto` is the default, so a project that states no mode dispatches exactly
+  // as it did before modes existed. `manual` carries the class the operator
+  // named. `ask` decides nothing here: it prints the question, and only a
+  // verified answer from THIS session's own transcript authorizes a class.
+  const policyOptions = {
+    model: flags.model,
+    capability: flags.capability,
+    models: dispatchConfig.models,
+    floors: dispatchConfig.modelFloors,
+    labels: ticket?.labels,
+    because: flags.because,
+    mode: effectiveMode || undefined,
+  };
+  let policy;
+  try {
+    policy = modelPolicy(policyOptions);
+    if (policy.pending === true) {
+      const question = modelConfirmationQuestion(request, policy);
+      if (dry) {
+        // The READ of an ask dispatch is the question it would pose. Printed as
+        // the native tool's own argument shape, so the orchestrator asks the
+        // question ax built rather than retyping one that would hash differently.
+        raw(`model confirmation: ${JSON.stringify({ questions: [question] })}`);
+        note('model policy: ask — undecided; no class chosen and no worker created');
+        return 0;
+      } else {
+        // THE WHOLE QUESTION, not just its id: the id hashes the decision and
+        // none of the words, so an ask that carried it while asking something
+        // else — other prose, a superset menu, another recommendation — would
+        // otherwise read as approval of this dispatch.
+        const approval = readModelConfirmation(flags.modelConfirmation, {
+          questionId: question.id, choices: policy.classes, expectedQuestion: question, ...confirmationScope,
+        });
+        if (!approval.ok) {
+          return cannot(approval.reason, 'run this dispatch with --dry-run, ask its question with the ask tool, then pass --model-confirmation <session.jsonl#toolCallId>');
+        }
+        policy = modelPolicy({ ...policyOptions, approval: { capability: approval.choice, reference: approval.reference } });
+      }
+    }
+  } catch (error) {
+    return refuse(String(error.message ?? error), 'check dispatch.models, the mode and the class this dispatch asks for');
+  }
+  // FAIL-CLOSED AT THE BOUNDARY. `--dry-run` is the only path that may hold an
+  // undecided policy, and it creates nothing. Anything else reaching placement
+  // with a pending decision would place on the RECOMMENDATION — the one outcome
+  // ask mode exists to prevent — so the state is refused rather than trusted to
+  // be unreachable.
+  if (policy.pending === true && !dry) {
+    return cannot(
+      `the class for ${request} was never chosen: ask mode places nothing without a verified answer`,
+      'ax worker dispatch … --model-mode ask --model-confirmation <session.jsonl#toolCallId>',
+    );
+  }
+  note(redactSecrets(`model policy: ${policy.mode} ${policy.capability} -> ${policy.selector} — ${policy.reason}`));
 
   const entry = dispatchConfig.entry ?? '';
   if (named) {
@@ -760,7 +942,7 @@ export function dispatch(
   // where the receiver does not look.
   const report = reportPathFor({ worktree: selector, request });
   const brief = renderBrief({
-    model: flags.model,
+    model: policy.selector,
     instruction,
     ticket,
     name: flags.name,
@@ -817,7 +999,7 @@ export function dispatch(
     // The preview is composed from the SAME array the dispatch would carry, so
     // it cannot drift from what runs. The Bash it replaces re-typed this line by
     // hand, which is a second implementation of the argv nobody tests.
-    note(`would run: ax worker start ${[...owned, '--spec-file', '<spec>', '--', ...place].join(' ')}`);
+    note(redactSecrets(`would run: ax worker start ${[...owned, '--spec-file', '<spec>', '--', ...place].join(' ')}`));
     return 0;
   }
 
@@ -832,7 +1014,7 @@ export function dispatch(
 
   // ── 7. dispatch ────────────────────────────────────────────────────────────
   const startArgs = [...owned, '--spec-file', spec, '--orca', bin, '--', ...place];
-  let code = startFn(startArgs, { env, runner });
+  let code = startFn(startArgs, { env, runner, modelPolicy: policy });
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a
     // failure to report, it is exactly what --resume exists for, and BOTH remote

@@ -9,7 +9,7 @@ import { basename, join } from 'node:path';
 
 import { installCommand } from '../delegation.mjs';
 import { bad, fix, note, ok, section, warn } from '../log.mjs';
-import { defaultStore, workerPane } from './record.mjs';
+import { defaultStore, recordModelPolicy, workerPane } from './record.mjs';
 import { equipment } from './child.mjs';
 import { readPane } from './pane.mjs';
 import { dispatchProof } from './transcript.mjs';
@@ -62,6 +62,8 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   let sessionRole = null;
   let first = null;
   let moved = null;
+  const policy = recordModelPolicy(recordPath);
+  let assignment = null;
 
   // EACH PROPOSITION IS LATCHED SEPARATELY, and that is the whole reason this is
   // three variables instead of one `proof`. `dispatchProof` answers non-null the
@@ -80,7 +82,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   // someone selected it) and the role receipt exists in either polarity —
   // `applied` or `refused`. A refusal is a real verdict and stops the wait; an
   // empty mover is indistinguishable from "not yet" and therefore keeps it.
-  const settled = () => model !== null && model.role !== '' && sessionRole !== null;
+  const settled = () => model !== null && model.role !== '' && sessionRole !== null && (policy === null || assignment !== null);
 
   for (;;) {
     if (!settled()) {
@@ -90,6 +92,7 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
       if (proof !== null) {
         if (proof.model !== null) model = proof.model;
         if (proof.sessionRole !== null) sessionRole = proof.sessionRole;
+        if (proof.modelAssignment !== undefined) assignment = proof.modelAssignment;
       }
     }
     if (pane !== '') {
@@ -107,6 +110,9 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
 
   const skillNames = sessionRole?.status === 'applied' ? sessionRole.skills : [];
   note(`model     ${model === null ? 'unreadable' : `${model.model}|${model.role}`}`);
+  const assignmentReady = policy === null || (assignment?.requested === policy.selector && model !== null
+    && (assignment.model === model.model || assignment.model.slice(assignment.model.indexOf('/') + 1) === model.model));
+  if (policy !== null) note(`assignment ${assignment === null ? 'unreadable' : `${assignment.requested} -> ${assignment.model} (${assignment.thinking ?? 'unchanged effort'})`}`);
   note(
     `session   ${
       sessionRole === null
@@ -122,12 +128,13 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
     sessionRole?.status === 'applied' &&
     sessionRole.role === 'worker' &&
     skillNames.includes('implementation');
-  if (model !== null && model.role === 'default' && roleReady && moved !== null) {
+  if (model !== null && model.role === 'default' && roleReady && moved !== null && assignmentReady) {
     ok('verified  the role, playbook, model marker, and pane movement are proven');
     fix(`ax worker tail ${pane || '<pane>'}`);
     return 0;
   }
 
+  if (!assignmentReady) bad(`UNPROVEN model assignment: expected ${policy.selector}; target receipt ${assignment?.requested ?? 'absent'} resolved ${assignment?.model ?? 'unknown'}, current ${model?.model ?? 'unknown'}`);
   if (model === null) {
     bad('UNPROVEN model: no transcript yet. The child may still be booting, or its transcript sits on another host and was unreadable from here.');
   } else if (model.role === '') {

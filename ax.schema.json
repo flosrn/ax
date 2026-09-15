@@ -283,6 +283,26 @@
       "additionalProperties": false,
       "description": "What `ax worker dispatch` has to know about THIS project to turn a ticket into a dispatched session. Every value here replaced a constant that used to be hardcoded for one repository — so nothing here carries a default, with ONE exception named at `cap`: a floor measured for one fleet, inherited by a repo that never declared it, is the same bug in a new place. What a project does not declare is not measured, and the report says so.",
       "properties": {
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The OMP role each work class dispatches on — one role per class, never a model. Which model, account and provider answer that role is decided by OMP's own role configuration and its gateway on the execution host; AX resolves nothing and reads no quota. A project that declares none of these keeps @default, exactly as it did before classes existed.",
+          "properties": {
+            "routine": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "A decided solution, bounded surface and known verification." },
+            "standard": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Ordinary implementation, or not enough evidence to go lower. Also the class an absent assessment routes to." },
+            "deep": { "type": "string", "pattern": "^[^\\s\\[\\]]+$", "description": "Unresolved design, difficult diagnosis or consequential changes." }
+          }
+        },
+        "modelMode": {
+          "type": "string",
+          "pattern": "^(auto|manual|ask)$",
+          "description": "Who decides the class. Absent means `auto` — the orchestrator's assessment, which is what a project that states nothing has always had; the default lives in src/worker/model-policy.mjs so a declared value and an absent one cannot disagree. `manual` routes the class the operator named, and refuses without one. `ask` offers the configured classes in a native ask dialog and dispatches only on a verified answer from the dispatching session's own transcript. Explicit --model-mode overrides this setting."
+        },
+        "modelFloors": {
+          "type": "object",
+          "description": "Exact ticket labels that raise an ASSESSED class. A floor never overrides a class a human named — in prose (manual) or in the ask dialog — and never overrides an explicit --model. Host placement is unchanged.",
+          "additionalProperties": { "type": "string", "pattern": "^(standard|deep)$" }
+        },
         "cap": {
           "type": "integer",
           "minimum": 0,

@@ -36,6 +36,41 @@ function fakeRunner(replies: Record<string, unknown>, calls: string[] = []): Orc
   };
 }
 
+/**
+ * A handler registry that COMPOSES two registrations of one event, the way the
+ * host does — keyed by name alone, the second would replace the first.
+ *
+ * This package registers `tool_call` TWICE and deliberately: the model half
+ * fences a session whose decided role could not be served, the role half fences
+ * one whose role body could not be established. A fake that keeps only the last
+ * registration drives a fence the host never asks, and it is the EARLIER one
+ * that disappears — so a suite built on it reports a missing guard that is
+ * present, or misses one that is gone.
+ *
+ * Registration order, first defined answer wins: an `undefined` means "this
+ * handler has no opinion", and a `{ block: true }` short-circuits.
+ */
+function registrar(): {
+  handlers: Map<string, (event: unknown, ctx: unknown) => unknown>;
+  on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
+} {
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  return {
+    handlers,
+    on(event, handler) {
+      const earlier = handlers.get(event);
+      if (earlier === undefined) {
+        handlers.set(event, handler);
+        return;
+      }
+      handlers.set(event, async (e, c) => {
+        const answer = await earlier(e, c);
+        return answer === undefined ? handler(e, c) : answer;
+      });
+    },
+  };
+}
+
 function fakeDeps(overrides: Record<string, unknown> = {}): {
   deps: Record<string, unknown>;
   applied: unknown[];
@@ -513,14 +548,12 @@ describe('the factory wiring, as the host actually calls it', () => {
    * cannot reach.
    */
   function fakePi(settings?: { getModelRole?(role: string): string | undefined }) {
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    const { handlers, on } = registrar();
     const applied: unknown[] = [];
     const thinking: string[] = [];
     const warnings: string[] = [];
     const pi = {
-      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
-        handlers.set(event, handler);
-      },
+      on,
       setModel: (model: unknown) => {
         applied.push(model);
       },
@@ -693,15 +726,6 @@ describe('the factory wiring, as the host actually calls it', () => {
     expect(warnings.join(' ')).toContain('no models facade');
   });
 
-  test('four registrations — two occasions, prompt capture, and the refusal fence', () => {
-    // `input` is not a third occasion: it mutates nothing and applies no model. It
-    // captures the submitted text, which is the only copy of the spec a worker on
-    // another execution host can reach. `tool_call` is the independent hard fence:
-    // even when the runtime refuses to hide tools, a rejected role cannot execute one.
-    const { pi, handlers } = fakePi();
-    orcaModel(pi as never);
-    expect([...handlers.keys()].sort()).toEqual(['before_agent_start', 'input', 'session_start', 'tool_call']);
-  });
 });
 
 describe('the two occasions do not both mutate', () => {
@@ -1388,13 +1412,11 @@ describe('the role reaches the session, appended', () => {
       failToolLock?: boolean;
     } = {},
   ) {
-    const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
+    const { handlers, on } = registrar();
     const commands = new Map<string, { handler(a: unknown, c: unknown): unknown }>();
     const activeTools: string[][] = [];
     const pi = {
-      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
-        handlers.set(event, handler);
-      },
+      on,
       setModel: () => {},
       setThinkingLevel: () => {},
       logger: { info: () => {}, warn: () => {} },
@@ -1723,9 +1745,9 @@ describe('the role reaches the session, appended', () => {
     const fail = { value: failInitially };
     const applied: string[][] = [];
     const warned: string[] = [];
-    const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
+    const { handlers, on } = registrar();
     const pi = {
-      on: (e: string, h: (a: unknown, b: unknown) => unknown) => { handlers.set(e, h); },
+      on,
       setModel: () => {},
       setThinkingLevel: () => {},
       logger: { info: () => {}, warn: (m: string) => { warned.push(m); } },
@@ -1859,5 +1881,268 @@ describe('the role reaches the session, appended', () => {
     fail.value = false;
     await handlers.get('before_agent_start')?.({ type: 'before_agent_start', systemPrompt: BASE }, ctx);
     expect(applied).toEqual([['read', 'bash', 'task']]);
+  });
+});
+
+/**
+ * THE REFUSAL, AT THE TWO SURFACES THAT DECIDE WHETHER THE SESSION ACTS.
+ *
+ * A dispatched worker whose decided role does not resolve on this host used to
+ * be a warn line: the applier said `unresolved`, the session kept the model it
+ * booted with, and the assignment ran to completion on a model nobody approved.
+ * That is the silent substitution every other step of the dispatch refuses, and
+ * a log line is not a fence.
+ *
+ * So these drive the CONSUMER surfaces — what `before_provider_request` hands
+ * back and whether it aborted, what `tool_call` returns, what
+ * `before_agent_start` puts in the system prompt, what landed in the journal —
+ * never the source of the guard. A refusal that cannot be observed at those
+ * four places is indistinguishable from the warn line it replaced.
+ */
+describe('a decided role this host cannot serve does not get to act', () => {
+  const BASE = ['OMP BASE PROMPT', 'TOOL POLICY'];
+  const ROLE_BODY = '# Personality\nYou own a slice end to end.';
+  const PARENT =
+    '/Users/flo/.omp/agent/sessions/-.omp/2026-09-15T09-00-00-000Z_019fdb81-47a2-7000-8fca-2b66b08f9e99.jsonl';
+  /** The same session's `task` child: same process, one directory deeper. */
+  const CHILD = `${PARENT.slice(0, -6)}/Worker.jsonl`;
+
+  /**
+   * EVERY handler per event, not the last one.
+   *
+   * The factory and the role machine each register a `tool_call` fence, and a
+   * `Map<string, handler>` keeps only whichever registered second — a fake that
+   * silently discards the guard under test. The host keeps both, so this does.
+   */
+  function host(
+    spec: string,
+    options: { resolve?: (spec: string) => unknown; setModel?: (model: unknown) => unknown } = {},
+  ) {
+    const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
+    const applied: unknown[] = [];
+    const entries: { customType: string; data: unknown }[] = [];
+    const activeTools: string[][] = [];
+    const warnings: string[] = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      },
+      setModel:
+        options.setModel ??
+        ((model: unknown) => {
+          applied.push(model);
+        }),
+      setThinkingLevel: () => {},
+      logger: { info: () => {}, warn: (message: string) => warnings.push(message) },
+      appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
+      getAllTools: () => [{ name: 'read' }, { name: 'bash' }],
+      setActiveTools: (names: string[]) => {
+        activeTools.push(names);
+      },
+      pi: {},
+    };
+    orcaModel(pi as never, {
+      handle: HANDLE,
+      run: fakeRunner({
+        'worker-list': workerList([
+          {
+            agentTerminalHandle: HANDLE,
+            workerState: 'running',
+            dispatchStatus: 'dispatched',
+            taskId: 't1',
+            runId: 'r1',
+            dispatchId: 'd1',
+          },
+        ]),
+        'task-list': taskList([{ id: 't1', spec }]),
+      }),
+      loadRole: async (name: string) => ({
+        role: { name, systemPrompt: ROLE_BODY },
+        reason: 'ok' as const,
+        detail: '' as const,
+      }),
+      loadPlaybook: async (name: string) => ({
+        content: `<playbook name="${name}">BODY</playbook>`,
+        reason: 'ok' as const,
+        detail: '' as const,
+      }),
+    });
+
+    const models = { resolve: options.resolve ?? ((s: string) => ({ provider: 'stub', id: s })) };
+    const ctx = { models, sessionManager: { getSessionFile: () => PARENT } };
+    let aborts = 0;
+    /** The shape `before_provider_request` really gets: a ctx carrying `abort`. */
+    const requestCtx = {
+      ...ctx,
+      abort: () => {
+        aborts += 1;
+      },
+    };
+    /**
+     * The same fences, asked by a `task` child of this session. It shares the
+     * process and the handle, and its own model came from the task subsystem, so
+     * its parent's marker was never addressed to it.
+     */
+    const childCtx = { ...requestCtx, sessionManager: { getSessionFile: () => CHILD } };
+
+    const fire = async (event: string, payload: unknown, on: unknown = ctx): Promise<unknown[]> => {
+      const out: unknown[] = [];
+      for (const handler of handlers.get(event) ?? []) out.push(await handler(payload, on));
+      return out;
+    };
+    /** The boot the host performs: the provisional occasion, then a prompt. */
+    const boot = async (): Promise<{ systemPrompt?: string[] } | undefined> => {
+      await fire('session_start', { type: 'session_start' });
+      const out = await fire('before_agent_start', { type: 'before_agent_start', systemPrompt: BASE });
+      return out[0] as { systemPrompt?: string[] } | undefined;
+    };
+    /** What a tool call is answered with, across every registered fence. */
+    const callTool = async (on: unknown = ctx): Promise<{ block?: boolean; reason?: string } | undefined> => {
+      const out = await fire('tool_call', { type: 'tool_call', name: 'bash' }, on);
+      return out.find((r) => (r as { block?: boolean } | undefined)?.block === true) as
+        | { block?: boolean; reason?: string }
+        | undefined;
+    };
+    /** The request the provider is about to issue, and what came back. */
+    const request = async (on: unknown = requestCtx): Promise<{ payload: unknown; returned: unknown }> => {
+      const payload = { messages: [{ role: 'user', content: 'do it' }] };
+      const [returned] = await fire('before_provider_request', { payload }, on);
+      return { payload, returned };
+    };
+    /** The refusal receipt this session's own journal carries, if any. */
+    const receipt = (): { detail?: string; requested?: string | null } | undefined =>
+      entries.find((entry) => entry.customType === '@flosrn/ax/model-refused')?.data as
+        | { detail?: string; requested?: string | null }
+        | undefined;
+    return {
+      boot,
+      callTool,
+      request,
+      fire,
+      receipt,
+      childCtx,
+      applied,
+      entries,
+      activeTools,
+      warnings,
+      aborts: () => aborts,
+    };
+  }
+
+  /** The host whose `resolve` cannot answer the alias the marker names. */
+  const BLIND = { resolve: () => undefined };
+
+  test('an unresolved decided alias is fenced, not run on the boot model', async () => {
+    // ONE TRANSITION, AT EVERY SURFACE THAT DECIDES WHETHER THE WORK HAPPENS.
+    // Nothing was applied, so the request that follows would carry whatever this
+    // session booted with: it is aborted instead (the only lever that stops bytes
+    // leaving), tools are blocked (the fail-closed one), and the prompt says so
+    // (the belt for a turn that reaches the model anyway — a runtime with no
+    // `ctx.abort`, a resume, an ordering this package does not control).
+    //
+    // The refusal is deliberately NOT reportable by the model: the durable trace
+    // is the journal receipt, which `ax worker verify` reads. Prose from a worker
+    // that could not be proven to be the machine the dispatch chose is the thing
+    // that gets mistaken for work.
+    const h = host('[omp role=supervisor model=@nosuchrole:high]', BLIND);
+    const out = await h.boot();
+
+    expect(h.applied).toEqual([]);
+
+    const { payload, returned } = await h.request();
+    expect(h.aborts()).toBe(1);
+    // The hook decides WHETHER the request happens, never what it contains.
+    expect(returned).toBe(payload);
+
+    // Three calls, because a fence that lets the second one through is not one.
+    for (let call = 0; call < 3; call += 1) {
+      const blocked = await h.callTool();
+      expect(blocked?.block).toBe(true);
+      expect(blocked?.reason).toContain('@nosuchrole');
+    }
+
+    expect(h.receipt()).toMatchObject({ requested: '@nosuchrole:high' });
+    expect(h.receipt()?.detail).toContain('did not resolve');
+    expect(h.entries.some((entry) => entry.customType === '@flosrn/ax/model-assignment')).toBe(false);
+    expect(h.activeTools).toEqual([[]]);
+
+    // Refused, and not also handed the authority the role would have conferred.
+    expect(out?.systemPrompt?.slice(0, 2)).toEqual(BASE);
+    expect(out?.systemPrompt?.[2]).toContain('DISPATCHED ROLE REFUSED');
+    expect(out?.systemPrompt?.join('\n')).not.toContain(ROLE_BODY);
+
+    // AND THE FENCE HAS A BOUNDARY. A `task` child shares this process and this
+    // handle, and its model came from the task subsystem — the parent's marker
+    // was never addressed to it, so neither lever may close on it.
+    const child = await h.request(h.childCtx);
+    expect(h.aborts()).toBe(1);
+    expect(child.returned).toBe(child.payload);
+    expect(await h.callTool(h.childCtx)).toBeUndefined();
+  });
+
+  test('a host that refuses the model change refuses the assignment too', async () => {
+    // The other way a decided role goes unserved: it resolved, and the runtime
+    // declined to switch. Same verdict, because the session would act on its boot
+    // model either way — and the receipt says which of the two happened.
+    const h = host('[omp model=@smol]', { setModel: () => false });
+    await h.boot();
+
+    await h.request();
+    expect(h.aborts()).toBe(1);
+    expect((await h.callTool())?.block).toBe(true);
+    expect(h.receipt()?.detail).toContain('refused the model change');
+  });
+
+  test('the provisional occasion does not fence — session_start keeps the retry open', async () => {
+    // `session_start` may look before Orca has recorded the Dispatch, which is
+    // why `before_agent_start` is the occasion that decides. Fencing on the
+    // provisional look would abort the first request of every session whose
+    // dispatch was merely late, and no later occasion can un-abort one.
+    const h = host('[omp model=@nosuchrole]', BLIND);
+    await h.fire('session_start', { type: 'session_start' });
+
+    const { payload, returned } = await h.request();
+    expect(h.aborts()).toBe(0);
+    expect(returned).toBe(payload);
+    expect(await h.callTool()).toBeUndefined();
+    expect(h.activeTools).toEqual([]);
+  });
+
+  test('a session whose parent decided nothing is warned, never fenced', async () => {
+    // The case this must not brick. No marker means nobody decided, so the spec
+    // this package falls back to is its OWN guess; guessing an alias the host
+    // cannot serve is a config complaint, and fencing on it would stop an
+    // operator's own pane from issuing a single request or calling one tool.
+    const h = host('get the login bug fixed', BLIND);
+    await h.boot();
+
+    expect(h.aborts()).toBe(0);
+    expect(await h.callTool()).toBeUndefined();
+    expect(h.receipt()).toBeUndefined();
+    expect(h.warnings.join(' ')).toContain('unresolved');
+  });
+
+  test('a decided role that DOES resolve is served, and neither fence closes', async () => {
+    // The negative control, and the reason none of the above can be a blanket
+    // refusal: the ordinary dispatch applies its model, receives its role body,
+    // reaches the provider and calls its tools.
+    //
+    // THE ASYMMETRY THIS FILE PINS, so the next reader does not "fix" it: only a
+    // MODEL refusal reaches the wire. A role/playbook this package could not load
+    // (`activation.ts refuseRole`) leaves the session on the model its parent
+    // decided — it may act, it just may not claim the role — so it fences tools
+    // and the prompt and never aborts the request.
+    const h = host('[omp role=supervisor model=@smol]');
+    const out = await h.boot();
+
+    expect(h.applied).toEqual([{ provider: 'stub', id: '@smol' }]);
+    expect(out?.systemPrompt?.[2]).toContain(ROLE_BODY);
+    expect(out?.systemPrompt?.join('\n')).not.toContain('DISPATCHED ROLE REFUSED');
+
+    const { payload, returned } = await h.request();
+    expect(h.aborts()).toBe(0);
+    expect(returned).toBe(payload);
+    expect(await h.callTool()).toBeUndefined();
+    expect(h.activeTools).toEqual([]);
   });
 });

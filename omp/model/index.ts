@@ -89,10 +89,23 @@ export type ApplyOutcome =
        */
       why: 'not-supervised' | 'absent' | 'unresolved' | 'lookup-failed';
       detail?: string;
+      /**
+       * The role or model the PARENT decided for this worker, present only when
+       * a marker named one.
+       *
+       * It is what separates "a dispatched worker whose approved role cannot be
+       * served" from "an interactive pane with nothing to serve". The first is
+       * terminal: this session was dispatched to run a class of work on a role
+       * the fleet routes, and continuing on whatever model it booted with would
+       * be the silent substitution the dispatcher refuses at every other step.
+       * The second must stay a warning — the common case is a human's own pane.
+       */
+      requested?: string;
     }
   | {
       applied: true;
       model: string;
+      requested: string;
       thinking: string | null;
       source: ModelIntent['source'];
       /**
@@ -142,19 +155,28 @@ async function applyIntent(
   via: 'orca' | 'transcript',
   readReason: string | undefined,
 ): Promise<ApplyOutcome> {
+  // The parent's own decision, carried on every refusal below. `marker` is the
+  // only source a parent WROTE: a supervised default is this package's guess for
+  // a session whose parent wrote nothing, and guessing wrong must not silence a
+  // pane the way an unserved dispatch has to.
+  const decided = intent.source === 'marker' ? { requested: `${intent.spec}${intent.thinking === null ? '' : `:${intent.thinking}`}` } : {};
   const resolved = deps.resolve(intent.spec);
   if (resolved === undefined || resolved === null) {
-    // Refusing loudly beats serving a model nobody asked for: an alias that does
-    // not resolve is a config error the operator must see, and the session still
-    // works on whatever it booted with.
+    // An alias that does not resolve is a config error on the host that was
+    // supposed to serve it — the role is missing, or its gateway is not
+    // configured. Naming it is the whole point: the caller decides whether this
+    // session may still act, and for a dispatched worker it may not.
     return {
       applied: false,
       why: 'unresolved',
       detail: `${intent.spec} did not resolve (${intent.source} via ${via}${readReason === undefined ? '' : `; ${readReason}`})`,
+      ...decided,
     };
   }
 
-  await deps.setModel(resolved);
+  if (await deps.setModel(resolved) === false) {
+    return { applied: false, why: 'unresolved', detail: `${intent.spec} resolved but the target host refused the model change`, ...decided };
+  }
 
   // Effort precedence, most specific first: the marker's own suffix, then the
   // suffix the role declares in config, then nothing. "Nothing" is load-bearing —
@@ -167,6 +189,7 @@ async function applyIntent(
   return {
     applied: true,
     model: describe(resolved),
+    requested: `${intent.spec}${intent.thinking === null ? '' : `:${intent.thinking}`}`,
     thinking,
     source: intent.source,
     via,
@@ -241,7 +264,9 @@ export interface ModelHost {
   on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
   setModel(model: unknown): Promise<unknown> | unknown;
   setThinkingLevel?(level: string): Promise<unknown> | unknown;
+  getThinkingLevel?(): string | undefined;
   logger?: { info?(message: string): void; warn?(message: string): void };
+  appendEntry?(customType: string, data: unknown): void;
   /**
    * The injected pi-coding-agent exports. `settings.getModelRole(role)` returns
    * a role's RAW configured spec, suffix included — the one thing
@@ -352,6 +377,48 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
    * costs no second pair of Orca subprocess calls.
    */
   let taskSpec: string | null = null;
+  /**
+   * Terminal role-activation refusal.
+   *
+   * A worker dispatched onto a role its host cannot serve does not get to act.
+   * The dispatcher chose a CLASS of work and the fleet routes that class to one
+   * role; if the role does not resolve there, the honest answers are "refuse"
+   * and "run whatever this session happened to boot with", and the second is
+   * the silent substitution every other step of the dispatch refuses. So it is
+   * refused here — before the first provider request and before any tool.
+   */
+  let refusal: { detail: string; requested: string | null } | null = null;
+
+  /**
+   * Refuse, terminally.
+   *
+   * Three levers, because no single one of them is a fence:
+   *   - the tool surface is emptied, so a compliant model sees nothing to call;
+   *   - `tool_call` returns `{ block: true }` for the rest of the session, which
+   *     is the only hook that is fail-closed (its dispatcher passes an
+   *     `onFailure` that blocks on a throw or timeout);
+   *   - the next provider request is aborted before it is sent.
+   * The receipt is appended too: a refusal nobody can read afterwards is
+   * indistinguishable from a worker that did nothing, and `ax worker verify`
+   * reads this session's own journal.
+   */
+  const refuse = async (detail: string, requested: string | null): Promise<void> => {
+    const first = refusal === null;
+    refusal = { detail, requested };
+    if (!first) return;
+    pi.logger?.warn?.(`[orca-model] ${instance} role activation refused: ${detail}`);
+    try {
+      pi.appendEntry?.('@flosrn/ax/model-refused', { detail, requested });
+    } catch (error) {
+      pi.logger?.warn?.(`[orca-model] ${instance} refusal not recorded: ${String(error)}`);
+    }
+    try {
+      await pi.setActiveTools?.([]);
+    } catch (error) {
+      // The `tool_call` fence is the hard boundary; this only hides the surface.
+      pi.logger?.warn?.(`[orca-model] ${instance} tool lock failed: ${String(error)}`);
+    }
+  };
 
   const once = async (occasion: string, ctx: unknown, final: boolean): Promise<void> => {
     if (isSubagentSession(ctx)) {
@@ -420,6 +487,16 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
     if (outcome.applied) {
       settled = true;
       taskSpec = outcome.taskSpec;
+      try {
+        pi.appendEntry?.('@flosrn/ax/model-assignment', {
+          requested: outcome.requested,
+          model: outcome.model,
+          thinking: pi.getThinkingLevel === undefined ? outcome.thinking : pi.getThinkingLevel() ?? null,
+          via: outcome.via,
+        });
+      } catch (error) {
+        pi.logger?.warn?.(`[orca-model] assignment not recorded: ${String(error)}`);
+      }
       const suffix = outcome.thinking === null ? '' : ` (thinking ${outcome.thinking})`;
       const note = outcome.detail === undefined ? '' : ` — ${outcome.detail}`;
       pi.logger?.info?.(
@@ -472,6 +549,17 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
     // identical. Measured: 11 lookups and 11 warn lines for one session and ten
     // prompts. Say it once, then stop.
     if (final) settled = true;
+    // AND AT THE FINAL OCCASION, AN UNSERVED DECIDED ROLE IS TERMINAL. The
+    // marker named the role this worker's class routes to, and this host could
+    // not serve it: the role is unconfigured, its gateway is absent, or the host
+    // refused the change. Acting anyway would run the assignment on an
+    // unapproved model and report it as the dispatch's work. `lookup-failed`
+    // is NOT this: it is Orca that did not answer, so the parent's decision was
+    // never read and there is nothing to have violated.
+    if (final && outcome.why === 'unresolved' && outcome.requested !== undefined) {
+      await refuse(outcome.detail ?? 'the decided role could not be served on this host', outcome.requested);
+      return;
+    }
     pi.logger?.warn?.(`[orca-model] ${instance} ${occasion}: ${outcome.why} — ${outcome.detail ?? 'no detail'}`);
   };
 
@@ -518,11 +606,67 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
 
   pi.on('session_start', (_event, ctx) => attempt('session_start', ctx, false));
 
+  /**
+   * The request fence. `ctx.abort()` is the ONLY lever that stops a request
+   * before it is sent — a throw from this hook is swallowed by the runner — and
+   * it reaches the wire: it aborts the loop controller whose signal is composed
+   * into the request signal the provider hands its SDK immediately after this
+   * hook returns, flavoured as an interrupt, which turn recovery excludes from
+   * fallback replay. So a refused session cannot be "recovered" onto another
+   * model. The payload is returned untouched: this hook decides whether the
+   * request happens, never what it contains.
+   */
+  pi.on('before_provider_request', (event, ctx) => {
+    const payload = (event as { payload?: unknown } | null)?.payload;
+    // A `task` child is its own session with its own pinned model, and its
+    // parent's marker was never addressed to it.
+    if (refusal === null || isSubagentSession(ctx)) return payload;
+    // `typeof`, not `!== undefined`: a truthy non-function would throw inside
+    // this handler, and the runner SWALLOWS that — the request would then go out
+    // while the log claimed a refusal.
+    const raw = (ctx as { abort?: unknown } | null)?.abort;
+    if (typeof raw === 'function') (raw as () => void).call(ctx);
+    return payload;
+  });
+
+  /**
+   * The tool fence, and the hard boundary of a refusal: `emitToolCall` passes an
+   * `onFailure` that blocks the tool if this handler throws or times out, which
+   * makes this the one hook that is fail-closed. A subagent of a refused session
+   * is not fenced here — its own model came from the task subsystem, and its
+   * parent's marker was never addressed to it.
+   */
+  pi.on('tool_call', (_event, ctx) => {
+    if (isSubagentSession(ctx)) return undefined;
+    return refusal === null
+      ? undefined
+      : { block: true, reason: `dispatched role refused: ${refusal.detail}` };
+  });
+
   pi.on('before_agent_start', async (event, ctx) => {
     // Model first — resolving the marker is what fills the Task spec — then
     // role. The ordering, implicit when the two machines shared one body, is
     // now this one visible line of the factory.
     await attempt('before_agent_start', ctx, true);
+    if (refusal !== null && !isSubagentSession(ctx)) {
+      // Re-asserted every turn: the system prompt is rebuilt each time, and a
+      // refusal that appears once can be talked past. The role machine is not
+      // consulted — there is no role to serve on a session that may not act.
+      const current = (event as { systemPrompt?: unknown } | null)?.systemPrompt;
+      const base = Array.isArray(current) ? current.filter((block): block is string => typeof block === 'string') : [];
+      return {
+        systemPrompt: [
+          ...base,
+          [
+            '<!-- omp:model-refused -->',
+            '# DISPATCHED ROLE REFUSED',
+            '',
+            `This session could not be served the role its dispatch decided: ${refusal.detail}.`,
+            'DO NOT execute the assignment. Do not call any tool. Report only this refusal.',
+          ].join('\n'),
+        ],
+      };
+    }
     return roles.beforeAgentStart(event, ctx);
   });
 }

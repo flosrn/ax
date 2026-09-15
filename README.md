@@ -166,6 +166,66 @@ The safety properties live in executable commands rather than operator prose:
 - the merge gate runs every declared ground against the exact head SHA and performs the merge it
   validated.
 
+### Choose a worker's class, not its model
+
+A dispatch decides a CLASS of work — `routine`, `standard` or `deep` — and hands the child the
+OMP role that class routes to. Which model, account and provider answer that role is decided by
+OMP's role configuration and its gateway on the execution host: ax resolves no model, reads no
+quota and names no provider.
+
+Configure one role per class in the project's `ax.config.json`:
+
+```json
+{
+  "dispatch": {
+    "models": { "routine": "@worker-routine", "standard": "@worker-standard", "deep": "@worker-deep" },
+    "modelFloors": { "domain:security": "deep" },
+    "modelMode": "auto"
+  }
+}
+```
+
+The roles and the labels are project choices; the example adds no provider dependency. Each role
+must resolve on the host that will serve it — a child dispatched onto a role its host cannot
+serve refuses before its first request rather than running on whatever it booted with.
+
+`modelMode` decides who picks the class, and `--model-mode` overrides it per dispatch:
+
+```bash
+ax worker dispatch --issue 412 --slug fix-guard --capability deep --because "unresolved lock design"
+ax worker dispatch --issue 412 --slug fix-guard --model-mode manual --capability routine --because "operator: decided fix"
+ax worker dispatch --issue 412 --slug fix-guard --model-mode ask --dry-run          # prints the question
+ax worker dispatch --issue 412 --slug fix-guard --model-mode ask --model-confirmation <session.jsonl#toolCallId>
+```
+
+- **auto** (the default, and what a project that states nothing has always had) takes the
+  orchestrator's `--capability` assessment; `--because` records it. No assessment routes the
+  conservative `standard` role, never the cheapest one. A label floor raises an assessment.
+- **manual** routes the class the operator named, and refuses without `--capability`. A label
+  floor does not override it: the operator chose.
+- **ask** offers the configured classes — classes only, no models and no efforts — in a native
+  `ask` dialog. `--dry-run` prints that question; `worker_model_confirmation` returns the
+  transcript reference of the answered ask, and `--model-confirmation` passes it back. The answer
+  must come from the dispatching session's own transcript, for this request, and a timeout,
+  cancellation, custom typed text, deferral, changed menu or missing result dispatches nothing at
+  all. A chosen class overrides both the recommendation and any label floor.
+
+`--model` remains the legacy explicit override for consumers that pin a selector, and it is
+honoured in `auto` only: in `manual` and `ask` the class is somebody's decision, so a selector
+there is refused rather than silently preferred. A project that configures no `dispatch.models`
+at all keeps `@default`, and `manual` and `ask` refuse there — there is no class to route.
+
+The dispatch record exposes the frozen decision through `ax worker start --show --request <id>`:
+the mode, the class, the role and the ask reference that authorized it. Recovery replays that
+record rather than reclassifying a changed ticket or re-reading a changed configuration. A
+same-repository claim from an earlier Run can be replaced only when the existing record proves no
+task was created; `worker start` rechecks that proof under its lock and preserves the refused
+record. Unknown outcomes never authorize a fresh decision. The child records what it was actually
+served as `@flosrn/ax/model-assignment`, and the dispatch verifier requires that receipt and
+compares it with the requested role and the session's current model: a missing receipt is
+unproven, never a verified assignment. Host placement (`--on`), account rotation and
+independently pinned subagents are unchanged.
+
 ## Install globally, pin locally
 
 Install ax once so the command exists outside any project:

@@ -110,6 +110,49 @@ that a concept search before filing would have caught.
 - Before adding a worker, read `ax worker ls`; its recorded live panes are the
   capacity signal and the number both caps gate. Follow the operator's
   concurrency limit, never a count from memory or task rows.
+- Decide the worker's CLASS, never its model. `routine` is a decided solution with
+  bounded surfaces and known verification, `standard` is ordinary implementation,
+  `deep` is unresolved design, difficult diagnosis or consequential changes. Which
+  model, account and provider serve that class is `dispatch.models` plus OMP's own
+  role configuration and its gateway on the execution host: never read a quota,
+  never name a provider, and never offer a model or an effort to a human.
+  `--capability <class>` states the class and `--because` records why; `--dry-run`
+  shows the decision without creating anything. Machine placement stays a separate
+  decision: a weaker class does not repair an overloaded build host.
+- WHICH MODE, read from the project's `dispatch.modelMode` and overridable per
+  dispatch with `--model-mode`:
+  - `auto` — you assess the class from the Assignment you already read. Pass
+    `--capability <class> --because <reason>`. State nothing you did not assess:
+    no assessment routes the conservative `standard` role, and a label floor in
+    `dispatch.modelFloors` can raise an assessment.
+  - `manual` — the OPERATOR chooses the class, in their own words. Translate what
+    they said into `--model-mode manual --capability <class> --because "<their
+    words>"`, and do not assess on their behalf: with no class named, the dispatch
+    refuses. Ask them if their scope statement does not name one.
+  - `ask` — the class is chosen in a real `ask` dialog, per PRD subissue, BEFORE
+    the dispatch:
+    1. `ax worker dispatch … --model-mode ask --dry-run` prints the question ax
+       built, as the `ask` tool's own `questions` argument. Nothing is created.
+    2. Ask exactly that question with the `ask` tool. Do not retype it, do not
+       add or reorder options, and do not add a model or an effort to it — it
+       hashes the decision it belongs to, and an edited menu is refused.
+    3. Call `worker_model_confirmation` to get this session's own transcript
+       reference for the answered ask.
+    4. Dispatch with `--model-mode ask --model-confirmation <reference>`, and
+       forward the class the human picked. Their choice outranks the
+       recommendation and any label floor.
+    A timeout, a cancellation, typed text, a deferral, a changed menu, an
+    unanswered question or an answer from another session authorizes nothing, and
+    the dispatch refuses with nothing created. Never report a choice you did not
+    read back from that reference, and never reuse one request's reference for
+    another.
+- SCOPE PRECEDENCE for a class or a mode stated in prose: the subissue's own
+  scope, then the PRD's, then what the project documents. Carry the narrowest one
+  into that dispatch's flags — it is frozen in the dispatch record, and there is
+  no preference store to write it to. Workers already running are unchanged.
+- `--model` is the legacy explicit selector, honoured in `auto` only. It skips the
+  class entirely, so it is the operator's own override and never your shortcut
+  around a mode whose point is that somebody chose.
 
 ## The wave record
 
@@ -128,7 +171,7 @@ membership derives from this record.
 Dispatch one worker per takeable ticket, under the cap:
 
 ```bash
-ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>]
+ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>] [--capability <class>] [--because <reason>] [--model-mode <auto|manual|ask>] [--model-confirmation <session.jsonl#toolCallId>]
 ```
 
 The command owns placement, setup, the recorded dispatch, role/model proof, and

@@ -825,6 +825,7 @@ export function start(
     env = process.env,
     gateFn,
     arm,
+    modelPolicy,
     now = () => new Date().toISOString(),
     sleep = sleepDefault,
   } = {},
@@ -957,7 +958,7 @@ export function start(
     }
 
     if (claim.claimed) {
-      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, delivery: parsed.delivery, now });
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, delivery: parsed.delivery, modelPolicy, now });
       return fresh(claim.path, spec, parsed.passthru, context);
     }
 
@@ -1044,7 +1045,7 @@ export function start(
       if (!claim.claimed) return cannot('lost the record claim race after preserving a stale foreign record');
       // Install the new owner's identity before releasing the lock. A sibling
       // then sees a zero-phase record and cannot call it stale.
-      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, delivery: parsed.delivery, now });
+      initRecord(claim.path, { request: parsed.request, orca: bin, because: parsed.because, repo: parsed.trackerRepo, kind: parsed.kind, delivery: parsed.delivery, modelPolicy, now });
     } catch (error) {
       return cannot(`could not preserve stale foreign record: ${String(error)}`);
     }

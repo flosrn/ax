@@ -278,18 +278,23 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
  * directory, and once it is gone this is the only place that says whether a
  * pane with no pull request failed or did exactly what it was dispatched to do.
  *
+ * `modelPolicy` records the dispatch-time assessment and requested selector, not
+ * the target host's eventual alias resolution. It is supplied by worker dispatch
+ * on the initial claim only; resume and replacement leave it unchanged.
+ *
  * Every key here is ADDITIVE and omitted when empty (the shape rule in this
  * file's header): every reader here works from named keys, no recovery path
  * branches on them, and a record written by an older ax carries none of them.
  * The absence of `delivery` is the default rather than an unknown — a dispatch
  * written before the mode existed was delivered by its child.
  */
-export function initRecord(path, { request, orca, because = '', repo = '', kind = '', delivery = '', host = hostname(), now = () => new Date().toISOString() }) {
+export function initRecord(path, { request, orca, because = '', repo = '', kind = '', delivery = '', modelPolicy, host = hostname(), now = () => new Date().toISOString() }) {
   const rec = { request, host, orca, createdAt: now(), attempts: [{ n: 1, settled: false, phases: [] }] };
   if (String(because).trim() !== '') rec.because = because;
   if (String(repo).trim() !== '') rec.repo = repo;
   if (String(kind).trim() !== '') rec.kind = String(kind).trim();
   if (String(delivery).trim() === 'parent') rec.delivery = 'parent';
+  if (modelPolicy !== undefined) rec.modelPolicy = modelPolicy;
   save(rec, path);
 }
 
@@ -1217,6 +1222,11 @@ export function staleClaim(path, callerRun) {
 export function recordRepo(path) {
   const repo = load(path).repo;
   return typeof repo === 'string' ? repo.trim() : '';
+}
+
+/** Requested selector policy; absent on dispatches created before model routing. */
+export function recordModelPolicy(path) {
+  return load(path).modelPolicy ?? null;
 }
 
 /**
