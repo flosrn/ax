@@ -406,8 +406,14 @@ test('the bundled orchestrator role drives the continuous frontier, not a wave b
   expect(role).toMatch(/unknown mutation is `ax worker start --resume/);
   expect(role).toMatch(/Missing\s+handles and incomplete host coverage are not proofs of death/);
   expect(role).toMatch(/cannot establish.*read to repair, never\s+an empty frontier/s);
-  // Overlap arbitration widened to every live pane, not one wave's members.
+  // Overlap arbitration widened to every live pane, not one wave's members —
+  // and the instrument's blind spot is named with it: `ax worker ls` counts
+  // RECORDED panes, so a session nobody dispatched is invisible to the number
+  // an orchestrator reads before claiming a slice (measured 2026-09-15 on
+  // goodluckagency/ofmchat #253–#257).
   expect(role).toMatch(/EVERY live pane/);
+  expect(role).toMatch(/counts the panes a dispatch\s+RECORDED/);
+  expect(role).toMatch(/peer_list/);
   // Wake-drain, refusal routing, and the bound on unattended repair.
   // #189: a second technical refusal stays with the agents; the operator is
   // not the automatic next hop. A dead route still redispatches recorded.
