@@ -29,7 +29,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname } from 'node:path';
 
-import { note, scrub } from './emit.mjs';
+import { event, scrub } from './emit.mjs';
 import { pathProblem } from './config.mjs';
 import { readVariable as readVariableFrom } from './address.mjs';
 import { loadMachineConfig } from './machine-config.mjs';
@@ -184,7 +184,7 @@ export async function createRelayServer({
   publishedAt = new Date().toISOString(),
   now = Date.now,
   nonceCap = NONCE_CAP,
-  output = { note },
+  output = { event },
 } = {}) {
   const identityName = nameOf(identity);
   const project = projectOf(context);
@@ -287,7 +287,7 @@ export async function createRelayServer({
   /** A rejected confirmation never dead-ends: it returns to a fresh GET. */
   const freshGet = (res, why) => {
     const id = diagnostic();
-    output.note?.(`phone confirmation refused (${why}, ${id})`);
+    output.event?.(`phone confirmation refused (${why}, ${id})`);
     seeOther(res, `${ROUTE}?g=${encodeURIComponent(generation)}&retry=${id}`);
   };
 
@@ -427,7 +427,7 @@ export async function createRelayServer({
         answer = await createHandoff({ identity: identityName, path: destination, login, generation });
       } catch (error) {
         // The provider's own words never reach the phone or this page.
-        output.note?.(`phone provider refused (${diagnostic()})`);
+        output.event?.(`phone provider refused (${diagnostic()})`);
         void error;
         return freshGet(res, 'provider');
       }

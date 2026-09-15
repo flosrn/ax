@@ -75,6 +75,19 @@ export const fatal = guarded(log.fatal);
 export const progress = message => status(message);
 
 /**
+ * One line a LIVE LISTENER says about itself, on stderr.
+ *
+ * Separate from `note` (stdout) because of when it happens: the relay keeps
+ * serving after the launch payload was written, so a request-time line on
+ * stdout is appended to whatever the reader already parsed — `ax debug-as
+ * status` JSON for an agent, or, under `node --test`, the runner's own framed
+ * protocol on the same stream (CI run 34940453124: one refusal note killed a
+ * 43-test file with a deserialization error on Linux). A refusal an operator
+ * reads as it scrolls past is exactly `src/log.mjs`'s `status`.
+ */
+export const event = message => status(message);
+
+/**
  * The `{ at, problem, fix }` triple every rule in this directory refuses with,
  * printed as a refusal and its repair — and answered as the same message, so a
  * caller that must also `throw` carries identical words.
@@ -86,4 +99,4 @@ export function refusal({ at, problem, fix: repair }) {
 }
 
 /** The same functions as one object, for a module that prefers a namespace. */
-export const emit = { section, raw, ok, bad, note, fix, refuse, refusal, warn, status, progress, fatal, scrub, addSecrets, resetSecrets };
+export const emit = { section, raw, ok, bad, note, fix, refuse, refusal, warn, status, progress, event, fatal, scrub, addSecrets, resetSecrets };

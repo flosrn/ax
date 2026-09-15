@@ -266,6 +266,43 @@ test('a nonce is single-use: the second submission returns to a fresh GET withou
   await server.close();
 });
 
+// STDOUT IS NOT A LOG. A launch's stdout is a payload an agent parses, and the
+// relay keeps serving long after that payload is written: a request-time line
+// on stdout lands wherever the reader happens to be. Measured on CI run
+// 34940453124 (Linux, Node 22): the first refusal note reached stdout while
+// `node --test` was framing its own protocol on the same stream, and this whole
+// file died with "Unable to deserialize cloned data due to invalid or
+// unsupported version" — 43 tests lost, while `--test-reporter=spec` passed all
+// 43 on the same machine. The refusal is an operator line; it belongs on stderr.
+test('a request-time refusal is an operator line on stderr, never a byte of the payload stream', async () => {
+  const server = await relay();
+  const nonce = nonceFrom((await rawRequest(server.port, { headers: allowed })).body);
+  await rawRequest(server.port, { method: 'POST', headers: allowed, body: `nonce=${nonce}` });
+
+  const out = [];
+  const err = [];
+  const streams = [
+    [process.stdout, process.stdout.write.bind(process.stdout), out],
+    [process.stderr, process.stderr.write.bind(process.stderr), err],
+  ];
+  for (const [stream, , sink] of streams) {
+    stream.write = chunk => {
+      sink.push(String(chunk));
+      return true;
+    };
+  }
+  try {
+    const replay = await rawRequest(server.port, { method: 'POST', headers: allowed, body: `nonce=${nonce}` });
+    assert.equal(replay.status, 303);
+  } finally {
+    for (const [stream, original] of streams) stream.write = original;
+  }
+
+  assert.equal(out.join(''), '', 'the payload stream carries nothing a live listener said');
+  assert.match(err.join(''), /phone confirmation refused \(unknown nonce, [0-9a-f]+\)/);
+  await server.close();
+});
+
 test('an expired nonce, another user\'s nonce and an unknown nonce all return to a fresh GET', async () => {
   let clock = 1_000_000;
   const machineTwo = { ...machine(), allowedLogins: [LOGIN, 'second@example.com'] };

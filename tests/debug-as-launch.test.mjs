@@ -15,7 +15,7 @@ const fixture = overrides => ({
   sweep: async () => {},
   preflight: () => ({ playwright: {}, surface: {} }),
   live: async () => {},
-  output: { refuse() {}, note() {}, progress() {}, raw() {} },
+  output: { refuse() {}, note() {}, progress() {}, event() {}, raw() {} },
   ...overrides,
 });
 test('an unsupported required phone capability refuses before browser opens', async () => {
