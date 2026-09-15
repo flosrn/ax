@@ -37,11 +37,11 @@ import {
   createRunner,
   findSelf,
   readSpec,
+  readSpecFromEntries,
   readSpecFromTranscript,
   resolveOrcaBin,
   type OrcaRunner,
 } from './self.ts';
-import { ownDispatchSpec } from './own-record.ts';
 import { isSubagentSession } from '../shared/session.ts';
 
 /**
@@ -54,7 +54,7 @@ import { isSubagentSession } from '../shared/session.ts';
  * no-op — it read `pi.models?.resolve?.()`, got `undefined` every time, and
  * refused with a warning nobody was reading.
  */
-type SpecSource = 'orca' | 'input' | 'transcript' | 'record';
+type SpecSource = 'orca' | 'input' | 'transcript';
 
 export interface ApplyDeps {
   run: OrcaRunner;
@@ -74,8 +74,8 @@ export interface ApplyDeps {
   configuredRole?(role: string): string | undefined;
   /**
    * The local spec this session can establish when Orca does not list it: the
-   * submitted prompt, the host-named session file, or its own write-ahead
-   * dispatch record. Omitted only when the caller has none of those sources.
+   * submitted prompt or the active in-memory session branch. Omitted only when
+   * the caller has neither source.
    */
   localSpec?(): { spec: string | null; via: Exclude<SpecSource, 'orca'>; reason?: string };
 }
@@ -292,7 +292,11 @@ export interface ModelHost {
 
 interface HandlerContext {
   models?: { resolve?(spec: string): unknown };
-  sessionManager?: { getSessionFile?(): string | undefined };
+  sessionManager?: {
+    getBranch?(): unknown;
+    getEntries?(): unknown;
+    getSessionFile?(): string | undefined;
+  };
 }
 
 
@@ -440,12 +444,6 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
 
     const handle = seams.handle !== undefined ? seams.handle : (process.env.ORCA_TERMINAL_HANDLE ?? null);
     const run = seams.run ?? createRunner(resolveOrcaBin().bin);
-    // THE ONE SHAPE THE SILENCE MUST NOT COVER, set by `localSpec` below when
-    // ax's own record names this pane. An operator's session owns no such
-    // record, so this stays null for it and the `absent` branch stays as quiet
-    // as it has to be — which is what a discriminator on the handle alone could
-    // not do, since an operator pane has a handle too.
-    let recordOwned = false;
     const outcome = await applyDispatchedModel({
       run,
       handle,
@@ -454,41 +452,47 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       setThinkingLevel: pi.setThinkingLevel?.bind(pi),
       configuredRole: (role) => pi.pi?.settings?.getModelRole?.(role),
       // Only reached on `absent`, and only acted on when it carries a marker.
+      // The submitted prompt is authoritative and race-free, but an Orca-
+      // injected prompt fires no `input` event. Its first user message is still
+      // already present in the session manager's active in-memory branch when
+      // `before_agent_start` fires, before the JSONL writer flushes it to disk.
       //
-      // THREE SOURCES, in this order and for one reason each. The submitted
-      // prompt is authoritative and race-free, but it exists only in the
-      // process that received it. The session file the HOST names covers what
-      // that misses: a session RESUMED into an existing worktree never sees an
-      // `input` event for the spec that started it.
-      //
-      // And ax's own DISPATCH RECORD covers a cold child before either source
-      // exists. The first repair found the child's transcript through that
-      // record, but still read the marker FROM the transcript; measured on
-      // goodluckagency/ofmchat #255/#257, `before_agent_start` ran before the
-      // marker-bearing first user turn was flushed, so the right file contained
-      // only the BOOT model and the child again stayed unequipped in silence.
-      // `task-create --spec` is byte-for-byte the parent brief and was recorded
-      // before the pane was opened. Read it directly: no Orca call, no
-      // `worker-list`, no host seam, and no session flush race
-      // (./own-record.ts).
+      // This is also the current-session identity a write-ahead pane record
+      // cannot supply. A reused operator pane with only a historical dispatch
+      // record has no marker in its active branch, so peer/status wakeups cannot
+      // inherit the former child's model or role. `getEntries` is compatibility
+      // only; `getBranch` wins because a rewind abandons later entries.
       localSpec: () => {
         if (firstInput !== null) return { spec: firstInput, via: 'input' };
-        const named = (ctx as HandlerContext | null)?.sessionManager?.getSessionFile?.();
-        if (named !== undefined && named !== null && named !== '') {
-          const transcript = readSpecFromTranscript(named);
-          if (transcript.spec !== null) return { ...transcript, via: 'transcript' };
+        const manager = (ctx as HandlerContext | null)?.sessionManager;
+        let active: { spec: string | null; reason?: string } = {
+          spec: null,
+          reason: 'host exposed no active session entries',
+        };
+        try {
+          const entries =
+            typeof manager?.getBranch === 'function'
+              ? manager.getBranch()
+              : typeof manager?.getEntries === 'function'
+                ? manager.getEntries()
+                : undefined;
+          active = readSpecFromEntries(entries);
+          if (active.spec !== null) return { ...active, via: 'transcript' };
+        } catch (error) {
+          return {
+            spec: null,
+            via: 'transcript',
+            reason: `active session entries unreadable: ${error instanceof Error ? error.message : String(error)}`,
+          };
         }
-        // A historical dispatch record can keep naming a pane after Orca reuses
-        // that terminal for an operator. At session_start no input exists yet,
-        // so the record cannot distinguish them. Spend the record only on the
-        // final occasion: an operator's first input wins above; an injected
-        // child fires no input and reaches the race-free record here.
-        if (!final) return { spec: null, via: 'record', reason: 'write-ahead record deferred until before_agent_start' };
-        const own = ownDispatchSpec(handle);
-        recordOwned = own.owned;
-        // An absent record is an operator's own pane, and stays as quiet as it
-        // was: `absentFallback` acts on a marker, never on a reason.
-        return { spec: own.spec, via: 'record', reason: own.reason };
+
+        // Compatibility for hosts that expose only the session file. This path
+        // cannot close the pre-flush window, but it never consults a historical
+        // record and therefore cannot equip an operator by pane alone.
+        const named = manager?.getSessionFile?.();
+        return named
+          ? { ...readSpecFromTranscript(named), via: 'transcript' }
+          : { spec: null, via: 'transcript', reason: active.reason };
       },
     });
 
@@ -528,22 +532,12 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       // Orca pane, which is the common case and must stay SILENT: warning here
       // would fire on every session the operator opens.
       //
-      // EXCEPT WHEN AX'S OWN RECORD NAMES THIS PANE. Then this is not an
-      // operator's session: it is a child ax dispatched, its spec could not be
-      // read through any of the three sources, and it is about to implement a
-      // ticket with no role or playbook. Measured 2026-09-15 on
-      // goodluckagency/ofmchat #253-#257, where three children did exactly that
-      // and the only party that knew said nothing — so the dispatch verb
-      // reported UNPROVEN with no cause, correctly and uselessly. The record is
-      // what separates the two populations; a handle cannot, because an
-      // operator pane has one too.
-      if (final) {
-        settled = true;
-        if (recordOwned)
-          pi.logger?.warn?.(
-            `[orca-model] ${instance} ${occasion}: this pane belongs to a dispatch record, and its spec could not provide an equipment marker through the submitted prompt, the host's session file or that record${outcome.detail === undefined ? '' : ` — ${outcome.detail}`}. It stays on its BOOT model with no role or playbook; a dispatch verb will report it UNPROVEN, correctly.`,
-          );
-      }
+      // At the final occasion this is an ordinary interactive session, a host
+      // whose session APIs could not establish a first user turn, or a cold
+      // child on an older host without the in-memory branch API. All stay
+      // untouched. A pane handle or historical dispatch record cannot safely
+      // distinguish those populations.
+      if (final) settled = true;
       return;
     }
 

@@ -64,7 +64,6 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/blocks.mjs`, `src/dotenv.mjs`, `src/hash.mjs`, `src/proc.mjs`, `src/supabase-guard.mjs` | managed block edits, env files, deterministic naming, pgid lookup, the shared-database guard |
 | `omp/index.ts` | public OMP factory; model → peer → report → checkpoint order |
 | `omp/model/index.ts`, `omp/model/activation.ts`, `omp/model/roles.ts`, `omp/model/role.ts` | marker and `/role` activation, bundled role/playbook loading, proof — and why session roles are never OMP task agents |
-| `omp/model/own-record.ts` | which recorded task spec is a dispatched child's OWN, joined from ax's write-ahead record by pane before any session flush — and why an absent record is an operator pane rather than a fault |
 | `omp/roles/`, `omp/playbooks/` | orchestrator, worker, triage-worker and maintainer contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/peer/completion.ts` | the Report a worker's completion carries: the receiver's twin of the path rule, the containment proof, the cap — and the dispositions it is named under |

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { readModelIntent, splitThinking, SUPERVISED_DEFAULT } from './alias.ts';
 import orcaModel, { applyDispatchedModel, type ApplyDeps } from './index.ts';
-import { findSelf, readSpecFromTranscript, resolveOrcaBin, type OrcaRunner } from './self.ts';
+import { findSelf, readSpecFromEntries, readSpecFromTranscript, resolveOrcaBin, type OrcaRunner } from './self.ts';
 
 /**
  * These tests defend the two failures this extension was built against:
@@ -451,6 +451,33 @@ describe('reading the spec out of a transcript', () => {
       row({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: '[omp model=@smol]' }] } }),
     ].join('\n');
     expect(readSpecFromTranscript('/t.jsonl', () => file).spec).toContain('@smol');
+  });
+
+  test('the active in-memory branch exposes the injected prompt before file flush', () => {
+    const entries = [
+      { type: 'model_change', model: 'omniroute/opus-5' },
+      {
+        type: 'message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'You are a dispatched worker.\n[omp role=worker model=@default] Ship it.' }],
+        },
+      },
+    ];
+
+    expect(readSpecFromEntries(entries).spec).toContain('[omp role=worker model=@default]');
+  });
+
+  test('a peer message alone is not a session spec', () => {
+    const entries = [
+      { type: 'model_change', model: 'omniroute/opus-5' },
+      { type: 'custom_message', customType: 'peer-message', content: 'Status changed.' },
+    ];
+
+    expect(readSpecFromEntries(entries)).toEqual({
+      spec: null,
+      reason: 'no user message in the active session branch',
+    });
   });
 });
 
@@ -1271,26 +1298,21 @@ describe('the peer extension spawns the resolved binary, never the bare name', (
  * that would have made it visible.
  */
 describe('an absent handle stops being looked up', () => {
+  const absentRun = (calls?: string[]) =>
+    fakeRunner({ 'worker-list': workerList([{ agentTerminalHandle: 'term_someone_else' }]) }, calls);
+
   test('an operator session is looked up twice, not once per prompt', async () => {
     const calls: string[] = [];
     const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
     const applied: unknown[] = [];
     const warnings: string[] = [];
     const pi = {
-      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
-        handlers.set(event, handler);
-      },
-      setModel: (model: unknown) => {
-        applied.push(model);
-      },
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => handlers.set(event, handler),
+      setModel: (model: unknown) => applied.push(model),
       setThinkingLevel: () => {},
       logger: { info: () => {}, warn: (m: string) => warnings.push(m) },
     };
-    // Orca answers, and this handle is simply not one of its workers.
-    orcaModel(pi as never, {
-      handle: HANDLE,
-      run: fakeRunner({ 'worker-list': workerList([{ agentTerminalHandle: 'term_someone_else' }]) }, calls),
-    });
+    orcaModel(pi as never, { handle: HANDLE, run: absentRun(calls) });
     const ctx = { models: { resolve: (spec: string) => ({ provider: 'stub', id: spec }) } };
 
     await handlers.get('session_start')?.({ type: 'session_start' }, ctx);
@@ -1301,6 +1323,71 @@ describe('an absent handle stops being looked up', () => {
     expect(calls.filter((call) => call.includes('worker-list'))).toHaveLength(2);
     expect(applied).toEqual([]);
     expect(warnings).toEqual([]);
+  });
+
+  test('a peer wake cannot equip an operator from pane history', async () => {
+    const calls: string[] = [];
+    const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
+    const applied: unknown[] = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => handlers.set(event, handler),
+      setModel: (model: unknown) => applied.push(model),
+      setThinkingLevel: () => {},
+      logger: { info: () => {}, warn: () => {} },
+    };
+    orcaModel(pi as never, { handle: HANDLE, run: absentRun(calls) });
+    const ctx = {
+      models: { resolve: (spec: string) => ({ provider: 'stub', id: spec }) },
+      sessionManager: {
+        getBranch: () => [
+          { type: 'model_change', model: 'omniroute/opus-5' },
+          { type: 'custom_message', customType: 'peer-message', content: 'Status changed.' },
+        ],
+      },
+    };
+
+    await handlers.get('session_start')?.({ type: 'session_start' }, ctx);
+    await handlers.get('before_agent_start')?.({ type: 'before_agent_start', systemPrompt: ['base'] }, ctx);
+
+    expect(calls.filter((call) => call.includes('worker-list'))).toHaveLength(2);
+    expect(applied).toEqual([]);
+  });
+
+  test('an injected prompt equips the cold child from the active branch', async () => {
+    const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
+    const applied: unknown[] = [];
+    const entries: { customType: string; data: unknown }[] = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => handlers.set(event, handler),
+      setModel: (model: unknown) => applied.push(model),
+      setThinkingLevel: () => {},
+      appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
+      logger: { info: () => {}, warn: () => {} },
+    };
+    orcaModel(pi as never, { handle: HANDLE, run: absentRun() });
+    const ctx = {
+      models: { resolve: (spec: string) => ({ provider: 'stub', id: spec }) },
+      sessionManager: {
+        getBranch: () => [
+          { type: 'model_change', model: 'omniroute/opus-5' },
+          {
+            type: 'message',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'Preamble.\n[omp role=worker model=@default] Ship it.' }],
+            },
+          },
+        ],
+      },
+    };
+
+    await handlers.get('session_start')?.({ type: 'session_start' }, ctx);
+
+    expect(applied).toEqual([{ provider: 'stub', id: '@default' }]);
+    expect(entries).toContainEqual(expect.objectContaining({
+      customType: '@flosrn/ax/model-assignment',
+      data: expect.objectContaining({ via: 'transcript' }),
+    }));
   });
 });
 
