@@ -20,8 +20,8 @@
 // child's own exit status.
 
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { accessSync, constants, existsSync } from 'node:fs';
+import { delimiter, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { loadCheckoutConfig, repoPaths } from './config.mjs';
 import { removeBlock, writeBlock } from './dotenv.mjs';
@@ -338,7 +338,7 @@ function appArguments(argv, cwd, appDir, canonicalize = physical) {
  * can be tested without a container, a port or a real CLI.
  */
 export function supabase(argv = [], deps = {}) {
-  const { env = process.env, cwd = process.cwd(), paths = repoPaths(cwd), runCli = execCli, findCli = resolveCli, canonicalize = physical } = deps;
+  const { env = process.env, cwd = process.cwd(), paths = repoPaths(cwd), runCli = execCli, findCli = resolveCli, canonicalize = physical, pathExists = existsSync } = deps;
   const { root, main } = paths;
 
   if (!root) {
@@ -392,6 +392,31 @@ export function supabase(argv = [], deps = {}) {
     return 1;
   }
 
+  // A PGTAP PATH THAT NAMES NO FILE IS REFUSED HERE, BEFORE A STACK IS SPENT.
+  //
+  // Measured 2026-09-15 on goodluckagency/ofmchat#253, typed from
+  // `<worktree>/apps/web`: `pnpm -w ax supabase db test
+  // supabase/tests/database/chatting-takeover.test.sql`. `pnpm -w` runs the
+  // WORKSPACE-ROOT script, so this process's cwd was the worktree root while
+  // the caller was spelling a path relative to the app. Path arguments resolve
+  // against the process cwd — the rule above, and the right one — so the path
+  // named nothing. Downstream that cost a promoted stack, a started container,
+  // `Files=0, Tests=0, Result: NOTESTS`, and a Perl `Cannot detect source of`
+  // carrying a 50-character prefix of the worktree path; the operator fell back
+  // to the whole 88-file suite, which is what naming one file exists to avoid.
+  //
+  // ax holds both halves — the caller's cwd and the configured app — so it can
+  // say which of the two spellings the caller meant instead of forwarding a
+  // doomed argv. Only `.sql` positionals of the two `test` spellings are
+  // checked: a passthrough command's argv belongs to the foreign CLI, and this
+  // claims no more of it than the file it can prove is absent.
+  const unnamed = missingTestPath(target.args, { cwd, appDir, pathExists });
+  if (unnamed !== null) {
+    fatal(unnamed.reason);
+    warn(unnamed.repair);
+    return 1;
+  }
+
   const classified = classifyCommand(target.args);
   const refusal = protect(target.args, { env, root, config, deps, classified });
   if (refusal !== 0) return refusal;
@@ -410,6 +435,55 @@ export function supabase(argv = [], deps = {}) {
   }
 
   return runCli(cli.path, ['--workdir', appDir, ...target.args], { cwd, env });
+}
+
+/**
+ * The first `.sql` positional of a `test` invocation that names no file, or
+ * `null` when every one of them exists.
+ *
+ * Keyed on the two spellings the CLI answers — `supabase test db <path...>`
+ * and its hidden `supabase db test <path...>` alias — because outside them a
+ * `.sql` argument is not this command's path positional and ax has no business
+ * deciding what it is. A flag, and a flag carrying its value in one token
+ * (`--db-url=/tmp/seed.sql`), are skipped by the leading `-`.
+ *
+ * THE LIMIT, stated because a reader would otherwise assume it away: a
+ * SEPARATED flag value ending in `.sql` (`--db-url weird.sql`) is
+ * indistinguishable from a path here and is checked like one. No documented
+ * `test` flag takes such a value, and maintaining a foreign CLI's flag arity
+ * is what `passthrough` exists to refuse — so the failure mode is a loud
+ * refusal naming the file it could not find, never a silent rewrite, and a
+ * test pins that shape rather than leaving it to be discovered.
+ *
+ * The repair names the OTHER spelling when the file is there, which is the
+ * whole value of checking here: `apps/web/…` from the repo root and `…` from
+ * the app are the same file, and a caller reached by `pnpm -w` is in the first
+ * of those two places while believing they are in the second.
+ */
+function missingTestPath(argv, { cwd, appDir, pathExists }) {
+  const words = argv.filter(arg => !arg.startsWith('-'));
+  const head = words.slice(0, 2).join(' ');
+  if (head !== 'db test' && head !== 'test db') return null;
+
+  for (const arg of argv) {
+    if (arg.startsWith('-') || !arg.endsWith('.sql')) continue;
+    const fromCwd = isAbsolute(arg) ? arg : resolve(cwd, arg);
+    if (pathExists(fromCwd)) continue;
+
+    const fromApp = isAbsolute(arg) ? '' : resolve(appDir, arg);
+    const reason = `supabase test names no file: ${fromCwd} does not exist — path arguments resolve against the PROCESS cwd (${cwd}), never against the configured app`;
+    if (fromApp !== '' && fromApp !== fromCwd && pathExists(fromApp)) {
+      return {
+        reason,
+        repair: `ax supabase ${head} ${relative(cwd, fromApp)}   # that file IS there; this ran in ${cwd}, and pnpm -w runs the workspace-root script rather than the one in the directory you typed from`,
+      };
+    }
+    return {
+      reason,
+      repair: `ls the path you meant — nothing at ${fromCwd}${fromApp === '' || fromApp === fromCwd ? '' : ` and nothing at ${fromApp}`}`,
+    };
+  }
+  return null;
 }
 
 /** `0` to proceed, a non-zero exit code to refuse. */

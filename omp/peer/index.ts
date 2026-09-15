@@ -608,15 +608,16 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
             ? `queued reply to ${route.peer} (${message_id}) on parent ${out.queued.run}`
             : `replied to ${route.peer} (${message_id})${out.via === 'relay' ? ' via parent relay' : ''}`,
         );
+        const delivered = out.queued
+          ? `Queued reply to ${route.peer} on the parent's Run ${out.queued.run}; it has not been forwarded yet.`
+          : out.via === 'relay'
+            ? `Replied to ${route.peer} through the shared parent (Orca refused the direct send).`
+            : `Replied to ${route.peer}.`;
         return {
           content: [
             {
               type: 'text',
-              text: out.queued
-                ? `Queued reply to ${route.peer} on the parent's Run ${out.queued.run}; it has not been forwarded yet.`
-                : out.via === 'relay'
-                  ? `Replied to ${route.peer} through the shared parent (Orca refused the direct send).`
-                  : `Replied to ${route.peer}.`,
+              text: out.unattributed === undefined ? delivered : `${delivered}\n\nUNATTRIBUTED: ${out.unattributed}`,
             },
           ],
         };
@@ -686,16 +687,21 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
           ? `queued relay for ${peer} on parent ${out.queued.run}`
           : `sent to ${peer}${out.via === 'relay' ? ' via parent relay' : ''}`,
       );
+      // THE DISCLOSURE RIDES THE SUCCESS, because that is the receipt a caller
+      // acts on: a send whose recipient cannot answer looked identical to one
+      // that can until 2026-09-15, when an ownership question left three times
+      // over such a channel and the answer had to come back out of band.
+      const delivered = out.queued
+        ? `Queued for ${peer} on the parent's Run ${out.queued.run}, currently unread. Orca accepted it durably, `
+          + `but the parent has not read or forwarded it yet; use a channel with a live reader if ${peer} must know now.`
+        : out.via === 'relay'
+          ? `Sent to ${peer} through the shared parent (Orca refused the direct lateral send).`
+          : `Sent to ${peer}.`;
       return {
         content: [
           {
             type: 'text',
-            text: out.queued
-              ? `Queued for ${peer} on the parent's Run ${out.queued.run}, currently unread. Orca accepted it durably, `
-                + `but the parent has not read or forwarded it yet; use a channel with a live reader if ${peer} must know now.`
-              : out.via === 'relay'
-                ? `Sent to ${peer} through the shared parent (Orca refused the direct lateral send).`
-                : `Sent to ${peer}.`,
+            text: out.unattributed === undefined ? delivered : `${delivered}\n\nUNATTRIBUTED: ${out.unattributed}`,
           },
         ],
       };

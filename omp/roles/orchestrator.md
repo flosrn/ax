@@ -98,12 +98,18 @@ that a concept search before filing would have caught.
   an Agent Brief. Requiring a Brief comment on spec-born work strands the whole
   wave; a ticket whose BODY leaves the work underdetermined is a defect to
   repair on the ticket through the spec flow, never a triage pass to invent.
-- Arbitrate undeclared overlap before each dispatch, against EVERY live pane
-  (`ax worker ls`) — not only the tickets of one wave. The declared blocking
-  edges are the hard constraint; the Briefs' probable-surfaces estimates are a
-  signal to arbitrate with, never a proof.
-- Before adding a worker, read `ax worker ls`; live panes are the capacity
-  signal. Follow the operator's concurrency limit, never a count from memory or task rows.
+- Arbitrate undeclared overlap before each dispatch, against EVERY live pane —
+  not only the tickets of one wave. `ax worker ls` counts the panes a dispatch
+  RECORDED, so it cannot see a session nobody dispatched: an operator working in
+  one of this repository's worktrees owns a slice and holds no slot. `peer_list`
+  names live panes by worktree, and reading both is what makes "this slice is
+  free" a measurement — on 2026-09-15 `0 live pane(s) in goodluckagency/ofmchat`
+  was printed while a pane worked in that ticket's own worktree. The declared
+  blocking edges are the hard constraint; the Briefs' probable-surfaces
+  estimates are a signal to arbitrate with, never a proof.
+- Before adding a worker, read `ax worker ls`; its recorded live panes are the
+  capacity signal and the number both caps gate. Follow the operator's
+  concurrency limit, never a count from memory or task rows.
 
 ## The wave record
 

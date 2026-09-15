@@ -216,6 +216,49 @@ test('dispatch proof keeps model selection separate from role and skill applicat
   assert.deepEqual(JSON.parse(out), dispatchProof({ needle: 'gap-353', sessionsRoot: root }));
 });
 
+// Measured 2026-09-15 across goodluckagency/ofmchat #253–#257. The registry
+// help reads `ax worker transcript --dispatch-proof <checkout> --request
+// <request_id>`, an orchestrator typed the checkout it was holding, and the
+// tail match could not see it: a session slug is `-Code-ofm-ofmchat`, so
+// `endsWith('/Users/flo/Code/ofm/ofmchat')` is false for every directory on
+// the host. Two recoveries refused, each naming a repair (`ax worker ls
+// --all`) that repairs nothing, over proof that was sitting in a readable
+// file — and the receipt never said "that is a path, I want a name".
+//
+// A TYPED PATH IS THE STRICTER KEY, and honouring it is exactly what the
+// caller asked for: `slugOf` names one directory by construction. The
+// deliberate no-cwd rule in that branch is about never substituting THIS
+// process's own checkout for a needle, which is a different gesture from
+// reading the path the operator typed.
+test('a typed checkout path is resolved by slug, never tail-matched as a name', () => {
+  const root = scratch();
+  const home = scratch();
+  const checkout = join(home, 'Code', 'ofm', 'ofmchat');
+  const dir = join(root, slugOf(checkout, { HOME: home }));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, '2026-09-15T07-19-36-299Z_01a0a3ef-7c6b-7716-b89d-1ea809e1c8e7.jsonl'),
+    [
+      JSON.stringify({ type: 'model_change', model: 'omniroute/opus-5', role: 'default' }),
+      JSON.stringify({ type: 'custom_message', customType: 'skill-prompt', details: { role: 'worker', skills: ['implementation'], status: 'applied' } }),
+    ].join('\n'),
+  );
+  // The adversarial neighbour: a second directory whose slug ends in this
+  // checkout's basename. It is what makes the bare name ambiguous, and what
+  // the path answers past.
+  mkdirSync(join(root, '-elsewhere-ofmchat'), { recursive: true });
+
+  const typed = capture(() => transcript(['--dispatch-proof', checkout, '--sessions', root], { env: { HOME: home } }));
+  assert.equal(typed.code, 0, typed.out);
+  assert.deepEqual(JSON.parse(typed.out), {
+    model: { model: 'omniroute/opus-5', role: 'default' },
+    sessionRole: { status: 'applied', role: 'worker', skills: ['implementation'] },
+  });
+
+  const byName = capture(() => transcript(['--dispatch-proof', 'ofmchat', '--sessions', root], { env: { HOME: home } }));
+  assert.equal(byName.code, 1, 'the bare name still matches two directories, and an ambiguity is not an answer');
+});
+
 // Issue #57: the flag renamed with the glossary (`--launch-proof` →
 // `--dispatch-proof`), but it travels over SSH from ax versions this machine
 // does not choose — released 0.15.x still speaks the retired spelling. The
