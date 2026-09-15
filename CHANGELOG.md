@@ -8,6 +8,17 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.25.0](https://github.com/flosrn/ax/compare/v0.24.8...v0.25.0) (2026-09-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **debug-as:** debugAs.route and debugAs.optInEnv no longer define a debug-session contract. Remove the retired section or replace it with explicit browser and identities declarations, plus optional phone configuration. No defaults, automatic conversion, or compatibility route is provided. The retired shape is reported as a non-fatal migration finding so consumers can pin the release before their cutover.
+
+### Features
+
+* **debug-as:** open shared Role browsers and confirmed phone handoffs ([#246](https://github.com/flosrn/ax/issues/246)) ([cf0c4ef](https://github.com/flosrn/ax/commit/cf0c4ef7e13a6a4a24c635810370aa81d477cbff))
+
 ## [0.24.8](https://github.com/flosrn/ax/compare/v0.24.7...v0.24.8) (2026-09-10)
 
 
