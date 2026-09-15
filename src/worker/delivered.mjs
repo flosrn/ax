@@ -76,6 +76,14 @@ import { newestDispatch, sessionFileForNeedle, stampOf, worktreesOf } from './tr
  * 1` means the brief arrived and NOTHING since, and `lastAt` is what an
  * orchestrator compares against the moment it sent.
  *
+ * AND A STEERING IS COUNTED IN WHATEVER SHAPE IT ARRIVED. `orca terminal send`
+ * lands as another user turn; `peer_send` lands as a `custom_message` of type
+ * `peer-message`. Counting only the first made `ax worker tail` tell an
+ * orchestrator that nothing had reached its child since the brief while the
+ * same receipt showed that child answering the steering (2026-09-15,
+ * goodluckagency/ofmchat#257). `at` stays the brief's own timestamp, because
+ * that is the one a stalled-prompt verdict is falsified against.
+ *
  * Delivery is still not liveness, and neither is a count.
  */
 export function briefDelivered(recordPath, { env = process.env, sessionsRoot } = {}) {
@@ -152,8 +160,8 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
   let count = 0;
   for (const line of lines) {
     // Cheap pre-filter, then parse: these files reach thousands of lines, and
-    // only the `"user"` ones can carry the answer.
-    if (line === '' || !line.includes('"user"')) continue;
+    // only these two shapes can carry the answer.
+    if (line === '' || (!line.includes('"user"') && !line.includes('"peer-message"'))) continue;
     let entry;
     try {
       entry = JSON.parse(line);
@@ -162,13 +170,29 @@ export function briefDelivered(recordPath, { env = process.env, sessionsRoot } =
       // by the very child being measured.
       continue;
     }
-    if (entry?.type !== 'message' || (entry.message ?? {}).role !== 'user') continue;
+    const userTurn = entry?.type === 'message' && (entry.message ?? {}).role === 'user';
+    // A STEERING IS NOT A USER TURN. `orca terminal send` lands as one; a
+    // steering sent with `peer_send`/`peer_reply` lands as a `custom_message`
+    // of type `peer-message`, and counting only user turns made the reader that
+    // WARNS about steering blind to the one shape it warns about — measured
+    // 2026-09-15 on goodluckagency/ofmchat#257, where `ax worker tail` said
+    // nothing had been recorded since the brief while the same receipt showed
+    // the child answering the steering it had been sent.
+    const peerTurn = entry?.type === 'custom_message' && entry.customType === 'peer-message';
+    if (!userTurn && !peerTurn) continue;
     const stampedAt = String(entry.timestamp ?? '');
-    if (count === 0) at = stampedAt;
+    // `at` is the BRIEF, so only a user turn may set it: it is the number an
+    // `agent_prompt_stalled` verdict is falsified against, and a steering that
+    // arrived first would silently move it.
+    if (at === '' && userTurn) at = stampedAt;
     lastAt = stampedAt;
     count += 1;
   }
 
   if (count === 0) return { known: true, delivered: false, count: 0, file };
+  // Something reached the child and the brief did not: `delivered` keeps
+  // meaning "the brief landed" for every caller that gates on it, and the
+  // count still reports what did arrive.
+  if (at === '') return { known: true, delivered: false, count, lastAt, file };
   return { known: true, delivered: true, at, lastAt, count, file };
 }
