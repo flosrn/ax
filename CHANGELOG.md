@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.25.2](https://github.com/flosrn/ax/compare/v0.25.1...v0.25.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* **model:** equip a dispatched child from its own record, not from worker-list ([#253](https://github.com/flosrn/ax/issues/253)) ([341146d](https://github.com/flosrn/ax/commit/341146d40ffe17f7e8c8991b72dcaaa9fa45706c))
+
 ## [0.25.1](https://github.com/flosrn/ax/compare/v0.25.0...v0.25.1) (2026-09-15)
 
 
