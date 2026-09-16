@@ -90,6 +90,7 @@ export function allEntries(): Partial<Entry>[] {
  * what a peer shell can claim by overwriting an entry. This one starts from a
  * handle ORCA witnessed — a pane verdict, or the private key on an older
  * runtime, gated in `attribution.ts` — so the sender does not choose the key
+ * this reads under.
  *
  * WHAT IT BUYS. A message sent with a hand-rolled `orca orchestration send`,
  * which is what Orca's supervised preamble teaches every worker to do for

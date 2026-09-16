@@ -390,7 +390,7 @@ function peerInfoForHandle(handle: string): PeerInfo {
 // message is sound *because the message is attributed*: a pane verdict
 // (or, on an older runtime, a present pane key) means Orca resolved this
 // sender, so everything in the message — payload included — came from that
-// gets no route at all.
+// pane. An unattributed message gets no route at all.
 //
 // It is emphatically NOT the registry, which a peer shell can overwrite to
 // redirect a victim's answers to itself.
