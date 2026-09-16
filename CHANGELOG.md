@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.26.3](https://github.com/flosrn/ax/compare/v0.26.2...v0.26.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **model:** equip pending prompts and retain staged playbooks ([#262](https://github.com/flosrn/ax/issues/262)) ([40416ae](https://github.com/flosrn/ax/commit/40416aeab116da1cae4de284a4a37fae30c8d64c))
+
 ## [0.26.2](https://github.com/flosrn/ax/compare/v0.26.1...v0.26.2) (2026-09-16)
 
 
