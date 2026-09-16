@@ -373,6 +373,9 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
    * session mid-flight.
    */
   let firstInput: string | null = null;
+  // OMP prepares the turn before adding its user message to getBranch()/JSONL.
+  // The hook carries that pending user prompt even when no input event fired.
+  let pendingPrompt: string | null = null;
   /**
    * The Task spec, kept from whichever occasion resolved it.
    *
@@ -452,10 +455,9 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
       setThinkingLevel: pi.setThinkingLevel?.bind(pi),
       configuredRole: (role) => pi.pi?.settings?.getModelRole?.(role),
       // Only reached on `absent`, and only acted on when it carries a marker.
-      // The submitted prompt is authoritative and race-free, but an Orca-
-      // injected prompt fires no `input` event. Its first user message is still
-      // already present in the session manager's active in-memory branch when
-      // `before_agent_start` fires, before the JSONL writer flushes it to disk.
+      // An injected prompt need not emit input, and before_agent_start precedes
+      // insertion of that user message into branch history. Existing history
+      // wins on resume; the hook's pending prompt closes the cold-start window.
       //
       // This is also the current-session identity a write-ahead pane record
       // cannot supply. A reused operator pane with only a historical dispatch
@@ -489,9 +491,11 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
         // cannot close the pre-flush window, but it never consults a historical
         // record and therefore cannot equip an operator by pane alone.
         const named = manager?.getSessionFile?.();
-        return named
-          ? { ...readSpecFromTranscript(named), via: 'transcript' }
-          : { spec: null, via: 'transcript', reason: active.reason };
+        const saved = named ? readSpecFromTranscript(named) : active;
+        if (saved.spec !== null) return { ...saved, via: 'transcript' };
+        return pendingPrompt !== null
+          ? { spec: pendingPrompt, via: 'input' }
+          : { ...saved, via: 'transcript' };
       },
     });
 
@@ -645,6 +649,10 @@ export default function orcaModel(pi: ModelHost, seams: FactorySeams = {}) {
   });
 
   pi.on('before_agent_start', async (event, ctx) => {
+    if (pendingPrompt === null) {
+      const prompt = (event as { prompt?: unknown } | null)?.prompt;
+      if (typeof prompt === 'string' && prompt !== '') pendingPrompt = prompt;
+    }
     // Model first — resolving the marker is what fills the Task spec — then
     // role. The ordering, implicit when the two machines shared one body, is
     // now this one visible line of the factory.

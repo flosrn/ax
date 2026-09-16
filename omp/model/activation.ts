@@ -136,6 +136,21 @@ export function roleActivation({
 
   /** The role whose skill/receipt message was already delivered. */
   let roleMessageSentFor: string | null = null;
+  // Preparation can be retried or abandoned. Only an observed committed
+  // skill message proves delivery, not returning it or starting another turn.
+  let roleMessagePreparedFor: string | null = null;
+  pi.on('message_end', (event, ctx) => {
+    if (isSubagentSession(ctx)) return;
+    if (!event || typeof event !== 'object' || !('message' in event)) return;
+    const message = event.message;
+    if (!message || typeof message !== 'object' || !('role' in message) || message.role !== 'custom') return;
+    if (!('customType' in message) || message.customType !== 'skill-prompt' || !('details' in message)) return;
+    const details = message.details;
+    if (!details || typeof details !== 'object' || !('status' in details) || details.status !== 'applied') return;
+    if (!('role' in details) || details.role !== roleMessagePreparedFor) return;
+    roleMessageSentFor = roleMessagePreparedFor;
+    roleMessagePreparedFor = null;
+  });
 
   /** A supervised session whose requested role could not be established never regains tools. */
   let roleRefusal: {
@@ -333,7 +348,7 @@ export function roleActivation({
     };
 
     if (skills !== null && skills.content !== null) {
-      roleMessageSentFor = name;
+      roleMessagePreparedFor = name;
       pi.logger?.info?.(`[orca-model] ${instance} autoload: ${skills.loaded.join(', ')} for role ${name}`);
       applied.message = {
         customType: 'skill-prompt',
@@ -375,6 +390,7 @@ export function roleActivation({
         // A cleared role must be able to come back with its skills: the
         // once-guard is per role, and clearing forgets which one was served.
         roleMessageSentFor = null;
+        roleMessagePreparedFor = null;
         say('role cleared — takes effect on your next message');
         return;
       }
