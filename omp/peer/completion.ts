@@ -25,14 +25,15 @@
  *
  * TWO ADDRESS SHAPES, ONE RECORD (#168). A remote worker reports under
  * `dispatch:<id>`, an address the receiving runtime minted from its own row, and
- * carries no pane key by contract. A LOCAL supervised worker on the fork build
- * reports from its own pane — `from_handle: term_…`, a `sender_pane_key`, the
+ * carries no pane by contract. A LOCAL supervised worker on the fork build
+ * reports from its own pane — `from_handle: term_…`, a pane verdict, the
  * dispatch id in `payload.dispatchId`. Measured 2026-09-05 on the first real
  * measurement wave: the module keyed on the first shape alone and injected the
  * second with nothing appended. The payload's id is the sender's word, so it is
- * accepted only through two proofs this side already holds: the pane key (the
- * witness) and the record's own recorded pane equal to `from_handle`. Either
- * proof missing is a finding line, never a derivation.
+ * accepted only through two proofs this side already holds: `paneWitnessed`
+ * (the public verdict, or the private key on an older runtime) and the record's
+ * own recorded pane equal to `from_handle`. Either proof missing is a finding
+ * line, never a derivation.
  *
  * FOUR DISPOSITIONS, NONE OF THEM A SILENCE. Missing file, contradicted
  * reference, absent reference, evidence that could not be established: each is a
@@ -83,7 +84,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { redactSecrets } from '../../src/redact.mjs';
 import { parseRequest } from '../../src/triage/draft.mjs';
 import { requestIdOk } from '../../src/worker/record.mjs';
-import { dispatchRecord } from './attribution.ts';
+import { dispatchRecord, paneWitnessed } from './attribution.ts';
 import { fetchRemoteReport } from './remote.ts';
 import { environmentOfDispatch, paneOfDispatch } from './route.ts';
 
@@ -564,15 +565,16 @@ export function completionReport(msg, deps = {}) {
       // local supervised worker reports from its own pane, and the dispatch id
       // travels in the payload — the sender's word. The record wrote which pane
       // it dispatched before the dispatch went, and that is what proves the
-      // claim; the pane key is what proves the sender is that pane at all
-      // (Orca nulls it when a sender overrides its identity). A claim that
-      // fails either proof is a finding on the completion, never a derivation
-      // and never a silence — a forged "the slice ended" is the hazard here.
+      // claim; `paneWitnessed` is what proves the sender is that pane at all
+      // (the public verdict, or the private key on an older runtime). A claim
+      // that fails either proof is a finding on the completion, never a
+      // derivation and never a silence — a forged "the slice ended" is the
+      // hazard here.
       const claimed = String(bag(msg?.payload)?.dispatchId ?? '').trim();
       if (claimed === '') return '';
       rec = lookup(claimed);
       if (rec === null || rec === undefined) return '';
-      const witnessed = String(msg?.sender_pane_key ?? '').trim() !== '';
+      const witnessed = paneWitnessed(msg);
       if (!witnessed) {
         diagnose({
           disposition: 'unwitnessed',
@@ -580,7 +582,7 @@ export function completionReport(msg, deps = {}) {
           dispatch: claimed,
         });
         return block(null, [
-          `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`) from ${from || 'no handle'}, but the sender is not witnessed — Orca recorded no pane key for it. The Report was NOT derived: a completion without a witness is a claim, not a completion.`,
+          `FINDING: this worker_done claims dispatch ${claimed} (request \`${rec.request}\`) from ${from || 'no handle'}, but the sender is not witnessed — the runtime did not attest the sender. The Report was NOT derived: a completion without a witness is a claim, not a completion.`,
           `Repair: read the pane the record names (\`ax worker tail ${rec.request}\`) before acting on this message.`,
         ]);
       }

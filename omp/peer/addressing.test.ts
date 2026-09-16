@@ -599,15 +599,29 @@ test('the registered peer_reply tool relays an answer and preserves the next ans
 // claimed for one commit. Corrected the same day, by id: `msg_b0ced64eb0a1`,
 // `msg_0af97fefc8f0` and `msg_51349c5b8861` are recorded as unattributed by
 // the receiving session AND carry a present `sender_pane_key` in
-// `orca orchestration inbox --json`. The field survives every layer that can
-// be read: insert sets it, every mailbox query is `SELECT *`, `check --wait
-// --json` returns whole rows, the receive loop parses `result.messages` and
-// hands the row straight to `senderIdentity`, which attributes any non-empty
-// key. What that establishes is a CONTRADICTION between a persisted diagnostic
-// and this path as written — not a location, and not even that the loss is in
-// this checkout: nothing here identifies which receiver, or which build of it,
-// emitted those three lines. The next step is one live delivery observed at
-// `senderIdentity`'s entry, never another source read.
+// `orca orchestration inbox --json`. What that established was a CONTRADICTION
+// between a persisted diagnostic and this path as written, and the reading
+// recorded here of how the field reaches the receiver — "insert sets it, every
+// mailbox query is `SELECT *`, `check` returns whole rows" — was the half that
+// turned out to be wrong.
+//
+// RESOLVED 2026-09-16, and it is a location after all. `check` does NOT return
+// whole rows: `exposeMessages`
+// (`src/main/runtime/rpc/methods/orchestration/messaging/mailbox-message-receipt.ts`)
+// DELETES `sender_pane_key` from every receipt it serves, together with `read`,
+// `sequence` and the `pointer_*` columns, because the key is delivery plumbing
+// the runtime owns rather than mailbox truth. So both readings above were
+// accurate about their own layer and simply never met: the key really is
+// persisted and visible in `inbox --json`, and the rows this receive loop
+// consumes really never carried it. Every honest pane was unattributable here
+// by construction. Confirmed live the same day on `msg_7006419679be` and
+// `msg_bb39390adc01` — present in `inbox --json`, absent from `check --all`.
+//
+// The fix is on the other side of that serializer: it now derives a public
+// `sender_attribution: 'pane' | 'unattributed'` from the stored key and
+// publishes THAT, exposing none of the key, and `senderIdentity`
+// (`./attribution.ts`) reads the verdict in preference to the key. See
+// `attribution.test.ts` for the precedence that pins it.
 //
 // What this test pins is therefore the narrow half that is decidable at send
 // time: no key in this pane's environment, no attribution, said out loud. The
