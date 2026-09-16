@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.26.2](https://github.com/flosrn/ax/compare/v0.26.1...v0.26.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **model:** read child equipment before session flush ([#256](https://github.com/flosrn/ax/issues/256)) ([4ec0b28](https://github.com/flosrn/ax/commit/4ec0b28202ba56268777d5d314f9fc5f5ee68bc5))
+
 ## [0.26.1](https://github.com/flosrn/ax/compare/v0.26.0...v0.26.1) (2026-09-16)
 
 
