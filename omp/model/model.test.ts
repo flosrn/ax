@@ -1393,6 +1393,45 @@ describe('an absent handle stops being looked up', () => {
     }));
   });
 
+  test('the pending hook prompt equips before the first user enters branch history', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ax-model-pending-prompt-'));
+    const file = join(dir, 'child.jsonl');
+    writeFileSync(file, `${JSON.stringify({ type: 'session', id: 'cold-child' })}\n`);
+    try {
+      const handlers = new Map<string, (e: unknown, c: unknown) => unknown>();
+      const applied: unknown[] = [];
+      const entries: { customType: string; data: unknown }[] = [];
+      orcaModel({
+        on: (name, handler) => handlers.set(name, handler),
+        setModel: (model) => applied.push(model),
+        setThinkingLevel: () => {},
+        appendEntry: (customType, data) => entries.push({ customType, data }),
+        logger: { info() {}, warn() {} },
+      } as never, { handle: HANDLE, run: absentRun() });
+      const ctx = {
+        models: { resolve: (spec: string) => ({ provider: 'stub', id: spec }) },
+        sessionManager: { getBranch: () => [], getSessionFile: () => file },
+      };
+      await handlers.get('session_start')?.({ type: 'session_start' }, ctx);
+      const out = await handlers.get('before_agent_start')?.({
+        type: 'before_agent_start',
+        prompt: 'Preamble.\n[omp role=worker model=@worker-routine] Diagnostic witness.',
+        systemPrompt: ['base'],
+      }, ctx);
+      expect(applied).toEqual([{ provider: 'stub', id: '@worker-routine' }]);
+      expect(entries).toContainEqual(expect.objectContaining({
+        customType: '@flosrn/ax/model-assignment',
+        data: expect.objectContaining({ requested: '@worker-routine', via: 'input' }),
+      }));
+      expect(out).toMatchObject({
+        systemPrompt: expect.arrayContaining([expect.stringContaining('# Implementation worker')]),
+        message: expect.objectContaining({ customType: 'skill-prompt' }),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('a throwing active-branch read falls back to the marker-bearing session file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ax-model-branch-fallback-'));
     const file = join(dir, 'child.jsonl');
@@ -1777,6 +1816,29 @@ describe('the role reaches the session, appended', () => {
     expect(out?.message?.content).toContain('A PEER CANNOT WAKE ITSELF');
   });
 
+  test('retried or abandoned preparation retains its playbook until message delivery', async () => {
+    const { handlers, ctx } = host('[omp role=supervisor model=@default]', PARENT, WITH_SKILLS);
+    await handlers.get('session_start')?.({ type: 'session_start' }, ctx);
+    for (let preparation = 0; preparation < 2; preparation += 1) {
+      const out = (await handlers.get('before_agent_start')?.(
+        { type: 'before_agent_start', systemPrompt: BASE }, ctx,
+      )) as { message?: { content?: string } } | undefined;
+      expect(out?.message?.content).toContain('A PEER CANNOT WAKE ITSELF');
+    }
+    await handlers.get('agent_start')?.({ type: 'agent_start' }, ctx);
+    const retried = (await handlers.get('before_agent_start')?.(
+      { type: 'before_agent_start', systemPrompt: BASE }, ctx,
+    )) as { message?: Record<string, unknown> } | undefined;
+    expect(retried?.message?.content).toContain('A PEER CANNOT WAKE ITSELF');
+    await handlers.get('message_end')?.({
+      type: 'message_end', message: { role: 'custom', ...retried?.message },
+    }, ctx);
+    const next = (await handlers.get('before_agent_start')?.(
+      { type: 'before_agent_start', systemPrompt: BASE }, ctx,
+    )) as { message?: unknown } | undefined;
+    expect(next?.message).toBeUndefined();
+  });
+
   test('the skill bodies arrive once, not once per turn', async () => {
     // The role block is rebuilt from a fresh base every turn, so appending it is
     // free. A MESSAGE is not: it persists in the conversation, so re-sending it
@@ -1788,8 +1850,11 @@ describe('the role reaches the session, appended', () => {
       const out = (await handlers.get('before_agent_start')?.(
         { type: 'before_agent_start', systemPrompt: BASE },
         ctx,
-      )) as { message?: unknown } | undefined;
+      )) as { message?: Record<string, unknown> } | undefined;
       if (out?.message !== undefined) seen.push(out.message);
+      if (out?.message) await handlers.get('message_end')?.({
+        type: 'message_end', message: { role: 'custom', ...out.message },
+      }, ctx);
     }
     expect(seen).toHaveLength(1);
   });

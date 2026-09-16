@@ -156,14 +156,22 @@ function install(spec: string): Installed {
   };
 }
 
-/** Run the one `before_agent_start` handler the composition installs. */
+/** Prepare and deliver one turn, as the host does after committing its hook results. */
 async function turn(installed: Installed, systemPrompt?: string[]): Promise<{
   systemPrompt?: string[];
   message?: { customType?: string; content?: string; details?: Record<string, unknown> };
 } | undefined> {
   const chain = installed.handlers.get('before_agent_start') ?? [];
   expect(chain).toHaveLength(1);
-  return (await chain[0]?.({ type: 'before_agent_start', systemPrompt }, installed.ctx)) as never;
+  const result = await chain[0]?.({ type: 'before_agent_start', systemPrompt }, installed.ctx) as {
+    message?: Record<string, unknown>;
+  } | undefined;
+  if (result?.message) {
+    for (const end of installed.handlers.get('message_end') ?? []) {
+      await end({ type: 'message_end', message: { role: 'custom', ...result.message } }, installed.ctx);
+    }
+  }
+  return result as never;
 }
 
 const BASE = ['OMP BASE PROMPT', 'TOOL POLICY'];
