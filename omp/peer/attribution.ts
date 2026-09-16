@@ -11,12 +11,17 @@
  * Two provenances, and the distinction between them is the point:
  *
  *   pane      Orca witnessed a live pane on THIS runtime and resolved the handle
- *             itself. This is the original contract and the only one that grants
- *             authority (a reply address, a relayed re-post).
+ *             itself, and PUBLISHED that verdict as `sender_attribution: 'pane'`.
+ *             The private `sender_pane_key` behind it is stripped from every
+ *             receipt, so the verdict — not the key — is what a message read off
+ *             the wire carries. This is the original contract and the only one
+ *             that grants authority (a reply address, a relayed re-post).
  *
- *   dispatch  A worker this session started. It has NO pane key by contract, and
- *             the address it arrives under was minted by the receiving runtime.
- *             It earns a NAME. It earns no authority.
+ *   dispatch  A worker this session started. It has NO pane by contract, so Orca
+ *             says `'unattributed'` about it and says so correctly; the address
+ *             it arrives under was minted by the receiving runtime, and the name
+ *             comes from our own write-ahead record. It earns a NAME. It earns
+ *             no authority.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -175,44 +180,78 @@ export function dispatchRecords(): { id: string; request: string; json: unknown 
 }
 
 /**
- * Identity is gated on `sender_pane_key`, the one field a sender cannot forge.
- * `from_handle` alone is NOT authenticated — it can be overridden with
- * `orca orchestration send --from <victim>` (Orca documents that flag as being
- * for impersonating another terminal) or by a doctored `ORCA_TERMINAL_HANDLE`.
- * Orca cross-checks the caller's pane against the handle it claims and drops the
- * key to null the moment they disagree:
+ * Did the runtime attest this message as coming from a pane?
  *
- *     honest send                     from_handle real     pane_key present
- *     --from <victim>                 from_handle victim   pane_key NULL
- *     ORCA_TERMINAL_HANDLE=<victim>   from_handle victim   pane_key NULL
+ * A present `sender_attribution` is authoritative and only the literal `'pane'`
+ * is a yes. Any other value — `'unattributed'`, an unknown string, `null` — is
+ * a no, and the private `sender_pane_key` is not consulted after that. The key
+ * is read only when the verdict is absent entirely (older runtime).
  *
- * THREAT MODEL, stated because the guarantee is bounded: this defends against the
- * `--from` flag and a stray environment variable, i.e. accidental or casual
- * misattribution between cooperating sessions. It does NOT defend against a
- * hostile process running as the same user, which can read a live pane key out of
- * another process's environment — but such a process can already inject directly
- * into any pane with `orca terminal send`, so peer messaging adds no exposure it
- * does not already have.
+ * This is the one reading of the two witness shapes. `senderIdentity` and the
+ * local-worker Report derivation (`./completion.ts`) both consume it, so a
+ * receipt that carries the public verdict and no key cannot be a pane here and
+ * an unwitnessed claim there.
+ */
+export function paneWitnessed(msg: Record<string, unknown>): boolean {
+  const verdict = msg.sender_attribution;
+  if (verdict !== undefined) return verdict === 'pane';
+  const paneKey = msg.sender_pane_key;
+  return paneKey !== null && paneKey !== undefined && paneKey !== '';
+}
+
+/**
+ * Identity comes from Orca's own statement about the sender, never from a field
+ * the sender wrote. That statement reaches a receipt in two shapes, and reading
+ * only the older one was a live defect.
+ *
+ *   sender_attribution   The PUBLIC verdict, `'pane' | 'unattributed'`. Orca
+ *                        derives it from the pane witness it has STORED for the
+ *                        message and exposes none of that witness
+ *                        (`exposeMessages`, `mailbox-message-receipt.ts`). This
+ *                        is what a receipt actually carries.
+ *
+ *   sender_pane_key      The witness itself. It lives in the mailbox row, and
+ *                        the same serializer deletes it from every receipt it
+ *                        serves, alongside `read`, `sequence` and the
+ *                        `pointer_*` columns — delivery plumbing the runtime
+ *                        owns. Only an older runtime, which published no
+ *                        verdict, leaks it this far.
+ *
+ * So the verdict wins whenever it is present, and only the literal `'pane'`
+ * opens the pane path: any other value means the runtime answered and its
+ * answer was not `'pane'`. Falling back to the key after that would make a
+ * stripped internal column an override of Orca's public answer — the one way
+ * this reading could weaken the refusal. The key is consulted ONLY when no
+ * verdict is present at all.
+ *
+ * WHAT THE VERDICT IS, AND IS NOT. It reports PROVENANCE: the runtime held a
+ * stored pane witness for this message. It is not a lifecycle authority check,
+ * and this module makes no claim about what a determined sender on the same
+ * machine can arrange. A non-pane verdict cannot open the pane path; a known
+ * dispatch still has its separate, record-derived identity below. Nothing in
+ * the message body can raise either provenance.
  */
 export function senderIdentity(
   msg: Record<string, unknown>,
   paneLookup: PaneLookup,
 ): SenderIdentity {
-  const paneKey = msg.sender_pane_key;
   const handle = String(msg.from_handle ?? '').trim();
+  const witnessed = paneWitnessed(msg);
 
-  if (paneKey === null || paneKey === undefined || paneKey === '') {
-    // A worker reporting through its dispatch has no pane key BY CONTRACT, and
-    // the address it arrives under was minted by the runtime rather than claimed
-    // by the sender. `dispatchIStarted` is the gate: our own write-ahead record,
-    // never the shape of the string.
+  if (!witnessed) {
+    // A worker reporting through its dispatch has no pane BY CONTRACT — so its
+    // honest verdict is `'unattributed'` — and the address it arrives under was
+    // minted by the runtime rather than claimed by the sender. `dispatchIStarted`
+    // is the gate: our own write-ahead record, never the shape of the string.
+    // This names the child; `kind: 'dispatch'` is what still denies it the relay
+    // and any address read out of its payload.
     const dispatched = /^dispatch:(.+)$/.exec(handle);
     const known = dispatched === null ? null : dispatchIStarted(dispatched[1] ?? '');
     if (known !== null)
       return { name: `child:${known}`, model: '', attributed: true, kind: 'dispatch' };
 
-    // No witness and no dispatch of ours: the sender either overrode its identity
-    // or is not an Orca pane at all. Never render a peer name or model.
+    // No witness and no dispatch of ours: the source cannot be established.
+    // Never render a peer name or model.
     return {
       name: handle ? `unattributed:${handle.slice(0, 14)}` : 'unattributed',
       model: '',
@@ -222,8 +261,8 @@ export function senderIdentity(
   if (!handle) return { name: 'unattributed', model: '', attributed: false };
 
   // Attribution is the WITNESS, not the name lookup. When Orca is briefly
-  // unreachable the worktree name is unknown, but the pane key still proves this
-  // came from the pane it claims — so the message stays attributed and, more
+  // unreachable the worktree name is unknown, but Orca's verdict remains —
+  // so the message stays attributed and, more
   // importantly, still earns a reply route. Degrading to "unattributed" here
   // would silently strip repliability from an honest peer.
   const info = paneLookup(handle);

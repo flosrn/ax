@@ -88,8 +88,9 @@ export function allEntries(): Partial<Entry>[] {
  * WHY THIS IS NOT THE FORGEABLE LOOKUP THIS MODULE REFUSES ELSEWHERE. Every
  * other "resolve an address" path here starts from a NAME, and a name is exactly
  * what a peer shell can claim by overwriting an entry. This one starts from a
- * handle ORCA witnessed — `sender_pane_key` present, gated in `attribution.ts` —
- * so the sender does not choose the key this reads under.
+ * handle ORCA witnessed — a pane verdict, or the private key on an older
+ * runtime, gated in `attribution.ts` — so the sender does not choose the key
+ * this reads under.
  *
  * WHAT IT BUYS. A message sent with a hand-rolled `orca orchestration send`,
  * which is what Orca's supervised preamble teaches every worker to do for

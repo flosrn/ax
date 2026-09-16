@@ -764,6 +764,39 @@ test('an UNWITNESSED sender claiming a dispatch is a finding, whatever handle it
   expect(block).not.toContain('- Witness: MET');
 });
 
+test('a check-wire receipt with the public pane verdict and NO pane key still derives the Report', () => {
+  // The same local-worker envelope as the case above, minus the private key
+  // `exposeMessages` strips from every `check` row. The public verdict is the
+  // witness this side can actually see.
+  const wt = witnessedWorktree();
+  const { sender_pane_key: _stripped, ...receipt } = witnessed(
+    { taskId: 'task_3d703cad122b', dispatchId: DISPATCH, outcome: 'succeeded', reportPath: wt.derived },
+    { sender_attribution: 'pane' },
+  );
+
+  const block = completionReport(receipt, deps(wt.rec));
+
+  expect(block).toContain('## CRITERIA');
+  expect(block).toContain('- Witness: MET, the record names this pane.');
+  expect(block).not.toContain('FINDING');
+});
+
+test('an explicit unattributed verdict is not resurrected by a legacy pane key', () => {
+  // A present verdict is authoritative. The private key is delivery plumbing
+  // the runtime owns, and reading it after `'unattributed'` would make a
+  // stripped internal column an override of Orca's public answer.
+  const wt = witnessedWorktree();
+
+  const block = completionReport(
+    witnessed({ dispatchId: DISPATCH }, { sender_attribution: 'unattributed' }),
+    deps(wt.rec),
+  );
+
+  expect(block).toContain('FINDING');
+  expect(block).toContain('not witnessed');
+  expect(block).not.toContain('- Witness: MET');
+});
+
 test('a record that recorded no pane cannot cross-check a witnessed claim, and says so', () => {
   const wt = withReport('## CRITERIA\n- x\n', '164-work');
 
