@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { senderIdentity as identify } from './attribution.ts';
 import { completionReport } from './completion.ts';
 import { DELIVERY_RECORD_CAP, readDelivery, recordDelivery, renderDelivery } from './diagnostics.ts';
 import {
@@ -1664,4 +1665,56 @@ test('heartbeat traffic cannot erase an unresolved failure from the bounded stor
     expect(fresh.records.some((x) => x.reason === 'injection-refused' && x.messageId === 'm-keep')).toBe(true);
     expect(fresh.records.some((x) => x.filter === 'heartbeat')).toBe(false);
   });
+});
+
+/**
+ * THE BOUNDARY, WITH THE REAL RULE BEHIND IT.
+ *
+ * Every route test above injects a stub identity, so none of them can see the
+ * shape of an actual receipt: `exposeMessages`
+ * (`.../orchestration/messaging/mailbox-message-receipt.ts`) deletes
+ * `sender_pane_key` from every row `check` returns, publishing the derived
+ * `sender_attribution` verdict in its place. A stub that hands back
+ * `kind: 'pane'` would keep passing whatever this loop does with the wire.
+ * These two run the REAL `senderIdentity` over a receipt shaped like the wire
+ * — no private key on it — and pin the verdict deciding both ways: routed when
+ * it says `'pane'`, no route when it says `'unattributed'`, even with a legacy
+ * key and a payload `replyTo` both present.
+ */
+async function deliverWithRealIdentity(
+  msg: Record<string, unknown>,
+  overrides: Partial<ReceiveDeps> = {},
+) {
+  return deliverPane(msg, {
+    senderIdentity: (m) => identify(m, () => ({ peer: 'worker', model: 'claude-opus-5' })),
+    ...overrides,
+  });
+}
+
+test('a check-wire receipt with the public pane verdict and NO pane key is routed', async () => {
+  const h = await deliverWithRealIdentity(
+    { id: 'm1', type: 'status', body: 'a question', from_handle: 'term_child', sender_attribution: 'pane' },
+    { paneRoute: () => CHILD_RUN },
+  );
+
+  expect(h.routes).toEqual([{ id: 'm1', route: { run: CHILD_RUN, peer: 'worker', threadId: 'm1' } }]);
+  expect(h.answerable).toEqual([true]);
+});
+
+test('a receipt whose public verdict is unattributed earns no route, legacy key or not', async () => {
+  const h = await deliverWithRealIdentity(
+    {
+      id: 'm1',
+      type: 'status',
+      body: 'a question',
+      from_handle: 'term_child',
+      sender_attribution: 'unattributed',
+      sender_pane_key: 'tab:leaf',
+      payload: JSON.stringify({ replyTo: PAYLOAD_RUN }),
+    },
+    { paneRoute: () => CHILD_RUN },
+  );
+
+  expect(h.routes).toEqual([]);
+  expect(h.answerable).toEqual([false]);
 });

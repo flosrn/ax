@@ -114,12 +114,127 @@ test('a witnessed pane is still the pane path, and says so', () => {
 });
 
 test('a forged handle with no pane key is not rescued by the dispatch path', () => {
-  // `--from <victim>` nulls the pane key. The dispatch branch must not become a
-  // second door for a sender that merely claims a term_ handle.
+  // A receipt with no witness of any kind, whatever handle it names. The
+  // dispatch branch must not become a second door for a sender that merely
+  // claims a term_ handle: it opens on our own record, never on the string.
   const who = senderIdentity(
     { from_handle: 'term_victim0000', sender_pane_key: null },
     paneLookup,
   );
   expect(who.attributed).toBe(false);
   expect(who.name).toBe('unattributed:term_victim000');
+});
+
+/**
+ * THE PUBLIC VERDICT, which is the field this side can actually see.
+ *
+ * This settles the contradiction left open in `addressing.test.ts`, and the
+ * cause is a location, readable in Orca's source rather than inferred from
+ * behaviour: `exposeMessages` in
+ * `src/main/runtime/rpc/methods/orchestration/messaging/mailbox-message-receipt.ts`
+ * lists `sender_pane_key` among the columns it DELETES from every receipt,
+ * because the key is delivery plumbing the runtime owns. So `inbox --json`
+ * showing a present key and the `check` rows this loop consumes showing none —
+ * observed on 2026-09-16 for `msg_7006419679be` and `msg_bb39390adc01` — is
+ * the serializer doing its job, not a loss anywhere in this checkout. An
+ * honest pane was unattributable here BY CONSTRUCTION.
+ *
+ * The same function now derives `sender_attribution: 'pane' | 'unattributed'`
+ * from the stored witness and publishes THAT, exposing none of the key. The
+ * rule these pin: a PRESENT verdict is authoritative and only the literal
+ * `'pane'` opens the pane path. Anything else — `'unattributed'`, a value this
+ * build does not know, `null` — closes it, and no legacy key and no payload
+ * may reopen it. An ABSENT verdict is an older runtime, where the key is still
+ * the only witness there is.
+ */
+test('a check-wire receipt attributes on the PUBLIC verdict, carrying no pane key at all', () => {
+  const who = senderIdentity(
+    { from_handle: 'term_abcd1234', sender_attribution: 'pane' },
+    paneLookup,
+  );
+  expect(who).toEqual({ name: 'wt-1234', model: 'stub-model', attributed: true, kind: 'pane' });
+});
+
+test('an explicit unattributed verdict is NOT resurrected by a legacy pane key', () => {
+  // The receipt is the newer statement and it is Orca's own: a runtime that
+  // publishes the verdict has already looked at the key. Reading the key after
+  // a `'unattributed'` verdict would make the old field an override of the new
+  // one, which is the single way this change could weaken the refusal.
+  const who = senderIdentity(
+    {
+      from_handle: 'term_victim0000',
+      sender_attribution: 'unattributed',
+      sender_pane_key: 'tab:leaf',
+    },
+    paneLookup,
+  );
+  expect(who.attributed).toBe(false);
+  expect(who.kind).toBeUndefined();
+  expect(who.name).toBe('unattributed:term_victim000');
+});
+
+test('a verdict this build does not understand is refused, never read as pane', () => {
+  for (const verdict of ['PANE', 'Pane', 'relay', '', null, 0, true, { kind: 'pane' }]) {
+    const who = senderIdentity(
+      { from_handle: 'term_abcd1234', sender_attribution: verdict, sender_pane_key: 'tab:leaf' },
+      paneLookup,
+    );
+    expect(who.attributed).toBe(false);
+    expect(who.kind).toBeUndefined();
+  }
+});
+
+test('the payload may not mint a verdict — only the top-level field is Orca\'s', () => {
+  const who = senderIdentity(
+    {
+      from_handle: 'term_abcd1234',
+      payload: JSON.stringify({ sender_attribution: 'pane', sender_pane_key: 'tab:leaf' }),
+    },
+    paneLookup,
+  );
+  expect(who.attributed).toBe(false);
+  expect(who.name).toBe('unattributed:term_abcd1234');
+});
+
+test('a dispatched worker is still NAMED when the public verdict says unattributed', () => {
+  // A worker reporting through its dispatch has no pane BY CONTRACT, so the
+  // honest verdict for it is `'unattributed'`. The name comes from our own
+  // write-ahead record, never from the sender, so the verdict does not bear on
+  // it — and `kind: 'dispatch'` still denies it the relay and the payload route.
+  record('probe-marker-3', 'ctx_95b5a1acf8ac');
+  const who = senderIdentity(
+    {
+      from_handle: 'dispatch:ctx_95b5a1acf8ac',
+      sender_attribution: 'unattributed',
+      type: 'worker_done',
+    },
+    paneLookup,
+  );
+  expect(who).toEqual({
+    name: 'child:probe-marker-3',
+    model: '',
+    attributed: true,
+    kind: 'dispatch',
+  });
+});
+
+test('an absent verdict is an OLD runtime: the pane key still decides, both ways', () => {
+  const witnessed = senderIdentity(
+    { from_handle: 'term_abcd1234', sender_pane_key: 'tab:leaf' },
+    paneLookup,
+  );
+  expect(witnessed).toEqual({
+    name: 'wt-1234',
+    model: 'stub-model',
+    attributed: true,
+    kind: 'pane',
+  });
+
+  const forged = senderIdentity({ from_handle: 'term_victim0000' }, paneLookup);
+  expect(forged.attributed).toBe(false);
+});
+
+test('a pane verdict with no handle names nobody rather than inventing one', () => {
+  const who = senderIdentity({ from_handle: '', sender_attribution: 'pane' }, paneLookup);
+  expect(who).toEqual({ name: 'unattributed', model: '', attributed: false });
 });

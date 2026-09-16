@@ -580,8 +580,8 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                   continue;
                 }
                 // A CROSS-HOST RELAY IS A SECOND CLAIM, and the witness covers
-                // only the first. `sender_pane_key` proves who wrote this
-                // envelope; `forwardEnvironment` asserts which runtime the
+                // only the first. The public pane verdict (or the private key
+                // on an older runtime) proves who wrote this envelope;
                 // target lives on, and the parent applies it to its OWN
                 // `orchestration send` — a privileged call aimed by an
                 // unverified value. Any witnessed sibling could therefore point
@@ -766,8 +766,8 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             }
 
             // The route rides in the message and is trusted only because the
-            // message is attributed: a witnessed `sender_pane_key` means Orca
-            // resolved this sender, so its payload is that pane's own words.
+            // message is attributed: a pane verdict (or, on an older runtime,
+            // a present pane key) means Orca resolved this sender, so its
             // Recording it BEFORE the replay check is what makes a question
             // survive an OMP restart — `.seen` restores the id, and the retained
             // delivery restores the route, so `peer_reply` still lands.
