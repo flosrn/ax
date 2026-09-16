@@ -227,6 +227,16 @@ function readHead(path: string, limit = TRANSCRIPT_HEAD_BYTES): string {
     closeSync(fd);
   }
 }
+/** The first user message in a session's active in-memory branch. */
+export function readSpecFromEntries(entries: unknown): { spec: string | null; reason?: string } {
+  if (!Array.isArray(entries)) return { spec: null, reason: 'host exposed no active session entries' };
+  for (const row of entries) {
+    const text = userText(row);
+    if (text !== null) return { spec: text };
+  }
+  return { spec: null, reason: 'no user message in the active session branch' };
+}
+
 
 /**
  * The spec as the SESSION received it, read from its own transcript.
@@ -261,23 +271,21 @@ export function readSpecFromTranscript(
   } catch (error) {
     return { spec: null, reason: `session file unreadable: ${error instanceof Error ? error.message : String(error)}` };
   }
-  // FIRST user message, not the last. A dispatched session's spec arrives once, at
-  // the start; later user entries are the operator steering it, and honouring
-  // those would let any later message retune the session mid-flight.
+  // FIRST user message, not the last. A dispatched session's spec arrives once,
+  // at the start; later user entries are operator steering, and honouring those
+  // would let any later message retune the session mid-flight.
+  const entries: unknown[] = [];
   for (const line of raw.split('\n')) {
     if (line === '') continue;
-    let row: unknown;
     try {
-      row = JSON.parse(line);
+      entries.push(JSON.parse(line));
     } catch {
       // One malformed line is not a malformed transcript: a session writing its
-      // JSONL can be interrupted mid-line, and the entries before that are still
-      // the truth.
-      continue;
+      // JSONL can be interrupted mid-line, and entries before it remain truth.
     }
-    const text = userText(row);
-    if (text !== null) return { spec: text };
   }
+  const found = readSpecFromEntries(entries);
+  if (found.spec !== null) return found;
   return {
     spec: null,
     reason: `no user message in the first ${TRANSCRIPT_HEAD_BYTES} bytes of the transcript`,
