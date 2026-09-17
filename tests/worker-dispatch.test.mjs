@@ -1442,6 +1442,22 @@ test('a project that configures no worker roles keeps @default: the opt-out is u
   assert.match(r.out, /unclassified: preserving @default/);
 });
 
+test('a stated class that routed nowhere is named on the receipt, with the JSON that repairs it', t => {
+  const root = repo({ dispatch: {} });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'deep', '--because', 'Unresolved design', '--dry-run'], { root });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  // The dispatch is legitimate and still happens — the opt-out is ratified. But
+  // `auto deep -> @default — orchestrator capability: deep` reads as a route
+  // that was chosen, and it was not: this project declares no class roles, so
+  // the class decided nothing. Measured on gapila #2061 (2026-09-08), where the
+  // decalage was found by eye after 22 minutes of implementation.
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /\[omp role=worker model=@default\]/);
+  assert.match(r.out, /deep class routed nowhere/);
+  assert.match(r.out, /"dispatch": \{ "models"/);
+});
+
 test('labels do not replace a missing model assessment', t => {
   const root = repo({ dispatch: { models: CLASSES, modelFloors: { 'domain:security': 'deep' } } });
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root, orca: { labels: ['domain:security'] } });

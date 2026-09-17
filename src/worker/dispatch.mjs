@@ -626,6 +626,18 @@ export function dispatch(
     );
   }
   note(redactSecrets(`model policy: ${policy.mode} ${policy.capability} -> ${policy.selector} — ${policy.reason}`));
+  // A CLASS THAT DECIDED NOTHING IS A FINDING, not a note. The opt-out above is
+  // ratified and the worker is dispatched, so this does not refuse — but the
+  // line before it reads as a route somebody chose, and on gapila #2061 that
+  // cost 22 minutes of live implementation before the operator spotted by eye
+  // that `deep` had landed on the interactive default. The repair is the JSON
+  // rather than the key path, for the reason `entry` states below: `dispatch`
+  // may not exist in that file at all.
+  if (policy.unrouted === true) {
+    bad(`the ${policy.capability} class routed nowhere: this project declares no dispatch.models, so ${policy.selector} answered and the class decided no role`);
+    fix('ax.config.json: { "dispatch": { "models": { "routine": "@<role>", "standard": "@<role>", "deep": "@<role>" } } }   # OMP role aliases, never models');
+    note('The dispatch still happens: a project that declares no class roles keeps @default by design. Settle it and dispatch again if that is not what you wanted.');
+  }
 
   const entry = dispatchConfig.entry ?? '';
   if (named) {

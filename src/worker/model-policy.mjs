@@ -31,6 +31,15 @@
 // the opt-out: it keeps `@default`, exactly as it did before any of this
 // existed, and every mode past `auto` refuses there rather than inventing a
 // route it was never given.
+//
+// AND THE OPT-OUT IS NOT PERMISSION TO SAY NOTHING. A project with no roles may
+// dispatch a class it cannot route — that is what keeps a repository working as
+// it did before classes existed — but the class then decided NO role, and the
+// decision says so in `unrouted`. Silence there cost 22 minutes of a live
+// implementation: `auto deep -> @default — orchestrator capability: deep` is
+// what an operator who asked for `deep` was shown, and it reads as a route that
+// was chosen (gapila #2061, 2026-09-08). The selector is unchanged, because
+// re-routing a running fleet is not a reporting fix.
 
 import { createHash } from 'node:crypto';
 
@@ -106,7 +115,7 @@ function raise(assessed, floors, labels) {
  * @returns {{version: 1, policyHash: string, mode: string, requestedCapability: string|null,
  *            capability: string, selector: string, source: string, floorLabels: string[],
  *            reason: string, classes: string[], recommended: string|null,
- *            confirmation: string|null, pending?: true}}
+ *            confirmation: string|null, pending?: true, unrouted?: true}}
  * @throws {Error} every refusal above; dispatch catches and declines before mutating
  */
 export function modelPolicy({
@@ -214,6 +223,13 @@ export function modelPolicy({
     }
   }
 
+  // THE GAP, and only where a decision was actually dropped. An operator (or a
+  // floor, which needs an assessment of its own) named a class this project
+  // configured no role for, so `@default` answered instead of the class. An
+  // unassessed dispatch dropped nothing — its reason already says `preserving
+  // @default` — and a named `--model` got exactly the selector it named.
+  const unrouted = named === '' && !opensRoles && assessment !== '';
+
   // THE RECOMMENDATION, computed the same way the assessment would have been:
   // it is what `auto` would have routed, which is the only honest thing to put
   // in front of a human. Kept on the answered decision too, so the record shows
@@ -233,6 +249,7 @@ export function modelPolicy({
     classes,
     recommended,
     confirmation: approved === null ? null : String(approved.reference ?? '').trim() || null,
+    ...(unrouted ? { unrouted: true } : {}),
   };
   // PENDING IS NOT A DECISION. An `ask` dispatch with no verified answer has a
   // menu and a recommendation and nothing else; the caller prints the question

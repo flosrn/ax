@@ -106,6 +106,33 @@ test('a project that configured no roles keeps @default, in every direction', ()
   assert.equal(assessed.capability, 'deep');
 });
 
+test('a class stated in a project with no roles is reported as routed nowhere', () => {
+  // The opt-out keeps the selector, and that is settled. What it must not keep
+  // is the SILENCE: an operator who named `deep` and got `@default` was told
+  // `orchestrator capability: deep` and nothing else, and paid 22 minutes of a
+  // live implementation to notice the class had decided no role at all
+  // (2026-09-08, gapila #2061). A recorded class that routed nowhere is a
+  // configuration gap on the record, exactly like the half-configured project
+  // below — it is merely one this project is allowed to dispatch through.
+  const stated = modelPolicy({ models: {}, capability: 'deep', because: 'unresolved design' });
+  assert.equal(stated.selector, '@default');
+  assert.equal(stated.capability, 'deep');
+  assert.equal(stated.unrouted, true);
+
+  // And the opt-out proper carries no gap: nobody stated a class, so no
+  // decision was dropped and there is nothing to repair.
+  const unassessed = modelPolicy({ models: {}, floors: FLOORS, labels: ['domain:security'] });
+  assert.equal(unassessed.unrouted, undefined);
+
+  // A project that configured its roles routes, so the field is absent there
+  // too — the gap is the absence of any role, never the class itself.
+  assert.equal(modelPolicy({ models: MODELS, capability: 'deep' }).unrouted, undefined);
+
+  // An operator who named a selector got the model they named: nothing was
+  // dropped, so naming a gap there would report a decision as a defect.
+  assert.equal(modelPolicy({ models: {}, model: '@operator-pick', capability: 'deep' }).unrouted, undefined);
+});
+
 test('a class this project half-configured is named, never quietly downgraded', () => {
   const boom = refusal(() => modelPolicy({ models: { routine: '@worker-routine' }, capability: 'deep' }));
 
