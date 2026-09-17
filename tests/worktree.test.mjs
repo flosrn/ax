@@ -87,6 +87,7 @@ test('a database-touching worktree gets its own block and endpoints', () => {
   assert.equal(result.supabase.source, 'scan', 'a first isolation is a new block — setup must tell the operator to restart');
 
   const block = result.env.find(write => write.label === SUPABASE_LABEL);
+  assert.equal(block.keys[KEYS.supabaseMode], 'isolated');
   assert.equal(block.keys[KEYS.supabaseOffset], String(result.supabase.offset));
   assert.equal(block.keys.SUPABASE_URL, `http://127.0.0.1:${result.supabase.ports.api}`);
 });

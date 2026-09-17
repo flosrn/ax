@@ -717,13 +717,26 @@ export function touchesDatabase({ cwd, supabaseDir, force, baseRefs = ['origin/m
  * ::1 first, the Supabase container only listens on IPv4 and every request
  * fails with ECONNREFUSED.
  *
- * Two keys are the durable RECORD of what this worktree claimed, and both are
- * needed. The offset says which block it took; the project id says what Docker
- * named the containers, which is the only handle anything has on them. Before
- * the id was recorded it was re-derived from the CURRENT branch on every run, so
- * a `git branch -m` minted a second name for a stack that was already running —
- * the config was rewritten, `supabase start` collided with its own ports, and
- * every later teardown addressed an id Docker had never used.
+ * THREE keys are the durable RECORD of what this worktree claimed, and all
+ * three are needed. The mode says it claimed isolation at all; the offset says
+ * which block it took; the project id says what Docker named the containers,
+ * which is the only handle anything has on them. Before the id was recorded it
+ * was re-derived from the CURRENT branch on every run, so a `git branch -m`
+ * minted a second name for a stack that was already running — the config was
+ * rewritten, `supabase start` collided with its own ports, and every later
+ * teardown addressed an id Docker had never used.
+ *
+ * THE MODE BELONGS HERE, not at one writer. Both writers rebuild this block and
+ * `writeBlock` REPLACES it, so a key held by the plan alone is erased the first
+ * time the promotion path rewrites the same label — and it was, on every
+ * promotion. `src/worktree/doctor.mjs` reads this key as one of the TWO
+ * witnesses that a shared plan still carries an isolated claim, so the loss was
+ * survivable rather than visible: the offset witness beside it is written here
+ * unconditionally and kept reporting alone. What made it expensive was
+ * downstream. A consumer carried this exact line as a pnpm patch against the
+ * published package, and a `patchedDependencies` key names an EXACT version —
+ * so every AX release failed that repository's automatic pin until someone
+ * regenerated the patch by hand.
  */
 export function envKeys({ ports, offset, projectId: id, envPrefix = '' }) {
   const keys = {
@@ -736,6 +749,7 @@ export function envKeys({ ports, offset, projectId: id, envPrefix = '' }) {
   };
   // Offset 0 is the shared baseline; recording it would claim isolation, and an
   // id without a block is the same false claim.
+  if (offset) keys[`${envPrefix}SUPABASE_MODE`] = 'isolated';
   if (offset) keys[`${envPrefix}SUPABASE_OFFSET`] = String(offset);
   if (offset && id) keys[`${envPrefix}SUPABASE_PROJECT`] = String(id);
   return keys;

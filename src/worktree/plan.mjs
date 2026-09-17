@@ -323,7 +323,7 @@ function envWrites({ config, port, urls, supabase, proxy = {} }) {
   writes.push({
     file: `${config.apps.web}/.env.local`,
     label: SUPABASE_LABEL,
-    keys: { [KEYS.supabaseMode]: 'isolated', ...envKeys({ ports: supabase.ports, offset: supabase.offset, projectId: supabase.projectId, envPrefix: PREFIX }) },
+    keys: envKeys({ ports: supabase.ports, offset: supabase.offset, projectId: supabase.projectId, envPrefix: PREFIX }),
   });
 
   return writes;
