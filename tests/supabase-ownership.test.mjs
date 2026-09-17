@@ -316,23 +316,31 @@ test('a renamed worktree promoted through the plan keeps its stack', () => {
   assert.equal(configProjectId(join(cwd, RELATIVE)), 'demo-412-chat');
 
   // And the record is rebuilt from the plan's decision, under the one label
-  // every block writer shares.
+  // every block writer shares — INCLUDING the isolation marker. The block is
+  // REPLACED, not merged, so a promotion that omits the marker erases the one
+  // setup wrote: measured as ofmchat's `@flosrn/ax` patch, which carried this
+  // line downstream for every release because nothing here asserted it.
   assert.equal(written[0][0], join(cwd, '.env.local'));
   assert.equal(written[0][1].label, 'Supabase endpoints');
+  assert.equal(written[0][1].keys.AX_SUPABASE_MODE, 'isolated');
   assert.equal(written[0][1].keys.AX_SUPABASE_OFFSET, '60');
   assert.equal(written[0][1].keys.AX_SUPABASE_PROJECT, 'demo-412-chat');
 });
 
-test('the env block records the project id next to the offset', () => {
+test('the env block records the mode and the project id next to the offset', () => {
   // The id is the ONLY handle Docker gives on the containers, and it used to be
-  // written down nowhere at all.
+  // written down nowhere at all. The mode joined this key set for the same
+  // reason: it is the record BOTH writers rebuild, so it cannot live at one of
+  // them.
   const keys = envKeys({ ports: blockPorts(BASE, 60), offset: 60, projectId: 'demo-412-chat', envPrefix: 'AX_' });
+  assert.equal(keys.AX_SUPABASE_MODE, 'isolated');
   assert.equal(keys.AX_SUPABASE_OFFSET, '60');
   assert.equal(keys.AX_SUPABASE_PROJECT, 'demo-412-chat');
 
-  // Offset 0 is the shared baseline: recording either key there would claim an
-  // isolation that does not exist.
+  // Offset 0 is the shared baseline: recording any of the three there would
+  // claim an isolation that does not exist.
   const shared = envKeys({ ports: blockPorts(BASE, 0), offset: 0, projectId: 'demo-412-chat', envPrefix: 'AX_' });
+  assert.equal(shared.AX_SUPABASE_MODE, undefined);
   assert.equal(shared.AX_SUPABASE_OFFSET, undefined);
   assert.equal(shared.AX_SUPABASE_PROJECT, undefined);
 });
