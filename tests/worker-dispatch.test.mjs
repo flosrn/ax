@@ -1458,6 +1458,20 @@ test('a stated class that routed nowhere is named on the receipt, with the JSON 
   assert.match(r.out, /"dispatch": \{ "models"/);
 });
 
+test('an unrouted class is not claimed as a dispatch when a later gate refuses', t => {
+  const root = repo({ dispatch: {} });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--capability', 'deep', '--because', 'Unresolved design'], { root, orca: { emptyBody: true } });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(r.home, { recursive: true, force: true }); });
+
+  // The class still routed nowhere, but nothing was created. Naming that as
+  // “the dispatch still happens” would tell an operator to settle a worker
+  // that does not exist.
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /body is empty|names none/i);
+  assert.doesNotMatch(r.out, /routed nowhere/);
+  assert.doesNotMatch(r.out, /The dispatch still happens/);
+});
+
 test('labels do not replace a missing model assessment', t => {
   const root = repo({ dispatch: { models: CLASSES, modelFloors: { 'domain:security': 'deep' } } });
   const r = run(['--issue', ISSUE, '--slug', SLUG, '--dry-run'], { root, orca: { labels: ['domain:security'] } });
