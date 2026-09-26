@@ -253,7 +253,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
         ['--model-confirmation <ref>', 'ask mode only: session.jsonl#toolCallId of the answered ask'],
         ['--model <alias>', 'legacy explicit selector; auto mode only, and it skips the class'],
         ['--agent <name>', 'the agent Orca starts in the pane (default omp)'],
-        ['--on <host>', 'a host declared in dispatch.hosts; `here` is this machine'],
+        ['--on <host>', 'a dispatch.hosts host or `here`; absent: the freest compute host'],
         ['--repo-id <id>', "the remote host's repo id, when the lookup for --on cannot answer"],
         ['--worktree <abs>', 'place into THIS existing tree instead of creating one'],
         ['--needs-ref <ref>', 'refuse unless origin carries this ref, so the child can reach it'],

@@ -171,6 +171,11 @@ function recordedPanes(store) {
  *                 records that named it, and the live extras at the tree.
  *                 Extras are occupancy, never slots; they do not join
  *                 `machine` or `mine`. An unasked remote is not a row here.
+ *   `hosts`       the same live and unmeasured panes by the host their record
+ *                 placed them on (`--on`), split out by `livePanes` for
+ *                 placement by capacity (./host-placement.mjs): a host's own
+ *                 worker ceiling is spent by every live pane there, whoever's
+ *                 repository owns it. Local panes name no host and are not in it.
  *
  * A caller that cannot name its own repository gets `mine: 0`, which is an
  * absence to act on and never a zero to spend: `capVerdict` says so.
@@ -181,12 +186,20 @@ function countPanes({ panes, inventory, repo }) {
   const machine = new Set();
   const mine = new Set();
   const unknown = new Set();
+  const hosts = new Map();
+  const onHosts = (names, key) => {
+    for (const host of names) {
+      const count = hosts.get(host) ?? { live: 0, unmeasured: 0 };
+      count[key] += 1;
+      hosts.set(host, count);
+    }
+  };
 
   for (const row of panes.byHandle.values()) {
     const terminal = inventory.byHandle.get(row.handle);
     if (terminal === undefined || terminal.orphaned === true) continue;
     machine.add(row.handle);
-
+    onHosts(row.hosts, 'live');
     if (named(row) === '') unknown.add(row.handle);
     else if (ours !== '' && named(row) === ours) mine.add(row.handle);
   }
@@ -200,6 +213,7 @@ function countPanes({ panes, inventory, repo }) {
   for (const row of undecided) {
     if (row.handle === null || machine.has(row.handle)) continue;
     unmeasuredMachine.add(row.handle);
+    onHosts([row.host], 'unmeasured');
     if (ours !== '' && named(row) === ours) unmeasuredMine.add(row.handle);
   }
 
@@ -239,6 +253,7 @@ function countPanes({ panes, inventory, repo }) {
       if (occ.ok) continue;
       unmeasuredMachine.add(row.handle);
       occupiedMachine.add(row.handle);
+      onHosts(row.hosts, 'unmeasured');
       occupancy.push({
         handle: row.handle,
         repo: String(row.repo ?? ''),
@@ -264,6 +279,7 @@ function countPanes({ panes, inventory, repo }) {
       occupied: { machine: occupiedMachine.size, mine: occupiedMine.size },
       occupancy,
     },
+    hosts,
   };
 }
 
@@ -271,10 +287,12 @@ function countPanes({ panes, inventory, repo }) {
  * How many recorded agent panes of `store` are UP — the one answer the listing
  * prints and both dispatch verbs refuse on.
  *
- * `{ live, inventory, unreadable, missing, reason }`:
+ * `{ live, hosts, inventory, unreadable, missing, reason }`:
  *
  *   `live`        the counts above, ready for `capLines` and `capVerdict`
  *                 (./capacity.mjs)
+ *   `hosts`       those panes by host, `Map<host, { live, unmeasured }>` —
+ *                 what placement spends a host's `maxWorkers` from
  *   `inventory`   the liveness this count was taken against — the local list
  *                 plus every pane a named host says it still owns, with the
  *                 rows no host could answer for. Returned rather than rebuilt,
@@ -300,11 +318,13 @@ function countPanes({ panes, inventory, repo }) {
 export function livePanes({ store, local, scopes, repo = '' }) {
   const panes = recordedPanes(store);
   if (panes.reason !== '' && !panes.missing) {
-    return { live: null, inventory: null, unreadable: panes.unreadable, missing: false, reason: panes.reason };
+    return { live: null, hosts: null, inventory: null, unreadable: panes.unreadable, missing: false, reason: panes.reason };
   }
   const inventory = liveInventory({ local, panes, scopes });
+  const { hosts, ...live } = countPanes({ panes, inventory, repo });
   return {
-    live: countPanes({ panes, inventory, repo }),
+    live,
+    hosts,
     inventory,
     unreadable: panes.unreadable,
     missing: panes.missing,

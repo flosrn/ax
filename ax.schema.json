@@ -330,9 +330,13 @@
           "items": { "type": "string" },
           "description": "Tracker labels that mean 'this ticket touches the database'. A dispatch carrying one of them provisions its worktree with its own Supabase stack (`ax worktree setup --database`) instead of letting the plan decide from a diff — and the diff of a tree that was created seconds ago is empty, so an issue whose whole subject is the database was provisioned to SHARE the primary checkout's stack. Measured 2026-08-25 on ofmchat #71 (domain:database, domain:security): the brief required an isolated reset and a full pgTAP run, and the worktree was announced as not touching the database. Absent means no ticket label forces isolation and the plan decides alone; the guard in front of `ax supabase` still promotes on the first write, but only for commands that go through it."
         },
+        "harnessos": {
+          "type": "string",
+          "description": "The HarnessOS checkout whose `scripts/capacity.ts --json` places a dispatch that names no --on — absolute, or `~/`-relative. HARNESSOS_SOURCE, when set, wins: the checkout's location is the machine's answer, and this key is only its fallback. Absent with no HARNESSOS_SOURCE, a dispatch with no --on cannot establish where to go and says so. Placement runs on the operator Mac only and never places on it."
+        },
         "hosts": {
           "type": "object",
-          "description": "Execution hosts this project may dispatch to, keyed by the Orca environment name passed to --on. A host absent from here cannot be dispatched to, and a ground it does not declare is not measured — the floors are what keep a newcomer from being OOM-killed for an incumbent's appetite, and they are per host and per project footprint.",
+          "description": "Execution hosts this project may dispatch to, keyed by the Orca environment name passed to --on. A host absent from here cannot be named with --on, and a ground it does not declare is not measured — the floors are what keep a newcomer from being OOM-killed for an incumbent's appetite, and they are per host and per project footprint. A dispatch with no --on reads its hosts' declarations from HarnessOS capacity instead, and an entry here for one of those hosts overrides them field by field for this repository.",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,

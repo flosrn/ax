@@ -38,7 +38,9 @@
 //   2. the ticket: unreadable creates nothing, and an EMPTY body creates nothing
 //      either unless --task names a different entry point
 //   3. --needs-ref: a ref the work is DEFINED by is proven on origin first
-//   4. placement: reuse | the repo's own tool | Orca, then `ax worktree setup`,
+//   4. placement: with no --on, the compute host with the most free slots
+//      (./host-placement.mjs, operator Mac only, never the Mac itself); then
+//      reuse | the repo's own tool | Orca, then `ax worktree setup`,
 //      then prove Orca can SEE the selector a dispatch will use
 //   5. what the child cannot fix for itself. The AX bundle its worktree registers
 //      is the one that REFUSES — waited for while an install lands, because a
@@ -77,6 +79,7 @@ import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
+import { capacityOf, harnessosSource, hostDeclarations, operatorMac, placeHost } from './host-placement.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // The landed facts this dispatch's notes carry, and the SHARED reader that
@@ -192,6 +195,12 @@ export function dispatch(
     // one here would be the duplicate representation the ruling refused.
     membership = specMembership,
     sessionsRoot,
+    // The machine answer placement depends on: only the operator Mac places a
+    // dispatch that names no target (./host-placement.mjs).
+    platform = process.platform,
+    // HarnessOS's capacity report, read for real; the suite injects a fixture
+    // of its contract.
+    capacity = capacityOf,
   } = {},
 ) {
   const usageError = (message, repair) => {
@@ -341,12 +350,26 @@ export function dispatch(
   }
   const wait = Number(flags.wait);
   // `here` is a synonym for local placement, the way Orca's own CLI reads it.
-  const on = flags.on === 'here' ? '' : flags.on;
+  // NO TARGET is neither: `--on` absent and no local `--worktree` means the
+  // compute host with the most free slots, chosen from HarnessOS capacity on the
+  // operator Mac and refused anywhere else (./host-placement.mjs, R10/R16). The
+  // Mac takes a worker only when the operator names it.
+  let on = flags.on === 'here' ? '' : flags.on;
+  const placing = flags.on === '' && flags.worktree === '';
 
   const named = flags.name !== '';
   const kind = named ? null : ticketKind(flags.issue);
   if (!named && kind === null) {
     return usageError(`--issue expects a Linear ref (ABC-123) or a GitHub issue number, not "${flags.issue}"`);
+  }
+  if (placing && flags.repoId !== '') {
+    return usageError('--repo-id names a repository on ONE host, and a dispatch with no --on has not chosen its host yet', 'pass --on <host> with --repo-id');
+  }
+  if (placing && !operatorMac(platform)) {
+    return refuse(
+      `a dispatch with no --on is placed by capacity from the operator Mac only, and this machine is ${platform} — a worker lands where somebody named it or where capacity chose it, never by default on whatever ran the command`,
+      'ax worker dispatch … --on here   # this machine, or --on <host> for a declared host',
+    );
   }
   if (named) {
     // The name IS the request id, and the request id is a directory name under
@@ -705,7 +728,25 @@ export function dispatch(
   // it is what scopes this repository's own count — and it is the same read that
   // later records the pane (`--tracker-repo`, §7), so it happens once.
   const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
-  const room = capRoom({ run, env, config, repo: trackerRepo });
+
+  // PLACEMENT'S REPORT IS READ BEFORE THE COUNT, because the count needs it: a
+  // pane placed earlier on a compute host this repository never declared is
+  // asked of that host through the declaration capacity carries, and without it
+  // that pane would be unaskable rather than counted. The cap still decides
+  // BEFORE any host is chosen or proven, so a full repository is refused by
+  // name — the cap — and never reads as a host shortage.
+  let fleet = null;
+  let declarations = {};
+  let counted = config;
+  if (placing) {
+    const source = harnessosSource({ env, config });
+    if (!source.ok) return cannot(source.reason, source.repair);
+    fleet = capacity({ source: source.path });
+    if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
+    declarations = hostDeclarations(fleet.capacity, dispatchConfig.hosts);
+    counted = { ...config, dispatch: { ...dispatchConfig, hosts: { ...dispatchConfig.hosts, ...declarations } } };
+  }
+  const room = capRoom({ run, env, config: counted, repo: trackerRepo });
   if (room.cannot) return cannot(room.cannot, room.repair);
   for (const line of room.lines) note(line);
   // An inability is exit 3 and a full cap is exit 1, because they are different
@@ -801,6 +842,32 @@ export function dispatch(
   // from, so the brief cannot name a tree the dispatch did not use.
   let selector = '';
 
+  // No target: the compute host with the most free slots, or a refusal naming
+  // why each host could not take the worker. Never this Mac (R10). The live
+  // count per host is the SAME measurement the cap was just decided on.
+  const repoName = basename(paths.root || cwd);
+  const proveOn = declaration => proveHost(declaration, { ssh: args => exec('ssh', args, cwd), kind, ref: flags.issue, sweep: !dry });
+  let target = null;
+  if (placing) {
+    const chosen = placeHost({
+      capacity: fleet.capacity,
+      declarations,
+      liveOn: host => room.hosts.get(host) ?? { live: 0, unmeasured: 0 },
+      repoFor: host => repoIdFor(repoName, { run, env: host }),
+      prove: (host, declaration) => proveOn(declaration),
+    });
+    for (const line of chosen.lines) note(line);
+    if (!chosen.ok) {
+      const why = chosen.skipped.length === 0 ? 'the capacity report lists no compute host' : chosen.skipped.map(row => `${row.host}: ${row.reason}`).join(' | ');
+      return refuse(
+        `no compute host can take this worker, and this Mac is never the fallback — ${why}`,
+        'ax worker dispatch … --on <host>   # a host you choose, or --on here to run it on this Mac',
+      );
+    }
+    target = chosen;
+    on = chosen.host;
+  }
+
   // `--worktree` means two different things on either side of `--on`, and until
   // #103 it meant only the local one: a directory on THIS machine, which can
   // never name a tree on the host the same argv is dispatching to.
@@ -810,19 +877,20 @@ export function dispatch(
     selector = worktree;
     place.push('--worktree', `path:${worktree}`, '--agent', flags.agent);
   } else if (on !== '') {
-    const declared = hostFor(config, on);
+    const declared = target === null ? hostFor(config, on) : { ok: true, host: target.declaration };
     if (!declared.ok) return refuse(declared.reason, `ax.config.json: dispatch.hosts.${on}.ssh "<target>"`);
 
-    let repoId = flags.repoId;
+    let repoId = target === null ? flags.repoId : target.repoId;
     if (repoId === '') {
-      const resolved = repoIdFor(basename(paths.root || cwd), { run, env: on });
+      const resolved = repoIdFor(repoName, { run, env: on });
       if (!resolved.ok) return cannot(resolved.reason, `orca repo list --environment ${on} --json`);
       repoId = resolved.id;
     } else if (!repoId.startsWith('id:')) repoId = `id:${repoId}`;
 
     // `sweep: !dry` — the browser sweep is the one MUTATION among the grounds,
     // and a preview that reclaims processes on another machine is not a preview.
-    const grounds = proveHost(declared.host, { ssh: args => exec('ssh', args, cwd), kind, ref: flags.issue, sweep: !dry });
+    // A placed host was already proven by the placement that chose it.
+    const grounds = target === null ? proveOn(declared.host) : target.grounds;
     for (const line of grounds.notes ?? []) note(line);
     if (!grounds.ok) return refuse(grounds.reason);
     if ((grounds.unproven ?? 0) > 0) {
@@ -1053,7 +1121,7 @@ export function dispatch(
     instruction,
     lineage,
     sessionsRoot,
-    host: on === '' ? null : (hostFor(config, on).host ?? null),
+    host: on === '' ? null : (target?.declaration ?? hostFor(config, on).host ?? null),
     exec,
     cwd,
     now,
@@ -1182,7 +1250,9 @@ function capRoom({ run, env, config, repo }) {
     lines.push(`host '${host}' could not be asked, so its panes are NOT in either count: ${scope.reason}`);
   }
   if (slots.inventory.omitted) lines.push('hosts are omitted from this terminal list: a pane on one of them is UNKNOWN here, not counted');
-  return { verdict, lines };
+  // `hosts` rides along for placement, which spends each host's worker ceiling
+  // from this same measurement rather than taking a second one.
+  return { verdict, lines, hosts: slots.hosts };
 }
 
 /**

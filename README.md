@@ -166,6 +166,32 @@ The safety properties live in executable commands rather than operator prose:
 - the merge gate runs every declared ground against the exact head SHA and performs the merge it
   validated.
 
+### Where a worker runs
+
+`ax worker dispatch` places the child where the operator names it, or where capacity chooses:
+
+```bash
+ax worker dispatch --issue 412 --slug fix-guard                # the compute host with the most free slots
+ax worker dispatch --issue 412 --slug fix-guard --on gapicore  # a host declared in dispatch.hosts
+ax worker dispatch --issue 412 --slug fix-guard --on here      # this machine
+```
+
+With no `--on`, the dispatch runs `bun scripts/capacity.ts --json` in the HarnessOS checkout
+named by `HARNESSOS_SOURCE`, or by `dispatch.harnessos` in `ax.config.json` when that variable is
+unset. Each reported host's ssh target, slice cgroup and floors come from that report;
+`dispatch.hosts.<host>` overrides them field by field for this repository. A host is passed over,
+with its reason printed, when it is cordoned, ineligible, has no healthy gateway probe, has live
+panes nobody can count, has no free slot, has no Orca repository of this name, or fails the host
+grounds `--on` proves. Slots are the smallest of free memory over the worker footprint, free CPU
+over the worker's CPU share, and `maxWorkers` minus the live panes already placed there; the most
+slots wins, ties go to the report's order. The repository cap (`dispatch.cap`) refuses before any
+host is chosen.
+
+Placement runs only on the operator Mac, and it never places on it: when no host can take the
+worker, the dispatch is refused with each host's reason. A dispatch with no target run anywhere
+else is refused. `--on <host>` skips placement and still proves the host; `--on here` and a local
+`--worktree` stay on this machine.
+
 ### Choose a worker's class, not its model
 
 A dispatch decides a CLASS of work — `routine`, `standard` or `deep` — and hands the child the
@@ -223,7 +249,7 @@ task was created; `worker start` rechecks that proof under its lock and preserve
 record. Unknown outcomes never authorize a fresh decision. The child records what it was actually
 served as `@flosrn/ax/model-assignment`, and the dispatch verifier requires that receipt and
 compares it with the requested role and the session's current model: a missing receipt is
-unproven, never a verified assignment. Host placement (`--on`), account rotation and
+unproven, never a verified assignment. Host placement, account rotation and
 independently pinned subagents are unchanged.
 
 ## Install globally, pin locally

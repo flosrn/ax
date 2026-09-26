@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import { addWorktree } from '../src/git.mjs';
@@ -296,9 +296,16 @@ const run = (argv, options = {}) => {
   }
 
   const started = [];
+  // Every dispatch here NAMES its target unless the test is about placement: a
+  // dispatch with no `--on` is placed by capacity on the operator Mac and
+  // refused anywhere else (../src/worker/host-placement.mjs), so `--on here`
+  // is how the local-placement propositions below keep saying "this machine".
+  const targeted = options.untargeted === true || argv.includes('--on') ? [...argv] : ['--on', 'here', ...argv];
   const result = capture(() =>
-    dispatch([...argv], {
+    dispatch(targeted, {
       runner: options.runnerOverride ?? runner,
+      platform: options.platform ?? 'linux',
+      capacity: options.capacity ?? (() => assert.fail('a targeted dispatch read the capacity report')),
       exec: (bin, args, at) => {
         if (bin === 'gh' && args[0] === 'repo') {
           const slug = options.slug ?? 'acme/widgets';
@@ -1308,6 +1315,148 @@ test('a LOCAL --worktree keeps its existence guard', () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /is not a directory on this host/);
   assert.deepEqual(r.started, []);
+});
+
+// ── placement by capacity (no --on) ──────────────────────────────────────────
+// A dispatch that names no target is placed from the operator Mac on the
+// compute host with the most free slots, read from HarnessOS's capacity report
+// (plan 2026-09-26-001, U10). The report here is a fixture of that contract.
+
+function computeHost(name, { freeMb = 8000, freePercent = 600, maxWorkers = 8, ...rest } = {}) {
+  return {
+    host: name,
+    state: 'ok',
+    eligible: true,
+    reasons: [],
+    cordoned: false,
+    declaration: { ssh: name, cgroup: '/sys/fs/cgroup/user.slice/user-1001.slice', diskPath: '/home/harness', diskFloorGb: 20, memFreeFloorMb: 1500 },
+    maxWorkers,
+    footprint: { memoryMb: 1000, cpuPercent: 100 },
+    memory: { maxMb: 12288, workMb: 12288 - freeMb, freeMb, hostAvailableMb: 20000 },
+    cpu: { quotaPercent: 600, usedPercent: 600 - freePercent, freePercent, pressureSomeAvg10: 0.5, stallThreshold: 40 },
+    disk: { path: '/home/harness', availGb: 120 },
+    orcaServeRssMb: 300,
+    gateway: { surface: `omp-${name}`, healthy: true, observedAt: '2026-09-26T08:00:00Z', detail: 'ok' },
+    ...rest,
+  };
+}
+
+/** A placement run on the operator Mac: no --on, the report injected, every ssh target recorded. */
+function placed(argv, { hosts, root = repo(), orca = {}, env = {}, sources = [], ssh = [], sshAnswer, ...options } = {}) {
+  return run(argv, {
+    root,
+    untargeted: true,
+    platform: 'darwin',
+    env: { HARNESSOS_SOURCE: '/src/harnessos', ...env },
+    capacity: ({ source }) => {
+      sources.push(source);
+      return { ok: true, capacity: { observedAt: '2026-09-26T08:00:00Z', hosts } };
+    },
+    orca: { repos: [{ id: 'r1', path: `/home/harness/orca/${basename(root)}` }], ...orca },
+    exec: (bin, args) => {
+      if (bin === 'ssh') {
+        ssh.push(args[args.indexOf('--') + 1]);
+        if (sshAnswer) return sshAnswer(args);
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    },
+    ...options,
+  });
+}
+
+test('AE4: no --on on the operator Mac starts the worker on the host with the most free slots', () => {
+  const sources = [];
+  const ssh = [];
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    hosts: [computeHost('gapicore', { freeMb: 2000 }), computeHost('netcup-vie', { freePercent: 500 })],
+    sources,
+    ssh,
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(sources, ['/src/harnessos'], 'the report comes from the checkout HARNESSOS_SOURCE names');
+  assert.match(r.started[0], /--on netcup-vie --worktree new-top-level --repo id:r1 --name gap-353-loading-states/);
+  assert.ok(ssh.length > 0 && ssh.every(target => target === 'netcup-vie'), `the chosen host is proven, through the ssh target capacity declares: ${ssh}`);
+  assert.ok(r.calls.every(line => !line.startsWith('worktree create')), 'no tree is placed on this Mac');
+});
+
+test('AE4: both hosts cordoned — the dispatch is refused with each reason, and the Mac is not used', () => {
+  const ssh = [];
+  const cordoned = { cordoned: true, eligible: false, reasons: ['cordoned'] };
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    hosts: [computeHost('gapicore', cordoned), computeHost('netcup-vie', cordoned)],
+    ssh,
+  });
+
+  assert.equal(r.code, 1, 'a refusal: nothing was created');
+  assert.match(r.out, /gapicore[^\n]*cordoned/);
+  assert.match(r.out, /netcup-vie[^\n]*cordoned/);
+  assert.match(r.out, /--on here/, 'the only way onto this Mac is to name it');
+  assert.deepEqual(r.started, []);
+  assert.deepEqual(ssh, [], 'no host is proven when none is eligible');
+  assert.ok(r.calls.every(line => !line.startsWith('worktree create')), 'and no local tree was placed as a fallback');
+});
+
+test('a host carrying earlier placed panes has fewer slots: they are counted on that host', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  livePane(join(home, 'store'), 'nv-1', { handle: 'term_nv', on: 'netcup-vie' });
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    home,
+    hosts: [computeHost('netcup-vie', { maxWorkers: 1 }), computeHost('gapicore', { freeMb: 2000 })],
+    orca: { hostTerminals: { 'netcup-vie': [{ handle: 'term_nv' }], gapicore: [] } },
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.started[0], /--on gapicore /);
+  assert.match(r.out, /netcup-vie[^\n]*no free slot/);
+});
+
+test('the repository cap is checked before placement, so its refusal names the cap', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  livePane(join(home, 'store'), 'gap-1-work', { handle: 'term_a' });
+  const ssh = [];
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    home,
+    root: repo({ dispatch: { cap: 1 } }),
+    hosts: [computeHost('netcup-vie')],
+    orca: { terminals: [{ handle: 'term_a' }, { handle: 'term_me', worktreePath: '/parent/wt' }] },
+    ssh,
+  });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /dispatch\.cap 1/);
+  assert.deepEqual(ssh, [], 'no host was proven for a dispatch the cap refuses');
+  assert.deepEqual(r.started, []);
+});
+
+test('explicit --on bypasses placement but not proveHost', () => {
+  const root = repo({ dispatch: { hosts: { far: { ssh: 'far-host', diskPath: '/srv', diskFloorGb: 10 } } } });
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], {
+    root,
+    platform: 'darwin',
+    exec: (bin, args) => (bin === 'ssh' && args.at(-1).startsWith('df ') ? { status: 0, stdout: '3G\n', stderr: '' } : { status: 0, stdout: '', stderr: '' }),
+  });
+
+  assert.equal(r.code, 1, 'the named host is still proven, and its shortage still refuses');
+  assert.match(r.out, /only 3G free on \/srv at 'far-host'/);
+  assert.deepEqual(r.started, []);
+});
+
+test('a dispatch with no target anywhere but the operator Mac is refused before anything is read', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { untargeted: true, platform: 'linux' });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /--on here/);
+  assert.match(r.out, /--on <host>/);
+  assert.deepEqual(r.started, []);
+  assert.ok(r.calls.every(line => !line.startsWith('linear issue')), 'the ticket was not even read');
+});
+
+test('--repo-id names one host’s repository, so it needs --on', () => {
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--repo-id', 'abc'], { hosts: [computeHost('netcup-vie')] });
+
+  assert.equal(r.code, 2);
+  assert.match(r.out, /--repo-id/);
 });
 
 // ── lineage ──────────────────────────────────────────────────────────────────
