@@ -171,7 +171,7 @@ function fakeExec(s) {
   return { exec, calls };
 }
 
-async function runDeploy(extra = {}, argv = ['--skip-pins', '--skip-remote']) {
+async function runDeploy(extra = {}, argv = ['--skip-pins']) {
   const roots = mkdtempSync(join(tmpdir(), 'ax-deploy-roots-'));
   const s = scenario(extra);
   const { exec, calls } = fakeExec(s);
@@ -216,14 +216,14 @@ const releaseWait = (r) =>
   r.calls.some((c) => c.bin === 'gh' && c.args[0] === 'run' && c.args[1] === 'list' && c.args.includes('Release'));
 
 test('--dry-run does not dispatch Test and does not merge', async () => {
-  const r = await runDeploy({}, ['--skip-pins', '--skip-remote', '--dry-run']);
+  const r = await runDeploy({}, ['--skip-pins', '--dry-run']);
   assert.equal(r.code, 0, r.out);
   assert.equal(dispatched(r), false, r.out);
   assert.equal(merged(r), false, r.out);
 });
 
 test('--pins-only does not dispatch Test and does not merge', async () => {
-  const r = await runDeploy({}, ['--skip-pins', '--skip-remote', '--pins-only']);
+  const r = await runDeploy({}, ['--skip-pins', '--pins-only']);
   assert.equal(r.code, 0, r.out);
   assert.equal(dispatched(r), false, r.out);
   assert.equal(merged(r), false, r.out);

@@ -16,7 +16,7 @@
  */
 
 import { expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -301,8 +301,10 @@ test('the declared host of this checkout is the target the transport is given', 
   const got = fetch(at, { declaration: undefined, cwd: import.meta.dir, ssh: localShell(argv) }) as Record<string, unknown>;
 
   // `ax.config.json` declares `dispatch.hosts.gapicore.ssh`, and that value —
-  // not a name, not a guess — is what ssh was addressed with.
-  expect(argv[0][3]).toBe('orca@vps');
+  // not a name, not a guess — is what ssh was addressed with. Read here rather
+  // than restated, so the test follows the declaration when the host moves.
+  const config = JSON.parse(readFileSync(join(import.meta.dir, '../../ax.config.json'), 'utf8'));
+  expect(argv[0][3]).toBe(config.dispatch.hosts.gapicore.ssh);
   expect((got.buf as Buffer).toString('utf8')).toBe('## CRITERIA\n- Remote: MET.\n');
 });
 

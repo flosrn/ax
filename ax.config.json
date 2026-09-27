@@ -22,10 +22,23 @@
       "standard": "@worker-standard",
       "deep": "@worker-deep"
     },
+    "harnessos": "~/Code/flosrn/harnessos",
     "hosts": {
       "gapicore": {
-        "ssh": "orca@vps",
-        "sessions": "/home/orca/.omp/agent/sessions"
+        "ssh": "harness@gapicore",
+        "sessions": "/home/harness/.omp/agent/sessions",
+        "cgroup": "/sys/fs/cgroup/user.slice/user-2000.slice",
+        "memFreeFloorMb": 1024,
+        "diskPath": "/home/harness",
+        "diskFloorGb": 20
+      },
+      "netcup-vie": {
+        "ssh": "harness@netcup-vie",
+        "sessions": "/home/harness/.omp/agent/sessions",
+        "cgroup": "/sys/fs/cgroup/user.slice/user-2000.slice",
+        "memFreeFloorMb": 1024,
+        "diskPath": "/home/harness",
+        "diskFloorGb": 20
       }
     }
   },

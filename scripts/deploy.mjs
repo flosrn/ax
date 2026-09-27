@@ -2,12 +2,11 @@
 // The release-propagation runbook, executable — first run performed by hand on
 // 2026-08-26 (v0.12.3) and captured here so every later release is one command:
 //
-//   node scripts/deploy.mjs             # merge, wait for npm, pin consumers, pull this tree + the VPS adapter
+//   node scripts/deploy.mjs             # merge, wait for npm, pin consumers, pull this tree
 //   node scripts/deploy.mjs --check     # drift report across every surface; needs no release, mutates nothing
 //   node scripts/deploy.mjs --dry-run   # print the plan and the discovered consumers, mutate nothing
-//   node scripts/deploy.mjs --pins-only # propagation only: pin consumers + the VPS adapter, no merge
+//   node scripts/deploy.mjs --pins-only # propagation only: pin consumers, no merge
 //   node scripts/deploy.mjs --skip-pins # release to npm only; leave consumers where they are
-//   node scripts/deploy.mjs --skip-remote # skip the VPS adapter checkout
 //
 // WHAT IT AUTOMATES, IN ORDER. (1) Find the open release-please PR — the one
 // place a version number is allowed to come from (AGENTS.md: a release is never
@@ -26,17 +25,19 @@
 // with one pull --rebase retry because a busy main rejects the first push
 // routinely. (6) Fast-forward THIS checkout: release-please bumps the version on
 // origin, so the tree that produced the release still read the previous one until
-// 2026-08-26, when npm served 0.13.0 and the repository said 0.12.3. (7) Converge
-// the VPS adapter checkout, which `consumers()` can never find because it is not
-// a consumer — it is ax itself, and `/home/orca/.omp` loads the bundle from it.
-// Measured the same day: 78 commits stale, silently, equipping every session on
-// that host. The old closing note told the operator to `ax pin` there, which is
-// the wrong gesture for a checkout that IS the package.
+// 2026-08-26, when npm served 0.13.0 and the repository said 0.12.3.
+//
+// COMPUTE HOSTS ARE NOT REACHED FROM HERE. Their AX checkout is a HarnessOS
+// component (`components.toml` `ax`, pinned to this checkout's package.json
+// version), so the fast-forward in (6) is what moves their pin, and
+// `components.ts apply --host <host> --apply` in HarnessOS is what converges
+// them. Until 2026-09-27 this script pulled a checkout under /home/orca on the
+// VPS itself; that checkout was decommissioned with the legacy harness.
 //
 // MAINTAINER TOOLING, NOT A COMMAND. This is deliberately not `ax deploy`:
-// which machine roots hold consumers and which VPS runs the fleet are facts
-// about the maintainer's machine, not about a consuming repository — a verb
-// would teach every consumer a gesture only one machine can perform.
+// which machine roots hold consumers is a fact about the maintainer's machine,
+// not about a consuming repository — a verb would teach every consumer a
+// gesture only one machine can perform.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -74,24 +75,6 @@ const NPM_WAIT_MS = 5 * 60_000;
 const MERGE_COMMIT_WAIT_MS = 60_000;
 const POLL_MS = 15_000;
 const MERGE_COMMIT_POLL_MS = 5_000;
-/**
- * The remote surface `consumers()` can NEVER find, because it is not a consumer.
- * `/home/orca/Code/flosrn/ax` declares this package as its OWN name, not as a
- * dependency, and yet `/home/orca/.omp/agent/extensions/ax.ts` loads the AX
- * adapter from it — so every agent session on that host is equipped by whatever
- * commit this checkout happens to sit on. Measured 2026-08-26, right after the
- * 0.13.0 release: it was 78 commits behind, silently, and nothing watched it.
- *
- * `ax pin` is the WRONG gesture here and the old closing note said to use it:
- * there is nothing to pin, the checkout IS the package. It converges with a
- * fast-forward pull, run as `orca` and never as root — a root pull leaves
- * root:root files and the next pull as orca dies on "unable to unlink old file"
- * (the ops runbook has paid for this three times).
- */
-const REMOTE_HOST = 'vps';
-const REMOTE_USER = 'orca';
-const REMOTE_ADAPTER = '/home/orca/Code/flosrn/ax';
-
 const succeeded = (out) => !out.error && out.status === 0;
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -108,23 +91,19 @@ export async function deploy(
   const dry = argv.includes('--dry-run');
   const check = argv.includes('--check');
   const skipPins = argv.includes('--skip-pins');
-  const skipRemote = argv.includes('--skip-remote');
   const pinsOnly = argv.includes('--pins-only');
   const rootsArg = argv.find((a) => a.startsWith('--roots='));
   const roots = rootsArg ? rootsArg.slice('--roots='.length).split(',') : DEFAULT_ROOTS;
-  const FLAGS = ['--dry-run', '--check', '--skip-pins', '--skip-remote', '--pins-only'];
+  const FLAGS = ['--dry-run', '--check', '--skip-pins', '--pins-only'];
   const unknown = argv.filter((a) => !FLAGS.includes(a) && !a.startsWith('--roots='));
   if (unknown.length > 0) {
     bad(`unknown argument(s): ${unknown.join(' ')}`);
-    fix('node scripts/deploy.mjs [--check] [--dry-run] [--pins-only] [--skip-pins] [--skip-remote] [--roots=/a,/b]');
+    fix('node scripts/deploy.mjs [--check] [--dry-run] [--pins-only] [--skip-pins] [--roots=/a,/b]');
     return 2;
   }
 
   const gh = (args) => exec('gh', args, { cwd: root, timeout: 60_000 });
   const git = (cwd, args) => exec('git', args, { cwd, timeout: 120_000 });
-
-  const remote = (script) =>
-    exec('ssh', [REMOTE_HOST, `sudo -u ${REMOTE_USER} -H bash -lc ${JSON.stringify(script)}`], { cwd: root, timeout: 180_000 });
 
   function pullSelf() {
     const dirty = git(root, ['status', '--porcelain']);
@@ -301,28 +280,15 @@ export async function deploy(
       for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
     }
 
-    section('remote adapter');
-    if (skipRemote) note(`--skip-remote: ${REMOTE_HOST}:${REMOTE_ADAPTER} left as it is`);
-    else {
-      const out = remote(
-        `cd ${REMOTE_ADAPTER} && git pull --ff-only -q origin main && git log --oneline -1 && node bin/ax.mjs help 2>&1 | head -1`,
-      );
-      if (!succeeded(out)) {
-        bad(`${REMOTE_HOST} did not converge: ${(out.stderr || out.error || '').toString().split('\n').filter((l) => !l.includes('Address already in use'))[0] || `exit ${out.status}`}`);
-        fix(`ssh ${REMOTE_HOST} 'sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} pull --ff-only origin main'   # as ${REMOTE_USER}, never root`);
-        verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'unreached' });
-      } else {
-        for (const line of out.stdout.trim().split('\n')) note(`  ${line.trim()}`);
-        ok(`${REMOTE_HOST} adapter checkout fast-forwarded — every session there is equipped from it`);
-        verdicts.push({ dir: `${REMOTE_HOST}:${REMOTE_ADAPTER}`, verdict: 'pulled' });
-      }
-    }
+    section('compute hosts');
+    note('their AX checkout is a HarnessOS component pinned to this package.json: once this tree is fast-forwarded, converge each host with');
+    fix('bun ~/Code/flosrn/harnessos/scripts/components.ts apply --host <host> --apply');
 
     section('summary');
     let failed = 0;
     for (const { dir, verdict } of verdicts) {
       note(`${dir}  ${verdict}`);
-      if (!['pinned', 'current', 'pulled'].includes(verdict)) failed = 1;
+      if (!['pinned', 'current'].includes(verdict)) failed = 1;
     }
     return failed;
   }
@@ -525,22 +491,6 @@ export async function deploy(
       const aligned = registry !== '' && consumer.pinned === registry;
       note(`${aligned ? 'aligned' : 'DRIFTED'}      ${consumer.dir} pins ${consumer.pinned}${aligned ? '' : ` — npm serves ${registry || '?'}`}`);
       if (!aligned) drifted += 1;
-    }
-
-    const out = remote(`cd ${REMOTE_ADAPTER} && git fetch -q origin main; git log --oneline -1; git rev-list --count HEAD..origin/main`);
-    if (!succeeded(out)) {
-      bad(`${REMOTE_HOST} unreachable — the adapter checkout's state is UNKNOWN, which is not the same as current`);
-      fix(`ssh ${REMOTE_HOST}   # then: sudo -u ${REMOTE_USER} -H git -C ${REMOTE_ADAPTER} status`);
-      drifted += 1;
-    } else {
-      const lines = out.stdout.trim().split('\n');
-      const count = Number(lines[lines.length - 1]);
-      note(`${count === 0 ? 'aligned' : 'DRIFTED'}      ${REMOTE_HOST}:${REMOTE_ADAPTER} — ${lines[0]?.trim()}`);
-      if (count !== 0) {
-        bad(`that checkout is ${count} commit(s) behind, and it equips EVERY agent session on ${REMOTE_HOST}`);
-        fix(`node scripts/deploy.mjs --check   # then converge it: node scripts/deploy.mjs (or --skip-pins to release only)`);
-        drifted += 1;
-      }
     }
 
     if (drifted === 0) ok('every surface matches the registry');
