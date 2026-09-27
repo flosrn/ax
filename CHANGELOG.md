@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.27.0](https://github.com/flosrn/ax/compare/v0.26.5...v0.27.0) (2026-09-27)
+
+
+### Features
+
+* **worker:** place untargeted dispatches on the compute host with capacity ([e3b5da4](https://github.com/flosrn/ax/commit/e3b5da4905c9553f892021fc827ec4ce882d0ac1))
+
 ## [0.26.5](https://github.com/flosrn/ax/compare/v0.26.4...v0.26.5) (2026-09-17)
 
 
