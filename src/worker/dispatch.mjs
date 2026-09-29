@@ -921,11 +921,16 @@ export function dispatch(
     // dispatch has yet to create is a placeholder, never a guessed path.
     const tree = /^(?:id:[^:]+::|path:)(\/.+)$/.exec(remote)?.[1] ?? '<worktree>';
     remotePin = `ssh ${declared.host.ssh} 'git -C ${tree} config extensions.worktreeConfig true && git -C ${tree} config --worktree user.name "<name>" && git -C ${tree} config --worktree user.email "<email>"'`;
-    place.push('--on', on, '--worktree', remote, '--repo', repoId, '--name', request, '--agent', flags.agent);
+    // The flags that CREATE a tree travel with `new-top-level` only: Orca
+    // refuses them beside an existing remote tree (placement.mjs,
+    // CREATION_FLAGS), and the repository is already inside `id:<repo>::<path>`.
+    place.push('--on', on, '--worktree', remote);
+    if (remote === 'new-top-level') place.push('--repo', repoId, '--name', request);
+    place.push('--agent', flags.agent);
     selector = remoteTreeOf(remote);
     // `--setup skip` is exactly what left a child with no URLs, so it is only
     // ever composed for a throwaway probe.
-    if (probe) place.push('--setup', 'skip');
+    if (probe && remote === 'new-top-level') place.push('--setup', 'skip');
   } else {
     if (paths.root === null) {
       return cannot('not inside a git checkout, so there is no repository to place a worktree in', 'cd <repo> && ax worker dispatch …');

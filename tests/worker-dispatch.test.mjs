@@ -1270,6 +1270,11 @@ test('a --on dispatch reuses the tree the host already carries, instead of new-t
   assert.equal(r.started.length, 1);
   assert.match(r.started[0], new RegExp(`--worktree id:abc::${tree}`), 'the record’s own selector, composed by nothing');
   assert.doesNotMatch(r.started[0], /new-top-level/, 'and no second tree is asked for');
+  // An existing remote tree carries no creation flags: Orca refuses them
+  // beside any selector but new-top-level (measured 2026-09-28, 2107-resume:
+  // `invalid_argument` — "Creation and setup options apply only to remote
+  // new-top-level worktrees").
+  assert.doesNotMatch(r.started[0], /--repo |--name |--setup /, r.started[0]);
   assert.match(r.out, /reusing/);
 });
 

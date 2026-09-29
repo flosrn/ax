@@ -36,7 +36,9 @@
 // honoured, because moving a child is a new dispatch. `inheritPlacement` is
 // that whole rule, and it answers before the live-agent gate — a placement
 // refusal issues nothing, not even the `task-update` that returns the task to
-// `ready`.
+// `ready`. On a remote host the record's `new-top-level` is how the child was
+// placed, not where it lives: the replacement goes back into the tree that
+// start's receipt names, or refuses naming it (`reinstateTree`, #275).
 
 import { mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -69,7 +71,9 @@ import {
   taskIdScan,
   taskUpdateOk,
   workerStartArgv,
+  workerStartTrees,
 } from './record.mjs';
+import { CREATION_FLAGS, reinstateRemote } from './placement.mjs';
 import { briefDelivered } from './delivered.mjs';
 import { armStallWatcher } from './stall.mjs';
 
@@ -335,6 +339,92 @@ export function inheritPlacement(recordedArgv, typed) {
     };
   }
   return { passthru: [...splitPlacement(typed).rest, ...placement] };
+}
+
+/** `argv` without the flags that create a remote tree, both option forms. */
+function withoutCreation(argv) {
+  const kept = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (CREATION_FLAGS.some(name => arg.startsWith(`${name}=`))) continue;
+    if (CREATION_FLAGS.includes(arg)) {
+      if (i + 1 < argv.length && !isOption(argv[i + 1])) i += 1;
+      continue;
+    }
+    kept.push(arg);
+  }
+  return kept;
+}
+
+/**
+ * A REMOTE REPLACEMENT GOES BACK INTO THE TREE, NOT BACK THROUGH THE DOOR
+ * (#275). `--worktree new-top-level` is how the first attempt was PLACED —
+ * "create me one" — and reissued it asks the host for a second tree: measured
+ * 2026-09-29 on gapila `2122-work`, netcup-vie minted `2122-work-2` detached
+ * on origin/main while the PR branch stayed checked out in `2122-work`, and
+ * the operator rebuilt the session by hand. Where the slice LIVES is the tree
+ * the newest worker-start's receipt names, so that is what is inherited:
+ *
+ *   - the host still lists it → `--worktree id:<repo>::<path>`, which the host
+ *     reuses as it stands (same branch, same Report path, nothing checked out).
+ *   - the host answered and does not list it → REFUSED, naming it. A fresh
+ *     tree starts the slice again from the base branch, which is a new
+ *     dispatch's decision, never a replace's (this file's header).
+ *   - the host could not answer, the receipt names no effects, or two trees →
+ *     CANNOT ESTABLISH: an unasked host is not an empty one (F-028).
+ *   - the receipt says the start placed nothing (no worktree effect, or Orca
+ *     refused it outright) → the recorded `new-top-level`, said out loud.
+ *
+ * And an existing remote tree never travels with the flags that create one:
+ * Orca refuses `--repo`/`--name`/`--base-branch`/`--setup` beside any selector
+ * but `new-top-level` (placement.mjs, `CREATION_FLAGS`). A local placement is
+ * already a recorded `path:` and passes through untouched.
+ */
+function reinstateTree(path, inherited, { run, request }) {
+  const on = argvValue(inherited, '--on') ?? '';
+  if (on === '') return { passthru: inherited };
+  if ((argvValue(inherited, '--worktree') ?? '') !== 'new-top-level') return { passthru: withoutCreation(inherited) };
+
+  let trees;
+  try {
+    trees = workerStartTrees(path);
+  } catch (error) {
+    return { cannot: `the newest worker-start's receipt is unreadable: ${String(error)}`, repair: `ax worker start --show --request ${request}` };
+  }
+  if (trees === null) {
+    return {
+      cannot: `the newest worker-start's receipt names no effects, so whether it created a tree on '${on}' is unknown — and reissuing new-top-level mints ${request}-2 beside one if it did`,
+      repair: `ax worker start --show --request ${request}   # and orca worktree list --environment ${on} --json`,
+    };
+  }
+  if (trees.length === 0) {
+    note(redactSecrets(`the recorded worker-start placed no tree on '${on}' (its receipt names none), so the recorded new-top-level is reissued`));
+    return { passthru: inherited };
+  }
+  if (trees.length > 1) {
+    return { cannot: `the newest worker-start's receipt names ${trees.length} trees (${trees.join(', ')}), so which one the slice lives in cannot be read`, repair: `ax worker start --show --request ${request}` };
+  }
+
+  const found = reinstateRemote({ on, treeId: trees[0], run });
+  if (found.cannot) return found;
+  if (found.gone) {
+    return {
+      refusal: `the tree the recorded attempt ran in, ${found.path}, is no longer listed on '${on}' — a replacement reinstates that tree or nothing, and a fresh new-top-level would start the slice again from the base branch, away from its work`,
+      repair: `${DISPATCH_ROUTE}   # after ${found.listing} confirms it is gone`,
+    };
+  }
+  note(redactSecrets(`reinstating the tree the recorded attempt ran in on '${on}': ${found.path} — its branch and Report stay where they are, and no second tree is asked for`));
+  const passthru = [];
+  const kept = withoutCreation(inherited);
+  for (let i = 0; i < kept.length; i += 1) {
+    if (kept[i] === '--worktree') {
+      passthru.push('--worktree', found.selector);
+      i += 1;
+    } else if (kept[i].startsWith('--worktree=')) {
+      passthru.push(`--worktree=${found.selector}`);
+    } else passthru.push(kept[i]);
+  }
+  return { passthru };
 }
 
 /**
@@ -669,9 +759,14 @@ function replaceLocked(path, passthru, context) {
     );
   }
   if (placed.refusal) return refuse(placed.refusal, placed.repair);
-  const inherited = placed.passthru;
-  const stillBad = placementRefusal(inherited);
+  const stillBad = placementRefusal(placed.passthru);
   if (stillBad) return refuse(stillBad);
+  // Still before the gate: the host's listing is a read, and a tree that is
+  // gone refuses with nothing mutated.
+  const tree = reinstateTree(path, placed.passthru, context);
+  if (tree.cannot) return cannot(tree.cannot, tree.repair);
+  if (tree.refusal) return refuse(tree.refusal, tree.repair);
+  const inherited = tree.passthru;
   note(redactSecrets(`inheriting the recorded placement: ${inherited.join(' ')}`));
 
   const gateCode = (context.gateFn ?? gate)([task, '--run', runId], { runner: context.run, env: context.env });

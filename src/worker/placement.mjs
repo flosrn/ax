@@ -532,6 +532,75 @@ export function remoteTreeOf(selector) {
   return tail.startsWith('/') ? tail : '';
 }
 
+/**
+ * The repository a remote selector CARRIES, as `id:<repoId>`, or `''` — the
+ * twin of `remoteTreeOf` for the other half of `id:<repo>::/<path>`. A
+ * placement into an existing remote tree carries no `--repo` (see
+ * `CREATION_FLAGS`), so a reader that must scope a listing to the repository
+ * finds it here.
+ */
+export function remoteRepoOf(selector) {
+  const repo = /^(?:id:)?([^:]+)::\//.exec(String(selector ?? ''))?.[1] ?? '';
+  return repo === '' ? '' : `id:${repo}`;
+}
+
+/**
+ * The placement flags that CREATE a remote tree, and travel with
+ * `new-top-level` only. Orca refuses them beside any other selector —
+ * "Creation and setup options apply only to remote new-top-level worktrees"
+ * (867d38397893, worker/worker-start-validation.ts, `!createsWorktree &&
+ * (name || repo || baseBranch || setup)`), measured 2026-09-28 on
+ * `2107-resume`, whose `--worktree path:… --repo … --name …` Orca rejected
+ * `invalid_argument` before placing anything.
+ */
+export const CREATION_FLAGS = ['--repo', '--name', '--base-branch', '--setup'];
+
+/**
+ * Is the tree a record's worker-start created still on its host, and by which
+ * selector is it addressed? `treeId` is Orca's own `<repoId>::<path>` from
+ * that start's receipt; the question is put to the host through the same
+ * listing `placeRemote` reads, never ssh.
+ *
+ * `{ selector, path }` when the host lists exactly that tree — `id:<repo>::<path>`,
+ * the unambiguous form, which the host REUSES as it stands (`action: 'reused'`
+ * in federation/federation.ts: nothing is checked out, the branch and every
+ * file the last pane left stay where they are). `{ gone, path, listing }` when
+ * the host answered and does not list it. `{ cannot, repair }` when the host
+ * could not answer or answered twice: an unasked host is not an empty one.
+ */
+export function reinstateRemote({ on, treeId, run }) {
+  const cut = String(treeId ?? '').indexOf('::');
+  const repo = cut > 0 ? treeId.slice(0, cut) : '';
+  const path = cut > 0 ? treeId.slice(cut + 2).replace(/\/+$/, '') : '';
+  if (repo === '' || !path.startsWith('/')) {
+    return {
+      cannot: `the recorded worker-start names worktree ${JSON.stringify(treeId)}, which carries no repository and absolute path, so which tree on '${on}' it created cannot be read`,
+      repair: `orca worktree list --environment ${on} --json   # find the tree by eye`,
+    };
+  }
+  const listing = `orca worktree list --repo id:${repo} --environment ${on} --json`;
+  const out = run(['worktree', 'list', '--repo', `id:${repo}`, '--environment', on, '--json']);
+  const receipt = out?.receipt ?? {};
+  const rows = receipt.result?.worktrees;
+  if (out?.status !== 0 || receipt.ok !== true || !Array.isArray(rows)) {
+    const detail = String(receipt.unparseable || receipt.error?.code || out?.stderr || '').replace(/\s+/g, ' ').trim();
+    return {
+      cannot: `'${on}' cannot say which worktrees it carries (${detail === '' ? 'no receipt' : detail}), so whether ${path} is still there is unknown — and a replacement placed anywhere else starts the slice away from its work`,
+      repair: `${listing}   # then repeat this --replace`,
+    };
+  }
+  const mine = rows.filter(row => {
+    if (row?.isMainWorktree === true) return false;
+    const scope = String(row?.repoId ?? '');
+    return (scope === '' || scope === repo) && String(row?.path ?? '').replace(/\/+$/, '') === path;
+  });
+  if (mine.length === 0) return { gone: true, path, listing };
+  if (mine.length > 1) {
+    return { cannot: `'${on}' lists ${mine.length} worktrees at ${path}, so which one the recorded attempt ran in cannot be read`, repair: `${listing}   # read the rows` };
+  }
+  return { selector: `id:${repo}::${path}`, path };
+}
+
 /** Poll the selector a dispatch will use, on evidence, against a deadline. */
 export function untilSeen({ run, worktree, deadline, now, sleep, tickMs }) {
   for (;;) {

@@ -988,6 +988,32 @@ test('#192: a REMOTE record\'s branch is read on the host its placement names, n
   assert.ok(calls.some(line => line.includes('--head feat/192-far')), calls.join(' | '));
 });
 
+test('#275: a REINSTATED remote record — its tree as `id:<repo>::<path>`, no --repo — is still asked of its host for its branch', () => {
+  // A replacement into an existing remote tree carries no `--repo` (Orca
+  // refuses creation flags beside an existing selector), so the listing's
+  // repository scope comes from the selector itself.
+  const dir = store();
+  record(dir, '275-reinstated', { dispatchId: 'ctx_back', handle: 'term_back', on: 'gapicore', worktree: 'id:repo-1::/srv/orca/275-far' });
+  const { exec, calls } = fakeExec({
+    answers: { 'gh pr list': prList([{ number: 275, state: 'OPEN', headRefName: 'feat/275-far' }]) },
+  });
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_back', 'term_back')],
+      terminals: [],
+      hosts: { gapicore: { terminals: [] } },
+      worktrees: [{ path: '/srv/orca/275-far', repoId: 'repo-1', branch: 'refs/heads/feat/275-far' }],
+    },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+    { cwd: repo({ gapicore: { ssh: 'gapicore' } }), exec },
+  );
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /→ ax worker start --replace --request 275-reinstated/);
+  assert.ok(calls.some(line => line.includes('--head feat/275-far')), calls.join(' | '));
+});
+
 test('#192: a host that cannot say which worktrees it carries produces an inability, never a local fallback', () => {
   const dir = store();
   record(dir, '192-unread', {

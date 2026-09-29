@@ -90,6 +90,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { defaultExec } from '../exec.mjs';
 import { parseReceipt } from '../orca-bin.mjs';
 import { physical } from '../worktree/locate.mjs';
+import { remoteRepoOf } from './placement.mjs';
 import { argvValue, recordDelivery, recordRepo, workerStartArgv } from './record.mjs';
 import { inheritPlacement } from './start.mjs';
 import { worktreesOf } from './transcript.mjs';
@@ -295,7 +296,9 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
   const read =
     host === ''
       ? localBranch(selector, exec)
-      : remoteBranch(host, selector, argvValue(placement.passthru, '--repo') ?? '', run, recordedTrees(recordPath));
+      : // A placement into an existing tree carries its repository inside the
+        // selector and no `--repo` beside it (placement.mjs, CREATION_FLAGS).
+        remoteBranch(host, selector, argvValue(placement.passthru, '--repo') || remoteRepoOf(selector), run, recordedTrees(recordPath));
   if (read.failed !== undefined) return read.failed;
   if (read.branch === '') return NO_CONTINUATION;
   const branch = read.branch;

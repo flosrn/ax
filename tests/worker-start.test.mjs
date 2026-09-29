@@ -567,7 +567,7 @@ test('replace with no recorded task cannot establish rather than inventing one',
 // recorded `.worktrees/57-policy-offer-engine`. Placement was opaque
 // passthrough, so a replace typed without it inherited nothing.
 
-test("a replace with no placement flags issues the record's placement byte for byte", () => {
+test("a replace with no placement flags issues the record's placement, less the flags that create a remote tree", () => {
   const home = scratch();
   const placement = [
     '--on', 'gapicore', '--worktree', 'repo_1::/srv/orca/ax/.worktrees/req-inherit',
@@ -583,8 +583,10 @@ test("a replace with no placement flags issues the record's placement byte for b
   assert.equal(r.code, 0, r.out);
   const call = run.calls.find(args => args.includes('worker-start'));
   // The caller's own non-placement passthrough survives; the placement is the
-  // record's, in the record's order.
-  assert.deepEqual(call.slice(-(placement.length + 3)), ['--model', 'alias', ...placement, '--json']);
+  // record's, in the record's order — without `--repo`/`--name`, which Orca
+  // refuses beside an existing remote tree (placement.mjs, CREATION_FLAGS).
+  const reused = ['--on', 'gapicore', '--worktree', 'repo_1::/srv/orca/ax/.worktrees/req-inherit', '--agent', 'omp'];
+  assert.deepEqual(call.slice(-(reused.length + 3)), ['--model', 'alias', ...reused, '--json']);
 });
 
 test('a replace may retype the recorded placement, and one that differs is refused naming both values', () => {
@@ -703,6 +705,98 @@ test('a replace never issues worktree=current unless the record recorded current
   const call = run.calls.find(args => args.includes('worker-start'));
   assert.equal(call.includes('current'), false, call.join(' '));
   assert.equal(call[call.indexOf('--worktree') + 1], 'path:/tmp/req-nocurrent');
+});
+
+// ── A remote replacement reinstates the TREE the first attempt created (#275) ─
+//
+// Measured 2026-09-29 on gapila `2122-work`: the record's worker-start said
+// `--on netcup-vie --worktree new-top-level`, and `--replace` reissued exactly
+// that — so the host minted `2122-work-2` detached on origin/main while the PR
+// branch `flosrn/2122-work` stayed checked out in the tree the receipt named.
+// `new-top-level` is how the first dispatch PLACED the child, not where the
+// slice lives; the receipt's `worktree` effect is.
+
+const REMOTE_REPO = '45d78ba4-b25a-43ed-96e1-add67078bcd2';
+const REMOTE_TREE = '/home/harness/orca/workspaces/gapila/2122-work';
+const REMOTE_PLACEMENT = [
+  '--on', 'netcup-vie', '--worktree', 'new-top-level',
+  '--repo', `id:${REMOTE_REPO}`, '--name', '2122-work', '--agent', 'omp',
+];
+
+/** fakeRunner, with a worker-start that CREATED `tree` and a host listing `listed`. */
+function remoteRunner({ tree = REMOTE_TREE, listed = [tree], listing = 'ok' } = {}) {
+  const base = fakeRunner();
+  const run = args => {
+    const line = args.join(' ');
+    if (line.includes('worker-start')) {
+      const out = base(args);
+      out.receipt.result.effects.unshift({ kind: 'worktree', action: 'created_top_level', id: `${REMOTE_REPO}::${tree}` });
+      out.stdout = JSON.stringify(out.receipt);
+      return out;
+    }
+    if (line.startsWith('worktree list')) {
+      base.calls.push([...args]);
+      if (listing !== 'ok') return { status: 1, stdout: '', stderr: listing, receipt: { unparseable: '' } };
+      return receipt({
+        worktrees: [
+          { id: `${REMOTE_REPO}::/home/harness/Code/gapilabs/gapila`, path: '/home/harness/Code/gapilabs/gapila', isMainWorktree: true, repoId: REMOTE_REPO },
+          ...listed.map(path => ({ id: `${REMOTE_REPO}::${path}`, path, branch: 'refs/heads/flosrn/2122-work', isMainWorktree: false, repoId: REMOTE_REPO })),
+        ],
+      });
+    }
+    return base(args);
+  };
+  run.calls = base.calls;
+  return run;
+}
+
+function remoteRecord(home) {
+  const first = invoke(freshArgs(home, '2122-work', REMOTE_PLACEMENT), { env: { HOME: home }, run: remoteRunner() });
+  assert.equal(first.code, 0, first.out);
+  return first;
+}
+
+test('a remote replace reinstates the tree the recorded worker-start created, never a second new-top-level', () => {
+  const home = scratch();
+  remoteRecord(home);
+  const run = remoteRunner();
+  const r = invoke(['--replace', '--request', '2122-work'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 0, r.out);
+  const call = run.calls.find(args => args.includes('worker-start'));
+  assert.equal(call[call.indexOf('--worktree') + 1], `id:${REMOTE_REPO}::${REMOTE_TREE}`, call.join(' '));
+  assert.equal(call.includes('new-top-level'), false, 'no second tree is asked for');
+  // Orca refuses creation options on an existing remote tree ("Creation and
+  // setup options apply only to remote new-top-level worktrees", measured on
+  // 2107-resume), so they do not travel with it.
+  for (const flag of ['--repo', '--name', '--setup']) assert.equal(call.includes(flag), false, `${flag} in ${call.join(' ')}`);
+  assert.deepEqual(call.slice(call.indexOf('--on'), call.indexOf('--on') + 2), ['--on', 'netcup-vie']);
+  assert.equal(call[call.indexOf('--agent') + 1], 'omp');
+  assert.match(r.out, new RegExp(REMOTE_TREE));
+});
+
+test('a remote replace whose recorded tree the host no longer lists refuses, naming the tree — never a silent new-top-level', () => {
+  const home = scratch();
+  remoteRecord(home);
+  const run = remoteRunner({ listed: [] });
+  const r = invoke(['--replace', '--request', '2122-work'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /REFUSED/);
+  assert.match(r.out, new RegExp(REMOTE_TREE));
+  assert.match(r.out, /netcup-vie/);
+  assert.match(r.out, /ax worker dispatch/);
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'nothing issued');
+  assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0, 'the task was not returned to ready');
+});
+
+test('a remote replace whose host cannot list its worktrees cannot establish, naming the listing', () => {
+  const home = scratch();
+  remoteRecord(home);
+  const run = remoteRunner({ listing: 'environment unreachable' });
+  const r = invoke(['--replace', '--request', '2122-work'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /orca worktree list --repo id:45d78ba4-b25a-43ed-96e1-add67078bcd2 --environment netcup-vie --json/);
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'nothing issued');
+  assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0);
 });
 
 // ── The pane is never touched from the automatic path ────────────────────────

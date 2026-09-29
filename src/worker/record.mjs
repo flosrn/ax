@@ -669,6 +669,30 @@ export function workerPane(path) {
 export const workerStartArgv = path => [...must(lastWorkerStart(load(path)), 'argv', 'worker-start phase')];
 
 /**
+ * The worktrees the newest `worker-start` phase's RECEIPT says it created or
+ * reused, as Orca spells them (`<repoId>::<path>`) — the same phase whose argv
+ * `workerStartArgv` answers, so a `--replace` reads where the child went and
+ * how it was placed off one phase, never two.
+ *
+ * `null` is UNKNOWN (F-028): a receipt carrying no `effects` container says
+ * nothing about what was placed. The one exception is a receipt Orca refused
+ * outright (`ok: false`): a remote worker-start validates, resolves the host
+ * and preflights it before its Dispatch exists, and every failure after that
+ * answers a `result` with its effects (Orca 867d38397893,
+ * federation/federated-worker-start.ts) — so a refusal placed nothing.
+ */
+export function workerStartTrees(path) {
+  const receipt = lastWorkerStart(load(path)).receipt ?? {};
+  const effects = receipt.result?.effects;
+  if (Array.isArray(effects)) {
+    return effects
+      .filter(effect => effect?.kind === 'worktree' && typeof effect.id === 'string' && effect.id !== '')
+      .map(effect => effect.id);
+  }
+  return receipt.ok === false ? [] : null;
+}
+
+/**
  * WHERE the newest worker-start sent the child: the host named by `--on`, or
  * `''` for this machine. Read from the phase's argv alone, so it answers for a
  * start whose receipt failed or names no terminal — the shape `settle` judges.
