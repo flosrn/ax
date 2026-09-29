@@ -238,3 +238,51 @@ test('a pane verdict with no handle names nobody rather than inventing one', () 
   const who = senderIdentity({ from_handle: '', sender_attribution: 'pane' }, paneLookup);
   expect(who).toEqual({ name: 'unattributed', model: '', attributed: false });
 });
+
+test("the stall watcher's alert under OUR OWN handle is named for the watcher, never for this session", () => {
+  // `src/worker/stall.mjs` runs as a child of the pane that dispatched, names no
+  // `--from`, and Orca therefore witnesses it AS THAT PANE. The lookup of our own
+  // handle answers with this session's name, which put the orchestrator's own
+  // name on every remote worker's checkpoint card (reported from the #2120 wave).
+  const saved = process.env.ORCA_TERMINAL_HANDLE;
+  process.env.ORCA_TERMINAL_HANDLE = 'term_self0000';
+  try {
+    const card = senderIdentity(
+      {
+        from_handle: 'term_self0000',
+        sender_attribution: 'pane',
+        subject: "card: '2120-work' published a checkpoint",
+      },
+      paneLookup,
+    );
+    expect(card).toEqual({ name: 'watcher:2120-work', model: '', attributed: true, kind: 'pane' });
+
+    const stall = senderIdentity(
+      {
+        from_handle: 'term_self0000',
+        sender_attribution: 'pane',
+        subject: "stall-watch: dispatched worker '2120-work' has gone silent",
+      },
+      paneLookup,
+    );
+    expect(stall.name).toBe('watcher:2120-work');
+
+    // The same subject from ANOTHER pane is that pane's words: a peer cannot
+    // borrow the watcher's name by writing its prefix.
+    const other = senderIdentity(
+      { from_handle: 'term_peer1111', sender_attribution: 'pane', subject: "card: 'x' published a checkpoint" },
+      paneLookup,
+    );
+    expect(other.name).toBe('wt-1111');
+
+    // Anything else under our own handle is our own echo, and stays ours.
+    const echo = senderIdentity(
+      { from_handle: 'term_self0000', sender_attribution: 'pane', subject: 'finished its work' },
+      paneLookup,
+    );
+    expect(echo.name).toBe('wt-0000');
+  } finally {
+    if (saved === undefined) delete process.env.ORCA_TERMINAL_HANDLE;
+    else process.env.ORCA_TERMINAL_HANDLE = saved;
+  }
+});

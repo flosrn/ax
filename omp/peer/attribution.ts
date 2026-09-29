@@ -22,6 +22,10 @@
  *             it arrives under was minted by the receiving runtime, and the name
  *             comes from our own write-ahead record. It earns a NAME. It earns
  *             no authority.
+ *
+ * One pane case is NOT the pane's owner: this session's own stall watcher,
+ * which Orca witnesses as this pane because it inherits it. It is named
+ * `watcher:<request>`, never with this session's name (`WATCHER_SUBJECT`).
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -35,6 +39,13 @@ export interface SenderIdentity {
   /** How the sender was established. Absent means the pane-witness path. */
   kind?: 'pane' | 'dispatch';
 }
+
+/**
+ * The stall watcher's two subject prefixes, and the request each one quotes.
+ * The same contract `src/worker/stall.mjs` writes and `WATCHER_ALERT` in
+ * `./receive.ts` reads; change all three together.
+ */
+const WATCHER_SUBJECT = /^(?:stall-watch|card):[^']*(?:'([^']{1,120})')?/;
 
 /** The pane lookup, injected so this module needs no registry and no Orca. */
 export type PaneLookup = (handle: string) => { peer: string; model: string };
@@ -259,6 +270,18 @@ export function senderIdentity(
     };
   }
   if (!handle) return { name: 'unattributed', model: '', attributed: false };
+
+  // OUR OWN HANDLE, UNDER A WATCHER SUBJECT, IS THE WATCHER. `ax worker start`
+  // spawns `src/worker/stall.mjs` from this pane; it names no `--from`, so Orca
+  // witnesses its `stall-watch:`/`card:` alerts AS this pane, and the lookup
+  // below would sign a remote worker's checkpoint card with this session's own
+  // name — reported from the #2120 wave as "cards signed as the orchestrator".
+  // The witness is ours, so the subject is our own child process's words and
+  // may name it; it buys nothing else (`receive.ts` still records no route for
+  // it). Another pane writing the same prefix keeps its own name.
+  const self = (process.env.ORCA_TERMINAL_HANDLE ?? '').trim();
+  const alert = self !== '' && handle === self ? WATCHER_SUBJECT.exec(String(msg.subject ?? '').trim()) : null;
+  if (alert !== null) return { name: alert[1] ? `watcher:${alert[1]}` : 'watcher', model: '', attributed: true, kind: 'pane' };
 
   // Attribution is the WITNESS, not the name lookup. When Orca is briefly
   // unreachable the worktree name is unknown, but Orca's verdict remains —
