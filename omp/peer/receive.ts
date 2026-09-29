@@ -28,6 +28,7 @@
  * never branches on whether the write succeeded.
  */
 
+import type { SenderIdentity } from './attribution.ts';
 import type { DeliveryDiagnostic } from './diagnostics.ts';
 import type { Fence } from './health.ts';
 
@@ -48,29 +49,8 @@ export const RETRY_MAX_MS = 60_000;
 // other. Two shapes for one sink is the defect, not the length.
 const RUN_ADDRESS = /^run:[A-Za-z0-9_-]{1,64}$/;
 
-// THE STALL WATCHER'S TWO SUBJECTS, which are a contract and not a convenience.
-// `src/worker/stall.mjs` writes them (`stall-watch: …` for a silent or gone
-// child, `card: …` for a remote checkpoint) and this side reads them, so the
-// strings are duplicated across a process boundary on purpose: the alert crosses
-// as an Orca message, and there is nothing to import. Change one end and the
-// receiver test that pins the wake fails at the other (#149).
-const WATCHER_ALERT = /^(?:stall-watch|card):/;
-
-export interface SenderInfo {
-  name: string;
-  model: string;
-  attributed: boolean;
-  /**
-   * How the sender was established. `pane` (or absent) is Orca's witness of a
-   * live pane on THIS runtime. `dispatch` is a worker we started, named from our
-   * own write-ahead record because a worker has no pane key by contract.
-   *
-   * The distinction is load-bearing below: being NAMED is not being AUTHORISED.
-   * A dispatch sender may be read and answered, and it may not hand this session
-   * a reply address nor borrow its authority to relay to a third party.
-   */
-  kind?: 'pane' | 'dispatch';
-}
+/** The sender as `./attribution.ts` established it — one declaration, read here by type only. */
+export type SenderInfo = SenderIdentity;
 
 /**
  * Everything the loop needs from the outside, passed in rather than imported.
@@ -108,12 +88,11 @@ export interface ReceiveDeps {
   recordRoute: (id: string, route: { run: string; peer: string; environment?: string; threadId?: string }) => void;
   /**
    * Where to write back to a worker we dispatched, DERIVED rather than read off the
-   * message. Optional: a host that cannot resolve it simply has no route, and
-   * `peer_reply` refuses with the message it already has.
+   * message: the dispatch id is looked up in this session's own write-ahead store and
+   * joined against Orca (`./route.ts`). Optional: a host that cannot resolve it simply
+   * has no route, and `peer_reply` refuses with the message it already has.
    */
-  deriveRoute?: (
-    msg: Record<string, unknown>,
-  ) => { run: string; peer: string; environment?: string } | null;
+  deriveRoute?: (dispatchId: string) => { run: string; peer: string; environment?: string } | null;
   /**
    * The Run a witnessed pane publishes for itself, as `run:<id>`, or `''`.
    *
@@ -284,9 +263,98 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
   );
 }
 
+/** Why a delivery carries no reply route. One reason, named in the banner and the diagnostic. */
+export type NoRoute =
+  | 'no-id'
+  | 'unattributed'
+  | 'pane-unrouted'
+  | 'dispatch-unresolved'
+  | 'watcher'
+  | 'watcher-unresolved';
+
+export type ReplyRoute = { run: string; peer: string; environment?: string };
+
+/**
+ * Where `peer_reply` may answer this message, or the one reason it may not.
+ *
+ * ANSWERABLE IS "A ROUTE WAS RECORDED", NEVER "THE SENDER WAS NAMED". This used
+ * to start `true` and be falsified only on the dispatch path, so a pane message
+ * with no return address was announced as repliable and then refused by
+ * `peer_reply`. That is most of the real traffic: a worker following Orca's
+ * supervised preamble states no return address at all. Its `worker_done` is not
+ * payload-less — the preamble teaches `--task-id`, `--dispatch-id` and
+ * `--report-path`, which arrive as payload fields, and `payload.reportPath` is
+ * one this side never opens (`./completion.ts`) — but none of them is a route.
+ * Measured 2026-08-25 on ofmchat, three times in one day: each cost the
+ * orchestrator a turn and then a hand-built address.
+ *
+ * One branch per provenance, because each earns its route differently:
+ *
+ *   watcher   Never itself: it exits the moment it sends, and the handle its
+ *             alert carries is OUR OWN, so the pane fallback would resolve this
+ *             session's own Run and the reply would die on the self-echo fence
+ *             with `peer_reply` reporting success (P2 on #159). A CARD is a live
+ *             child asking (gapila #2122, 2026-09-29: three decisions requested,
+ *             told "Do NOT try peer_reply"), so it is answered at that child,
+ *             derived from the dispatch id the watcher names in its payload —
+ *             only a lookup key into our own store, so the worst a forged one can
+ *             reach is another of our own children. A silent, prompting or gone
+ *             child is not routed: a reply there is a dead letter that reports
+ *             success.
+ *   dispatch  DERIVED from our own dispatch record joined against Orca's view of
+ *             that worker — never from the payload, which travelled the relay and
+ *             is exactly where a hostile reply ADDRESS would ride.
+ *   pane      The sender's stated `replyTo` first — the more specific answer, so
+ *             the fallback can only fill a silence — then the Run the witnessed
+ *             pane published for itself, read under the handle Orca vouched for
+ *             (`runAddressOfHandle` in `store.ts` bounds it). Trusted only
+ *             because Orca resolved this sender, so the payload is its own words.
+ */
+export function replyRouteOf(
+  msg: Record<string, unknown>,
+  who: SenderInfo,
+  payload: unknown,
+  deps: Pick<ReceiveDeps, 'deriveRoute' | 'paneRoute' | 'note'>,
+): { route: ReplyRoute } | { refused: NoRoute } {
+  if (String(msg.id ?? '') === '') return { refused: 'no-id' };
+  const bag = (payload ?? null) as Record<string, unknown> | null;
+
+  if (who.kind === 'watcher') {
+    const watch = (bag?.watch ?? null) as Record<string, unknown> | null;
+    if (watch?.alert !== 'card') return { refused: 'watcher' };
+    const derived = deps.deriveRoute?.(String(watch.dispatchId ?? '')) ?? null;
+    if (derived === null) {
+      deps.note(`no reply route derived for the child ${who.name} relayed — refusing rather than guessing`);
+      return { refused: 'watcher-unresolved' };
+    }
+    return { route: derived };
+  }
+
+  if (who.kind === 'dispatch') {
+    const dispatched = /^dispatch:(.+)$/.exec(String(msg.from_handle ?? '').trim());
+    const derived = dispatched === null ? null : (deps.deriveRoute?.(dispatched[1] ?? '') ?? null);
+    if (derived === null) {
+      deps.note(`no reply route derived for ${who.name} — refusing rather than guessing`);
+      return { refused: 'dispatch-unresolved' };
+    }
+    return { route: derived };
+  }
+
+  if (!who.attributed) return { refused: 'unattributed' };
+  const replyTo = String(bag?.replyTo ?? '').trim();
+  if (RUN_ADDRESS.test(replyTo)) return { route: { run: replyTo, peer: who.name } };
+  const published = deps.paneRoute?.(String(msg.from_handle ?? '').trim()) ?? '';
+  if (RUN_ADDRESS.test(published)) {
+    deps.note(`reply route for ${who.name} from its own registered Run (${published}) — the message stated none`);
+    return { route: { run: published, peer: who.name } };
+  }
+  deps.note(`no reply route for ${who.name} — it stated none and its pane publishes none`);
+  return { refused: 'pane-unrouted' };
+}
+
 /**
  * The other thing a reader must not discover by failing: this message cannot be
- * answered with `peer_reply`.
+ * answered with `peer_reply` — and WHY, because the reason decides what to do.
  *
  * Measured 2026-08-25 on ofmchat #55. Its Dispatch had settled `failed`, so Orca
  * revoked the capability and rejected the child's escalation outright — and then
@@ -301,9 +369,7 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
  * after a second report on 2026-09-08 (a worker refused `Dispatch … capability
  * is revoked` on a correction it was ASKED for, after an ordinary successful
  * report). Every path below is relative to the fork checkout's
- * `src/main/runtime/orchestration/db/dispatch-context/`, and the first draft of
- * this note cited them from `src/main/db/…` — a prefix that resolves to nothing,
- * which is not a citation:
+ * `src/main/runtime/orchestration/db/dispatch-context/`:
  *
  *   `worker-report-settlement.ts`  sets `capability_revoked_at` UNCONDITIONALLY
  *     in the settling UPDATE; only `last_failure` is conditioned on the outcome
@@ -311,24 +377,33 @@ export function gapBanner(sender: string, v: SequenceVerdict): string {
  *     completion, in one statement with `status = 'completed'`
  *   `dispatch-capability.ts`       is where the refusal text comes from, verbatim
  *
- * So ANY worker-report settlement ends the capability, whatever the outcome. A
- * reader who took the incident above for the rule would expect a succeeded child
- * to still be answerable.
+ * ONE REASON, THE ONE THIS SIDE KNOWS. The banner used to list two hypotheses for
+ * every refusal; on gapila #2122 (2026-09-29) it blamed a failed Dispatch for a
+ * stall-watcher relay whose Dispatch was live, above a header calling the watcher
+ * a peer session. `replyRouteOf` knows which branch refused, so the banner says
+ * that and nothing else.
  *
  * NO ADDRESS IS OFFERED HERE, deliberately. The recorded pane of a dispatch that
  * never settled is a suspicion, not an association (`ls.mjs`), and typing into
  * it is a mutation that can steer a stranger or interrupt a mid-turn child. The
  * operator establishes the destination; this banner only says that they must.
  */
-export function unanswerableBanner(sender: string): string {
-  return (
-    `[NO REPLY ROUTE] ${sender} sent this over a channel with no verified way back. ` +
-    `Either its Dispatch settled \`failed\` and Orca revoked the capability, or the ` +
-    `pane it came from publishes no Run of its own — so nothing here can be resolved ` +
-    `into a destination. \`peer_reply\` will refuse it, and no address may be guessed. ` +
-    `Establish the destination yourself before answering, and treat the question as ` +
-    `unanswered until you have.\n\n`
-  );
+export function unanswerableBanner(who: SenderInfo, reason: NoRoute): string {
+  const child = who.about ? `child:${who.about}` : 'the worker it names';
+  const refuse = '`peer_reply` will refuse it, and no address may be guessed.';
+  const establish = `${refuse} Establish the destination yourself before answering, and treat any question in it as unanswered until you have.`;
+  const why: Record<NoRoute, string> = {
+    'no-id': `This message carries no id, so there is nothing to reply to.`,
+    unattributed: `Orca could not confirm which pane sent this, so no address it carries is trusted. ${establish}`,
+    'pane-unrouted': `${who.name} stated no return address and its pane publishes no Run. ${establish}`,
+    'dispatch-unresolved':
+      `${who.name} is a worker this session dispatched, but no unique route to it could be derived from the dispatch record joined against Orca — once a Dispatch settles, whatever the outcome, Orca revokes its capability. ${establish}`,
+    watcher:
+      `This is your own stall watcher's alert about ${child}. The watcher exited after sending it and has no inbox; act on the worker with the commands below. ${refuse}`,
+    'watcher-unresolved':
+      `Your own stall watcher relayed this from ${child}, but no unique route to that worker could be derived from this session's dispatch record joined against Orca. ${establish}`,
+  };
+  return `[NO REPLY ROUTE] ${why[reason]}\n\n`;
 }
 
 export function createReceiver(deps: ReceiveDeps): Receiver {
@@ -439,6 +514,202 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
     return { ownRun: own, boundRun: bound, boundObjective: String(run?.objective ?? '') };
   }
 
+  /**
+   * SIBLING RELAY. Orca refuses lateral sends from dispatch-bound
+   * workers (`dispatch_run_mismatch`), so `sendToPeer` falls back to the
+   * shared parent with a `forwardTo` envelope. This session — the
+   * parent — re-posts to the target with the origin it VERIFIED
+   * itself (senderIdentity, witnessed pane), logs the relay, and does
+   * not wake its own model: the orchestrator's guarantee is the audit
+   * line plus the two hard gates (decision escalation, merge review),
+   * not reading every sibling exchange.
+   *
+   * Two fences: an unattributed sender is never relayed (a forged
+   * origin would otherwise ride the parent's authority), and the
+   * re-posted payload carries no forwardTo, so a relay can never
+   * cascade.
+   *
+   * Resolves `false` only when a relay that was attempted did not land, so the
+   * delivery is not acked; every refusal is final and resolves `true`.
+   */
+  async function relaySibling(
+    msg: Record<string, unknown>,
+    fwBag: Record<string, unknown> | null,
+    forwardTo: string,
+    deliveryId: string,
+  ): Promise<boolean> {
+    let landed = true;
+    const fwId = String(msg.id ?? '');
+    if (fwId && deps.wasInjected(fwId)) return true;
+    const origin = deps.senderIdentity(msg);
+    if (!origin.attributed) {
+      if (fwId) deps.rememberInjected(fwId);
+      deps.note(`forward REFUSED: unattributed sender asked to relay to ${forwardTo}`);
+      diagnose({
+        reason: 'filtered',
+        filter: 'forward-unattributed',
+        peer: origin.name,
+        messageId: fwId || undefined,
+        deliveryId: deliveryId || undefined,
+        detail: `asked to relay to ${forwardTo}`,
+      });
+      return true;
+    }
+    // A worker we started is NAMED, not authorised. Only a
+    // pane-witnessed sender may borrow this session's relay.
+    if (origin.kind === 'dispatch') {
+      if (fwId) deps.rememberInjected(fwId);
+      deps.note(`forward REFUSED: dispatch sender ${origin.name} is named, not pane-witnessed — no borrowed authority`);
+      diagnose({
+        reason: 'filtered',
+        filter: 'forward-dispatch',
+        peer: origin.name,
+        messageId: fwId || undefined,
+        deliveryId: deliveryId || undefined,
+      });
+      return true;
+    }
+    if (!RUN_ADDRESS.test(forwardTo)) {
+      if (fwId) deps.rememberInjected(fwId);
+      deps.note(`forward REFUSED: malformed target '${forwardTo}'`);
+      diagnose({
+        reason: 'filtered',
+        filter: 'forward-malformed',
+        peer: origin.name,
+        messageId: fwId || undefined,
+        deliveryId: deliveryId || undefined,
+        detail: `malformed target '${forwardTo}'`,
+      });
+      return true;
+    }
+    // A CROSS-HOST RELAY IS A SECOND CLAIM, and the witness covers
+    // only the first. The public pane verdict (or the private key
+    // on an older runtime) proves who wrote this envelope;
+    // `forwardEnvironment` asserts which runtime the target lives
+    // on, and the parent applies it to its OWN
+    // `orchestration send` — a privileged call aimed by an
+    // unverified value. Any witnessed sibling could therefore point
+    // this session at any declared host. So the pair is re-derived
+    // from records this side wrote before dispatching, and the two
+    // wrong answers are both closed: an unattested relay is
+    // REFUSED, never sent bare, because a bare `run:<id>` resolves
+    // against THIS runtime and would deliver a sibling's words to
+    // whoever holds that id here.
+    const forwardEnvironment = String(fwBag?.forwardEnvironment ?? '').trim();
+    if (forwardEnvironment !== '') {
+      let attested = false;
+      try {
+        attested = deps.attestRelayEnvironment?.(forwardTo, forwardEnvironment) === true;
+      } catch {
+        // An attestation that could not be made is not one that
+        // succeeded. The refusal below names the host, so the repair
+        // is readable either way.
+        attested = false;
+      }
+      if (!attested) {
+        if (fwId) deps.rememberInjected(fwId);
+        const detail = `no dispatch record of this session places ${forwardTo} on '${forwardEnvironment}'`;
+        deps.note(
+          `forward REFUSED: cross-host relay to ${forwardTo} on '${forwardEnvironment}' — ${detail}`,
+        );
+        diagnose({
+          reason: 'filtered',
+          filter: 'forward-environment',
+          peer: origin.name,
+          messageId: fwId || undefined,
+          deliveryId: deliveryId || undefined,
+          detail,
+        });
+        return true;
+      }
+    }
+    try {
+      const statedReturn = String(fwBag?.replyTo ?? '').trim();
+      // The return address travelled in a PANE-WITNESSED envelope,
+      // which is what authorises this relay at all. It still has to
+      // be a Run address before the final recipient is invited to
+      // answer it; malformed data is omitted, never "mostly"
+      // trusted. The original sender remains the return route — the
+      // parent does not insert itself into the conversation.
+      const replyTo = RUN_ADDRESS.test(statedReturn) ? statedReturn : '';
+      const forwardThreadId = String(fwBag?.forwardThreadId ?? fwId).trim();
+      const relayPayload = JSON.stringify({
+        peer: origin.name,
+        relayedByParent: true,
+        ...(sequenceOf(fwBag) === null ? {} : { seq: sequenceOf(fwBag) }),
+        ...(replyTo ? { replyTo } : {}),
+      });
+      const relay = deps.spawn(
+        [
+          deps.orca,
+          'orchestration',
+          'send',
+          '--to',
+          forwardTo,
+          '--type',
+          String(msg.type ?? 'status'),
+          '--subject',
+          `peer:${origin.name} (via parent relay)`,
+          '--body',
+          String(msg.body ?? ''),
+          '--payload',
+          relayPayload,
+          // The thread root travelled in the PANE-WITNESSED relay
+          // envelope. `fwId` is only the parent's receipt id; using
+          // it here splits one exchange into a new thread at every
+          // relay hop. Legacy envelopes stated no root, so only they
+          // correctly fall back to their own id.
+          ...(forwardThreadId ? ['--thread-id', forwardThreadId] : []),
+          // The environment names the FINAL destination's runtime;
+          // `send.ts` deliberately kept it off the local parent hop.
+          // Nonempty only once ATTESTED above, so this flag never
+          // carries a host the payload merely asked for.
+          ...(forwardEnvironment ? ['--environment', forwardEnvironment] : []),
+          '--json',
+        ],
+        { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 15_000 },
+      ) as { stdout: unknown; stderr: unknown; exited: Promise<number>; exitCode?: number };
+      const relayOut = await new Response(relay.stdout).text();
+      const relayErr = await new Response(relay.stderr).text();
+      const exitCode = await relay.exited;
+      const receipt = deps.parse(relayOut) as { ok?: boolean } | null;
+      if (exitCode !== 0 || receipt?.ok !== true) {
+        landed = false;
+        const detail = relayErr.trim() || relayOut.trim() || `exit ${exitCode}`;
+        deps.note(`forward relay failed: ${detail}`);
+        diagnose({
+          reason: 'injection-refused',
+          peer: origin.name,
+          messageId: fwId || undefined,
+          deliveryId: deliveryId || undefined,
+          detail,
+        });
+      } else {
+        if (fwId) deps.rememberInjected(fwId);
+        deps.note(`relayed ${origin.name} → ${String(fwBag?.forwardToName ?? forwardTo)} (sibling forward)`);
+        diagnose({
+          reason: 'filtered',
+          filter: 'forward',
+          peer: origin.name,
+          messageId: fwId || undefined,
+          deliveryId: deliveryId || undefined,
+          detail: `relayed to ${forwardTo}`,
+        });
+      }
+    } catch (err) {
+      landed = false;
+      deps.note(`forward relay failed: ${err}`);
+      diagnose({
+        reason: 'injection-refused',
+        peer: origin.name,
+        messageId: fwId || undefined,
+        deliveryId: deliveryId || undefined,
+        detail: String(err),
+      });
+    }
+    return landed;
+  }
+
   function loop(pi): void {
     if (stopped) return;
 
@@ -541,196 +812,12 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
               );
               continue;
             }
-            // SIBLING RELAY. Orca refuses lateral sends from dispatch-bound
-            // workers (`dispatch_run_mismatch`), so `sendToPeer` falls back to the
-            // shared parent with a `forwardTo` envelope. This session — the
-            // parent — re-posts to the target with the origin it VERIFIED
-            // itself (senderIdentity, witnessed pane), logs the relay, and does
-            // not wake its own model: the orchestrator's guarantee is the audit
-            // line plus the two hard gates (decision escalation, merge review),
-            // not reading every sibling exchange.
-            //
-            // Two fences: an unattributed sender is never relayed (a forged
-            // origin would otherwise ride the parent's authority), and the
-            // re-posted payload carries no forwardTo, so a relay can never
-            // cascade.
-            {
-              const rawFw = msg.payload;
-              const fwBag = (
-                typeof rawFw === 'string' ? deps.parse(rawFw) : rawFw
-              ) as Record<string, unknown> | null;
-              const forwardTo = String(fwBag?.forwardTo ?? '').trim();
-              if (forwardTo) {
-                const fwId = String(msg.id ?? '');
-                if (fwId && deps.wasInjected(fwId)) continue;
-                const origin = deps.senderIdentity(msg);
-                if (!origin.attributed) {
-                  if (fwId) deps.rememberInjected(fwId);
-                  deps.note(`forward REFUSED: unattributed sender asked to relay to ${forwardTo}`);
-                  diagnose({
-                    reason: 'filtered',
-                    filter: 'forward-unattributed',
-                    peer: origin.name,
-                    messageId: fwId || undefined,
-                    deliveryId: deliveryId || undefined,
-                    detail: `asked to relay to ${forwardTo}`,
-                  });
-                  continue;
-                }
-                // A worker we started is NAMED, not authorised. Only a
-                // pane-witnessed sender may borrow this session's relay.
-                if (origin.kind === 'dispatch') {
-                  if (fwId) deps.rememberInjected(fwId);
-                  deps.note(`forward REFUSED: dispatch sender ${origin.name} is named, not pane-witnessed — no borrowed authority`);
-                  diagnose({
-                    reason: 'filtered',
-                    filter: 'forward-dispatch',
-                    peer: origin.name,
-                    messageId: fwId || undefined,
-                    deliveryId: deliveryId || undefined,
-                  });
-                  continue;
-                }
-                if (!RUN_ADDRESS.test(forwardTo)) {
-                  if (fwId) deps.rememberInjected(fwId);
-                  deps.note(`forward REFUSED: malformed target '${forwardTo}'`);
-                  diagnose({
-                    reason: 'filtered',
-                    filter: 'forward-malformed',
-                    peer: origin.name,
-                    messageId: fwId || undefined,
-                    deliveryId: deliveryId || undefined,
-                    detail: `malformed target '${forwardTo}'`,
-                  });
-                  continue;
-                }
-                // A CROSS-HOST RELAY IS A SECOND CLAIM, and the witness covers
-                // only the first. The public pane verdict (or the private key
-                // on an older runtime) proves who wrote this envelope;
-                // `forwardEnvironment` asserts which runtime the target lives
-                // on, and the parent applies it to its OWN
-                // `orchestration send` — a privileged call aimed by an
-                // unverified value. Any witnessed sibling could therefore point
-                // this session at any declared host. So the pair is re-derived
-                // from records this side wrote before dispatching, and the two
-                // wrong answers are both closed: an unattested relay is
-                // REFUSED, never sent bare, because a bare `run:<id>` resolves
-                // against THIS runtime and would deliver a sibling's words to
-                // whoever holds that id here.
-                const forwardEnvironment = String(fwBag?.forwardEnvironment ?? '').trim();
-                if (forwardEnvironment !== '') {
-                  let attested = false;
-                  try {
-                    attested = deps.attestRelayEnvironment?.(forwardTo, forwardEnvironment) === true;
-                  } catch {
-                    // An attestation that could not be made is not one that
-                    // succeeded. The refusal below names the host, so the repair
-                    // is readable either way.
-                    attested = false;
-                  }
-                  if (!attested) {
-                    if (fwId) deps.rememberInjected(fwId);
-                    const detail = `no dispatch record of this session places ${forwardTo} on '${forwardEnvironment}'`;
-                    deps.note(
-                      `forward REFUSED: cross-host relay to ${forwardTo} on '${forwardEnvironment}' — ${detail}`,
-                    );
-                    diagnose({
-                      reason: 'filtered',
-                      filter: 'forward-environment',
-                      peer: origin.name,
-                      messageId: fwId || undefined,
-                      deliveryId: deliveryId || undefined,
-                      detail,
-                    });
-                    continue;
-                  }
-                }
-                try {
-                  const statedReturn = String(fwBag?.replyTo ?? '').trim();
-                  // The return address travelled in a PANE-WITNESSED envelope,
-                  // which is what authorises this relay at all. It still has to
-                  // be a Run address before the final recipient is invited to
-                  // answer it; malformed data is omitted, never "mostly"
-                  // trusted. The original sender remains the return route — the
-                  // parent does not insert itself into the conversation.
-                  const replyTo = RUN_ADDRESS.test(statedReturn) ? statedReturn : '';
-                  const forwardThreadId = String(fwBag?.forwardThreadId ?? fwId).trim();
-                  const relayPayload = JSON.stringify({
-                    peer: origin.name,
-                    relayedByParent: true,
-                    ...(sequenceOf(fwBag) === null ? {} : { seq: sequenceOf(fwBag) }),
-                    ...(replyTo ? { replyTo } : {}),
-                  });
-                  const relay = deps.spawn(
-                    [
-                      deps.orca,
-                      'orchestration',
-                      'send',
-                      '--to',
-                      forwardTo,
-                      '--type',
-                      String(msg.type ?? 'status'),
-                      '--subject',
-                      `peer:${origin.name} (via parent relay)`,
-                      '--body',
-                      String(msg.body ?? ''),
-                      '--payload',
-                      relayPayload,
-                      // The thread root travelled in the PANE-WITNESSED relay
-                      // envelope. `fwId` is only the parent's receipt id; using
-                      // it here splits one exchange into a new thread at every
-                      // relay hop. Legacy envelopes stated no root, so only they
-                      // correctly fall back to their own id.
-                      ...(forwardThreadId ? ['--thread-id', forwardThreadId] : []),
-                      // The environment names the FINAL destination's runtime;
-                      // `send.ts` deliberately kept it off the local parent hop.
-                      // Nonempty only once ATTESTED above, so this flag never
-                      // carries a host the payload merely asked for.
-                      ...(forwardEnvironment ? ['--environment', forwardEnvironment] : []),
-                      '--json',
-                    ],
-                    { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 15_000 },
-                  ) as { stdout: unknown; stderr: unknown; exited: Promise<number>; exitCode?: number };
-                  const relayOut = await new Response(relay.stdout).text();
-                  const relayErr = await new Response(relay.stderr).text();
-                  const exitCode = await relay.exited;
-                  const receipt = deps.parse(relayOut) as { ok?: boolean } | null;
-                  if (exitCode !== 0 || receipt?.ok !== true) {
-                    allInjected = false;
-                    const detail = relayErr.trim() || relayOut.trim() || `exit ${exitCode}`;
-                    deps.note(`forward relay failed: ${detail}`);
-                    diagnose({
-                      reason: 'injection-refused',
-                      peer: origin.name,
-                      messageId: fwId || undefined,
-                      deliveryId: deliveryId || undefined,
-                      detail,
-                    });
-                  } else {
-                    if (fwId) deps.rememberInjected(fwId);
-                    deps.note(`relayed ${origin.name} → ${String(fwBag?.forwardToName ?? forwardTo)} (sibling forward)`);
-                    diagnose({
-                      reason: 'filtered',
-                      filter: 'forward',
-                      peer: origin.name,
-                      messageId: fwId || undefined,
-                      deliveryId: deliveryId || undefined,
-                      detail: `relayed to ${forwardTo}`,
-                    });
-                  }
-                } catch (err) {
-                  allInjected = false;
-                  deps.note(`forward relay failed: ${err}`);
-                  diagnose({
-                    reason: 'injection-refused',
-                    peer: origin.name,
-                    messageId: fwId || undefined,
-                    deliveryId: deliveryId || undefined,
-                    detail: String(err),
-                  });
-                }
-                continue;
-              }
+            const rawFw = msg.payload;
+            const fwBag = (typeof rawFw === 'string' ? deps.parse(rawFw) : rawFw) as Record<string, unknown> | null;
+            const forwardTo = String(fwBag?.forwardTo ?? '').trim();
+            if (forwardTo) {
+              if (!(await relaySibling(msg, fwBag, forwardTo, deliveryId))) allInjected = false;
+              continue;
             }
             const msgId = String(msg.id ?? '');
             const who = deps.senderIdentity(msg);
@@ -757,115 +844,40 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // that child stopped. Under the old `escalation` envelope the wake
             // still landed as Orca's rejection, from the runtime rather than from
             // this handle; `status` is accepted (#149), so the drop below would
-            // be the whole message. The key is the watcher's two subject
-            // prefixes and nothing wider: an echo of this session's own report
+            // be the whole message. The key is `kind: 'watcher'`, which
+            // `./attribution.ts` grants only to the watcher's two subject
+            // prefixes under this handle: an echo of this session's own report
             // still dies here, which is the noise measured above.
             const selfHandle = (process.env.ORCA_TERMINAL_HANDLE ?? '').trim();
-            // AND IT IS NEVER ANSWERABLE, which is the second half of the
-            // exemption and not a detail of it. The watcher exits the moment it
-            // sends, and the handle this alert carries is OUR OWN — so the pane
-            // fallback below would resolve it to this session's own Run, record
-            // that as a route, and have `peerContent` invite `peer_reply`. The
-            // reply would come straight back here and die on the fence above,
-            // with the tool reporting success: the exact "invited, then refused"
-            // shape measured three times on 2026-08-25 that made a recorded route
-            // the definition of answerable in the first place. Raised as P2 on
-            // #159 by a review lens, before it could be measured again.
-            let selfOriginAlert = false;
-            if (selfHandle && String(msg.from_handle ?? '') === selfHandle) {
-              if (WATCHER_ALERT.test(String(msg.subject ?? '').trim())) {
-                selfOriginAlert = true;
-                deps.note(
-                  `stall watcher alert under our own handle — injecting, no reply route (${msgId || 'no id'})`,
-                );
-              } else {
-                deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
-                diagnose({
-                  reason: 'filtered',
-                  filter: 'self-echo',
-                  peer: who.name,
-                  messageId: msgId || undefined,
-                  deliveryId: deliveryId || undefined,
-                });
-                continue;
-              }
+            if (who.kind === 'watcher') {
+              deps.note(`stall watcher alert under our own handle about ${who.about || 'a child'} (${msgId || 'no id'})`);
+            } else if (selfHandle && String(msg.from_handle ?? '') === selfHandle) {
+              deps.note(`dropped a message this session sent itself (${msgId || 'no id'})`);
+              diagnose({
+                reason: 'filtered',
+                filter: 'self-echo',
+                peer: who.name,
+                messageId: msgId || undefined,
+                deliveryId: deliveryId || undefined,
+              });
+              continue;
             }
 
-            // The route rides in the message and is trusted only because the
-            // message is attributed: a pane verdict (or, on an older runtime,
-            // a present pane key) means Orca resolved this sender, so its
-            // payload is that pane's own words.
-            // Recording it BEFORE the replay check is what makes a question
-            // survive an OMP restart — `.seen` restores the id, and the retained
-            // delivery restores the route, so `peer_reply` still lands.
             const rawPayload = msg.payload;
             const msgPayload =
               typeof rawPayload === 'string' ? deps.parse(rawPayload) : rawPayload;
-            const replyTo = String(
-              (msgPayload as Record<string, unknown> | null)?.replyTo ?? '',
-            ).trim();
             // Orca carries the first message id as `thread_id` on every child
             // message in the exchange. A message created before thread support
             // has none, and its own id is the correct root. This value is what a
             // reply must reuse — using the newest message id forks the history at
             // every turn and loses the original question after one round trip.
             const threadId = String(msg.thread_id ?? msg.threadId ?? msgId).trim();
-            // ANSWERABLE IS "A ROUTE WAS RECORDED", NEVER "THE SENDER WAS NAMED".
-            //
-            // This used to start `true` and be falsified only on the dispatch
-            // path, so a pane message with no return address was announced as
-            // repliable and then refused by `peer_reply`. That is most of the real
-            // traffic: a worker following Orca's supervised preamble states no
-            // return address at all. Its `worker_done` is not payload-less — the
-            // preamble teaches `--task-id`, `--dispatch-id` and `--report-path`,
-            // which arrive as payload fields, and `payload.reportPath` is one
-            // this side never opens (`./completion.ts`) — but none of them is a
-            // route. Measured 2026-08-25 on ofmchat, three times in one day:
-            // each cost the orchestrator a turn and then a hand-built address.
-            let answerable = false;
-            const paneHandle = String(msg.from_handle ?? '').trim();
-            // `kind !== 'dispatch'` and not merely `attributed`: a dispatch sender
-            // is named from our own record, but the payload it carries came over
-            // the relay, and a reply ADDRESS is exactly the field a hostile
-            // payload would want us to keep. An absent kind is the pane path.
-            if (!selfOriginAlert && msgId && who.attributed && who.kind !== 'dispatch') {
-              // The sender's own statement first: it is the more specific answer,
-              // and honouring it means the fallback below can only fill a silence.
-              if (RUN_ADDRESS.test(replyTo)) {
-                deps.recordRoute(msgId, { run: replyTo, peer: who.name, threadId });
-                answerable = true;
-              } else {
-                // No return address stated. The pane that sent this was witnessed
-                // by Orca, so the Run IT published for itself is a route this side
-                // resolves from a key the sender did not choose — see
-                // `runAddressOfHandle` in `store.ts` for the bound on that.
-                const published = deps.paneRoute?.(paneHandle) ?? '';
-                if (RUN_ADDRESS.test(published)) {
-                  deps.recordRoute(msgId, { run: published, peer: who.name, threadId });
-                  answerable = true;
-                  deps.note(
-                    `reply route for ${who.name} from its own registered Run (${published}) — the message stated none`,
-                  );
-                } else {
-                  deps.note(
-                    `no reply route for ${who.name} — it stated none and its pane publishes none`,
-                  );
-                }
-              }
-            }
-            // A dispatch sender's address is DERIVED, from our own dispatch record joined
-            // against Orca's view of that worker — never from the payload above, which
-            // travelled the relay. So this branch reads nothing the sender wrote, and the
-            // resolver returns null rather than a guess whenever the join is not unique.
-            else if (msgId && who.kind === 'dispatch' && deps.deriveRoute !== undefined) {
-              const derived = deps.deriveRoute(msg);
-              if (derived === null) {
-                deps.note(`no reply route derived for ${who.name} — refusing rather than guessing`);
-              } else {
-                deps.recordRoute(msgId, { ...derived, threadId });
-                answerable = true;
-              }
-            }
+            // Recording the route BEFORE the replay check is what makes a question
+            // survive an OMP restart — `.seen` restores the id, and the retained
+            // delivery restores the route, so `peer_reply` still lands.
+            const reply = replyRouteOf(msg, who, msgPayload, deps);
+            const answerable = 'route' in reply;
+            if ('route' in reply) deps.recordRoute(msgId, { ...reply.route, threadId });
 
             if (msgId && deps.wasInjected(msgId)) continue; // replayed, already seen
             // SEQUENCE GAP. Checked here and not earlier, so it is evaluated
@@ -939,7 +951,7 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 customType: 'peer-message',
                 content:
                   (verdict.lost > 0 ? gapBanner(who.name, verdict) : '') +
-                  (answerable ? '' : unanswerableBanner(who.name)) +
+                  ('refused' in reply ? unanswerableBanner(who, reply.refused) : '') +
                   deps.peerContent(msg, who, answerable) +
                   report,
                 display: true,
@@ -971,17 +983,13 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                 lost: verdict.lost,
               });
             }
-            if (!answerable) {
+            if ('refused' in reply) {
               diagnose({
                 reason: 'no-reply-route',
                 peer: who.name,
                 messageId: msgId || undefined,
                 deliveryId: deliveryId || undefined,
-                detail: selfOriginAlert
-                  ? 'stall-watcher alert under this session handle'
-                  : who.kind === 'dispatch'
-                    ? 'no unique derived route'
-                    : 'it stated none and its pane publishes none',
+                detail: reply.refused,
               });
             }
             if (msgId) deps.rememberInjected(msgId);

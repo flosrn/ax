@@ -52,8 +52,10 @@ this handle belong to this session?", which is a different proposition for any p
 inherited the environment. A detached watcher writes about a CHILD under the parent's handle.
 
 The exemption is keyed on the two subjects the watcher owns, `stall-watch:` and `card:`
-(`WATCHER_ALERT` in `omp/peer/receive.ts`), and nothing wider: an echo of the session's own
-report still dies at the fence.
+(`WATCHER_SUBJECT` in `omp/peer/attribution.ts`, which grants `kind: 'watcher'` only under this
+session's own handle), and nothing wider: an echo of the session's own report still dies at the
+fence. Where an answer to a watcher's alert goes is a separate question:
+`a-relay-answered-at-its-subject-not-its-sender.md`.
 
 ## The rule
 

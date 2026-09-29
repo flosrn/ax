@@ -10,9 +10,12 @@
  * WHAT DOES NOT WORK, measured 2026-08-13, and why the two fields below are the ones used:
  *
  *   `--to dispatch:<id>`      Stored on the remote host under `run_legacy_local` and consumed
- *                             by nobody: the federated importer inserts the row with no
- *                             `runId` and the DB defaults it. Looks accepted, delivers
- *                             nothing (stablyai/orca#13656).
+ *                             by nobody: the federated importer inserted the row with no
+ *                             `runId` and the DB defaulted it (stablyai/orca#13656). Fixed
+ *                             upstream in #19542/#19689 (2026-09-08) and present in fork
+ *                             build 867d383978 — but the importer runs on the WORKER's host,
+ *                             so a remote host older than that still dead-letters it, and
+ *                             the route here stays `run:` + `--environment`.
  *   `--to run:<its Run>`      Consumed and injected — but ONLY with `--environment`, because
  *                             a bare `run:<id>` is resolved against the runtime receiving the
  *                             call, which does not know that Run.

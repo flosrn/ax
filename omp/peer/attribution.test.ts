@@ -255,7 +255,9 @@ test("the stall watcher's alert under OUR OWN handle is named for the watcher, n
       },
       paneLookup,
     );
-    expect(card).toEqual({ name: 'watcher:2120-work', model: '', attributed: true, kind: 'pane' });
+    // Its own provenance, not a pane peer's: the words are a relay about a CHILD,
+    // and `about` is the request the receiver routes an answer to.
+    expect(card).toEqual({ name: 'watcher:2120-work', model: '', attributed: true, kind: 'watcher', about: '2120-work' });
 
     const stall = senderIdentity(
       {
@@ -273,7 +275,7 @@ test("the stall watcher's alert under OUR OWN handle is named for the watcher, n
       { from_handle: 'term_peer1111', sender_attribution: 'pane', subject: "card: 'x' published a checkpoint" },
       paneLookup,
     );
-    expect(other.name).toBe('wt-1111');
+    expect(other).toMatchObject({ name: 'wt-1111', kind: 'pane' });
 
     // Anything else under our own handle is our own echo, and stays ours.
     const echo = senderIdentity(

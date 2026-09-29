@@ -115,13 +115,24 @@ describe("the reply instruction", () => {
 		expect(out).toContain("opened PR #75");
 	});
 
-	test("forbids it, by name, when none was", () => {
+	test("says nothing about replying when none was: the receiver's banner already names why", () => {
+		// The banner above states the one reason; a second line repeating "do not
+		// reply" pushed the peer's words further down for nothing (gapila #2122).
 		const out = peerContent(msg, pane, false);
-		expect(out).toContain("Do NOT try peer_reply");
-		expect(out).not.toContain("Reply with the peer_reply tool");
+		expect(out).not.toContain("peer_reply");
 		// The words still arrive: an address this side cannot resolve is not a
 		// reason to withhold what a peer said.
 		expect(out).toContain("opened PR #75");
+	});
+
+	test("a watcher relay is presented as this session's own watcher, answered at the child", () => {
+		const watcher = { name: "watcher:2122-work", model: "", attributed: true, kind: "watcher" as const, about: "2122-work" };
+		const out = peerContent({ id: "msg_2", type: "status", body: "DECISION: rule on merge gate" }, watcher, true);
+		expect(out).not.toContain("From peer session");
+		expect(out).toContain("stall watcher");
+		expect(out).toContain("Reply with the peer_reply tool (message_id: msg_2)");
+		expect(out).toContain("child:2122-work");
+		expect(out).toContain("DECISION: rule on merge gate");
 	});
 
 	test("an unidentified sender with a route keeps its own weaker wording", () => {
@@ -132,8 +143,8 @@ describe("the reply instruction", () => {
 		expect(out).toContain("If you reply at all, use the peer_reply tool");
 	});
 
-	test("no id outranks both: there is nothing to reply to", () => {
+	test("no id outranks a route: there is nothing to reply to", () => {
 		const out = peerContent({ type: "status", body: "x" }, pane, true);
-		expect(out).toContain("carries no id");
+		expect(out).not.toContain("peer_reply");
 	});
 });
