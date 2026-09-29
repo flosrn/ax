@@ -254,6 +254,62 @@ test('a throw while announcing health is caught, not left unhandled', async () =
   expect(h.retries).toHaveLength(1);
 });
 
+// A fenced check is not a transient failure: the pane now consumes another
+// Run. The loop asks Orca which one, so the announcement can name it — and it
+// asks only on `consumer_fenced`, never on an ordinary failed wait.
+const FENCED = JSON.stringify({
+  ok: false,
+  error: { code: 'consumer_fenced', message: 'This coordinator terminal is bound to run_new, not run_test.' },
+});
+
+test('a fenced check reports the Run the pane was rebound to', async () => {
+  const fences: unknown[] = [];
+  const asked: string[][] = [];
+  const h = harness({
+    spawn: () => fakeChild(FENCED),
+    sh: (argv) => {
+      asked.push(argv);
+      return JSON.stringify({ ok: true, result: { run: { id: 'run_new', objective: 'the plan' } } });
+    },
+    reportHealth: (_pi, _healthy, fence) => fences.push(fence ?? null),
+  });
+  const r = createReceiver(h.deps);
+  r.useTimers(h.timers);
+  r.start(h.pi);
+  await settle();
+  r.stop();
+
+  expect(asked).toEqual([['orca', 'orchestration', 'run-current', '--json']]);
+  expect(fences).toEqual([{ ownRun: 'run_test', boundRun: 'run_new', boundObjective: 'the plan' }]);
+  expect(h.retries).toHaveLength(1);
+});
+
+test('a fence the pane does not explain, and an ordinary failure, carry no cause', async () => {
+  for (const [stdout, current] of [
+    [FENCED, JSON.stringify({ ok: true, result: { run: { id: 'run_test' } } })],
+    [FENCED, ''],
+    [WAIT_FAILED, JSON.stringify({ ok: true, result: { run: { id: 'run_new' } } })],
+  ]) {
+    const fences: unknown[] = [];
+    const asked: string[][] = [];
+    const h = harness({
+      spawn: () => fakeChild(stdout),
+      sh: (argv) => {
+        asked.push(argv);
+        return current;
+      },
+      reportHealth: (_pi, _healthy, fence) => fences.push(fence ?? null),
+    });
+    const r = createReceiver(h.deps);
+    r.useTimers(h.timers);
+    r.start(h.pi);
+    await settle();
+    r.stop();
+    expect(fences).toEqual([null]);
+    expect(asked).toHaveLength(stdout === FENCED ? 1 : 0);
+  }
+});
+
 test('stop() short-circuits the loop and a retry already pending', async () => {
   const h = harness({
     spawn: () => {

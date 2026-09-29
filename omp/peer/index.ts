@@ -74,6 +74,7 @@ import { transcriptFor } from './transcript.ts';
 import {
   type Announcement,
   type ChannelState,
+  type Fence,
   disable as disableChannel,
   freshChannel,
   markTurnCompleted,
@@ -141,8 +142,8 @@ function note(line: string): void {
 }
 
 /** Fold one loop outcome into the channel state, and say whatever it returns. */
-function reportReceiveHealth(pi, healthy: boolean): void {
-  say(pi, observeChannel(channel, healthy, Date.now()));
+function reportReceiveHealth(pi, healthy: boolean, fence: Fence | null = null): void {
+  say(pi, observeChannel(channel, healthy, Date.now(), fence));
 }
 
 /** The loop will not start in a pane that should have had one. */

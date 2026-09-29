@@ -133,4 +133,49 @@ describe('receive-channel health', () => {
     expect(said.text).toContain('completion report');
     expect(said.text).toContain('peer_read');
   });
+
+  // Measured 2026-09-28 in ofmchat-engine: the coordinator followed Orca's own
+  // guide and ran `orca orchestration run-create`, which rebound the pane.
+  // Every `check --run <peer run>` was then `consumer_fenced`, and the only
+  // thing the session was ever told — at minute 5 — was "the check loop keeps
+  // failing". A fence does not heal by waiting, so it is said at once, with
+  // its cause and its repair.
+  const FENCE = {
+    ownRun: 'run_b59a8095a844',
+    boundRun: 'run_5ff2476f759a',
+    boundObjective: 'ship the 17-unit plan',
+  };
+
+  test('a pane rebound to another Run is announced at the first fenced check, with cause and repair', () => {
+    const s = freshChannel();
+    const a = observe(s, false, T0, FENCE);
+    expect(a?.kind).toBe('down');
+    expect(a?.text).toContain('run_5ff2476f759a');
+    expect(a?.text).toContain('ship the 17-unit plan');
+    expect(a?.text).toContain('run-create');
+    expect(a?.text).toContain('orca orchestration run-use --id run_b59a8095a844');
+    // The decision is stated, not left for the reader to infer.
+    expect(a?.text).toContain('will not follow');
+  });
+
+  test('a fence is said once per Run, survives a failed diagnosis, and recovers like any outage', () => {
+    const s = freshChannel();
+    expect(observe(s, false, T0, FENCE)).not.toBeNull();
+    expect(observe(s, false, T0 + 60_000, FENCE)).toBeNull();
+    // A later check whose `run-current` could not be read is the same outage,
+    // not a new generic one: it must neither re-announce nor downgrade.
+    expect(observe(s, false, T0 + DOWN_AFTER_MS * 2)).toBeNull();
+    // Rebound yet again: that is new information, and it is said.
+    const moved = observe(s, false, T0 + DOWN_AFTER_MS * 3, { ...FENCE, boundRun: 'run_third' });
+    expect(moved?.text).toContain('run_third');
+    // `run-use --id <peer run>` ends it.
+    expect(observe(s, true, T0 + DOWN_AFTER_MS * 4)?.kind).toBe('recovered');
+  });
+
+  test('a generic outage already announced still names the fence once its cause is learned', () => {
+    const s = freshChannel();
+    expect(failFor(s, DOWN_AFTER_MS)).toHaveLength(1);
+    const fenced = observe(s, false, T0 + DOWN_AFTER_MS + 60_000, FENCE);
+    expect(fenced?.text).toContain('run_5ff2476f759a');
+  });
 });

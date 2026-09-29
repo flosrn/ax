@@ -29,6 +29,7 @@
  */
 
 import type { DeliveryDiagnostic } from './diagnostics.ts';
+import type { Fence } from './health.ts';
 
 // `check --wait` holds the socket for this long, then returns an empty
 // delivery. Long enough that the loop is not a poll; short enough that a dead
@@ -87,7 +88,11 @@ export interface ReceiveDeps {
   sh: (argv: string[], timeoutMs?: number) => string;
   parse: (raw: string) => unknown;
   note: (line: string) => void;
-  reportHealth: (pi: unknown, healthy: boolean) => void;
+  /**
+   * One loop outcome. `fence` is set only when a `consumer_fenced` check was
+   * explained by `run-current` naming a different Run for this pane.
+   */
+  reportHealth: (pi: unknown, healthy: boolean, fence?: Fence | null) => void;
   senderIdentity: (msg: Record<string, unknown>) => SenderInfo;
   /**
    * The peer's words as the model sees them. `answerable` is passed rather than
@@ -412,6 +417,26 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
     // retries in a host that never supplies one, never as the normal path.
     const t = setTimeout(() => loop(pi), delay);
     t?.unref?.();
+  }
+
+  /**
+   * WHY IS THIS PANE FENCED? Asked only on `consumer_fenced`, which Orca raises
+   * when the pane's current Run is not the one `check` named — typically a
+   * `run-create`/`run-use` the session ran itself, following Orca's own guide.
+   * Without this the session heard, five minutes late, only that "the check
+   * loop keeps failing". `null` when Orca cannot name a different Run: the
+   * failure then stays generic rather than guessing a cause.
+   */
+  function fencedBy(): Fence | null {
+    const current = deps.parse(
+      deps.sh([deps.orca, 'orchestration', 'run-current', '--json'], 10_000),
+    ) as { result?: { run?: Record<string, unknown> } & Record<string, unknown> } | null;
+    const run = current?.result?.run ?? current?.result;
+    const bound = typeof run?.id === 'string' ? run.id : '';
+    const own = deps.runId();
+    if (!bound || bound === own) return null;
+    deps.note(`fenced: pane rebound from ${own} to ${bound}`);
+    return { ownRun: own, boundRun: bound, boundObjective: String(run?.objective ?? '') };
   }
 
   function loop(pi): void {
@@ -1039,7 +1064,11 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
           `msg=${String(payload?.error?.message ?? '').slice(0, 160)} ` +
           `stderr=${errText.slice(0, 160)} raw=${raw.slice(0, 200)}`,
       );
-      deps.reportHealth(pi, false);
+      deps.reportHealth(
+        pi,
+        false,
+        payload?.error?.code === 'consumer_fenced' ? fencedBy() : null,
+      );
       scheduleRetry(pi);
     })().catch((err) => {
       // The detached promise's own safety net. Its body has a guarded await

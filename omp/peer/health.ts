@@ -21,6 +21,19 @@ export type Announcement = {
   text: string;
 };
 
+/**
+ * The pane consumes another Run: this session's peer Run was fenced because a
+ * `run-create` or `run-use` in this pane rebound it. Unlike every other failure
+ * it does not heal by waiting, so it is said at once, with its repair.
+ */
+export type Fence = {
+  /** The Run peers address this session on (the registry's). */
+  ownRun: string;
+  /** The Run `run-current` now reports for this pane. */
+  boundRun: string;
+  boundObjective: string;
+};
+
 export type ChannelState = {
   /** First failure of the current outage; 0 while healthy. */
   downSince: number;
@@ -32,6 +45,12 @@ export type ChannelState = {
   turnCompleted: boolean;
   /** Non-empty when the loop never started at all, and why. */
   disabled: string;
+  /**
+   * The fence behind the current outage, as last announced. Sticky until
+   * healthy: a later check whose `run-current` could not be read is the same
+   * outage, and must not downgrade it to "the check loop keeps failing".
+   */
+  fence: Fence | null;
 };
 
 export function freshChannel(): ChannelState {
@@ -41,6 +60,7 @@ export function freshChannel(): ChannelState {
     woken: false,
     turnCompleted: false,
     disabled: '',
+    fence: null,
   };
 }
 
@@ -74,6 +94,28 @@ const DISABLED_TEXT = (reason: string) =>
   'reporting a peer silent.';
 
 /**
+ * THE RECEIVER WILL NOT FOLLOW THE PANE, and the text says so. The Run the pane
+ * moved to belongs to another workflow — the tag guard in `ensureRun` exists
+ * because consuming such a Run acknowledges its worker traffic before that
+ * workflow reads it. Peers keep addressing `ownRun`, where Orca retains what
+ * they send, so rebinding delivers the backlog. One pane consumes one Run: the
+ * operator chooses which, and each choice is named with what it costs.
+ */
+const FENCED_TEXT = (f: Fence) =>
+  `Peer messaging stopped receiving: this pane was rebound from its peer Run \`${f.ownRun}\` to ` +
+  `\`${f.boundRun}\`${f.boundObjective ? ` ("${f.boundObjective}")` : ''} — an ` +
+  '`orca orchestration run-create` or `run-use` in this pane did that. Orca lets one pane consume ' +
+  `one Run, so every \`check --run ${f.ownRun}\` is now refused (\`consumer_fenced\`). The receiver ` +
+  `will not follow the pane to \`${f.boundRun}\`: that Run belongs to another workflow, and consuming ` +
+  'it would acknowledge its worker traffic before that workflow reads it. Peers still address ' +
+  `\`${f.ownRun}\`, and Orca retains what they send. Choose one: (1) hear peers again with ` +
+  `\`orca orchestration run-use --id ${f.ownRun}\` — the backlog is delivered, and this pane stops ` +
+  `reading \`${f.boundRun}\`'s mailbox; or (2) stay on \`${f.boundRun}\`, and no peer message, reply ` +
+  'or completion report reaches you until you rebind — do not end your turn expecting to be woken. ' +
+  'To orchestrate without losing peers, create Tasks and start workers on the Run ' +
+  '`orca orchestration run-current` reported before, not on a new one.';
+
+/**
  * Fold one loop outcome into the state and return what to say, if anything.
  *
  * Announces an outage once and its recovery once, so a channel that flaps does
@@ -84,6 +126,7 @@ export function observe(
   state: ChannelState,
   healthy: boolean,
   now: number,
+  fence: Fence | null = null,
   downAfterMs: number = DOWN_AFTER_MS,
 ): Announcement | null {
   if (state.disabled) return null;
@@ -91,6 +134,7 @@ export function observe(
   if (healthy) {
     state.downSince = 0;
     state.woken = false;
+    state.fence = null;
     if (!state.announced) return null;
     state.announced = false;
     // No wake on good news: the delivery that follows will wake the session
@@ -101,19 +145,27 @@ export function observe(
 
   if (!state.downSince) state.downSince = now;
   const elapsed = now - state.downSince;
-  if (elapsed < downAfterMs) return null;
+  // A fence is not a blip, so it skips the threshold. A new bound Run is new
+  // information and is said even mid-outage; the same one is said once.
+  const known = state.fence;
+  const moved = fence !== null && fence.boundRun !== known?.boundRun;
+  const current = moved ? fence : known;
+  if (current === null && elapsed < downAfterMs) return null;
 
   // A cold outage is shown without spending a model turn. If a real turn later
   // completes while that same outage continues, it earns exactly one wake:
   // `announced` and `woken` are separate because displaying is not waking.
   const wake = state.turnCompleted && !state.woken;
-  if (state.announced && !wake) return null;
+  if (state.announced && !wake && !moved) return null;
   state.announced = true;
+  state.fence = current;
   if (wake) state.woken = true;
   return {
     kind: 'down',
     wake,
-    text: DOWN_TEXT(Math.round(elapsed / 60_000), 'the check loop keeps failing'),
+    text: current
+      ? FENCED_TEXT(current)
+      : DOWN_TEXT(Math.round(elapsed / 60_000), 'the check loop keeps failing'),
   };
 }
 
