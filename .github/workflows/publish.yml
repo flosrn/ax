@@ -27,14 +27,19 @@ permissions:
   issues: write
   id-token: write
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
+# Concurrency is per JOB, not per run (#283). A workflow-level group held every
+# later push's release-please run until the whole previous run ended — and
+# `notify-consumers` now waits up to 45 minutes for npm to serve the version,
+# which would have delayed the next release PR by as much. Release-please runs
+# stay serialized with each other, publishes with each other; the notifier holds
+# neither.
 jobs:
   release:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -70,6 +75,9 @@ jobs:
         )
       }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release.outputs.tag_name }}
     steps:
