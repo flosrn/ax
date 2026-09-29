@@ -842,6 +842,9 @@ export function dispatch(
   // path is derived from, so the brief cannot name a tree the dispatch did not
   // use.
   let selector = '';
+  // The per-worktree identity pin for a child on another host, as the command
+  // the operator runs THERE: nothing on this side can write into a tree there.
+  let remotePin = '';
 
   // No target: the compute host with the most free slots, or a refusal naming
   // why each host could not take the worker. Never this Mac (R10). The live
@@ -914,6 +917,10 @@ export function dispatch(
       if (placed.selector !== '') remote = placed.selector;
     }
 
+    // A tree the host already carries is named in the pin command; a tree the
+    // dispatch has yet to create is a placeholder, never a guessed path.
+    const tree = /^(?:id:[^:]+::|path:)(\/.+)$/.exec(remote)?.[1] ?? '<worktree>';
+    remotePin = `ssh ${declared.host.ssh} 'git -C ${tree} config extensions.worktreeConfig true && git -C ${tree} config --worktree user.name "<name>" && git -C ${tree} config --worktree user.email "<email>"'`;
     place.push('--on', on, '--worktree', remote, '--repo', repoId, '--name', request, '--agent', flags.agent);
     selector = remoteTreeOf(remote);
     // `--setup skip` is exactly what left a child with no URLs, so it is only
@@ -1006,7 +1013,15 @@ export function dispatch(
     const identity = pinIdentity(worktree, { exec: (b, a, at) => exec(b, a, at ?? worktree) });
     for (const line of identity.notes) note(line);
   } else if (on !== '' && !dry) {
-    note(`no advisor mandate and no pinned git identity for a child on '${on}': its worktree is created inside the dispatch, after the roster is read — expect to tell it by hand, or move both into that repo's setup hook on that host`);
+    note(`no advisor mandate for a child on '${on}': its worktree is created inside the dispatch, after the roster is read — expect to tell it by hand, or move it into that repo's setup hook on that host`);
+    // NOT "no identity": the child commits as that host's own user, global
+    // config included, and this side reads none of it. What is missing is the
+    // SCOPE ./child.mjs pinIdentity writes locally, and a global identity does
+    // not stand in for it — a babysitter's rename lands in the repository's
+    // shared .git/config, which outranks the global for every sibling tree.
+    // Measured on gapicore: `harness` carries a global user.email, and the old
+    // line read as if it did not.
+    note(`no per-worktree git identity pinned for a child on '${on}', and a global identity there does not cover it: its commits carry that host's own git identity, but a babysitter's rename lands in the repository's SHARED .git/config, which outranks any global, so a sibling's babysitter can sign this child's commits until its identity is pinned in the child's own worktree scope — once the tree exists: ${remotePin}`);
     // Same shape, and worth its own line because the consequence is a shared
     // database rather than a missing courtesy: nothing here provisions that
     // remote tree, so a ticket that says it touches the database cannot be

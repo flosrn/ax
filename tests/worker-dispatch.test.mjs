@@ -1608,6 +1608,34 @@ test('a cross-host child says lineage is impossible rather than attempting it', 
   assert.ok(r.calls.every(argv => !argv.includes('--parent-worktree')));
 });
 
+// F6a (a gapila wave, worker #2120): a child on gapicore commits as `harness`, whose GLOBAL
+// identity is set, and the old line — "no pinned git identity" — read as if it
+// were missing. The pin is a per-worktree SCOPE, not an identity: a babysitter's
+// rename lands in the shared .git/config, which outranks any global.
+test('a cross-host child is told why a global identity does not cover it, and how to pin one there', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], { root: onFar() });
+
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /no pinned git identity/, 'the identity is the host\u2019s own and is not missing');
+  assert.match(r.out, /global identity .*does not cover it/);
+  assert.match(r.out, /SHARED \.git\/config/);
+  assert.match(r.out, /ssh far-host 'git -C <worktree> config extensions\.worktreeConfig true && git -C <worktree> config --worktree user\.name "<name>" && git -C <worktree> config --worktree user\.email "<email>"'/);
+});
+
+test('a cross-host child reusing a known tree gets the pin command for THAT tree', () => {
+  const tree = '/srv/orca/probe/.worktrees/gap-353-loading-states';
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], {
+    root: onFar(),
+    orca: {
+      repos: [{ id: 'abc', path: '/srv/orca/probe', worktreeBasePath: '.worktrees' }],
+      hostTrees: [{ path: tree, isMainWorktree: false, repoId: 'abc' }],
+    },
+  });
+
+  assert.equal(r.code, 0);
+  assert.match(r.out, new RegExp(`ssh far-host 'git -C ${tree} config extensions\\.worktreeConfig true`));
+});
+
 // ── the brief, and what is never mutated ─────────────────────────────────────
 
 test('the brief is a FILE, and its first line carries the marker with the instruction', () => {
