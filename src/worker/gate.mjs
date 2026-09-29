@@ -108,8 +108,8 @@ import { defaultExec } from '../exec.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
-import { hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
-import { agentTerminal, defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
+import { createdPane, hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
+import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
 
 /**
  * The task a REQUEST id names, read from the dispatch record store, or null.
@@ -162,41 +162,6 @@ export function namedList(out, key, command) {
   const rows = result[key];
   if (!Array.isArray(rows)) return { ok: false, reason: `'${command}' answered "${key}" as ${typeof rows}, not a list` };
   return { ok: true, rows };
-}
-
-/**
- * THE AGENT PANE OF A DISPATCH WHOSE worker-list ROW BINDS NONE (#2107).
- *
- * `agentTerminalHandle` is the pane worker-list has BOUND, and a start that
- * failed at `agent_readiness` never binds it — yet the pane was created, and
- * may still be running. Measured 2026-09-29 on ctx_44751b4a84a6: null in
- * worker-list, while `worker-show` named the agent pane among the worker's
- * effects and gapicore's own terminal list still held it. That read is Orca's
- * record of what the start did, so it is asked before the row is called
- * unproven — through the same `agentTerminal` reading every receipt gets.
- *
- * The HOST is the start's own placement: `startOptions.on` null is this
- * runtime (`''`); a remote start names its environment in `serverName`, the
- * name `--on`/`--environment` take. Anything less is `undefined` — the
- * conservative branch where no absence is a death (F-028).
- */
-function unboundPane(run, dispatchId) {
-  const out = run(['orchestration', 'worker-show', '--dispatch', dispatchId, '--json']);
-  if (out.status !== 0) {
-    const detail = String(out.stderr || out.stdout || '').trim().slice(0, 200);
-    return { ok: false, reason: `its worker-show failed (exit ${out.status})${detail ? `: ${detail}` : ''}` };
-  }
-  const worker = out.receipt?.result?.worker;
-  if (worker === null || typeof worker !== 'object') return { ok: false, reason: 'its worker-show answered no "worker"' };
-  const handle = agentTerminal(worker);
-  if (handle === null) return { ok: false, reason: 'its worker-show names no agent pane among the effects' };
-  const start = worker.startOptions;
-  let host;
-  if (start !== null && typeof start === 'object' && 'on' in start) {
-    if (start.on === null) host = '';
-    else if (typeof start.serverName === 'string' && start.serverName !== '') host = start.serverName;
-  }
-  return { ok: true, handle, host };
 }
 
 /**
@@ -462,7 +427,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     let why = 'this dispatch recorded no pane, so nothing here proves it ended';
     let read = '';
     if (handle === null && typeof w.dispatchId === 'string') {
-      const bound = unboundPane(run, w.dispatchId);
+      const bound = createdPane(run, w.dispatchId);
       if (bound.ok) {
         handle = bound.handle;
         if (host === undefined) host = bound.host;

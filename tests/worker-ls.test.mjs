@@ -116,7 +116,7 @@ const taskCreated = (taskId = 'task_aaa') => ({ ok: true, result: { task: { id: 
  * reply that never claims to have read its own scope — can be pinned too. An
  * environment absent from `hosts`, or one carrying `fail`, could not answer.
  */
-function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], workers = [], runs = null, ready = true, terminalFail = false, workerFail = false, hosts = {} } = {}) {
+function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], workers = [], runs = null, ready = true, terminalFail = false, workerFail = false, hosts = {}, shows = {} } = {}) {
   const calls = [];
   const run = args => {
     calls.push(args);
@@ -177,6 +177,14 @@ function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], 
       const asked = args.includes('--run') ? args[args.indexOf('--run') + 1] : '';
       const scope = asked === '' ? { run: 'run_bound', source: 'bound' } : { run: asked, source: 'flag' };
       return { status: 0, stdout: '', stderr: '', receipt: { ok: true, result: { workers: asked === '' ? workers : runs[asked] ?? [], scope } } };
+    }
+    // `worker-show --dispatch <id>`: the `result` Orca answers, keyed by id; an
+    // id absent from `shows` fails the read.
+    if (args[0] === 'orchestration' && args[1] === 'worker-show') {
+      const id = args[args.indexOf('--dispatch') + 1];
+      return shows[id] === undefined
+        ? { status: 1, stdout: '', stderr: `Unknown dispatch ${id}`, receipt: { unparseable: `Unknown dispatch ${id}`, error: 'x' } }
+        : { status: 0, stdout: '', stderr: '', receipt: { ok: true, result: shows[id] } };
     }
     throw new Error(`unexpected call: ${args.join(' ')}`);
   };
@@ -1396,4 +1404,41 @@ test("F6c: another repository's dead rows are counted, never listed or offered a
 
   const all = capture(() => ls(['--all'], { runner: run(), env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
   assert.match(all.out, /117-normalize/, '--all still lists every record');
+});
+
+test("F2: a record whose start bound no pane is joined to its Run's row by TASK, and worker-show names the pane — as gate reads it", () => {
+  // Measured 2026-09-29 from gapila: 2107-resume's own worker-start was refused
+  // (no dispatch id in the record), yet worker-list --run run_351d18262762 held
+  // ctx_44751b4a84a6 for its task with a null handle (start failed at
+  // agent_readiness), and worker-show named term_f8c0fca4 on gapicore. gate
+  // called it LIVE; ls called it INCONNU and listed term_f8c0fca4 under another
+  // record as a pane nobody claims, offering that record's replay.
+  const dir = store();
+  writeRecord(dir, '2107-resume', [
+    { name: 'task-create', receipt: taskCreated('task_953c') },
+    { name: 'worker-start', exit: 1, receipt: { ok: false, error: { code: 'invalid_argument', message: 'refused' } } },
+  ], { on: 'gapicore', runId: 'run_351d' });
+  const path = writeRecord(dir, 'qual-gapicore', [{ name: 'task-create', receipt: taskCreated('task_2010') }, { name: 'worker-start' }], { on: 'gapicore', runId: 'run_351d' });
+  const rec = JSON.parse(readFileSync(path, 'utf8'));
+  Object.assign(rec.attempts[0].phases[1], { exit: null, transport: 'spawnSync orca ETIMEDOUT', receipt: { unparseable: '', error: 'SyntaxError: Unexpected end of JSON input' } });
+  writeFileSync(path, JSON.stringify(rec));
+
+  const run = fakeRunner({
+    terminals: [],
+    omittedHostIds: ['runtime:7930a317'],
+    hosts: { gapicore: { terminals: [{ ...pane('term_f8c0'), worktreePath: '/home/harness/orca/workspaces/gapila/2107-work' }] } },
+    workers: [],
+    runs: { run_351d: [{ taskId: 'task_953c', dispatchId: 'ctx_4475', workerState: 'failed', terminalState: 'retained', agentTerminalHandle: null }] },
+    shows: {
+      ctx_4475: {
+        dispatch: { id: 'ctx_4475' },
+        worker: { startOptions: { on: 'gapicore', serverName: 'gapicore' }, effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_f8c0' }] },
+      },
+    },
+  });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('2107-resume'), /pane VIVANT · worker-list failed\/retained/, out);
+  assert.match(lineWith('2107-resume'), /term_f8c0.*worker-show/, 'the row says where the pane came from');
+  assert.doesNotMatch(out, /no record claims: term_f8c0/, 'a pane Orca attributes to a record is claimed');
 });

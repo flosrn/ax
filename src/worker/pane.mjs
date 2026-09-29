@@ -26,6 +26,7 @@
 // disagreement between three copies.
 
 import { hostFor } from './hosts.mjs';
+import { agentTerminal } from './record.mjs';
 
 const safeParse = text => {
   try {
@@ -34,6 +35,47 @@ const safeParse = text => {
     return null;
   }
 };
+
+/**
+ * THE AGENT PANE A DISPATCH CREATED, as Orca's own record of the start says —
+ * for a dispatch whose worker-list row binds none (#2107).
+ *
+ * `agentTerminalHandle` is the pane worker-list has BOUND, and a start that
+ * failed at `agent_readiness` never binds it — yet the pane was created, and
+ * may still be running. Measured 2026-09-29 on ctx_44751b4a84a6: null in
+ * worker-list, while `worker-show` named the agent pane among the worker's
+ * effects and gapicore's own terminal list still held it. That read is Orca's
+ * record of what the start did, so it is asked before the pane is called
+ * unknown — through the same `agentTerminal` reading every receipt gets.
+ *
+ * ONE READER, because two verbs need it and disagreed without it: `ax worker
+ * gate` read this pane as 2107-resume's live agent while `ax worker ls` listed
+ * the same handle as a pane no record claims and offered an unrelated record's
+ * replay over it.
+ *
+ * The HOST is the start's own placement: `startOptions.on` null is this
+ * runtime (`''`); a remote start names its environment in `serverName`, the
+ * name `--on`/`--environment` take. Anything less is `undefined` — the
+ * conservative branch where no absence is a death (F-028).
+ */
+export function createdPane(run, dispatchId) {
+  const out = run(['orchestration', 'worker-show', '--dispatch', dispatchId, '--json']);
+  if (out.status !== 0) {
+    const detail = String(out.stderr || out.stdout || '').trim().slice(0, 200);
+    return { ok: false, reason: `its worker-show failed (exit ${out.status})${detail ? `: ${detail}` : ''}` };
+  }
+  const worker = out.receipt?.result?.worker;
+  if (worker === null || typeof worker !== 'object') return { ok: false, reason: 'its worker-show answered no "worker"' };
+  const handle = agentTerminal(worker);
+  if (handle === null) return { ok: false, reason: 'its worker-show names no agent pane among the effects' };
+  const start = worker.startOptions;
+  let host;
+  if (start !== null && typeof start === 'object' && 'on' in start) {
+    if (start.on === null) host = '';
+    else if (typeof start.serverName === 'string' && start.serverName !== '') host = start.serverName;
+  }
+  return { ok: true, handle, host };
+}
 
 /**
  * `latestCursor`, the only liveness signal that crosses hosts.

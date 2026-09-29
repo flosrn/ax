@@ -112,7 +112,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
 import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
-import { hostReader, hostScopes, terminalInventory } from './pane.mjs';
+import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore, recordedRun } from './record.mjs';
 import { livePanes } from './slots.mjs';
 
@@ -290,13 +290,15 @@ function workerIndex(run, runId = '') {
   }
   const byDispatch = new Map();
   const byHandle = new Map();
+  const byTask = new Map();
   for (const worker of receipt.result.workers) {
     if (worker === null || typeof worker !== 'object') continue;
     if (typeof worker.dispatchId === 'string') byDispatch.set(worker.dispatchId, worker);
     if (typeof worker.agentTerminalHandle === 'string') byHandle.set(worker.agentTerminalHandle, worker);
+    if (typeof worker.taskId === 'string') byTask.set(worker.taskId, [...(byTask.get(worker.taskId) ?? []), worker]);
   }
   const scope = receipt.result.scope;
-  return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length, run: scope !== null && typeof scope === 'object' && typeof scope.run === 'string' ? scope.run : '' };
+  return { ok: true, byDispatch, byHandle, byTask, total: receipt.result.workers.length, run: scope !== null && typeof scope === 'object' && typeof scope.run === 'string' ? scope.run : '' };
 }
 
 // THE HOSTS A RECORD NAMES, and THIS CHECKOUT'S DECLARATION of them, live in
@@ -477,6 +479,32 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // — so that a pane a host carries and no record names can be told apart from
   // one another dispatch owns (F2).
   const rows = files.map(file => ({ file, row: describeRecord(dir, file) }));
+
+  // A START THAT BOUND NO PANE, READ AS GATE READS IT (F2, #2107). A record
+  // whose own worker-start named no dispatch (refused, or never answered) can
+  // still own one: Orca holds a Dispatch for its TASK, and when that row binds
+  // no pane (a start failed at `agent_readiness`) `worker-show` names the pane
+  // the start created — ./pane.mjs `createdPane`, the reader gate uses. The
+  // join is by the task the record's own task-create named, in the Run its own
+  // phases name, and only a task with exactly ONE dispatch there is joined:
+  // two are a choice this verb does not make (F-028).
+  let fromShow = 0;
+  if (workers.ok) {
+    for (const { file, row } of rows) {
+      if (row.handle !== null || row.dispatchId !== null || row.unsettled !== null || typeof row.taskId !== 'string') continue;
+      const index = ownRun(file)?.index ?? workers;
+      const mine = index.byTask?.get(row.taskId) ?? [];
+      if (mine.length !== 1 || typeof mine[0].dispatchId !== 'string') continue;
+      const [worker] = mine;
+      const bound = typeof worker.agentTerminalHandle === 'string'
+        ? { ok: true, handle: worker.agentTerminalHandle, host: row.pending, from: 'worker-list' }
+        : { ...createdPane(run, worker.dispatchId), from: 'worker-show' };
+      if (!bound.ok) continue;
+      Object.assign(row, { handle: bound.handle, dispatchId: worker.dispatchId, host: bound.host, pending: undefined, why: '', origin: `${bound.handle} from ${bound.from} of ${worker.dispatchId}` });
+      row.claims.push(bound.handle);
+      fromShow += 1;
+    }
+  }
   const claimed = new Set(rows.flatMap(({ row }) => row.claims));
 
   // WHICH REPOSITORY A ROW IS (F6c): only this checkout's rows, and those
@@ -670,7 +698,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       : leakedLive
         ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now`
         : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
-    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${suffix}`;
+    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}`;
 
     if (disagrees) {
       bad(line);
@@ -743,6 +771,14 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // meets are now one measurement rather than two tallies that agreed by
   // maintenance (#161).
   capSummary(slots.live);
+  // A PANE ESTABLISHED FROM ORCA'S DISPATCH, NOT FROM A RECEIPT, IS IN NEITHER
+  // COUNT: both counts read the panes this store's receipts recorded
+  // (./slots.mjs, #161), and a start that bound no pane recorded none. Said
+  // rather than silently left out of a number printed as the one that gates.
+  const liveFromShow = views.filter(view => view.row.origin !== undefined && view.pane === 'VIVANT').length;
+  if (liveFromShow > 0) {
+    note(`${liveFromShow} live pane(s) above were read from Orca's dispatch (a start that bound no pane) and are in NEITHER count — the counts read recorded panes only, so they understate by that many`);
+  }
   // A RECORD THE COUNT COULD NOT READ IS DISCLOSED, because this verb is
   // lenient per record and the fences are not: a row can render here — with the
   // pane its last usable receipt named — while the reader that counts refuses
