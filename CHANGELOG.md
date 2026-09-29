@@ -8,6 +8,18 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.28.2](https://github.com/flosrn/ax/compare/v0.28.1...v0.28.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **peer:** answer a watcher's card at the child it names ([6cb2248](https://github.com/flosrn/ax/commit/6cb2248db5a9492cdd794cdc2ac28637bd40104a))
+* **peer:** answer a watcher's card at the child it names, and say the one reason a message cannot be answered ([ff476d3](https://github.com/flosrn/ax/commit/ff476d3955f1346fa9cc8325501e8c88bc61a20e))
+* **pin:** grade what the pin commit carries — `ax doctor --project` ([0e1cef2](https://github.com/flosrn/ax/commit/0e1cef281e24820b8a79f0ab6b618127a8301e8a)), closes [#276](https://github.com/flosrn/ax/issues/276)
+* **worker:** a remote --replace reinstates the tree its first attempt created ([ffe651a](https://github.com/flosrn/ax/commit/ffe651a6cdef0556382d336c7f6150205b866f23)), closes [#275](https://github.com/flosrn/ax/issues/275)
+* **worker:** budget remote worker-start for Orca's full transport deadline ([e4cb28f](https://github.com/flosrn/ax/commit/e4cb28fb116eff4bbd43e95f5bc6ac72c27ab197)), closes [#275](https://github.com/flosrn/ax/issues/275)
+* **worker:** settle a proven-dead active Dispatch before replacement ([ffddf09](https://github.com/flosrn/ax/commit/ffddf093bf2301167ddeaef2faaae963678096e1)), closes [#275](https://github.com/flosrn/ax/issues/275)
+
 ## [0.28.1](https://github.com/flosrn/ax/compare/v0.28.0...v0.28.1) (2026-09-29)
 
 
