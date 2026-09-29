@@ -260,6 +260,46 @@ test('rm reaps NOTHING before refusing a dirty worktree', async () => {
   assert.doesNotMatch(out, /asked \d+ process/);
 });
 
+test('rm reaps NOTHING before refusing a clean worktree that holds a populated submodule', () => {
+  // git refuses this one too without --force ("working trees containing
+  // submodules cannot be moved or removed"), however clean the tree is.
+  // Measured 2026-09-28 in ofmchat-engine (vendor/parlant): the status probe
+  // alone let it through to cleanup, and git refused afterwards.
+  const { fixture, main } = repo();
+  const lib = join(fixture, 'lib');
+  mkdirSync(lib);
+  git(lib, 'init', '-q', '-b', 'main');
+  file(join(lib, 'README'));
+  git(lib, 'add', '-A');
+  git(lib, 'commit', '-qm', 'lib');
+  git(main, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'vendor/lib');
+  git(main, 'commit', '-qm', 'submodule');
+  const tree = worktree(main, join(fixture, 'sub'), 'sub');
+  // The common shape: `worktree add` leaves submodules UNINITIALIZED, and git
+  // removes such a tree without --force. The main checkout's populated
+  // `.git/modules` must not make every sibling read as "holds submodules".
+  const bare = worktree(main, join(fixture, 'bare'), 'bare');
+  const plain = ax(main, 'rm', 'bare');
+  assert.equal(plain.status, 0, plain.out);
+  assert.equal(existsSync(bare), false);
+  git(tree, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init');
+  // Ignored build output, so the tree is CLEAN and only the submodule stands in git's way.
+  file(join(main, '.git', 'info', 'exclude'), '.next/\n');
+  file(join(tree, '.next', 'build'));
+
+  const { status, out } = ax(main, 'rm', 'sub');
+
+  assert.equal(status, 1, out);
+  assert.match(out, /submodule/);
+  assert.match(out, /--force/);
+  assert.equal(existsSync(join(tree, '.next')), true, 'build output was deleted by a command that then refused');
+  assert.equal(existsSync(tree), true);
+
+  const forced = ax(main, 'rm', 'sub', '--force');
+  assert.equal(forced.status, 0, forced.out);
+  assert.equal(existsSync(tree), false);
+});
+
 test('a node process that is not this tree\u2019s dev tooling survives a reap', async () => {
   // `^node` matched every node process whose cwd was in the tree: a second agent
   // session, a REPL, or — measured, TERMed then KILLed, reported only as `node` —

@@ -15,7 +15,8 @@
 // refuse for has to be refused HERE, before the first process is signalled.
 
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import { repoPaths } from '../config.mjs';
 import { listWorktrees, removeWorktree } from '../git.mjs';
@@ -94,9 +95,9 @@ export function remove(argv = []) {
 /**
  * Everything git would refuse to remove for, answered BEFORE cleanup runs.
  *
- * `undefined` means removable. The two conditions mirror git's own: a locked
+ * `undefined` means removable. The conditions mirror git's own: a locked
  * worktree is never removed without unlocking (not even with `--force`), and
- * modified or untracked files need `--force`.
+ * a populated submodule, modified or untracked files need `--force`.
  */
 function notRemovable({ path, main, force }) {
   const entry = listWorktrees(main).find(tree => physical(tree.path) === physical(path));
@@ -105,14 +106,47 @@ function notRemovable({ path, main, force }) {
   }
   if (force) return undefined;
 
+  const named = entry ? entry.path : path;
+  const submodules = populatedSubmodules(path);
+  if (submodules.length > 0) {
+    return {
+      reason: `${path} holds populated submodule(s) — git refuses to remove a worktree containing submodules without --force`,
+      detail: submodules.slice(0, 5),
+      fix: `ax worktree rm ${named} --force   # also discards any uncommitted changes in that tree and its submodules`,
+    };
+  }
+
   const changes = uncommitted(path);
   return changes.length === 0
     ? undefined
     : {
         reason: `${changes.length} uncommitted change(s) in ${path} — git would refuse this removal`,
         detail: changes.slice(0, 5),
-        fix: `ax worktree rm ${entry ? entry.path : path} --force   # discards uncommitted changes in that tree`,
+        fix: `ax worktree rm ${named} --force   # discards uncommitted changes in that tree`,
       };
+}
+
+/**
+ * The submodules git's `validate_no_submodules` would stop a non-forced
+ * removal for: the worktree's own `modules` git dir exists, or a gitlink in its
+ * index is checked out. Measured 2026-09-28 (ofmchat-engine, `vendor/parlant`):
+ * without this, a clean tree passed the status probe, cleanup ran, and git
+ * refused afterwards with "working trees containing submodules cannot be moved
+ * or removed". An unreadable probe answers none, like `uncommitted`.
+ */
+function populatedSubmodules(path) {
+  const read = args => {
+    const result = spawnSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return result.status === 0 && typeof result.stdout === 'string' ? result.stdout : '';
+  };
+  const found = read(['ls-files', '--stage', '-z'])
+    .split('\0')
+    .filter(line => line.startsWith('160000 '))
+    .map(line => line.slice(line.indexOf('\t') + 1))
+    .filter(name => existsSync(join(path, name, '.git')));
+  if (found.length > 0) return found;
+  const modules = read(['rev-parse', '--git-path', 'modules']).trim();
+  return modules && existsSync(isAbsolute(modules) ? modules : join(path, modules)) ? [modules] : [];
 }
 
 /**
