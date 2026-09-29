@@ -415,7 +415,40 @@ test('a failed receipt whose pane cannot be read is terminal', () => {
   assert.match(r.log, /settled: dispatch=failed worker=failed; exiting/);
 });
 
-test('a stale watcher pidfile fails closed instead of racing an automatic takeover', () => {
+// A pidfile whose holder is PROVEN dead holds nothing. #270: a watcher killed
+// by its caller's deadline cannot run its `finally`, so it leaves exactly this,
+// and a re-arm that refuses it hands the operator a manual rm for a fact the
+// machine had already measured.
+test('a pidfile whose holder is proven dead is taken over, and the watch runs', () => {
+  let pidPath;
+  let heldDuringRun = '';
+  const runner = fakeRunner({ cursors: [1, 2, 3] });
+  const probe = args => {
+    if (!heldDuringRun) heldDuringRun = readFileSync(pidPath, 'utf8');
+    return runner(args);
+  };
+  probe.calls = runner.calls;
+  const r = invoke({
+    runner: probe,
+    before: ({ watchDir }) => {
+      mkdirSync(watchDir, { recursive: true });
+      pidPath = join(watchDir, 'req-watch.pid');
+      writeFileSync(pidPath, '999');
+    },
+    processAlive: holder => holder !== 999,
+    env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '2' },
+  });
+  assert.equal(r.code, 0);
+  assert.equal(heldDuringRun, '4242', 'the claim is this watcher\u2019s while it runs');
+  assert.ok(r.calls.length > 0, 'the watch actually ran');
+  assert.match(r.log, /took over .* dead pid 999/);
+  assert.equal(existsSync(`${pidPath}.takeover`), false, 'the takeover lock is released');
+});
+
+// Two re-arms can find the same dead holder. Only one may take it over: the
+// other must find the takeover in flight and stand down, never unlink the
+// winner's fresh claim.
+test('a takeover already in flight is never raced', () => {
   let pidPath;
   const r = invoke({
     runner: fakeRunner({ cursors: [1, 2, 3] }),
@@ -423,15 +456,45 @@ test('a stale watcher pidfile fails closed instead of racing an automatic takeov
       mkdirSync(watchDir, { recursive: true });
       pidPath = join(watchDir, 'req-watch.pid');
       writeFileSync(pidPath, '999');
+      writeFileSync(`${pidPath}.takeover`, '777');
     },
-    processAlive: () => false,
+    processAlive: holder => holder === 777,
     env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '2' },
   });
   assert.equal(r.code, 0);
-  assert.match(r.out, /dead pid 999/);
-  assert.match(r.out, /automatic takeover is refused/);
   assert.equal(r.calls.length, 0, 'no second watcher probes or alerts');
-  assert.equal(readFileSync(pidPath, 'utf8'), '999', 'the existing ownership evidence is untouched');
+  assert.equal(readFileSync(pidPath, 'utf8'), '999', 'the contended pidfile is untouched');
+  assert.match(r.out, /takeover .* in flight/);
+});
+
+// `kill(pid, 0)` failing is not death: EPERM is a LIVE process this user may
+// not signal. pid 1 is always alive and never ours.
+test('a holder the kernel refuses to signal is alive, never taken over', () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const watchDir = join(home, 'watch');
+  writeRecord(store, 'req-eperm');
+  mkdirSync(watchDir, { recursive: true });
+  writeFileSync(join(watchDir, 'req-eperm.pid'), '1');
+  const armed = [];
+  const chunks = [];
+  const outWrite = process.stdout.write.bind(process.stdout);
+  const errWrite = process.stderr.write.bind(process.stderr);
+  process.stdout.write = chunk => (chunks.push(String(chunk)), true);
+  process.stderr.write = chunk => (chunks.push(String(chunk)), true);
+  let code;
+  try {
+    code = stall(['--request', 'req-eperm', '--orca', 'orca'], {
+      env: { HOME: home, ORCA_DISPATCH_STORE: store, ORCA_STALL_DIR: watchDir },
+      arm: options => (armed.push(options), true),
+    });
+  } finally {
+    process.stdout.write = outWrite;
+    process.stderr.write = errWrite;
+  }
+  assert.equal(code, 0);
+  assert.deepEqual(armed, []);
+  assert.match(chunks.join(''), /already armed for req-eperm \(pid 1\)/);
 });
 
 test('a transient terminal-read failure never proves a failed worker dead', () => {

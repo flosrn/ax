@@ -334,12 +334,17 @@ function alertCard(run, fields, request, card, worktreePath) {
   ]);
 }
 
+/**
+ * `kill(pid, 0)` answers two different failures, and only one of them is a
+ * death: ESRCH is no such process, EPERM is a LIVE process this user may not
+ * signal. Reading EPERM as dead would hand a live holder's claim away.
+ */
 function processAliveDefault(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error.code === 'EPERM';
   }
 }
 
@@ -356,6 +361,25 @@ function readHolder(path, processAlive) {
   return { holder, stale: !processAlive(holder) };
 }
 
+/**
+ * One watcher per request, and a PROVEN-DEAD holder holds nothing.
+ *
+ * A watcher removes its pidfile in a `finally`, which a SIGKILL, a reboot or a
+ * caller's tool deadline never runs (#270: an agent's 60 s timeout killed the
+ * foreground re-arm and left exactly this). Such a file used to refuse every
+ * later re-arm "automatic takeover is refused — remove it only after verifying
+ * no watcher survives", which asked the operator to measure by hand the one
+ * fact this function measures: the holder pid is gone (ESRCH, see
+ * `processAliveDefault`), and a watcher only ever runs under the pid it wrote.
+ *
+ * What that refusal really guarded was the RACE: two re-arms both read the same
+ * dead pid, one replaces it, and the other then unlinks the winner's fresh
+ * claim — two watchers. The takeover is therefore serialised by an O_EXCL
+ * `<pidfile>.takeover` lock, and the pidfile is re-read under it: only a file
+ * that still names the dead pid is replaced. A contender that finds the lock
+ * stands down. A lock left by a taker that died inside that window is not
+ * guessed at either — it is named, for a person to remove.
+ */
 function claimPid(path, pid, processAlive) {
   try {
     writeFileSync(path, String(pid), { flag: 'wx', mode: 0o600 });
@@ -366,12 +390,36 @@ function claimPid(path, pid, processAlive) {
   const held = readHolder(path, processAlive);
   // Gone between the claim and the read: its holder just exited. Not ours to
   // retry — the next re-arm claims a free file.
-  return held.absent ? { claimed: false, unreadable: true } : { claimed: false, ...held };
+  if (held.absent) return { claimed: false, unreadable: true };
+  if (!held.stale) return { claimed: false, ...held };
+
+  const lock = `${path}.takeover`;
+  try {
+    writeFileSync(lock, String(pid), { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const taker = readHolder(lock, processAlive);
+    return { claimed: false, contended: true, lock, taker: taker.holder ?? 0, interrupted: taker.stale === true };
+  }
+  try {
+    if (readHolder(path, processAlive).holder === held.holder) rmSync(path, { force: true });
+    try {
+      writeFileSync(path, String(pid), { flag: 'wx', mode: 0o600 });
+      return { claimed: true, tookOver: held.holder };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      return { claimed: false, ...readHolder(path, processAlive) };
+    }
+  } finally {
+    rmSync(lock, { force: true });
+  }
 }
 
 /** The one sentence for a claim this watcher does not hold. */
 function heldBy(request, claim) {
-  if (claim.stale) return `pidfile for ${request} belongs to dead pid ${claim.holder}; automatic takeover is refused — remove it only after verifying no watcher survives.`;
+  if (claim.contended && claim.interrupted) return `a takeover of the pidfile for ${request} was interrupted (dead pid ${claim.taker}); remove ${claim.lock} and re-arm.`;
+  if (claim.contended) return `a takeover of the pidfile for ${request} is already in flight (pid ${claim.taker || 'unknown'}); not doubling it.`;
+  if (claim.stale) return `pidfile for ${request} belongs to dead pid ${claim.holder} and could not be taken over; not doubling an unknown watcher.`;
   if (claim.holder) return `already armed for ${request} (pid ${claim.holder}); not doubling it.`;
   return `pidfile for ${request} is unreadable; not doubling an unknown watcher.`;
 }
@@ -431,9 +479,10 @@ export function armStallWatcher({ request, bin, env = process.env, spawnProcess 
  * unwatched and six calls to recover. It now detaches through the same
  * `armStallWatcher` a dispatch uses, and everything it can establish without
  * the loop it says HERE, to the caller, instead of in a log nobody reads: a
- * malformed request, a missing record, no Orca, a watcher already holding the
- * claim. The detached child's own claim stays the authority for a race between
- * two re-arms.
+ * malformed request, a missing record, no Orca, a live watcher already holding
+ * the claim. A holder proven dead is announced and left to the child's
+ * `claimPid`, which takes it over; that claim stays the one authority for a race
+ * between two re-arms.
  */
 export function stall(argv = [], { resolve = resolveOrca, env = process.env, processAlive = processAliveDefault, arm = armStallWatcher } = {}) {
   const parsed = parse(argv);
@@ -452,16 +501,16 @@ export function stall(argv = [], { resolve = resolveOrca, env = process.env, pro
   if (!bin) return cannot('no Orca CLI on this machine');
 
   const held = readHolder(join(watchDirOf(env), `${parsed.request}.pid`), processAlive);
-  if (!held.absent) {
-    const message = heldBy(parsed.request, held);
-    if (held.holder && !held.stale) {
-      note(redactSecrets(message));
-      return 0;
-    }
-    bad(redactSecrets(message));
+  if (held.holder && !held.stale) {
+    note(redactSecrets(heldBy(parsed.request, held)));
+    return 0;
+  }
+  if (held.unreadable) {
+    bad(redactSecrets(heldBy(parsed.request, held)));
     fix(`rm ${join(watchDirOf(env), `${parsed.request}.pid`)} && ax worker stall --request ${parsed.request}`);
     return 1;
   }
+  if (held.stale) note(`the pidfile for ${parsed.request} names dead pid ${held.holder}; the new watcher takes it over.`);
 
   // The switch that keeps a dispatch from arming anything; here it would make
   // the explicit ask a silent no-op, which is the one failure a watcher verb
@@ -558,6 +607,7 @@ export function watch(
     log(message);
     return 0;
   }
+  if (claim.tookOver) log(`took over the pidfile from dead pid ${claim.tookOver}.`);
 
   try {
     let worktreePath = '';
