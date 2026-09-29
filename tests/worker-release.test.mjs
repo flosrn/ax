@@ -541,7 +541,11 @@ function declaringCheckout() {
   return dir;
 }
 
-function remoteOrca({ handle, worktreePath, cursors = [5, 5], afterRelease = null, runs = {} }) {
+/**
+ * `trees` is what `worktree list --environment gapicore` answers: rows
+ * `{ path, branch }`, or `'refuse'` for a host that does not answer.
+ */
+function remoteOrca({ handle, worktreePath, cursors = [5, 5], afterRelease = null, runs = {}, trees = [] }) {
   const calls = [];
   let reads = 0;
   let released = false;
@@ -561,6 +565,10 @@ function remoteOrca({ handle, worktreePath, cursors = [5, 5], afterRelease = nul
         const asked = args.includes('--run') ? args[args.indexOf('--run') + 1] : '';
         const scope = asked === '' ? { run: 'run_bound_elsewhere', source: 'bound' } : { run: asked, source: 'flag' };
         return { status: 0, stdout: JSON.stringify({ ok: true, result: { workers: runs[asked] ?? [], scope } }), stderr: '' };
+      }
+      if (line.startsWith('worktree list')) {
+        if (!onHost(args) || trees === 'refuse') return { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'environment_unreachable', message: 'environment_unreachable' } }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify({ ok: true, result: { worktrees: trees.map(tree => ({ id: `repo-1::${tree.path}`, repoId: 'repo-1', path: tree.path, branch: `refs/heads/${tree.branch}` })) } }), stderr: '' };
       }
       if (line.startsWith('terminal list')) {
         if (onHost(args)) return { status: 0, stdout: listed(!(released && afterRelease === 'gone')), stderr: '' };
@@ -585,8 +593,21 @@ function remoteOrca({ handle, worktreePath, cursors = [5, 5], afterRelease = nul
   return { runner, calls };
 }
 
-/** The 2120-work record's shape: `worker-start --on gapicore`, ready receipt, agent pane. */
-function remoteRecord(dir, request, dispatchId, handle, runId = 'run_ffe427d624e2') {
+/**
+ * The 2120-work record's shape: `worker-start --on gapicore --worktree
+ * new-top-level --repo id:<repo>`, ready receipt naming the agent pane and the
+ * tree the host created. `previous` prepends an earlier attempt of the same
+ * request — the 0.28.1 re-placement that left 2122-work with two trees.
+ */
+function remoteRecord(dir, request, dispatchId, handle, runId = 'run_ffe427d624e2', { tree = `/home/harness/orca/workspaces/gapila/${request}`, previous = null } = {}) {
+  const start = (id, at, pane, identity) => ({
+    name: 'worker-start',
+    identity,
+    argv: ['stub-orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--worktree', 'new-top-level', '--repo', 'id:repo-1', '--name', request, '--json'],
+    exit: 0,
+    receipt: { ok: true, result: { dispatchId: id, state: 'ready', effects: [{ kind: 'worktree', action: 'created_top_level', id: `repo-1::${at}` }, { kind: 'terminal', role: 'agent', action: 'created', id: pane }] } },
+  });
+  const attempts = previous === null ? [] : [{ n: 1, settled: false, phases: [start(previous.dispatchId, previous.tree, `term_${previous.dispatchId}`, 'id-p')] }];
   writeFileSync(
     join(dir, `${request}.json`),
     JSON.stringify({
@@ -596,32 +617,81 @@ function remoteRecord(dir, request, dispatchId, handle, runId = 'run_ffe427d624e
       createdAt: '2026-08-20T10:00:00.000Z',
       repo: 'owner/repo',
       kind: 'implementation',
-      attempts: [{ n: 1, settled: false, phases: [{
+      attempts: [...attempts, { n: attempts.length + 1, settled: false, phases: [{
         name: 'task-create',
         identity: 'id-0',
         argv: ['stub-orca', 'orchestration', 'task-create', '--run', runId, '--spec', 'x', '--json'],
         exit: 0,
         receipt: { ok: true, result: { task: { id: 'task_f960' } } },
-      }, {
-        name: 'worker-start',
-        identity: 'id-1',
-        argv: ['stub-orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--worktree', 'new-top-level', '--name', request, '--json'],
-        exit: 0,
-        receipt: { ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: handle }] } },
-      }] }],
+      }, start(dispatchId, tree, handle, 'id-1')] }],
     }),
   );
 }
 
-const remoteRelease = (argv, { afterRelease = null, cursors, runs } = {}) => {
+const TREE_2120 = '/home/harness/orca/workspaces/gapila/2120-work';
+
+const remoteRelease = (
+  argv,
+  {
+    afterRelease = null,
+    cursors,
+    runs,
+    request = '2120-work',
+    dispatchId = 'ctx_cf95',
+    tree = TREE_2120,
+    previous = null,
+    trees = [{ path: TREE_2120, branch: 'flosrn/2120-work' }],
+    prs = [{ number: 2136, state: 'MERGED', headRefName: 'flosrn/2120-work' }],
+  } = {},
+) => {
   const dir = store();
   const handle = 'term_ab55e94f';
-  remoteRecord(dir, '2120-work', 'ctx_cf95', handle);
-  const { runner, calls } = remoteOrca({ handle, worktreePath: '/home/harness/orca/workspaces/gapila/2120-work', afterRelease, cursors, runs });
-  const { exec } = fakeExec({ answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 2136, headRefName: 'flosrn/2120-work' }]), stderr: '' } } });
+  remoteRecord(dir, request, dispatchId, handle, 'run_ffe427d624e2', { tree, previous });
+  const { runner, calls } = remoteOrca({ handle, worktreePath: tree, afterRelease, cursors, runs, trees });
+  const { exec, calls: shell } = fakeExec({ answers: { 'gh pr list': { status: 0, stdout: JSON.stringify(prs), stderr: '' } } });
   const result = capture(() => release([...argv, '--store', dir, '--gap', '0'], { runner, exec, env: { HOME: dir }, cwd: declaringCheckout(), sleep: () => {} }));
-  return { ...result, calls, dir };
+  return { ...result, calls, shell, dir };
 };
+
+// #280, measured from gapila on 0.28.2: a remote tree its host still listed
+// read `worktree gone` (2126-work on gapicore, 2122-work-2 on netcup-vie),
+// because the proof asked THIS Mac's filesystem about a path on another host,
+// then searched merged PRs by the tree's directory name.
+test('#280: a remote tree its host still lists is asked of that host, never read as gone', () => {
+  const r = remoteRelease(['--dispatch', 'ctx_cf95'], { prs: [{ number: 2143, state: 'OPEN', headRefName: 'flosrn/2120-work' }] });
+
+  assert.ok(r.calls.includes('worktree list --repo id:repo-1 --environment gapicore --json'), 'the tree is asked of the host the record names');
+  assert.doesNotMatch(r.out, /worktree gone/, r.out);
+  assert.match(r.out, /ctx_cf95 .*KEEP · PR #2143 still open/);
+  assert.match(r.out, /ax pr gate --pr 2143/);
+  assert.doesNotMatch(r.out, /cd \/home\/harness/, 'a repair never cds into a path that lives on another host');
+});
+
+test("#280: the last attempt's tree is judged on the branch its host has checked out, and a merged PR there is CLOSE", () => {
+  const r = remoteRelease(['--dispatch', 'ctx_e910'], {
+    request: '2122-work',
+    dispatchId: 'ctx_e910',
+    tree: '/home/harness/orca/workspaces/gapila/2122-work-2',
+    previous: { dispatchId: 'ctx_3ae7', tree: '/home/harness/orca/workspaces/gapila/2122-work' },
+    trees: [{ path: '/home/harness/orca/workspaces/gapila/2122-work-2', branch: 'flosrn/2122-work' }],
+    prs: [{ number: 2138, state: 'MERGED', headRefName: 'flosrn/2122-work' }],
+  });
+
+  assert.ok(r.shell.some(line => line.includes('pr list') && line.includes('--head flosrn/2122-work ')), r.shell.join('\n'));
+  assert.doesNotMatch(r.out, /2122-work-2'/, 'the tree slug is never the lookup key while the host names its branch');
+  assert.match(r.out, /ctx_e910 .*pane QUIET · CLOSE · PR #2138 merged/, r.out);
+  assert.match(r.out, /1 closeable/);
+});
+
+test('#280: a host that does not answer for its trees is cannot-establish, never gone', () => {
+  const r = remoteRelease(['--dispatch', 'ctx_cf95'], { trees: 'refuse' });
+
+  assert.doesNotMatch(r.out, /worktree gone|no merged PR/, r.out);
+  assert.match(r.out, /ctx_cf95 .*KEEP · cannot establish the worktree on 'gapicore'/);
+  assert.match(r.out, /orca worktree list --repo id:repo-1 --environment gapicore --json/);
+  assert.ok(r.shell.every(line => !line.includes('pr list')), 'no PR is searched for a tree nobody could read');
+  assert.match(r.out, /0 closeable/);
+});
 
 test('F2: a pane on a declared host is established where it lives, and its release goes out', () => {
   const r = remoteRelease(['--close', '--dispatch', '2120-work']);

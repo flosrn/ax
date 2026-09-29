@@ -173,22 +173,59 @@ function recordedTrees(recordPath) {
 }
 
 /**
- * The branch of a worktree on the host this record's placement NAMES, asked of
- * that host (#192).
+ * ONE TREE ON ONE HOST, asked of that host (#192): `{ present: true, branch }`,
+ * `{ present: false }` when the host answered and no longer lists it, or
+ * `{ unread, listing }` — the inability and the exact call that would answer it.
  *
  * The read is `placeRemote`'s own — `worktree list --repo <id> --environment
  * <env>`, over the Orca federation — and every step of it can fail to answer:
- * a caller holding no runtime, a placement naming no path or no repository, a
- * host that cannot list, a row that carries no branch, two rows on one path.
- * Each is a NAMED inability with the exact call to make, never a fallback to
- * the local machine: `/srv/orca/<name>` there and a same-named directory here
- * are different trees, and the local one would answer for a stranger.
+ * a caller holding no runtime, no repository to scope the listing to, a host
+ * that cannot list, a row that carries no branch, two rows on one path. Each is
+ * a NAMED inability, never a fallback to the local machine: `/srv/orca/<name>`
+ * there and a same-named directory here are different trees, and the local one
+ * would answer for a stranger. And never "gone" (F-028): only a host that
+ * ANSWERED for its worktrees can say one is not among them.
+ *
+ * Exported for `./release.mjs`, whose landing proof asks the same question of
+ * the same host: one reader, so the two verbs cannot disagree about a tree.
+ */
+export function hostTree(host, path, repoArg, run) {
+  const listing = ['orca', 'worktree', 'list', '--repo', repoArg === '' ? 'id:<repo-id>' : repoArg, '--environment', host, '--json'];
+  const unread = detail => ({ unread: detail, listing });
+
+  if (run === null) return unread('this reader was given no runtime to ask that host with');
+  if (repoArg === '') return unread(`nothing scopes the listing to a repository, and an unscoped one answers about every repository '${host}' carries`);
+
+  const out = run(['worktree', 'list', '--repo', repoArg, '--environment', host, '--json']);
+  const receipt = out?.receipt ?? {};
+  const rows = receipt.result?.worktrees;
+  if (out?.status !== 0 || receipt.ok !== true || !Array.isArray(rows)) {
+    const detail = String(receipt.unparseable ?? receipt.error?.code ?? out?.stderr ?? '').replace(/\s+/g, ' ').trim();
+    return unread(`'${host}' could not say which worktrees it carries (${detail === '' ? 'no receipt' : detail})`);
+  }
+
+  // Compared as strings on `/`: nothing here resolves a symlink or stats a
+  // directory on another machine (../worker/placement.mjs).
+  const mine = rows.filter(row => String(row?.path ?? '').replace(/\/+$/, '') === path.replace(/\/+$/, ''));
+  // A TREE ITS OWN HOST NO LONGER LISTS IS GONE, the remote twin of a local
+  // tree already removed (`localBranch`): the host answered for its worktrees.
+  // Printed as an unread question it asked the operator to re-run a read whose
+  // answer could not change (measured on 2120-work, whose tree was removed by
+  // hand).
+  if (mine.length === 0) return { present: false };
+  if (mine.length > 1) return unread(`'${host}' lists ${mine.length} worktrees at ${path}, so nothing here can say which branch this pane worked on`);
+  const branch = String(mine[0].branch ?? '').replace(/^refs\/heads\//, '').trim();
+  if (branch === '' || /\s/.test(branch)) return unread(`the row '${host}' gave for ${path} carries no branch`);
+  return { present: true, branch };
+}
+
+/**
+ * The branch of a worktree on the host this record's placement NAMES — which
+ * tree, then `hostTree` for its branch.
  */
 function remoteBranch(host, selector, repoArg, run, recorded) {
   const listing = ['orca', 'worktree', 'list', '--repo', repoArg === '' ? 'id:<repo-id>' : repoArg, '--environment', host, '--json'];
-  const unread = detail => ({ failed: failedRead(`the branch of this record's worktree on '${host}' is unread: ${detail}`, listing) });
-
-  if (run === null) return unread('this reader was given no runtime to ask that host with');
+  if (run === null) return { failed: failedRead(`the branch of this record's worktree on '${host}' is unread: this reader was given no runtime to ask that host with`, listing) };
   // THE TREE THE HOST CREATED, when the placement could not name one before
   // the call (`new-top-level`, a selector the host resolved): the start's own
   // receipt names it as a `worktree` effect, read through `worktreesOf`, the
@@ -209,29 +246,9 @@ function remoteBranch(host, selector, repoArg, run, recorded) {
       },
     };
   }
-  if (repoArg === '') return unread(`nothing scopes the listing to a repository, and an unscoped one answers about every repository '${host}' carries`);
-
-  const out = run(['worktree', 'list', '--repo', repoArg, '--environment', host, '--json']);
-  const receipt = out?.receipt ?? {};
-  const rows = receipt.result?.worktrees;
-  if (out?.status !== 0 || receipt.ok !== true || !Array.isArray(rows)) {
-    const detail = String(receipt.unparseable ?? receipt.error?.code ?? out?.stderr ?? '').replace(/\s+/g, ' ').trim();
-    return unread(`'${host}' could not say which worktrees it carries (${detail === '' ? 'no receipt' : detail})`);
-  }
-
-  // Compared as strings on `/`: nothing here resolves a symlink or stats a
-  // directory on another machine (../worker/placement.mjs).
-  const mine = rows.filter(row => String(row?.path ?? '').replace(/\/+$/, '') === path.replace(/\/+$/, ''));
-  // A TREE ITS OWN HOST NO LONGER LISTS IS GONE, the remote twin of a local
-  // tree already removed (`localBranch`): the host answered for its worktrees,
-  // so there is nothing to ask and nothing to continue with. Printed as an
-  // unread question it asked the operator to re-run a read whose answer could
-  // not change (measured on 2120-work, whose tree was removed by hand).
-  if (mine.length === 0) return { branch: '' };
-  if (mine.length > 1) return unread(`'${host}' lists ${mine.length} worktrees at ${path}, so nothing here can say which branch this pane worked on`);
-  const branch = String(mine[0].branch ?? '').replace(/^refs\/heads\//, '').trim();
-  if (branch === '' || /\s/.test(branch)) return unread(`the row '${host}' gave for ${path} carries no branch`);
-  return { branch };
+  const tree = hostTree(host, path, repoArg, run);
+  if (tree.unread !== undefined) return { failed: failedRead(`the branch of this record's worktree on '${host}' is unread: ${tree.unread}`, tree.listing) };
+  return { branch: tree.present ? tree.branch : '' };
 }
 
 /**

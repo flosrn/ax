@@ -113,6 +113,9 @@
 //     that same host, reports as NOT established, naming
 //     `orca terminal close --terminal <h> --environment <env>`. (The 2026-08-14
 //     measurement that made every remote row a KEEP predates that capability.)
+//     Its LANDING PROOF is asked of that host too (#280): the tree the
+//     dispatch's own receipt names, and the branch the host lists it on —
+//     never this Mac's filesystem, which read every remote tree as gone.
 //   * remove a worktree, delete a branch, or touch git state. Ever.
 //
 // EVERY CLOSE IS WRITE-AHEAD (F-001)
@@ -167,8 +170,10 @@ import { planProject, readManifest } from '../plan.mjs';
 import { createRunner, parseReceipt, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
+import { hostTree } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { hostReader, hostScopes, paneReadable, readPane, terminalInventory } from './pane.mjs';
+import { remoteRepoOf, remoteTreeOf } from './placement.mjs';
 import {
   argvValue,
   claimRecord,
@@ -375,6 +380,7 @@ function workerInventory(run, runId = '') {
       // it stays '' rather than defaulting to a value that authorizes anything.
       ownership: typeof resource.ownershipState === 'string' ? resource.ownershipState : '',
       worktree: worktreeId.split('::').pop() ?? '',
+      worktreeId,
       known: true,
     });
   }
@@ -446,6 +452,33 @@ function establishedArchive(resource, dispatchId) {
   const source = typeof archive.source === 'string' ? archive.source : '';
   if (status !== 'captured' || source === '') return null;
   return { source, status };
+}
+
+/**
+ * The tree the worker-start that opened `dispatchId` says its host created or
+ * reused — the `worktree` effect of THAT phase's receipt, with the repository
+ * that scopes a listing of it (`--repo` on the argv, else the effect's own
+ * `<repoId>::`). `null` when the record cannot say: an unreadable record, no
+ * such phase, or a receipt naming no tree or two.
+ */
+function placedTree(recordPath, dispatchId) {
+  let rec;
+  try {
+    rec = JSON.parse(readFileSync(recordPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  for (const attempt of Array.isArray(rec?.attempts) ? rec.attempts : []) {
+    for (const phase of Array.isArray(attempt?.phases) ? attempt.phases : []) {
+      if (phase?.name !== 'worker-start' || phase?.receipt?.result?.dispatchId !== dispatchId) continue;
+      const effects = Array.isArray(phase.receipt.result.effects) ? phase.receipt.result.effects : [];
+      const trees = effects.filter(effect => effect?.kind === 'worktree' && typeof effect.id === 'string' && remoteTreeOf(effect.id) !== '');
+      if (trees.length !== 1) return null;
+      const argv = Array.isArray(phase.argv) ? phase.argv : [];
+      return { tree: remoteTreeOf(trees[0].id), repoArg: argvValue(argv, '--repo') || remoteRepoOf(trees[0].id) };
+    }
+  }
+  return null;
 }
 
 const processReadRepair = (worktree, dispatchId) =>
@@ -699,6 +732,44 @@ function mergedPrFor(gh, { repo, slug, dispatchId }) {
 }
 
 /**
+ * The ONE pull request that proves `branch`, matched by name — landed on
+ * MERGED, the state's own repair otherwise, or `null` when no PR carries that
+ * head. Trusting the first row was a bug in waiting: `--head` is a filter the
+ * caller cannot verify, and a first row for another branch — or one carrying no
+ * head ref at all — would land. `gate` is where `ax pr gate` runs for an OPEN
+ * one: the worktree when it is on this machine, the checkout when it is not.
+ */
+function prOfBranch(gh, { repo, branch, dispatchId, gate }) {
+  const prQuery = ['gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json', 'number,state,headRefName'];
+  const prOut = gh(prQuery.slice(1));
+  if (prOut.error) return missing(`gh could not run: ${String(prOut.error.message ?? prOut.error)}`, rerun(prQuery));
+  // A failed query is IGNORANCE, and it may not fall through to what follows a
+  // missing PR: "I could not ask about PRs" would be reported as "there is no PR".
+  if (prOut.status !== 0) return missing(`gh refused — ${firstLine(prOut.stderr) || `exit ${prOut.status}`}`, rerun(prQuery));
+  const list = parseReceipt(prOut.stdout);
+  if (!Array.isArray(list)) return missing('gh answered an unreadable PR list', rerun(prQuery));
+  const mine = list.filter(pr => String(pr?.headRefName ?? '') === branch);
+  if (mine.length > 1) {
+    return missing(
+      `${mine.length} PRs claim head ${branch}`,
+      rerun(prQuery, 'close or retarget the duplicates: one head, one PR, or nothing here can name the one that proves this pane'),
+    );
+  }
+  if (mine.length === 0) return null;
+  const pr = mine[0];
+  if (pr.state === 'MERGED') return landed(`PR #${pr.number} merged`);
+  // AN OPEN PR IS NOT PROOF (F-031), so the repair is the merge decision and
+  // not this verb: `ax pr gate` names every ground that still refuses it.
+  if (pr.state === 'OPEN') {
+    return missing(`PR #${pr.number} still open`, `cd ${shq(gate)} && ax pr gate --pr ${pr.number}   # this pane closes when that PR is MERGED and never before; the gate names what still blocks it`);
+  }
+  if (pr.state === 'CLOSED') {
+    return missing(`PR #${pr.number} closed unmerged`, readThenSay(dispatchId, `PR #${pr.number} was closed without merging, so nothing this pane did ever landed`));
+  }
+  return missing(`PR #${pr.number} is in state ${JSON.stringify(pr.state)}`, rerun(['gh', 'pr', 'view', String(pr.number), '--repo', repo, '--json', 'state,mergedAt,headRefName']));
+}
+
+/**
  * Did an implementation land? A MERGED pull request, and nothing else.
  *
  * THE WORKTREE IS USUALLY GONE, and that is the normal state of the case this
@@ -708,15 +779,49 @@ function mergedPrFor(gh, { repo, slug, dispatchId }) {
  * post-merge pane permanently unclosable: the feature refused precisely the
  * situation it was asked for.
  *
+ * A TREE ON ANOTHER HOST IS ASKED OF THAT HOST (#280). `existsSync` over
+ * `/home/harness/…` answers about THIS machine, so every remote tree read as
+ * gone and its PR was searched by the directory's name — `2122-work-2`, a name
+ * Orca's re-placement gave the tree while its branch stayed `flosrn/2122-work`.
+ * The host's own `worktree list` (./continuation.mjs `hostTree`, the reader the
+ * continuation already asks) says whether the tree is there and WHICH BRANCH IT
+ * HAS CHECKED OUT. That branch is the key, exactly as `rev-parse` is for a local
+ * tree: the record names no branch at all (`--name` is a request to Orca, which
+ * suffixes the directory and prefixes the branch as it sees fit), so the only
+ * authoritative answer is the tree's own HEAD. A host that does not answer is
+ * CANNOT-ESTABLISH, never gone (F-028); a host that answered without the tree
+ * is the gone case above, on that host.
+ *
+ * What the listing cannot carry is `git status`: nothing here reads another
+ * host's working tree, so a remote CLOSE says its dirt was not read rather than
+ * implying it is clean. It still closes on the merged PR — the gone-tree route
+ * has never read dirt either, and this verb never touches the tree it leaves.
+ *
  * No call below hides its stderr. A refused `git` formats exactly like good
  * news, and two audits concluded "nothing to save" that way before a third found
  * 116 unpushed commits.
  */
-function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore }) {
+function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore, host = '', repoArg = '', run = null }) {
   if (!worktree) return missing('no worktree recorded', readThenSay(dispatchId, 'this host recorded no worktree for the dispatch, so there is no branch to ask about'));
   if (!repo) return missing('no repo to query', GH_AUTH);
   const slug = worktree.split('/').filter(Boolean).pop() ?? '';
   if (slug === '') return missing('the recorded worktree names no slug', readThenSay(dispatchId, `the recorded worktree ${worktree} names no slug to match a PR head against`));
+
+  if (host !== '') {
+    const tree = hostTree(host, worktree, repoArg, run);
+    if (tree.unread !== undefined) {
+      return missing(`cannot establish the worktree on '${host}' — ${tree.unread}`, rerun(tree.listing, `ask '${host}' whether ${worktree} is still there and which branch it has checked out, then re-run this verb; an unanswered host is never a gone tree`));
+    }
+    if (!tree.present) return mergedPrFor(gh, { repo, slug, dispatchId });
+    const proof = prOfBranch(gh, { repo, branch: tree.branch, dispatchId, gate: checkout });
+    if (proof === null) {
+      return missing(
+        `no PR for ${tree.branch} on '${host}'`,
+        readThenSay(dispatchId, `${tree.branch} on '${host}' carries no pull request, and its commits are not counted from this machine — re-engage that pane to open one, or accept the work is unshipped`),
+      );
+    }
+    return proof.landed ? landed(`${proof.detail} (${tree.branch} on '${host}'; its uncommitted state there is not read from here)`) : proof;
+  }
 
   if (!existsSync(worktree)) return mergedPrFor(gh, { repo, slug, dispatchId });
 
@@ -735,37 +840,8 @@ function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, igno
   const dirt = proveClean(dirtyOut.stdout, { branch, worktree, checkout, ignore });
   if (dirt !== null) return dirt;
 
-  // The PR that proves THIS branch, matched by name. Trusting the first row was
-  // a bug in waiting: `--head` is a filter the caller cannot verify, and a first
-  // row for another branch — or one carrying no head ref at all — would land.
-  const prQuery = ['gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json', 'number,state,headRefName'];
-  const prOut = gh(prQuery.slice(1));
-  if (prOut.error) return missing(`gh could not run: ${String(prOut.error.message ?? prOut.error)}`, rerun(prQuery));
-  // A failed query is IGNORANCE, and it may not fall through to the commit count
-  // below: "I could not ask about PRs" would be reported as "there is no PR".
-  if (prOut.status !== 0) return missing(`gh refused — ${firstLine(prOut.stderr) || `exit ${prOut.status}`}`, rerun(prQuery));
-  const list = parseReceipt(prOut.stdout);
-  if (!Array.isArray(list)) return missing('gh answered an unreadable PR list', rerun(prQuery));
-  const mine = list.filter(pr => String(pr?.headRefName ?? '') === branch);
-  if (mine.length > 1) {
-    return missing(
-      `${mine.length} PRs claim head ${branch}`,
-      rerun(prQuery, 'close or retarget the duplicates: one head, one PR, or nothing here can name the one that proves this pane'),
-    );
-  }
-  if (mine.length === 1) {
-    const pr = mine[0];
-    if (pr.state === 'MERGED') return landed(`PR #${pr.number} merged`);
-    // AN OPEN PR IS NOT PROOF (F-031), so the repair is the merge decision and
-    // not this verb: `ax pr gate` names every ground that still refuses it.
-    if (pr.state === 'OPEN') {
-      return missing(`PR #${pr.number} still open`, `cd ${shq(worktree)} && ax pr gate --pr ${pr.number}   # this pane closes when that PR is MERGED and never before; the gate names what still blocks it`);
-    }
-    if (pr.state === 'CLOSED') {
-      return missing(`PR #${pr.number} closed unmerged`, readThenSay(dispatchId, `PR #${pr.number} was closed without merging, so nothing this pane did ever landed`));
-    }
-    return missing(`PR #${pr.number} is in state ${JSON.stringify(pr.state)}`, rerun(['gh', 'pr', 'view', String(pr.number), '--repo', repo, '--json', 'state,mergedAt,headRefName']));
-  }
+  const proof = prOfBranch(gh, { repo, branch, dispatchId, gate: worktree });
+  if (proof !== null) return proof;
 
   const aheadQuery = ['git', '-C', worktree, 'rev-list', '--count', `${base}..${branch}`];
   const aheadOut = git(worktree, ['rev-list', '--count', `${base}..${branch}`]);
@@ -788,7 +864,7 @@ function proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, igno
 const CUSTOM_UNPROVABLE = 'a custom pass publishes nothing that could prove it';
 
 /** Which proof a session owes, decided by the kind its dispatch recorded. */
-function prove(gh, git, { request, kind, issuedAt, worktree, repo, base, dispatchId, checkout, ignore, recordPath }) {
+function prove(gh, git, { request, kind, issuedAt, worktree, repo, base, dispatchId, checkout, ignore, recordPath, host = '', repoArg = '', run = null }) {
   if (request === null) {
     return missing(
       'unknown provenance — this host recorded no request for that dispatch',
@@ -799,7 +875,7 @@ function prove(gh, git, { request, kind, issuedAt, worktree, repo, base, dispatc
   // and a custom pass of issue 2025 on owner `one` repo `two` are the same
   // bytes; only the verb that created the record knows which it was.
   const recorded = ['implementation', 'triage', 'brief', 'custom'].includes(kind) ? kind : '';
-  if (recorded === 'implementation') return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
+  if (recorded === 'implementation') return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore, host, repoArg, run });
   if (recorded === 'custom') {
     return missing(
       CUSTOM_UNPROVABLE,
@@ -834,7 +910,7 @@ function prove(gh, git, { request, kind, issuedAt, worktree, repo, base, dispatc
   // every job request opens with its job word, so a request carrying none was
   // never a job. That is a fact this record establishes rather than a reading
   // of it, and it keeps every pre-`--kind` implementation closeable.
-  if (named.job === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore });
+  if (named.job === null) return proveLanded(gh, git, { repo, worktree, base, dispatchId, checkout, ignore, host, repoArg, run });
   return missing(
     `cannot establish which proof this owes — the record names no kind, and the request "${request}" carries the job word '${named.job}'`,
     readThenSay(
@@ -1632,13 +1708,22 @@ export function release(
       continue;
     }
 
+    // THE TREE IS JUDGED WHERE THE RECORD PLACED IT (#280): `--on <env>` of the
+    // worker-start that opened THIS dispatch, and the tree that start's receipt
+    // names. Keyed by dispatch id, never by attempt order or by the record's
+    // union of trees: a request re-placed on 0.28.1 holds two (`2122-work`,
+    // then `2122-work-2`), and only the one this pane ran in proves anything.
+    const placedOn = entry?.env ?? '';
+    const onTree = placedOn === '' || entry === undefined ? null : placedTree(join(store, entry.file), row.dispatchId);
     candidates.push({
       ...row,
-      worktree,
+      worktree: onTree?.tree || worktree,
       environment,
       request: entry?.request ?? null,
       issuedAt: entry?.issuedAt ?? null,
       kind: entry?.kind ?? '',
+      host: placedOn,
+      repoArg: onTree?.repoArg || remoteRepoOf(row.worktreeId ?? ''),
     });
   }
 
@@ -1666,6 +1751,9 @@ export function release(
           checkout,
           ignore: plan.ignore,
           recordPath: candidate.request === null ? store : join(store, `${candidate.request}.json`),
+          host: candidate.host,
+          repoArg: candidate.repoArg,
+          run,
         });
   }
 
