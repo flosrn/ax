@@ -75,14 +75,24 @@
 // inability carrying the exact call to make, like every other unread question
 // here. Only the pull request stays a local read: a forge fact is the same fact
 // from any machine.
+//
+// WHICH TREE ON THAT HOST is the placement's path when it names one, and
+// otherwise the tree the start's own receipt says the host created (F2): a
+// `new-top-level` placement has no path before the call, and every remote row
+// read "carries no path — run it, then re-run this verb", a repair whose answer
+// could never change. `worktreesOf` (./transcript.mjs, the reader the Report
+// path uses) names it from the `worktree` effect; one tree or none. When no
+// receipt names one, the row says nothing recorded can, and offers the listing
+// as a look, never as a re-run.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { defaultExec } from '../exec.mjs';
 import { parseReceipt } from '../orca-bin.mjs';
 import { physical } from '../worktree/locate.mjs';
 import { argvValue, recordDelivery, recordRepo, workerStartArgv } from './record.mjs';
 import { inheritPlacement } from './start.mjs';
+import { worktreesOf } from './transcript.mjs';
 
 /**
  * Nothing could be asked, so nothing is claimed and nothing is printed — the
@@ -152,6 +162,15 @@ function localBranch(selector, exec) {
   return { branch };
 }
 
+/** The trees this record's receipts say were created or used — `worktreesOf`, read leniently: an unreadable record names none. */
+function recordedTrees(recordPath) {
+  try {
+    return worktreesOf(JSON.parse(readFileSync(recordPath, 'utf8')));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The branch of a worktree on the host this record's placement NAMES, asked of
  * that host (#192).
@@ -164,18 +183,30 @@ function localBranch(selector, exec) {
  * the local machine: `/srv/orca/<name>` there and a same-named directory here
  * are different trees, and the local one would answer for a stranger.
  */
-function remoteBranch(host, selector, repoArg, run) {
+function remoteBranch(host, selector, repoArg, run, recorded) {
   const listing = ['orca', 'worktree', 'list', '--repo', repoArg === '' ? 'id:<repo-id>' : repoArg, '--environment', host, '--json'];
   const unread = detail => ({ failed: failedRead(`the branch of this record's worktree on '${host}' is unread: ${detail}`, listing) });
 
   if (run === null) return unread('this reader was given no runtime to ask that host with');
-  const path = selectorPath(selector);
+  // THE TREE THE HOST CREATED, when the placement could not name one before
+  // the call (`new-top-level`, a selector the host resolved): the start's own
+  // receipt names it as a `worktree` effect, read through `worktreesOf`, the
+  // reader the Report path and the transcript already derive the tree from —
+  // one tree or none, never a pick among several.
+  const path = selectorPath(selector) || (recorded.length === 1 ? recorded[0] : '');
   if (path === '') {
-    return unread(
-      selector === ''
-        ? 'its placement names no worktree at all'
-        : `its placement names ${JSON.stringify(selector)}, which carries no path that host could be asked about`,
-    );
+    // Nothing recorded names the tree, and nothing re-read will: the argv and
+    // the receipt are what they are. So no re-run is offered — the listing is
+    // for the operator to find the tree by eye, and this verb decides nothing.
+    return {
+      failed: {
+        route: null,
+        failed: `the branch of this record's worktree on '${host}' is undecided: ${
+          selector === '' ? 'its placement names no worktree at all' : `its placement names ${JSON.stringify(selector)}`
+        }, and ${recorded.length === 0 ? 'no receipt of this record names the tree its start created' : `its receipts name ${recorded.length} trees`}, so nothing recorded can say which branch it worked on`,
+        fix: `${listing.map(shq).join(' ')}   # find the tree by eye; re-running this verb cannot change this answer`,
+      },
+    };
   }
   if (repoArg === '') return unread(`nothing scopes the listing to a repository, and an unscoped one answers about every repository '${host}' carries`);
 
@@ -259,7 +290,7 @@ export function continuationFor(recordPath, { request, dispatchId = null, exec =
   const read =
     host === ''
       ? localBranch(selector, exec)
-      : remoteBranch(host, selector, argvValue(placement.passthru, '--repo') ?? '', run);
+      : remoteBranch(host, selector, argvValue(placement.passthru, '--repo') ?? '', run, recordedTrees(recordPath));
   if (read.failed !== undefined) return read.failed;
   if (read.branch === '') return NO_CONTINUATION;
   const branch = read.branch;

@@ -1017,6 +1017,53 @@ test('#192: a host that cannot say which worktrees it carries produces an inabil
   assert.ok(!calls.some(line => line.startsWith('git ')), `nothing local answers for a remote tree: ${calls.join(' | ')}`);
 });
 
+/** A remote record placed `new-top-level`, whose receipt names the tree the host created — 2120-work's shape. */
+function topLevel(dir, request, { dispatchId, handle, effects }) {
+  const path = record(dir, request, { dispatchId, handle, on: 'gapicore', repoId: 'id:repo-1' });
+  const rec = JSON.parse(readFileSync(path, 'utf8'));
+  const start = rec.attempts[0].phases[1];
+  start.argv = ['orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--worktree', 'new-top-level', '--repo', 'id:repo-1', '--name', request, '--json'];
+  start.receipt.result.effects = [...effects, ...start.receipt.result.effects];
+  writeFileSync(path, JSON.stringify(rec));
+  return path;
+}
+
+test('F2: a new-top-level record reads its branch from the tree its own receipt says the host created', () => {
+  // Every remote row printed "its placement names new-top-level, which carries
+  // no path" with "run it, then re-run this verb" — a loop, since the argv
+  // never changes. The receipt already names the tree (measured in
+  // 2120-work.json: {kind:'worktree', action:'created_top_level',
+  // id:'<repo>::/home/harness/orca/workspaces/gapila/2120-work'}).
+  const dir = store();
+  topLevel(dir, '2120-work', { dispatchId: 'ctx_top', handle: 'term_top', effects: [{ kind: 'worktree', action: 'created_top_level', id: 'repo-1::/srv/orca/2120-work' }] });
+  const { exec, calls } = fakeExec({ answers: { 'gh pr list': prList([{ number: 2136, state: 'OPEN', headRefName: 'flosrn/2120-work' }]) } });
+  const r = verdict(
+    { workers: [dispatch('ctx_top', 'term_top')], terminals: [], hosts: { gapicore: { terminals: [] } }, worktrees: [{ path: '/srv/orca/2120-work', repoId: 'repo-1', branch: 'refs/heads/flosrn/2120-work' }] },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+    { cwd: repo({ gapicore: { ssh: 'gapicore' } }), exec },
+  );
+
+  assert.doesNotMatch(r.out, /carries no path/, r.out);
+  assert.match(r.out, /→ ax worker start --replace --request 2120-work/);
+  assert.ok(calls.some(line => line.includes('--head flosrn/2120-work')), calls.join(' | '));
+});
+
+test('F2: a new-top-level record whose receipt names no tree says nothing recorded can name it, and offers no loop', () => {
+  const dir = store();
+  topLevel(dir, '2121-work', { dispatchId: 'ctx_none', handle: 'term_none', effects: [] });
+  const r = verdict(
+    { workers: [dispatch('ctx_none', 'term_none')], terminals: [], hosts: { gapicore: { terminals: [] } }, worktrees: [] },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+    { cwd: repo({ gapicore: { ssh: 'gapicore' } }), exec: fakeExec().exec },
+  );
+
+  assert.match(r.out, /undecided/);
+  assert.match(r.out, /no receipt of this record names the tree/);
+  assert.doesNotMatch(r.out, /re-run this verb/, 'a read whose answer cannot change is not offered as the repair');
+});
+
 // ── #205: a record that could not have created a task is not an inability ────
 // Measured on this host: two of 288 records carry no task id because their one
 // `task-create` was FENCED — exit 1, `ok: false`, `consumer_fenced`, no result,
