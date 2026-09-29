@@ -1484,6 +1484,25 @@ const firstIn = (channels, verbs) => {
 };
 
 /**
+ * The hand merge a refusal hands to a human, bound to the head this run
+ * validated. A refusal that names "merge by hand" in prose leaves the pin out,
+ * and a hand merge without `--match-head-commit` lands whatever the branch
+ * holds when it runs rather than the commit every ground just measured —
+ * measured on gapila #2129 and #2137 (2026-09-28/29), two ticketless chore PRs
+ * refused on R8 exactly as designed and then merged unpinned. The pin is the
+ * same one the gate's own `--merge` carries, so the human path loses the merge
+ * record and the closure poll, never the head binding.
+ *
+ * Without a 40-hex SHA the command is named unpinned rather than guessed: the
+ * one caller that can reach this without a resolved head is the post-merge
+ * replay's Ground 9, which prints its unknowns and never this repair.
+ */
+const handMerge = ({ pr, slug, sha = '', method = 'squash' }) =>
+  /^[0-9a-f]{40}$/.test(String(sha))
+    ? `merge it by hand at the head this run validated: gh pr merge ${pr} --repo ${slug} --${method} --match-head-commit ${sha}`
+    : `merge it by hand: gh pr merge ${pr} --repo ${slug} --${method}`;
+
+/**
  * Ground 7. A closing keyword GitHub actually recognises, on a base where it
  * fires.
  *
@@ -1501,7 +1520,8 @@ const firstIn = (channels, verbs) => {
  *    that is exactly why the answer cannot be to merge: the frontier re-derives
  *    from issue state, so a delivered ticket that closes nothing stalls its
  *    whole subgraph. Naming the ticket, or merging by hand, is the operator's
- *    call and the repair says so.
+ *    call and the repair says so — the hand merge printed pinned to the head
+ *    this run validated (`handMerge`), so the human path keeps that binding.
  *  - A base that is not the repository's default branch makes every keyword
  *    inert: GitHub closes linked issues only on a default-branch merge. The
  *    detector would otherwise print "GitHub will close the issue" about a merge
@@ -1533,7 +1553,7 @@ const firstIn = (channels, verbs) => {
  * ticket by construction" alone would be a false sentence about that body — the
  * species this ground exists to remove.
  */
-export function keywordGround({ channels, tracker, pr, slug, baseBranch = '', defaultBranch = '', release }) {
+export function keywordGround({ channels, tracker, pr, slug, baseBranch = '', defaultBranch = '', release, sha = '', method = 'squash' }) {
   const out = account();
   // The shape answers before anything else this ground asks. Base inertness is
   // not asked either: there is no ticket to be inert about, and a release PR
@@ -1651,7 +1671,7 @@ export function keywordGround({ channels, tracker, pr, slug, baseBranch = '', de
       rest === ''
         ? 'closing keyword: the body closes no issue and expresses no intent to. That is a PR with no ticket behind it, or an author who forgot — no reading of the body separates them, and the frontier re-derives from issue state, so an unclosed delivered ticket stalls its subgraph'
         : `closing keyword: neither the body nor ${rest} closes an issue or expresses intent to. That is a PR with no ticket behind it, or an author who forgot — no reading of them separates the two, and the frontier re-derives from issue state, so an unclosed delivered ticket stalls its subgraph`,
-      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #N", or merge this one by hand if no ticket is behind it`,
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #N" — or, if no ticket is behind it, ${handMerge({ pr, slug, sha, method })}`,
     );
   }
   return out;
@@ -1761,7 +1781,7 @@ const closureOf = entry => `${sourcesOf(entry)} closes #${entry.issue}`;
  * matters: an unrun check is never a passed one, and a reader of this verdict
  * must not believe a binding was verified.
  */
-export function ticketGround({ binding, closes, channels, pr, slug, release }) {
+export function ticketGround({ binding, closes, channels, pr, slug, release, sha = '', method = 'squash' }) {
   const out = account();
   if (release?.ok) {
     out.note(
@@ -1784,7 +1804,7 @@ export function ticketGround({ binding, closes, channels, pr, slug, release }) {
       `ticket binding: this merge is for #${bound} (${binding.source}), and ${
         rest === '' ? 'the body closes no same-repository issue' : `neither the body nor ${rest} closes a same-repository issue`
       }, so #${bound} would stay open after it — every ticket blocked by #${bound} then derives from a stale blocker`,
-      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #${bound}", or merge by hand if this PR is not that ticket's delivery`,
+      `gh pr edit ${pr} --repo ${slug} --body-file -   # add "Closes #${bound}" — or, if this PR is not that ticket's delivery, ${handMerge({ pr, slug, sha, method })}`,
     );
     return out;
   }
@@ -1859,7 +1879,7 @@ export const canonical = value =>
       : inner,
   );
 
-export function declarationGround({ git, root, baseBranch, baseCommit, sha, refsRefreshed, pr, slug }) {
+export function declarationGround({ git, root, baseBranch, baseCommit, sha, refsRefreshed, pr, slug, method = 'squash' }) {
   const out = account();
   const gitRun = args => git(args, root);
   if (!refsRefreshed) {
@@ -1913,7 +1933,7 @@ export function declarationGround({ git, root, baseBranch, baseCommit, sha, refs
   } else {
     out.refuse(
       'declaration guard: this PR edits the prGate declaration it is measured by — measured by the OLD grounds, it would silently redefine what every later autonomous merge must prove',
-      `review the prGate diff, then merge by hand: gh pr merge ${pr} --repo ${slug} --squash   # the human checkpoint this refusal restores`,
+      `review the prGate diff, then ${handMerge({ pr, slug, sha: headRef, method })}   # the human checkpoint this refusal restores`,
     );
   }
   return out;

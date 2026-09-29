@@ -1597,6 +1597,19 @@ test('without a declared tracker the refusal wording is the bare one, so no othe
   assert.doesNotMatch(out, /moves by hand/);
 });
 
+test('a PR with no ticket behind it is handed to a hand merge pinned to the head this run validated', () => {
+  // Measured on gapila #2129 and #2137 (2026-09-28/29): chore PRs with no
+  // ticket, refused on R8 as designed, then merged by hand. The repair named the
+  // hand merge in prose only, so the merge that ran was not bound to the SHA the
+  // gate had just validated — the one guarantee `--match-head-commit` provides.
+  const { code, out } = run(['--pr', '1845'], { ...CLEAN, receipt: prView({ body: 'Tooling fix.', title: 'chore: tooling' }) });
+  assert.equal(code, 1);
+  assert.match(out, /REFUSE — closing keyword: neither the body nor the PR title closes an issue/);
+  const validated = /head SHA\s+([0-9a-f]{40})/.exec(out)?.[1];
+  assert.ok(validated, out);
+  assert.match(out, new RegExp(`merge it by hand at the head this run validated: gh pr merge 1845 --repo gapilabs/gapila --squash --match-head-commit ${validated}`));
+});
+
 test('the tracker ref reported is the one a closing verb points at, not the first mention', () => {
   // Measured on gapila #1959: the first tracker match was GAP-377 (background),
   // the body's actual subject ten paragraphs down was `Fixes GAP-379`.
@@ -2524,7 +2537,7 @@ test('KTD5: a PR that edits the prGate declaration it is measured by refuses tow
   const { code, out } = capture(() => gate(['--pr', '1845', '--merge'], { gh, git: realGit, cwd: root, env: { HOME: sandbox }, sleep: () => {} }));
   assert.equal(code, 1);
   assert.match(out, /REFUSE — declaration guard: this PR edits the prGate declaration it is measured by/);
-  assert.match(out, /→ review the prGate diff, then merge by hand: gh pr merge 1845/);
+  assert.match(out, new RegExp(`→ review the prGate diff, then merge it by hand at the head this run validated: gh pr merge 1845 --repo ${SLUG} --squash --match-head-commit ${shaOf(root, 'feature')}`));
   assert.ok(!calls.some(call => call.startsWith('pr merge')), 'the disarming PR was not merged autonomously');
 });
 

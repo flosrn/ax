@@ -1010,7 +1010,7 @@ export function gate(
     // The guard stands on the head SHA this run resolved — never on a branch
     // name a stale `origin/<head>` shadows — and on the base commit the shared
     // measurement observed, with the same refresh reading.
-    declarationGround({ git, root: paths.root, baseBranch, baseCommit, sha, refsRefreshed, pr, slug }),
+    declarationGround({ git, root: paths.root, baseBranch, baseCommit, sha, refsRefreshed, pr, slug, method }),
     // Ground 6 measures the SHAPE of each post-open commit against the commit
     // graph (#90), so it takes the same git reader, the same base commit and
     // the same refresh reading: a clean merge from the base is base movement,
@@ -1021,8 +1021,8 @@ export function gate(
     // own inability to establish is a named reason in this same verdict rather
     // than a silent narrowing to the body (#86).
     channel,
-    keywordGround({ channels, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch, release }),
-    ticketGround({ binding, closes: closedIssuesOf(channels), channels, pr, slug, release }),
+    keywordGround({ channels, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch, release, sha, method }),
+    ticketGround({ binding, closes: closedIssuesOf(channels), channels, pr, slug, release, sha, method }),
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);
