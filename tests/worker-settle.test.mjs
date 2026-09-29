@@ -14,6 +14,7 @@
 // initRecord / phaseBegin / phaseEnd), the runtime is an injected runner and
 // `gh` is an injected exec: no Orca, no network, no clock.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,33 +70,71 @@ const dispatch = (id, handle, { state = 'failed', taskId = TASK } = {}) => ({
   agentTerminalHandle: handle,
 });
 
-/** An Orca answering the three reads this verb makes, and nothing else. */
-function fakeRunner({ workers = [], terminals = [], omittedHostIds = [], ready = true, workerListFails = false, workerListShape = false, terminalListFails = false } = {}) {
+/**
+ * An Orca answering the reads this verb makes, and nothing else. `runs` keys
+ * the rows a `worker-list --run <id>` answers — an unscoped call answers only
+ * `workers`, the Run bound to the calling terminal, exactly as Orca 867d38397893
+ * scopes it. `hosts` answers `terminal list --environment <name>`; `shows`
+ * answers `worker-show --dispatch <id>`, and an unshown dispatch fails.
+ */
+function fakeRunner({ workers = [], runs = {}, terminals = [], omittedHostIds = [], hosts = {}, shows = {}, ready = true, workerListFails = false, workerListShape = false, terminalListFails = false } = {}) {
   const calls = [];
   const receipt = result => ({ status: 0, stdout: '', stderr: '', receipt: { ok: true, result } });
   const broken = detail => ({ status: 1, stdout: '', stderr: detail, receipt: { unparseable: detail, error: 'x' } });
+  const inventory = (rows, omitted) =>
+    receipt({
+      terminals: rows.map(t => (typeof t === 'string' ? { handle: t } : t)),
+      hostScope: { hostIds: ['local'], omittedHostIds: omitted },
+      totalCount: rows.length,
+    });
 
   const run = args => {
     calls.push(args);
     const line = args.join(' ');
+    const flag = name => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
     if (args[0] === 'status') return ready ? receipt({ runtime: { reachable: true } }) : broken('not running');
     if (line.includes('worker-list')) {
       if (workerListFails) return broken('Unknown command: orchestration worker-list');
       if (workerListShape) return receipt({});
-      return receipt({ workers });
+      const scoped = flag('--run');
+      return receipt({ workers: scoped === undefined ? workers : runs[scoped] ?? [] });
+    }
+    if (line.includes('worker-show')) {
+      const shown = shows[flag('--dispatch')];
+      return shown === undefined ? broken('dispatch not found') : receipt({ worker: shown });
     }
     if (line.includes('terminal list')) {
+      const environment = flag('--environment');
+      if (environment !== undefined) {
+        const host = hosts[environment];
+        if (host === undefined) throw new Error(`this verb asked a host the fixture never declared: ${environment}`);
+        return host.fail ? broken(host.fail) : inventory(host.terminals ?? [], []);
+      }
       if (terminalListFails) return broken('runtime_unavailable');
-      return receipt({
-        terminals: terminals.map(t => (typeof t === 'string' ? { handle: t } : t)),
-        hostScope: { hostIds: ['local'], omittedHostIds },
-        totalCount: terminals.length,
-      });
+      return inventory(terminals, omittedHostIds);
     }
     throw new Error(`this verb issued a call it must never issue: ${line}`);
   };
   run.calls = calls;
   return run;
+}
+
+/**
+ * A checkout declaring the hosts passed here — the only thing that says how ax
+ * reaches a host (`hostFor`, ../src/worker/hosts.mjs), so the only thing that
+ * lets a remote pane be asked about at all. `checkout()` declares none, and is
+ * every settle's default: the repository running this suite declares real
+ * hosts, and a test must not inherit them.
+ */
+function checkout(hosts = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'ax-settle-repo-'));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  const dispatch = Object.keys(hosts).length === 0 ? {} : { dispatch: { entry: '/entry', hosts } };
+  writeFileSync(
+    join(dir, 'ax.config.json'),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, ...dispatch }),
+  );
+  return dir;
 }
 
 /** A `gh` that names this checkout's repository — or one that cannot. */
@@ -123,10 +162,10 @@ function run(argv, options = {}) {
 }
 
 /** One settle over a live-looking machine, with everything injected. */
-const settling = (path, dir, fixture = {}, argv = ['71-rls-refute'], { slug = REPO, ghFails = false } = {}) => {
+const settling = (path, dir, fixture = {}, argv = ['71-rls-refute'], { slug = REPO, ghFails = false, cwd = checkout() } = {}) => {
   const runner = fakeRunner(fixture);
   const before = readFileSync(path, 'utf8');
-  const result = run(argv, { runner, exec: ghSaying(slug, { fails: ghFails }), env: { ORCA_DISPATCH_STORE: dir } });
+  const result = run(argv, { runner, exec: ghSaying(slug, { fails: ghFails }), env: { ORCA_DISPATCH_STORE: dir }, cwd });
   return { ...result, calls: runner.calls, before, after: readFileSync(path, 'utf8') };
 };
 
@@ -440,6 +479,61 @@ test('a dispatch row with no pane recorded is unknown, not dead', () => {
   const r = settling(path, dir, { workers: [dispatch('ctx_a8c1c8b9d585', null)] });
 
   assert.equal(r.code, 3);
+  assert.equal(r.after, r.before);
+});
+
+// ── another Run, another host, a start that bound no pane (#2107, F2) ───────
+// Measured 2026-09-29 from gapila: `worker-list` with no `--run` answers only
+// the Run bound to the calling terminal (Orca `worker-list-run-scope.ts`), so a
+// record of another Run read as "no dispatch here"; a pane sent `--on gapicore`
+// was judged against this Mac's list alone; and a start that failed at
+// `agent_readiness` binds no pane in worker-list while worker-show names the
+// one it created. `ax worker gate` reads all three since 5bd17e5 — settle, which
+// may only write what the gate can prove, read none of them.
+
+test('a record of another Run is judged on ITS Run\u2019s worker-list, never read as an absence', () => {
+  const dir = store();
+  const path = writeRecord(dir, '71-rls-refute', [
+    { name: 'task-create', receipt: taskCreated(), argv: ['orca', 'orchestration', 'task-create', '--run', 'run_theirs', '--json'] },
+    { name: 'worker-start', receipt: startFailed('term_7f0854ba') },
+  ]);
+  const r = settling(path, dir, { workers: [], runs: { run_theirs: [dispatch('ctx_a8c1c8b9d585', 'term_7f0854ba')] }, terminals: [] });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /run_theirs/, 'the Run asked is stated');
+  assert.equal(settledFlag(path), true);
+});
+
+test('a pane dispatched --on a DECLARED host is judged on that host\u2019s own list', () => {
+  const onGapicore = dir => writeRecord(dir, '71-rls-refute', [
+    { name: 'task-create', receipt: taskCreated() },
+    { name: 'worker-start', receipt: startFailed('term_far'), argv: ['orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--json'] },
+  ]);
+  const cwd = checkout({ gapicore: { ssh: 'harness@gapicore' } });
+  const rows = [dispatch('ctx_a8c1c8b9d585', 'term_far')];
+
+  const gone = store();
+  const deadPath = onGapicore(gone);
+  const dead = settling(deadPath, gone, { workers: rows, terminals: [], omittedHostIds: ['runtime:7930a317'], hosts: { gapicore: { terminals: [] } } }, ['71-rls-refute'], { cwd });
+  assert.equal(dead.code, 0, dead.out);
+  assert.equal(settledFlag(deadPath), true, 'absent from the list gapicore answered for its own panes: a corpse');
+
+  const busy = store();
+  const livePath = onGapicore(busy);
+  const live = settling(livePath, busy, { workers: rows, terminals: [], omittedHostIds: ['runtime:7930a317'], hosts: { gapicore: { terminals: ['term_far'] } } }, ['71-rls-refute'], { cwd });
+  assert.equal(live.code, 1, live.out);
+  assert.match(live.out, /orca terminal read --terminal term_far --environment gapicore/, 'a remote pane is read where it lives');
+  assert.equal(live.after, live.before);
+});
+
+test('a row that binds no pane is judged by the pane worker-show says the start created', () => {
+  const dir = store();
+  const path = deadAttempt(dir, '71-rls-refute');
+  const created = { effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_created' }], startOptions: { on: null } };
+  const r = settling(path, dir, { workers: [dispatch('ctx_a8c1c8b9d585', null)], terminals: ['term_created'], shows: { ctx_a8c1c8b9d585: created } });
+
+  assert.equal(r.code, 1, 'the created pane is alive, so the attempt has not ended');
+  assert.match(r.out, /term_created/);
   assert.equal(r.after, r.before);
 });
 

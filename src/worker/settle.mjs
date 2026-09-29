@@ -39,6 +39,20 @@
 // pane absent from a list that read `local` is the corpse `release` closes
 // on, and only a pane sent `--on` a host stays unknown here, naming that host.
 //
+// AND THE RUN AND THE HOST ARE THE RECORD'S, READ THE WAY THE GATE READS THEM
+// (#2107, F2). Measured 2026-09-29 from gapila: `worker-list` with no `--run`
+// answers only the Run bound to the calling terminal (Orca
+// `worker-list-run-scope.ts`), so a record of another Run read as "no dispatch
+// here"; a pane sent `--on gapicore` was judged against this Mac's list alone,
+// an inability with a repair this verb could never consume; and a start that
+// failed at `agent_readiness` binds no pane in worker-list while worker-show
+// names the one it created. The gate learned all three (5bd17e5) and this verb,
+// whose one rule is "if the gate cannot prove death, settle cannot settle",
+// learned none. Now the worker-list is the record's own Run's (`recordedRun`),
+// a remote pane is put to its declared host through the reader every pane
+// verdict shares (./pane.mjs `hostReader`), and an unbound row is read through
+// `createdPane` — the gate's readers, not copies of them.
+//
 // SCOPE IS THE CHECKOUT WHOSE FRONTIER THE FLIP CHANGES. Settling moves a
 // request from `already-dispatched` to `attempt-ended-unmerged` in
 // `../frontier.mjs`, so the record must name THIS repository: the comparison is
@@ -106,8 +120,9 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { continuationFor } from './continuation.mjs';
 import { namedList } from './gate.mjs';
-import { paneVerdict, terminalInventory } from './pane.mjs';
-import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordDelivery, recordRepoNaming, requestIdOk, taskIdScan } from './record.mjs';
+import { declarationOf } from './hosts.mjs';
+import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
+import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordDelivery, recordRepoNaming, recordedRun, requestIdOk, taskIdScan } from './record.mjs';
 
 const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
@@ -447,10 +462,18 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     // dispatches, then the panes that make each one an agent or a corpse. An
     // absent `workers` container is a cannot-establish that says so — on a host
     // whose command set has no `worker-list`, an empty read would authorise the
-    // very write it must forbid.
-    const workers = namedList(run(['orchestration', 'worker-list', '--json']), 'workers', 'orca orchestration worker-list');
+    // very write it must forbid. The dispatches are the record's own Run's; a
+    // record that names none leaves the bound Run as the only one to ask.
+    let runId = '';
+    try {
+      runId = recordedRun(path);
+    } catch {
+      // no phase argv carries --run: nothing to scope by, and nothing is inferred
+    }
+    const scope = runId === '' ? [] : ['--run', runId];
+    const workers = namedList(run(['orchestration', 'worker-list', ...scope, '--json']), 'workers', 'orca orchestration worker-list');
     if (!workers.ok) {
-      return cannot(`${workers.reason} (absent on this host?)`, 'orca orchestration worker-list --json   # settle from the host that carries it');
+      return cannot(`${workers.reason} (absent on this host?)`, `orca orchestration worker-list ${scope.join(' ')}${scope.length === 0 ? '' : ' '}--json   # settle from the host that carries it`);
     }
     const terminals = terminalInventory(run);
     if (!terminals.ok) {
@@ -460,7 +483,7 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
     const rows = workers.rows.filter(worker => worker.taskId === task);
     if (rows.length === 0) {
       return cannot(
-        `no dispatch of ${task} is in this host's worker-list, so nothing here proves the attempt ended`,
+        `no dispatch of ${task} is in ${runId === '' ? "this host's worker-list" : `the worker-list of Run ${runId}, the Run ${request} recorded`}, so nothing here proves the attempt ended`,
         `ax worker gate ${request}   # the detector, and where an unknown is the safe answer`,
       );
     }
@@ -483,37 +506,57 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
       );
     }
 
-    note(`Dispatches for ${task}: ${rows.length}${host === '' ? '' : ` (dispatched --on ${host})`}`);
+    note(`Dispatches for ${task}: ${rows.length}${runId === '' ? '' : ` in Run ${runId}, as recorded`}${host === '' ? '' : ` (dispatched --on ${host})`}`);
+    const hosts = hostReader(hostScopes(run, declarationOf(cwd)), terminals);
     const live = [];
     const unknown = [];
     for (const worker of rows) {
-      const handle = typeof worker.agentTerminalHandle === 'string' ? worker.agentTerminalHandle : null;
+      let handle = typeof worker.agentTerminalHandle === 'string' ? worker.agentTerminalHandle : null;
+      let why = 'no pane recorded on this dispatch';
+      let read = '';
+      if (handle === null && typeof worker.dispatchId === 'string') {
+        const bound = createdPane(run, worker.dispatchId);
+        if (bound.ok) handle = bound.handle;
+        else {
+          why = `worker-list binds this dispatch no pane, and ${bound.reason}`;
+          read = `orca orchestration worker-show --dispatch ${worker.dispatchId} --json   # the pane this dispatch created`;
+        }
+      }
       // One verdict definition (./pane.mjs); the host comes from the record above.
-      const verdict = paneVerdict(handle, 'no pane recorded on this dispatch', terminals, { host });
-      if (verdict.pane === 'VIVANT') live.push(worker);
-      else if (verdict.pane !== 'MORT') unknown.push({ worker, verdict });
+      const located = hosts.locate(handle, why, host);
+      const { verdict } = located;
+      if (verdict.pane === 'VIVANT') live.push({ worker, handle, environment: located.environment });
+      else if (verdict.pane !== 'MORT') unknown.push({ worker, verdict, read });
       note(
-        `${verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'dead   ' : 'unknown'} ${worker.dispatchId}  worker=${worker.workerState}  terminal=${worker.terminalState}  handle=${String(worker.agentTerminalHandle ?? '—').slice(0, 24)}`,
+        `${verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'dead   ' : 'unknown'} ${worker.dispatchId}  worker=${worker.workerState}  terminal=${worker.terminalState}  handle=${String(handle ?? '—').slice(0, 24)}` +
+          `${handle !== null && handle !== worker.agentTerminalHandle ? ' (from worker-show)' : ''}`,
       );
     }
 
     if (live.length > 0) {
-      const first = live[0];
+      const [{ handle, environment }] = live;
       return refuse(
-        `STOP — ${live.length} live agent(s) on ${task} (${live.map(worker => worker.dispatchId).join(', ')}): an attempt whose agent is working has not ended`,
-        `ax worker tail ${first.agentTerminalHandle}   # read that agent; a \`failed\` dispatch describes the receipt, never the process`,
+        `STOP — ${live.length} live agent(s) on ${task} (${live.map(entry => entry.worker.dispatchId).join(', ')}): an attempt whose agent is working has not ended`,
+        environment === ''
+          ? `ax worker tail ${handle}   # read that agent; a \`failed\` dispatch describes the receipt, never the process`
+          : `orca terminal read --terminal ${handle} --environment ${environment} --json   # read that agent on '${environment}'; a \`failed\` dispatch describes the receipt, never the process`,
       );
     }
 
     if (unknown.length > 0) {
-      // The doubt is the HOST the record names, never the runtimes this list
-      // happened to omit: a local pane is judged above, so an unknown here is a
-      // pane dispatched `--on` a host this call did not read (#160).
+      // What is left unknown is named by its cause: a row whose created pane
+      // nothing names, or a host the record names that could not be asked —
+      // undeclared here, or its list did not come back. A local pane is judged
+      // above, and a declared host that answered decides its own panes.
+      const [first] = unknown;
+      const unaskable = new Map(hosts.unaskable());
       return cannot(
-        `${unknown.length} pane(s) of ${task} cannot be established from here${host === '' ? '' : ` — dispatched --on ${host}, whose panes this host's terminal list does not carry`} — ${unknown[0].verdict.detail}`,
-        host === ''
-          ? `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`
-          : `orca terminal list --environment ${host} --json   # read the pane where it lives; settle once that host proves it gone`,
+        `${unknown.length} pane(s) of ${task} cannot be established from here — ${first.verdict.detail}${unaskable.has(host) ? ` (${unaskable.get(host).reason})` : ''}`,
+        first.read !== ''
+          ? first.read
+          : host === ''
+            ? `ax worker tail ${request}   # establish that pane, then re-run: an unknown pane is never a corpse`
+            : `orca terminal list --environment ${host} --json   # read the pane where it lives; this verb asks '${host}' itself once dispatch.hosts.${host} declares it and its list answers`,
       );
     }
 
