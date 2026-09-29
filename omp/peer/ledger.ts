@@ -110,7 +110,9 @@ export function observe(ledger: Ledger, entry: unknown): boolean {
       const id = str(d.messageId);
       if (m.isError === true || d.type !== 'question' || !id) return false;
       const line = headline(str(d.text));
-      ledger.awaiting.set(id, { id, peer: str(d.peer), line, at: num(d.at) });
+      // An unattributed send reached a recipient with no route back, so no
+      // answer can ever close it; listing it would wait forever.
+      if (d.unattributed !== true) ledger.awaiting.set(id, { id, peer: str(d.peer), line, at: num(d.at) });
       ledger.asked.set(id, line);
       return true;
     }

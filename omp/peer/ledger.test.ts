@@ -54,6 +54,14 @@ test('a failed or status send waits on nothing', () => {
   expect(l.awaiting.size).toBe(0);
 });
 
+test('a question sent without a reply route waits on nothing: no answer can come back', () => {
+  // `unattributed: true` is the send receipt saying this pane published no
+  // ORCA_PANE_KEY, so the recipient gets no route to answer it.
+  const l = freshLedger();
+  observe(l, tool('peer_send', { messageId: 'q4', peer: 'p', type: 'question', text: 't', unattributed: true }));
+  expect(l.awaiting.size).toBe(0);
+});
+
 test('lost messages and unroutable watcher alerts are alerts until peer_diagnostics is read', () => {
   const l = freshLedger();
   observe(l, received({ messageId: 'm5', peer: '2122-work', lostBefore: 2 }));

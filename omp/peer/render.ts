@@ -131,7 +131,7 @@ export function createPeerView(deps: PeerViewDeps) {
     const fit = (l: string) => kit.truncate(l, Math.min(w, MAX_WIDTH));
     if (result?.isError || !d.outcome) return [fit(p.fg('muted', '╰ ') + p.fg('error', `✗ ${textOf(result?.content).split('\n')[0]}`))];
     const to = d.peer ? p.fg('dim', ` to ${d.peer}`) : '';
-    const waiting = d.type === 'question' && d.messageId ? p.fg('dim', ' · waiting for the answer') : '';
+    const waiting = d.type === 'question' && d.messageId && !d.unattributed ? p.fg('dim', ' · waiting for the answer') : '';
     const lines = [p.fg('muted', '╰ ') + p.fg(d.outcome === 'queued' ? 'warning' : 'success', `✓ ${OUTCOME[d.outcome] ?? d.outcome}`) + to + waiting];
     if (d.unattributed)
       lines.push(p.fg('muted', '  ') + p.fg('warning', '! the recipient cannot answer: this pane publishes no ORCA_PANE_KEY'));
