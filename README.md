@@ -180,12 +180,13 @@ With no `--on`, the dispatch runs `bun scripts/capacity.ts --json` in the Harnes
 named by `HARNESSOS_SOURCE`, or by `dispatch.harnessos` in `ax.config.json` when that variable is
 unset. Each reported host's ssh target, slice cgroup and floors come from that report;
 `dispatch.hosts.<host>` overrides them field by field for this repository. A host is passed over,
-with its reason printed, when it is cordoned, ineligible, has no healthy gateway probe, has live
-panes nobody can count, has no free slot, has no Orca repository of this name, or fails the host
-grounds `--on` proves. Slots are the smallest of free memory over the worker footprint, free CPU
-over the worker's CPU share, and `maxWorkers` minus the live panes already placed there; the most
-slots wins, ties go to the report's order. The repository cap (`dispatch.cap`) refuses before any
-host is chosen.
+with its reason printed, when it is cordoned, ineligible, has no healthy gateway probe, carries no
+slice maximum, has live panes nobody can count, has no free slot, has no Orca repository of this
+name, or fails the host grounds `--on` proves. Slots are the smallest of free memory over the
+worker footprint, the slice maximum over the footprint minus the live panes already placed there
+(a live worker reserves its footprint even in a quiet phase), free CPU over the worker's CPU share,
+and `maxWorkers` minus those live panes; the most slots wins, ties go to the report's order. The
+repository cap (`dispatch.cap`) refuses before any host is chosen.
 
 Placement runs only on the operator Mac, and it never places on it: when no host can take the
 worker, the dispatch is refused with each host's reason. A dispatch with no target run anywhere

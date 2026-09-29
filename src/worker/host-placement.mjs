@@ -4,17 +4,27 @@
 //
 // HARNESSOS MEASURES HEADROOM, AX COMPUTES SLOTS (KTD9). `bun scripts/capacity.ts
 // --json` in the HarnessOS checkout reports, per compute host, the harness
-// slice's free memory and CPU, the measured per-worker footprint, `maxWorkers`,
-// the cordon, the eligibility verdict with its reasons, and the host's latest
-// gateway probe. The live-worker count is not in that report: AX's only reader
-// of it is `livePanes` (./slots.mjs), so the count that fences the repository
-// cap is the count that spends a host's worker ceiling. Slots are
+// slice's maximum and free memory and its free CPU, the measured per-worker
+// footprint, `maxWorkers`, the cordon, the eligibility verdict with its
+// reasons, and the host's latest gateway probe. The live-worker count is not in
+// that report: AX's only reader of it is `livePanes` (./slots.mjs), so the
+// count that fences the repository cap is the count that spends a host's
+// worker ceiling. Slots are
 //
 //   max(0, min(floor(memory.freeMb / footprint.memoryMb),
+//              floor(memory.maxMb / footprint.memoryMb) - live,
 //              floor(cpu.freePercent / footprint.cpuPercent),
 //              maxWorkers - live))
 //
 // and the most slots wins, ties to the report's order.
+//
+// A LIVE WORKER RESERVES ITS FOOTPRINT (#271). Free memory is read NOW, and a
+// worker in a quiet phase (reading, review, waiting on CI) holds almost none of
+// it: free memory alone read gapicore as room for a second 12500 MB worker
+// beside a live one in a 16384 MB slice, whose two peaks the slice's OOM killer
+// then settles. So the slice maximum is divided among the live workers first,
+// and a report that carries no slice maximum is a host whose reservation cannot
+// be computed — skipped by name, never answered from free memory (F-028).
 //
 // THE MAC IS NEVER A FALLBACK (R10). Placement runs only on the operator Mac —
 // detected as HarnessOS's own `localHost` detects it (`scripts/infra.ts`): the
@@ -118,31 +128,38 @@ function reportSkip(entry) {
   if (entry.gateway === null || entry.gateway === undefined) return `no gateway probe for its omp-${entry.host} surface, so a worker there may have no model to answer it`;
   if (entry.gateway.healthy !== true) return `gateway ${entry.gateway.surface} unhealthy: ${entry.gateway.detail || 'no detail'}`;
   if (!entry.footprint || !entry.memory || !entry.cpu) return 'no recorded footprint, memory or CPU reading, so its slots cannot be computed';
+  if (!(Number.isFinite(entry.memory.maxMb) && entry.memory.maxMb > 0)) {
+    return 'the capacity report carries no slice maximum (memory.maxMb) for it, so the footprint its live workers reserve cannot be computed — free memory alone would read a quiet worker as room (#271, F-028)';
+  }
   return '';
 }
 
-/** The contract's slot formula, and the three terms it took the minimum of. */
+/** The contract's slot formula, and the terms it took the minimum of. */
 function slotsOf(entry, live) {
-  const byMemory = Math.floor(entry.memory.freeMb / entry.footprint.memoryMb);
+  const footprint = entry.footprint.memoryMb;
+  const byFree = Math.floor(entry.memory.freeMb / footprint);
+  const bySlice = Math.floor(entry.memory.maxMb / footprint);
+  const byMemory = Math.min(byFree, bySlice - live);
   const byCpu = Math.floor(entry.cpu.freePercent / entry.footprint.cpuPercent);
   const byWorkers = entry.maxWorkers - live;
   return {
     slots: Math.max(0, Math.min(byMemory, byCpu, byWorkers)),
-    terms: `memory ${byMemory}, CPU ${byCpu}, workers ${entry.maxWorkers} - ${live} live = ${byWorkers}`,
+    terms:
+      `memory ${byMemory} (${byFree} by ${entry.memory.freeMb} MB free, ${bySlice} by ${entry.memory.maxMb} MB slice - ${live} live = ${bySlice - live}), ` +
+      `CPU ${byCpu}, workers ${entry.maxWorkers} - ${live} live = ${byWorkers}`,
   };
 }
 
 /**
- * The host this dispatch goes to, or every host's reason for not taking it.
+ * Every reported host's slots, from the report and the live count alone — the
+ * per-host lines a placement prints before it spends a repository lookup or a
+ * host proof.
  *
- * `liveOn(host)` answers `{ live, unmeasured }` from `livePanes`; `repoFor(host)`
- * answers `repoIdFor`'s verdict; `prove(host, declaration)` answers `proveHost`'s.
- * All three are injected so the order and the arithmetic are provable offline.
- *
- * Answers `{ ok: true, host, declaration, repoId, grounds, lines, skipped }` or
- * `{ ok: false, lines, skipped }`, `skipped` being `[{ host, reason }]`.
+ * `liveOn(host)` answers `{ live, unmeasured }` from `livePanes`. Answers
+ * `{ lines, skipped, candidates }`, `candidates` being `[{ host, slots }]` in
+ * slot order (stable: equal slots keep the report's order).
  */
-export function placeHost({ capacity, declarations, liveOn, repoFor, prove }) {
+export function hostSlots({ capacity, liveOn }) {
   const lines = [];
   const skipped = [];
   const skip = (host, reason) => {
@@ -170,9 +187,27 @@ export function placeHost({ capacity, declarations, liveOn, repoFor, prove }) {
     lines.push(`host '${entry.host}': ${slots} free slot(s) (${terms})`);
     candidates.push({ host: entry.host, slots });
   }
-
-  // Stable: equal slots keep the report's order.
   candidates.sort((a, b) => b.slots - a.slots);
+  return { lines, skipped, candidates };
+}
+
+/**
+ * The host this dispatch goes to, or every host's reason for not taking it.
+ *
+ * `liveOn(host)` answers `{ live, unmeasured }` from `livePanes`; `repoFor(host)`
+ * answers `repoIdFor`'s verdict; `prove(host, declaration)` answers `proveHost`'s.
+ * All three are injected so the order and the arithmetic are provable offline.
+ *
+ * Answers `{ ok: true, host, declaration, repoId, grounds, lines, skipped }` or
+ * `{ ok: false, lines, skipped }`, `skipped` being `[{ host, reason }]`.
+ */
+export function placeHost({ capacity, declarations, liveOn, repoFor, prove }) {
+  const { lines, skipped, candidates } = hostSlots({ capacity, liveOn });
+  const skip = (host, reason) => {
+    skipped.push({ host, reason });
+    lines.push(`host '${host}' skipped: ${reason}`);
+  };
+
   for (const { host } of candidates) {
     const repo = repoFor(host);
     if (!repo.ok) {

@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { capacityOf, harnessosSource, hostDeclarations, placeHost } from '../src/worker/host-placement.mjs';
 
 /** One capacity entry, eligible and roomy unless a test says otherwise. */
-function host(name, { freeMb = 8000, freePercent = 600, maxWorkers = 8, footprint = { memoryMb: 1000, cpuPercent: 100 }, ...rest } = {}) {
+function host(name, { freeMb = 8000, maxMb = 12288, freePercent = 600, maxWorkers = 8, footprint = { memoryMb: 1000, cpuPercent: 100 }, ...rest } = {}) {
   return {
     host: name,
     state: 'ok',
@@ -19,7 +19,7 @@ function host(name, { freeMb = 8000, freePercent = 600, maxWorkers = 8, footprin
     declaration: { ssh: name, cgroup: '/sys/fs/cgroup/user.slice/user-1001.slice', diskPath: '/home/harness', diskFloorGb: 20, memFreeFloorMb: 1500 },
     maxWorkers,
     footprint,
-    memory: { maxMb: 12288, workMb: 12288 - freeMb, freeMb, hostAvailableMb: 20000 },
+    memory: { maxMb, workMb: maxMb - freeMb, freeMb, hostAvailableMb: 20000 },
     cpu: { quotaPercent: 600, usedPercent: 600 - freePercent, freePercent, pressureSomeAvg10: 0.5, stallThreshold: 40 },
     disk: { path: '/home/harness', availGb: 120 },
     orcaServeRssMb: 300,
@@ -103,6 +103,45 @@ test('a host whose live panes could not be counted is skipped, not counted as em
 
   assert.equal(r.host, 'netcup-vie');
   assert.match(reasonOf(r, 'gapicore'), /cannot be counted/);
+});
+
+// ── #271: a live worker reserves its footprint ───────────────────────────────
+// Free memory is read NOW, and a live worker in a quiet phase holds almost none
+// of it — so free memory alone reads that worker's host as room for a second
+// one, whose peak then lands on top of the first's inside one slice.
+
+/** The issue's gapicore: slice 3459/16384 MB held, 12924 MB free, footprint 12500 MB. */
+const quiet = (name, extra = {}) =>
+  host(name, { maxMb: 16384, freeMb: 12924, footprint: { memoryMb: 12500, cpuPercent: 100 }, maxWorkers: 4, ...extra });
+
+test('#271: one live worker on a 16384 MB slice with a 12500 MB footprint leaves 0 memory slots, so the worker goes elsewhere', () => {
+  const r = place(capacity(quiet('gapicore'), quiet('netcup-vie', { freeMb: 16000, maxWorkers: 3 })), {
+    live: { gapicore: { live: 1, unmeasured: 0 } },
+  });
+
+  assert.equal(r.host, 'netcup-vie');
+  assert.match(reasonOf(r, 'gapicore'), /no free slot \(memory 0 /);
+  assert.deepEqual(r.proved, ['netcup-vie'], 'the host whose slice a live worker reserves is never proven');
+});
+
+test('#271: with no other host, the reserved slice refuses the dispatch by that reason', () => {
+  const r = place(capacity(quiet('gapicore')), { live: { gapicore: { live: 1, unmeasured: 0 } } });
+
+  assert.equal(r.ok, false);
+  assert.match(reasonOf(r, 'gapicore'), /memory 0 .*16384 MB slice.*1 live/);
+});
+
+test('#271: the same host with no live worker still takes one', () => {
+  const r = place(capacity(quiet('gapicore')));
+
+  assert.equal(r.host, 'gapicore');
+});
+
+test('#271: a report with no slice maximum cannot reserve a live worker, and says so rather than reading free memory', () => {
+  const r = place(capacity(host('gapicore', { memory: { workMb: 3459, freeMb: 12924, hostAvailableMb: 20000 } }), host('netcup-vie', { freeMb: 2000 })));
+
+  assert.equal(r.host, 'netcup-vie');
+  assert.match(reasonOf(r, 'gapicore'), /no slice maximum \(memory\.maxMb\)/);
 });
 
 // ── scenario 2: grounds past capacity ────────────────────────────────────────
