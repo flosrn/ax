@@ -315,6 +315,17 @@ test('F-003: dispatch corpses whose terminals are gone are not live agents', () 
   });
   assert.equal(r.code, 0);
   assert.match(r.out, /no live agent/);
+  // #275: "return the task to `ready` first" named no verb. With no record to
+  // route it, the answer is the raw verb — and the one Orca needs before it.
+  assert.doesNotMatch(r.out, /return the task to `ready` first/);
+  assert.match(r.out, /→ orca orchestration task-update --id task_bedfd180d2e6 --status ready --json/);
+});
+
+test('#275: a dead Dispatch Orca still holds active is named with the stop that frees its task', () => {
+  const r = verdict({ workers: [dispatch('ctx_held', 'term_closed', 'ready'), dispatch('ctx_done', 'term_gone', 'failed')], terminals: [] });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /→ orca orchestration worker-stop --dispatch ctx_held --json/);
+  assert.doesNotMatch(r.out, /worker-stop --dispatch ctx_done/, 'a settled worker holds nothing');
 });
 
 test('F-003: an orphaned pane is a dead one, not an agent at work', () => {
@@ -752,6 +763,7 @@ test('#192: a proven-dead pane is answered with the continuation its branch deci
 
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /→ ax worker start --replace --request 192-open/, 'the unfinished slice is continued, not restarted');
+  assert.match(r.out, /`ax worker start --replace` returns the task to `ready` itself/, '#275: the verb that returns the task is named');
   assert.match(r.out, /#200/);
   assert.ok(calls.some(line => line.includes('gh pr list') && line.includes('--head feat/192-open')), calls.join(' | '));
 });

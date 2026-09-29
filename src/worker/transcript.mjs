@@ -979,7 +979,7 @@ function sessionFileForNeedle({ needle, cwd = '', dispatchId = '', env = process
 }
 
 /** Exported for the doctor of a wrong answer: which files a target would consider. */
-export { findRecords, sessionCandidates, worktreesOf };
+export { dispatchIdsOf, findRecords, sessionCandidates, worktreesOf };
 
 /**
  * Exported for `./delivered.mjs`, which asks the same question this file

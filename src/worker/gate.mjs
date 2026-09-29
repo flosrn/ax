@@ -111,6 +111,10 @@ import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
 import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
 
+// Orca 867d38397893, db/tasks/task-status-transition.ts excludes exactly
+// these states from the active supervised worker check.
+const SETTLED_WORKER = ['failed', 'succeeded', 'stopped', 'abandoned'];
+
 /**
  * The task a REQUEST id names, read from the dispatch record store, or null.
  *
@@ -624,10 +628,27 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     return 3;
   }
 
-  ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch (return the task to `ready` first).');
+  ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch.');
   for (const { prov, continuation } of continuations) {
     if (continuation.failed !== '') note(`the continuation of ${prov.request} is undecided: ${continuation.failed}`);
     if (continuation.fix !== '') fix(continuation.fix);
+  }
+  // WHICH VERB RETURNS THE TASK TO `ready` (#275). This line used to end
+  // "(return the task to `ready` first)" and name none — while `--replace`
+  // does it itself, and Orca refuses it by hand as long as any Dispatch of the
+  // task is still `pending`/`dispatched`, which a closed pane does not change
+  // (867d38397893, db/tasks/task-status-transition.ts). So: the replace route
+  // says it does both; with nothing recorded to route the task, the raw verbs
+  // are named, the stop first, for each worker Orca still reads as running.
+  if (continuations.some(({ continuation }) => continuation.route === 'replace')) {
+    note('`ax worker start --replace` returns the task to `ready` itself — stopping first a Dispatch Orca still holds active over a pane this gate proved dead.');
+  } else if (continuations.every(({ continuation }) => continuation.fix === '')) {
+    for (const { w } of dead) {
+      if (!SETTLED_WORKER.includes(w.workerState)) {
+        fix(`orca orchestration worker-stop --dispatch ${w.dispatchId} --json   # its pane is proven dead, and Orca still reads its worker '${w.workerState}' — a Dispatch it holds active refuses the task-update below`);
+      }
+    }
+    fix(`orca orchestration task-update --id ${task}${runId === '' ? '' : ` --run ${runId}`} --status ready --json   # returns the task to ready for a re-dispatch`);
   }
   return 0;
 }

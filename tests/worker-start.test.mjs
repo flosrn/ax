@@ -700,14 +700,23 @@ test('replace with no recorded task cannot establish rather than inventing one',
 
 test("a replace with no placement flags issues the record's placement, less the flags that create a remote tree", () => {
   const home = scratch();
+  const tree = '/srv/orca/ax/.worktrees/req-inherit';
   const placement = [
-    '--on', 'gapicore', '--worktree', 'repo_1::/srv/orca/ax/.worktrees/req-inherit',
+    '--on', 'gapicore', '--worktree', `repo_1::${tree}`,
     '--repo', 'id:abc', '--name', 'req-inherit', '--agent', 'omp',
   ];
   const first = invoke(freshArgs(home, 'req-inherit', placement), { env: { HOME: home } });
   assert.equal(first.code, 0, first.out);
 
-  const run = fakeRunner();
+  const base = fakeRunner();
+  const run = args => {
+    if (args[0] === 'worktree' && args[1] === 'list') {
+      base.calls.push([...args]);
+      return receipt({ worktrees: [{ id: `repo_1::${tree}`, path: tree, repoId: 'repo_1', isMainWorktree: false }] });
+    }
+    return base(args);
+  };
+  run.calls = base.calls;
   const r = invoke(['--replace', '--request', 'req-inherit', '--', '--model', 'alias'], {
     env: { HOME: home }, run, gateFn: () => 0,
   });
@@ -716,7 +725,7 @@ test("a replace with no placement flags issues the record's placement, less the 
   // The caller's own non-placement passthrough survives; the placement is the
   // record's, in the record's order — without `--repo`/`--name`, which Orca
   // refuses beside an existing remote tree (placement.mjs, CREATION_FLAGS).
-  const reused = ['--on', 'gapicore', '--worktree', 'repo_1::/srv/orca/ax/.worktrees/req-inherit', '--agent', 'omp'];
+  const reused = ['--on', 'gapicore', '--worktree', `id:repo_1::${tree}`, '--agent', 'omp'];
   assert.deepEqual(call.slice(-(reused.length + 3)), ['--model', 'alias', ...reused, '--json']);
 });
 
