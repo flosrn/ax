@@ -22,8 +22,16 @@
  * THE JOIN. Orca answers both halves, so nothing here reads a file on the other host and
  * nothing keeps a long-lived connection:
  *
- *   worker-show --dispatch <id>          → `agent_terminal_handle`, `worktree_id`
+ *   worker-show --dispatch <id>          → `agentTerminalHandle`, `worktreeId`
  *   run-list --environment <env>         → rows carrying `coordinator_handle`, `objective`
+ *
+ * The two receipts do NOT share a spelling, and that is Orca's shape, not a slip here:
+ * worker-show projects its row through `exposeWorker` (camelCase since Orca 06a607a1d7,
+ * 2026-09-06), while run-list returns the raw `RunRow` minus internal columns (snake_case).
+ * Both re-measured on build 867d38397893, 2026-09-29 (#269). The worker fields are read
+ * newest spelling first with the pre-2026-09-06 `agent_terminal_handle`/`worktree_id` as a
+ * fallback, because an unread field here is not an error anyone sees: it is a `null` route
+ * and a `[NO REPLY ROUTE]` banner on every remote child's DECISION.
  *
  * A remote OMP session publishes its own Run through `orca-peer`, which is why that Run's
  * `coordinator_handle` is the worker's terminal and its `objective` is
@@ -91,8 +99,8 @@ export function resolveChildRoute(
   const shown = run(['orchestration', 'worker-show', '--dispatch', dispatchId, '--json']);
   if (shown.reason !== undefined) return null;
   const worker = field(field(shown.value, 'result'), 'worker');
-  const handle = str(field(worker, 'agent_terminal_handle'));
-  const name = worktreeName(str(field(worker, 'worktree_id')));
+  const handle = str(field(worker, 'agentTerminalHandle')) || str(field(worker, 'agent_terminal_handle'));
+  const name = worktreeName(str(field(worker, 'worktreeId')) || str(field(worker, 'worktree_id')));
   if (handle === '' || name === '') return null;
 
   const listed = run(

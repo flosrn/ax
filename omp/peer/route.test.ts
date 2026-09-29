@@ -2,13 +2,19 @@
  * THE ADDRESS OF A WORKER ON ANOTHER HOST.
  *
  * A wrong answer here delivers this session's reply to a stranger, so every case below is
- * written to check that the resolver refuses rather than guesses. The shapes are Orca
- * 1.4.180's own, copied from live output on 2026-08-13:
+ * written to check that the resolver refuses rather than guesses. The shapes are Orca's own,
+ * copied from live output:
  *
- *   worker-show --dispatch ctx_73e5a2dec161  → agent_terminal_handle term_d5683080-…,
- *                                              worktree_id <repo>::/…/workspaces/probe-mail
- *   run-list --environment gapicore          → a row with coordinator_handle term_d5683080-…
- *                                              and objective "peer session: probe-mail"
+ *   worker-show --dispatch ctx_cf95b5df9cad  → agentTerminalHandle term_ab55e94f-…,
+ *                                              worktreeId <repo>::/…/workspaces/2120-work
+ *                                              (camelCase since Orca 06a607a1d7, 2026-09-06;
+ *                                              measured on build 867d38397893, 2026-09-29, #269)
+ *   run-list --environment gapicore          → a row with coordinator_handle term_ab55e94f-…
+ *                                              and objective "peer session: 2120-work" (a raw
+ *                                              DB row, still snake_case on that same build)
+ *
+ * Orca 1.4.180 (2026-08-13) answered worker-show with `agent_terminal_handle`/`worktree_id`;
+ * that older spelling stays readable, the newer one wins.
  *
  * `worker-show` exposes NO pane key (its `pane_key`, `tab_id` and `leaf_id` are absent), so
  * the join cannot use one. It matches the handle AND the objective, and treats one-of-two as
@@ -39,7 +45,7 @@ function orca(replies: Record<string, unknown>, calls: string[] = []) {
 
 const shown = (over: Record<string, unknown> = {}) => ({
   ok: true,
-  result: { worker: { agent_terminal_handle: HANDLE, worktree_id: WT, ...over } },
+  result: { worker: { agentTerminalHandle: HANDLE, worktreeId: WT, ...over } },
 });
 
 const runRow = (over: Record<string, unknown> = {}) => ({
@@ -67,6 +73,18 @@ test('the run whose `coordinator_handle` and objective BOTH match is the address
   });
   // The environment is passed to Orca, not guessed from the row.
   expect(calls[1]).toBe('orchestration run-list --environment gapicore --json');
+});
+
+test('a pre-2026-09-06 worker-show (snake_case) still resolves, and the newer spelling wins', () => {
+  const legacy = { ok: true, result: { worker: { agent_terminal_handle: HANDLE, worktree_id: WT } } };
+  expect(
+    resolveChildRoute(orca({ 'worker-show': legacy, 'run-list': listed([runRow()]) }), 'ctx_1', 'gapicore', 'child:x'),
+  ).toEqual({ run: 'run:run_2aa06e94548e', environment: 'gapicore', peer: 'child:x' });
+  // Both present and disagreeing: the camelCase field is the one this build writes.
+  const both = shown({ agent_terminal_handle: 'term_stale', worktree_id: '::/x/elsewhere' });
+  expect(
+    resolveChildRoute(orca({ 'worker-show': both, 'run-list': listed([runRow()]) }), 'ctx_1', 'gapicore', 'child:x'),
+  ).toEqual({ run: 'run:run_2aa06e94548e', environment: 'gapicore', peer: 'child:x' });
 });
 
 test('a handle that matches while the objective does not is REFUSED, not answered', () => {
