@@ -86,6 +86,8 @@ export interface ReceiveDeps {
   /** Ack succeeded: durable replay ids may now be reduced to the live window. */
   compactInjected: () => void;
   recordRoute: (id: string, route: { run: string; peer: string; environment?: string; threadId?: string }) => void;
+  /** A delivery was handed to the model, with the `details` it carried. Presentation only. */
+  delivered?: (details: Record<string, unknown>) => void;
   /**
    * Where to write back to a worker we dispatched, DERIVED rather than read off the
    * message: the dispatch id is looked up in this session's own write-ahead store and
@@ -946,6 +948,34 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
             // the only account a killed pane ever gets. A type-aware delivery
             // that demotes `status` must exempt those two subjects out loud;
             // `./receive.test.ts` fails until it does.
+            const details = {
+              peer: who.name,
+              model: who.model,
+              attributed: who.attributed,
+              // Two different claims, and conflating them is what produced
+              // three refused replies in one day: named by Orca, versus a
+              // destination this session actually holds.
+              answerable,
+              messageId: msgId,
+              type: String(msg.type ?? 'status'),
+              ...(verdict.seq === null ? {} : { sequence: verdict.seq }),
+              ...(verdict.lost > 0 ? { lostBefore: verdict.lost } : {}),
+              // What the operator's view draws (`view.ts`, `ledger.ts`), so it
+              // never parses the prose below back out. `threadId` is how an
+              // answer finds the question this session asked; `refused` is the
+              // one NoRoute reason, as a code.
+              body: String(msg.body ?? ''),
+              threadId,
+              at: Date.now(),
+              ...(who.kind ? { kind: who.kind } : {}),
+              ...(who.about ? { about: who.about } : {}),
+              ...(who.kind === 'watcher' && typeof msgPayload?.watch?.alert === 'string'
+                ? { alert: msgPayload.watch.alert }
+                : {}),
+              ...('route' in reply
+                ? { route: `${reply.route.run}${reply.route.environment ? ` @ ${reply.route.environment}` : ''}` }
+                : { refused: reply.refused }),
+            };
             pi.sendMessage(
               {
                 customType: 'peer-message',
@@ -955,22 +985,14 @@ export function createReceiver(deps: ReceiveDeps): Receiver {
                   deps.peerContent(msg, who, answerable) +
                   report,
                 display: true,
-                details: {
-                  peer: who.name,
-                  model: who.model,
-                  attributed: who.attributed,
-                  // Two different claims, and conflating them is what produced
-                  // three refused replies in one day: named by Orca, versus a
-                  // destination this session actually holds.
-                  answerable,
-                  messageId: msgId,
-                  type: String(msg.type ?? 'status'),
-                  ...(verdict.seq === null ? {} : { sequence: verdict.seq }),
-                  ...(verdict.lost > 0 ? { lostBefore: verdict.lost } : {}),
-                },
+                details,
               },
               { triggerTurn: true },
             );
+            // The operator's view only; a throw there must not cost the loop a delivery.
+            try {
+              deps.delivered?.(details);
+            } catch {}
             acceptSequence(who.name, verdict.seq);
             if (verdict.lost > 0) {
               diagnose({

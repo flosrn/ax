@@ -410,6 +410,35 @@ test('a paneless parent Run retains a refused lateral send as an explicit queue'
   expect(out).toEqual({ ok: true, via: 'relay', queued: { run: 'run_parent_unread' } });
 });
 
+test('the id Orca gave a sent message comes back, direct or relayed — it is the thread the answer will carry', async () => {
+  // Orca's `send --json` receipt names the message (`result.message.id`), and a
+  // reply to it carries that id as `thread_id` — through a parent relay too,
+  // whose repost threads on the relay message's own id (`receive.ts`). Without
+  // it a session cannot tell which arriving message answers which question.
+  orcaSaysNothing();
+  const receipt = (id: string) => ({ parsed: { ok: true, result: { message: { id } } }, text: '', stdout: '' });
+  const { deliver } = await load();
+
+  expect(deliver({ address: 'run:run_b', text: 'q?' }, { runOrcaRaw: () => receipt('msg_direct') })).toMatchObject({
+    ok: true,
+    via: 'direct',
+    messageId: 'msg_direct',
+  });
+
+  let n = 0;
+  const relayed = deliver(
+    { address: 'run:run_b', text: 'q?' },
+    {
+      runOrcaRaw: () => (++n === 1 ? { parsed: { ok: false }, text: 'dispatch_run_mismatch', stdout: '' } : receipt('msg_relay')),
+      resolveParent: () => ({ peer: { run: 'run_parent', peer: 'parent' } as never }),
+    },
+  );
+  expect(relayed).toMatchObject({ ok: true, via: 'relay', messageId: 'msg_relay' });
+
+  // A receipt that names no message leaves the field absent, never invented.
+  expect('messageId' in deliver({ address: 'run:run_b', text: 'q?' }, { runOrcaRaw: () => ({ parsed: { ok: true }, text: '', stdout: '' }) })).toBe(false);
+});
+
 test('a dispatch_run_mismatch reply keeps the thread, return address, and remote environment on the parent relay', async () => {
   // THE SENDER MUST HAVE A RUN OF ITS OWN, which the first draft of this case
   // did not give it: under `orcaSaysNothing()` there is no self peer, so there is

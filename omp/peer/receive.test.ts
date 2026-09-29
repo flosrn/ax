@@ -1337,6 +1337,40 @@ test("a watcher's card is answered at the child it names, never at this session'
 });
 
 /**
+ * THE OPERATOR'S VIEW READS `details`, NEVER THE MODEL'S PROSE. `view.ts` and
+ * `ledger.ts` draw a delivery from these fields alone — the peer's own words,
+ * the thread it belongs to, who it is about, where a reply goes, and which
+ * refusal applies — so parsing the banner text back out is never needed.
+ */
+test('a delivery carries what the operator view draws: words, thread, subject, route, and the one refusal', async () => {
+  await withSelfHandle(async () => {
+    const card = await deliverWithRealIdentity(
+      { ...watcherAlert('m2', 'card', "card: '149-work' published a checkpoint", 'in-review\tDECISION: portails'), thread_id: 'q_root' },
+      { paneRoute: () => CHILD_RUN, deriveRoute: () => DERIVED_CHILD },
+    );
+    expect(card.sent[0]?.details).toMatchObject({
+      messageId: 'm2',
+      threadId: 'q_root',
+      kind: 'watcher',
+      about: '149-work',
+      alert: 'card',
+      body: 'in-review\tDECISION: portails',
+      route: `${DERIVED_CHILD.run} @ netcup-vie`,
+      answerable: true,
+    });
+    expect(typeof (card.sent[0]?.details as { at?: unknown }).at).toBe('number');
+    expect(card.sent[0]?.details).not.toHaveProperty('refused');
+
+    const gone = await deliverWithRealIdentity(
+      watcherAlert('m1', 'gone', "stall-watch: dispatched worker '149-work' is GONE without reporting"),
+      { paneRoute: () => CHILD_RUN, deriveRoute: () => DERIVED_CHILD },
+    );
+    expect(gone.sent[0]?.details).toMatchObject({ kind: 'watcher', alert: 'gone', refused: 'watcher', answerable: false });
+    expect(gone.sent[0]?.details).not.toHaveProperty('route');
+  });
+});
+
+/**
  * THE WATCHER IS WHAT ORCA WITNESSED, NEVER WHAT A HANDLE CLAIMS.
  *
  * `from_handle` is a string any process can write with `--from term_<ours>`; Orca
