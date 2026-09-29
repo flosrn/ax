@@ -2,10 +2,11 @@
 // Detached, fail-open supervision for one recorded worker-start.
 //
 // This process is deliberately separate from start.mjs (ADR 0025): a broken
-// watcher must never turn a successful dispatch into a refusal. It watches two
-// independent signals: pane cursor movement for a one-shot silence alert, and
-// deliberate worktree-card changes for remote children whose completion mail
-// may not cross hosts.
+// watcher must never turn a successful dispatch into a refusal. It watches
+// three independent signals: pane cursor movement for a one-shot silence alert,
+// Orca's own `agentWait` verdict for a worker parked on a prompt (see
+// `promptWait`), and deliberate worktree-card changes for remote children whose
+// completion mail may not cross hosts.
 //
 // TWO WAYS IN, ONE LOOP. `watch` is the loop, and it runs only as this file's
 // own process entry — the detached child `armStallWatcher` spawns. Every caller
@@ -98,7 +99,7 @@ function workerProbe(run, dispatchId) {
   // as one. Without it, `settled: false` makes an unreadable state
   // indistinguishable from a live one — which is how an unread probe becomes a
   // reported death.
-  if (out.status !== 0 || out.receipt?.ok !== true) return { known: false, settled: false, failed: false, label: 'unknown' };
+  if (out.status !== 0 || out.receipt?.ok !== true) return { known: false, settled: false, failed: false, label: 'unknown', wait: undefined };
   const result = out.receipt.result ?? {};
   const dispatch = result.dispatch?.status;
   const worker = result.worker?.state;
@@ -109,6 +110,41 @@ function workerProbe(run, dispatchId) {
     settled: settledDispatch.has(dispatch) || settledWorker.has(worker),
     failed: dispatch === 'failed' || worker === 'failed',
     label: `dispatch=${dispatch ?? 'unknown'} worker=${worker ?? 'unknown'}`,
+    wait: promptWait(result.observation),
+  };
+}
+
+/**
+ * Orca's own verdict that the worker is PARKED ON A PROMPT only a human can
+ * answer: the wait, `null` when Orca looked and found none, `undefined` when
+ * nobody knows.
+ *
+ * F6d (gapila wave, 2026-09-28, worker 2120): the pane sat on an interactive
+ * selection window and the silence alert was the first thing to notice, 46
+ * minutes in, still offering "hung, quiet or waiting" as indistinguishable.
+ * They are not, on the receipt this loop already reads every tick:
+ * `orca orchestration worker-show` carries `observation.agentWait`
+ * (`src/main/runtime/rpc/methods/orchestration/worker/worker-observation.ts` at
+ * Orca 867d38397893, federated workers included), the runtime's own reading of
+ * the agent's hook, its prompt text or its title, gated on the exact worker
+ * process. Cursor movement stays the only LIVENESS here; this is a named state,
+ * read from its owner, never a scrape of the screen.
+ *
+ * THE ABSENCE RULE IS ORCA'S OWN, and F-028's: an absent field means Orca never
+ * looked (older host, unverifiable identity, unreadable pane, slow probe) and
+ * "never means the worker is not waiting". So `undefined` alerts nothing AND
+ * ends nothing: only an explicit `null` closes a wait already announced, and
+ * only an object naming its evidence opens one.
+ */
+function promptWait(observation) {
+  if (!observation || typeof observation !== 'object' || !('agentWait' in observation)) return undefined;
+  const wait = observation.agentWait;
+  if (wait === null) return null;
+  if (typeof wait !== 'object' || typeof wait.source !== 'string') return undefined;
+  return {
+    source: wait.source,
+    reason: typeof wait.reason === 'string' ? wait.reason : '',
+    since: Number.isFinite(wait.since) ? wait.since : null,
   };
 }
 
@@ -224,7 +260,7 @@ const refusalLine = (alert, out) =>
 
 // THE DELIVERY FORM OF EVERY ALERT IN THIS FILE.
 //
-// Addressing was never the gap: all three alerts already reach the dispatching
+// Addressing was never the gap: every alert here already reaches the dispatching
 // Run. Being ACCEPTED there was, and this constant is what the measurement
 // decided.
 //
@@ -284,6 +320,34 @@ function alertStall(run, fields, request, silentSeconds, status, signal) {
   return run([
     'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
     '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' has gone silent`),
+    '--body', redactSecrets(body), '--json',
+  ]);
+}
+
+/**
+ * The worker is not silent, it is ASKING — and Orca measured it.
+ *
+ * Not the silence alert: that one offers three explanations because it cannot
+ * choose; this one names the third and the evidence for it. And not a failure
+ * either — Orca's own contract says a waiting worker is healthy — so the watch
+ * goes on after it, and the silence alert keeps its place as the backstop.
+ */
+function alertPrompt(run, fields, request, wait, status) {
+  const inspect = ['orca terminal read', '--terminal', fields.handle];
+  if (fields.env) inspect.push('--environment', fields.env);
+  inspect.push('--limit', '60', '--json');
+  const since = wait.since === null ? '' : ` since ${new Date(wait.since).toISOString()}`;
+  const body = [
+    `Dispatch ${fields.dispatchId} for request ${request} is parked on a prompt only a human can answer${since}.`,
+    `Orca's evidence: ${wait.reason || 'interactive prompt'} (via ${wait.source}).`,
+    `Current Orca view: ${status}.`,
+    'It is waiting, not hung: nothing moves until that prompt is answered in its pane.',
+    `Inspect: ${inspect.join(' ')}`,
+    `State: orca orchestration worker-show --dispatch ${fields.dispatchId} --json`,
+  ].join('\n');
+  return run([
+    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
+    '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' is waiting on a prompt`),
     '--body', redactSecrets(body), '--json',
   ]);
 }
@@ -629,6 +693,9 @@ export function watch(
     let cardsSent = 0;
     let stallOff = false;
     let failedNoted = false;
+    // One alert per WAIT, not per tick: set once a prompt alert is delivered,
+    // cleared only by Orca's explicit "no wait" (see `promptWait`).
+    let promptAnnounced = false;
 
     for (;;) {
       if (!existsSync(recordPath)) {
@@ -739,6 +806,18 @@ export function watch(
             }
           }
         }
+      }
+
+      if (state.wait === null) promptAnnounced = false;
+      if (state.wait && !promptAnnounced && !settled) {
+        const sent = alertPrompt(run, fields, parsed.request, state.wait, state.label);
+        if (sendOk(sent)) {
+          promptAnnounced = true;
+          log(`PROMPT alert sent to run:${fields.run} (${state.wait.reason || 'interactive prompt'} via ${state.wait.source}); watch continues.`);
+        } else if (sendRefused(sent)) {
+          log(refusalLine('prompt alert', sent));
+          return 0;
+        } else log('prompt alert failed; will retry next tick.');
       }
 
       const silent = currentTime - lastActivity;

@@ -48,11 +48,12 @@ function writeRecord(store, request, { on = 'envx', terminal = true, repaired = 
   return path;
 }
 
-function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 6], readFails = 0, cards = ['in-progress\t1/4 · Work · task'], worktree = '/tmp/work', worktrees = null, sendFails = false, sendRefused = null, omittedHosts = [], showFails = false, paneStatus = null } = {}) {
+function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 6], readFails = 0, cards = ['in-progress\t1/4 · Work · task'], worktree = '/tmp/work', worktrees = null, sendFails = false, sendRefused = null, omittedHosts = [], showFails = false, paneStatus = null, waits = [] } = {}) {
   const calls = [];
   let cursorIndex = 0;
   let cardIndex = 0;
   let listIndex = 0;
+  let showIndex = 0;
   let sendCount = 0;
   let readCount = 0;
   // `worktrees` is the per-`terminal list` series, for transient discovery.
@@ -83,8 +84,13 @@ function fakeRunner({ settled = false, status = null, cursors = [1, 2, 3, 4, 5, 
         const body = { ok: false, error: { message: 'runtime unreachable' } };
         return { status: 1, stdout: JSON.stringify(body), stderr: 'unreachable', receipt: body };
       }
-      if (status) return receipt({ dispatch: { status: status.dispatch }, worker: { state: status.worker } });
-      return receipt({ dispatch: { status: settled ? 'completed' : 'running' }, worker: { state: settled ? 'succeeded' : 'working' } });
+      // Orca's `observation.agentWait`, one entry per worker-show: `undefined`
+      // leaves the field ABSENT (never looked), `null` is "looked, no wait".
+      const wait = waits.length ? waits[Math.min(showIndex, waits.length - 1)] : undefined;
+      showIndex += 1;
+      const observation = wait === undefined ? { status: 'live', exactWorker: true } : { status: 'live', exactWorker: true, agentWait: wait };
+      if (status) return receipt({ dispatch: { status: status.dispatch }, worker: { state: status.worker }, observation });
+      return receipt({ dispatch: { status: settled ? 'completed' : 'running' }, worker: { state: settled ? 'succeeded' : 'working' }, observation });
     }
     if (command === 'terminal read') {
       readCount += 1;
@@ -211,6 +217,39 @@ test('a frozen remote pane emits exactly one local-run alert, then exits', () =>
   for (const read of r.calls.filter(args => args[0] === 'terminal' && args[1] === 'read')) {
     assert.equal(read[read.indexOf('--environment') + 1], 'envx');
     assert.equal(read[read.indexOf('--terminal') + 1], 'term_t1');
+  }
+});
+
+// F6d (gapila wave, worker 2120): the pane sat on an interactive selection
+// window, and the only thing that ever said so was the silence alert, 46 min
+// later. Orca already answers the question on the receipt this loop reads every
+// tick: `worker-show` → `observation.agentWait`, "a worker parked on a prompt
+// only a human can answer", with the evidence that proved it.
+const PROMPT = { source: 'prompt-text', reason: 'agent-interactive-prompt', since: 1_790_000_000_000 };
+
+test('a worker Orca reports parked on a prompt is announced at once, once per wait', () => {
+  const runner = fakeRunner({
+    cursors: [7, 7, 7, 7, 7, 7, 8, 8, 8],
+    waits: [PROMPT, PROMPT, PROMPT, null, null, PROMPT, PROMPT, null],
+  });
+  const r = invoke({ runner, env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '8' } });
+  assert.equal(r.code, 0);
+  const sent = sends(r.calls);
+  assert.equal(sent.length, 2, 'one alert per wait episode, never one per tick');
+  const subject = sent[0][sent[0].indexOf('--subject') + 1];
+  assert.match(subject, /^stall-watch: dispatched worker 'req-watch' /, 'the watcher subject grammar the peer receiver reads');
+  assert.match(subject, /prompt/);
+  const body = sent[0][sent[0].indexOf('--body') + 1];
+  assert.match(body, /agent-interactive-prompt/);
+  assert.match(body, /prompt-text/);
+  assert.equal(sent[0][sent[0].indexOf('--type') + 1], 'status');
+  assert.match(r.log, /lifetime/, 'a waiting worker is healthy: the watch goes on');
+});
+
+test('an absent or null agentWait is never read as a prompt', () => {
+  for (const waits of [[], [null]]) {
+    const r = invoke({ runner: fakeRunner({ cursors: [1, 2, 3, 4, 5], waits }), env: { ORCA_STALL_AFTER: '99', ORCA_STALL_LIFETIME: '4' } });
+    assert.equal(sends(r.calls).length, 0, JSON.stringify(waits));
   }
 });
 
