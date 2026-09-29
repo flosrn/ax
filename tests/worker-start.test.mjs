@@ -9,7 +9,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { armStallWatcher, start } from '../src/worker/start.mjs';
+import { start } from '../src/worker/start.mjs';
+import { armStallWatcher } from '../src/worker/stall.mjs';
 import { acquireLock } from '../src/worker/record.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-worker-start-'));

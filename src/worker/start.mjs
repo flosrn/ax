@@ -38,14 +38,12 @@
 // refusal issues nothing, not even the `task-update` that returns the task to
 // `ready`.
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 
 import { RUNNER_TIMEOUT_MS, createRunner, resolveOrca } from '../orca-bin.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { bad, fix, note, ok, raw, section, status } from '../log.mjs';
+import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { gate } from './gate.mjs';
 import {
   acquireLock,
@@ -73,8 +71,8 @@ import {
   workerStartArgv,
 } from './record.mjs';
 import { briefDelivered } from './delivered.mjs';
+import { armStallWatcher } from './stall.mjs';
 
-const STALL_MODULE = fileURLToPath(new URL('./stall.mjs', import.meta.url));
 // No sleep here any more: nothing in this verb waits on a pane. The cursor
 // polling that used to live in `ensureSpecSubmitted` is gone with it, and the
 // one place that still measures a pane over time is `ax worker repair`.
@@ -496,45 +494,6 @@ export function briefWitness(path, { env = process.env, sessionsRoot } = {}) {
   }
   note(redactSecrets(`BRIEF NOT PROVEN — ${witness.known ? `the child's session names no user message yet` : witness.reason}.`));
   return 'unproven';
-}
-
-/**
- * Spawn the fail-open watcher as a separate process; the caller exits
- * immediately. FAIL-OPEN is the whole contract: a watcher that cannot be armed
- * says so and the dispatch stands — a supervisor must never be able to fail a
- * worker that is already running. There are three ways it can fail, and all
- * three end the same way: the module is absent, `spawn` throws synchronously,
- * or the child fails asynchronously (ENOENT on the interpreter arrives on the
- * 'error' event, after this function has returned — unhandled, it would take
- * the process down at a point where the mutation is already committed).
- */
-export function armStallWatcher({ request, bin, env = process.env, spawnProcess = spawn, modulePath = STALL_MODULE } = {}) {
-  if (String(env.ORCA_STALL_WATCH ?? '1') === '0') return;
-  const notArmed = detail => status(redactSecrets(`stall-watch NOT armed: ${detail}`));
-  if (!existsSync(modulePath)) {
-    notArmed(`${modulePath} is missing.`);
-    return;
-  }
-
-  const dir = env.ORCA_STALL_DIR || join(env.HOME ?? '', '.omp', 'run', 'stall-watch');
-  let fd;
-  try {
-    const logPath = join(dir, `${request}.log`);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fd = openSync(logPath, 'a', 0o600);
-    const child = spawnProcess(process.execPath, [modulePath, '--request', request, '--orca', bin], {
-      detached: true,
-      stdio: ['ignore', fd, fd],
-      env: { ...env, ORCA_DISPATCH_STORE: defaultStore(env) },
-    });
-    child.on('error', error => notArmed(String(error)));
-    child.unref();
-    status(`STALL-WATCH armed (pid ${child.pid}) — a silent hang will be reported to the dispatching run.`);
-  } catch (error) {
-    notArmed(String(error));
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
 }
 
 

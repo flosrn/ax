@@ -32,7 +32,7 @@ import { redactSecrets } from '../redact.mjs';
 import { briefDelivered } from './delivered.mjs';
 import { paneVerdict, readPane, terminalInventory } from './pane.mjs';
 import { defaultStore, heldRepaired, markHeldRepair, report, requestIdOk, workerPane, workerSpec } from './record.mjs';
-import { armStallWatcher } from './start.mjs';
+import { armStallWatcher } from './stall.mjs';
 
 const USAGE = 'ax worker repair --request <id> [--delivered]';
 

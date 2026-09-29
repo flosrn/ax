@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { progressOnly, stall } from '../src/worker/stall.mjs';
+import { progressOnly, stall, watch } from '../src/worker/stall.mjs';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ax-worker-stall-'));
 const receipt = result => {
@@ -152,7 +152,7 @@ function invoke({ request = 'req-watch', record = true, recordOptions, runner = 
   process.stderr.write = chunk => (chunks.push(String(chunk)), true);
   let code;
   try {
-    code = stall(['--request', request, '--orca', 'orca'], { runner, env: fullEnv, now, sleep, pid, processAlive, append });
+    code = watch(['--request', request, '--orca', 'orca'], { runner, env: fullEnv, now, sleep, pid, processAlive, append });
   } finally {
     process.stdout.write = outWrite;
     process.stderr.write = errWrite;
@@ -186,7 +186,7 @@ test('a vanished record ends the running watcher without an alert', () => {
   const watchDir = join(home, 'watch');
   const path = writeRecord(store, 'req-gone');
   let seconds = 0;
-  const code = stall(['--request', 'req-gone', '--orca', 'orca'], {
+  const code = watch(['--request', 'req-gone', '--orca', 'orca'], {
     runner,
     env: { HOME: home, ORCA_DISPATCH_STORE: store, ORCA_STALL_DIR: watchDir, ORCA_STALL_TICK: '1', ORCA_STALL_AFTER: '9' },
     now: () => seconds,
@@ -815,4 +815,94 @@ test('the re-arm line an alert carries is a verb the reader can run', () => {
   // exist. A repair that cannot come true is the dead end a finding with no fix
   // already is.
   assert.doesNotMatch(body, /src\/worker\/stall\.mjs/);
+});
+
+// THE RE-ARM LINE IS RUN BY AN AGENT, WHOSE SHELL HAS A DEADLINE. Reported as
+// #270 (2026-09-28, gapila wave, worker 2120): `ax worker stall` ran the loop in
+// the foreground, so the orchestrator's 60 s Bash timeout killed the watcher it
+// had just armed and left its pidfile behind to refuse the next re-arm. The verb
+// must detach exactly as `worker start` does and give the shell back at once.
+test('the printed re-arm verb detaches a live watcher and returns at once', async t => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const watchDir = join(home, 'watch');
+  writeRecord(store, 'req-rearm', { on: '' });
+  const orca = join(home, 'orca-stub');
+  writeFileSync(orca, `#!/usr/bin/env bash
+case "$1 $2" in
+  "orchestration worker-show") echo '{"ok":true,"result":{"dispatch":{"status":"running"},"worker":{"state":"working"}}}' ;;
+  "terminal read") echo '{"ok":true,"result":{"terminal":{"latestCursor":7}}}' ;;
+  "terminal list") echo '{"ok":true,"result":{"terminals":[{"handle":"term_t1"}]}}' ;;
+  *) echo '{"ok":false,"error":{"code":"unexpected"}}'; exit 1 ;;
+esac
+`, { mode: 0o755 });
+  let pid = 0;
+  t.after(() => {
+    if (pid) try { process.kill(pid, 'SIGKILL'); } catch {}
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const cli = fileURLToPath(new URL('../bin/ax.mjs', import.meta.url));
+  const r = spawnSync(process.execPath, [cli, 'worker', 'stall', '--request', 'req-rearm'], {
+    encoding: 'utf8',
+    // The deadline an agent's tool would impose, scaled down: a foreground loop
+    // (tick 60 s, alert after 45 min) can only end here by being killed.
+    timeout: 8000,
+    env: {
+      ...process.env,
+      HOME: home,
+      NO_COLOR: '1',
+      ORCA_CLI_COMMAND: orca,
+      ORCA_DISPATCH_STORE: store,
+      ORCA_STALL_DIR: watchDir,
+      ORCA_STALL_TICK: '60',
+      ORCA_STALL_AFTER: '2700',
+      ORCA_STALL_WATCH: '1',
+    },
+  });
+  const out = `${r.stdout}${r.stderr}`;
+  assert.equal(r.error?.code, undefined, `the verb must return before the deadline kills it: ${out}`);
+  assert.equal(r.status, 0, out);
+  const armed = out.match(/STALL-WATCH armed \(pid (\d+)\)/);
+  assert.ok(armed, out);
+  pid = Number(armed[1]);
+
+  // And what it left behind is a WATCHER, not a pidfile: the named pid is alive
+  // and holds the claim.
+  const pidPath = join(watchDir, 'req-rearm.pid');
+  const deadline = Date.now() + 5000;
+  while (!(existsSync(pidPath) && readFileSync(pidPath, 'utf8') === String(pid)) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(readFileSync(pidPath, 'utf8'), String(pid));
+  assert.doesNotThrow(() => process.kill(pid, 0), 'the watcher survives the verb that armed it');
+});
+
+test('the re-arm verb never spawns a second watcher beside a live one', () => {
+  const home = scratch();
+  const store = join(home, 'dispatch');
+  const watchDir = join(home, 'watch');
+  writeRecord(store, 'req-live');
+  mkdirSync(watchDir, { recursive: true });
+  writeFileSync(join(watchDir, 'req-live.pid'), '999');
+  const armed = [];
+  const chunks = [];
+  const errWrite = process.stderr.write.bind(process.stderr);
+  const outWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = chunk => (chunks.push(String(chunk)), true);
+  process.stderr.write = chunk => (chunks.push(String(chunk)), true);
+  let code;
+  try {
+    code = stall(['--request', 'req-live', '--orca', 'orca'], {
+      env: { HOME: home, ORCA_DISPATCH_STORE: store, ORCA_STALL_DIR: watchDir },
+      processAlive: () => true,
+      arm: options => (armed.push(options), true),
+    });
+  } finally {
+    process.stdout.write = outWrite;
+    process.stderr.write = errWrite;
+  }
+  assert.equal(code, 0);
+  assert.deepEqual(armed, []);
+  assert.match(chunks.join(''), /already armed for req-live \(pid 999\)/);
 });

@@ -6,16 +6,26 @@
 // independent signals: pane cursor movement for a one-shot silence alert, and
 // deliberate worktree-card changes for remote children whose completion mail
 // may not cross hosts.
+//
+// TWO WAYS IN, ONE LOOP. `watch` is the loop, and it runs only as this file's
+// own process entry — the detached child `armStallWatcher` spawns. Every caller
+// that wants a watcher (`worker start`, `worker repair`, and the `ax worker
+// stall` verb an alert prints as its re-arm) goes through `armStallWatcher`, so
+// none of them ever holds the loop in its own foreground.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { redactSecrets } from '../redact.mjs';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
-import { bad, fix, note } from '../log.mjs';
+import { bad, fix, note, status } from '../log.mjs';
 import { defaultStore, dispatchFields, heldRepaired, requestIdOk } from './record.mjs';
 import { paneReadable, readPane, terminalInventory } from './pane.mjs';
+
+const self = fileURLToPath(import.meta.url);
+const watchDirOf = env => env.ORCA_STALL_DIR || join(env.HOME ?? '', '.omp', 'run', 'stall-watch');
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -333,6 +343,19 @@ function processAliveDefault(pid) {
   }
 }
 
+/** Who holds a watcher pidfile, read-only: absent, unreadable, or a pid and whether it lives. */
+function readHolder(path, processAlive) {
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    return error.code === 'ENOENT' ? { absent: true } : { unreadable: true };
+  }
+  const holder = Number(text.trim());
+  if (!(Number.isInteger(holder) && holder > 0)) return { unreadable: true };
+  return { holder, stale: !processAlive(holder) };
+}
+
 function claimPid(path, pid, processAlive) {
   try {
     writeFileSync(path, String(pid), { flag: 'wx', mode: 0o600 });
@@ -340,21 +363,119 @@ function claimPid(path, pid, processAlive) {
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
   }
-
-  let holder = 0;
-  try {
-    holder = Number(readFileSync(path, 'utf8').trim());
-  } catch {
-    return { claimed: false, unreadable: true };
-  }
-  return {
-    claimed: false,
-    holder,
-    stale: holder > 0 && !processAlive(holder),
-  };
+  const held = readHolder(path, processAlive);
+  // Gone between the claim and the read: its holder just exited. Not ours to
+  // retry — the next re-arm claims a free file.
+  return held.absent ? { claimed: false, unreadable: true } : { claimed: false, ...held };
 }
 
-export function stall(
+/** The one sentence for a claim this watcher does not hold. */
+function heldBy(request, claim) {
+  if (claim.stale) return `pidfile for ${request} belongs to dead pid ${claim.holder}; automatic takeover is refused — remove it only after verifying no watcher survives.`;
+  if (claim.holder) return `already armed for ${request} (pid ${claim.holder}); not doubling it.`;
+  return `pidfile for ${request} is unreadable; not doubling an unknown watcher.`;
+}
+
+/**
+ * Spawn the fail-open watcher as a separate process; the caller exits
+ * immediately. FAIL-OPEN is the whole contract: a watcher that cannot be armed
+ * says so and the dispatch stands — a supervisor must never be able to fail a
+ * worker that is already running. There are three ways it can fail, and all
+ * three end the same way: the module is absent, `spawn` throws synchronously,
+ * or the child fails asynchronously (ENOENT on the interpreter arrives on the
+ * 'error' event, after this function has returned — unhandled, it would take
+ * the process down at a point where the mutation is already committed).
+ *
+ * Answers whether a child was spawned, for the one caller whose exit code is
+ * the arming itself (`stall`, below); the dispatch callers ignore it.
+ */
+export function armStallWatcher({ request, bin, env = process.env, spawnProcess = spawn, modulePath = self } = {}) {
+  if (String(env.ORCA_STALL_WATCH ?? '1') === '0') return false;
+  const notArmed = detail => status(redactSecrets(`stall-watch NOT armed: ${detail}`));
+  if (!existsSync(modulePath)) {
+    notArmed(`${modulePath} is missing.`);
+    return false;
+  }
+
+  const dir = watchDirOf(env);
+  let fd;
+  try {
+    const logPath = join(dir, `${request}.log`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fd = openSync(logPath, 'a', 0o600);
+    const child = spawnProcess(process.execPath, [modulePath, '--request', request, '--orca', bin], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      env: { ...env, ORCA_DISPATCH_STORE: defaultStore(env) },
+    });
+    child.on('error', error => notArmed(String(error)));
+    child.unref();
+    status(`STALL-WATCH armed (pid ${child.pid}) — a silent hang will be reported to the dispatching run.`);
+    return true;
+  } catch (error) {
+    notArmed(String(error));
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * `ax worker stall --request <id> [--orca <bin>]` — the Re-arm line every
+ * silence alert prints, and so a gesture an AGENT runs, under a tool deadline.
+ *
+ * It ARMS and returns; it never watches. Reported as #270 (2026-09-28, gapila,
+ * worker 2120): this verb used to run the loop itself, in the foreground, so the
+ * orchestrator's 60 s Bash timeout killed the watcher it had just armed, and the
+ * pidfile the killed loop left behind refused the next re-arm — eight minutes
+ * unwatched and six calls to recover. It now detaches through the same
+ * `armStallWatcher` a dispatch uses, and everything it can establish without
+ * the loop it says HERE, to the caller, instead of in a log nobody reads: a
+ * malformed request, a missing record, no Orca, a watcher already holding the
+ * claim. The detached child's own claim stays the authority for a race between
+ * two re-arms.
+ */
+export function stall(argv = [], { resolve = resolveOrca, env = process.env, processAlive = processAliveDefault, arm = armStallWatcher } = {}) {
+  const parsed = parse(argv);
+  if (parsed.error) return callerBug(parsed.error);
+  if (!requestIdOk(parsed.request)) return callerBug(`invalid --request ${JSON.stringify(parsed.request)}`);
+
+  const recordPath = join(defaultStore(env), `${parsed.request}.json`);
+  try {
+    dispatchFields(recordPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return cannot(`no record at ${recordPath}; nothing to watch`);
+    return cannot(`record at ${recordPath} cannot configure a watch: ${String(error.message ?? error)}`);
+  }
+
+  const bin = parsed.explicitOrca || resolve({ env });
+  if (!bin) return cannot('no Orca CLI on this machine');
+
+  const held = readHolder(join(watchDirOf(env), `${parsed.request}.pid`), processAlive);
+  if (!held.absent) {
+    const message = heldBy(parsed.request, held);
+    if (held.holder && !held.stale) {
+      note(redactSecrets(message));
+      return 0;
+    }
+    bad(redactSecrets(message));
+    fix(`rm ${join(watchDirOf(env), `${parsed.request}.pid`)} && ax worker stall --request ${parsed.request}`);
+    return 1;
+  }
+
+  // The switch that keeps a dispatch from arming anything; here it would make
+  // the explicit ask a silent no-op, which is the one failure a watcher verb
+  // must never have.
+  if (String(env.ORCA_STALL_WATCH ?? '1') === '0') {
+    bad('ORCA_STALL_WATCH=0 in this environment disables every stall watcher; nothing was armed.');
+    fix(`ORCA_STALL_WATCH=1 ax worker stall --request ${parsed.request}`);
+    return 1;
+  }
+  return arm({ request: parsed.request, bin, env }) ? 0 : 3;
+}
+
+/** The loop — entered only as this file's own process, detached by `armStallWatcher`. */
+export function watch(
   argv = [],
   {
     resolve = resolveOrca,
@@ -401,7 +522,7 @@ export function stall(
   const cardWatchAsked = String(env.ORCA_CARD_WATCH ?? '1') !== '0';
   const cardEnabled = cardWatchAsked && fields.env !== '';
   const cardMax = Math.max(0, finiteOr(env.ORCA_CARD_MAX, 20));
-  const watchDir = env.ORCA_STALL_DIR || join(env.HOME ?? '', '.omp', 'run', 'stall-watch');
+  const watchDir = watchDirOf(env);
   mkdirSync(watchDir, { recursive: true, mode: 0o700 });
   const pidPath = join(watchDir, `${parsed.request}.pid`);
   const logPath = join(watchDir, `${parsed.request}.log`);
@@ -432,11 +553,7 @@ export function stall(
     return cannot(`pidfile claim failed: ${String(error)}`);
   }
   if (!claim.claimed) {
-    const message = claim.stale
-      ? `pidfile for ${parsed.request} belongs to dead pid ${claim.holder}; automatic takeover is refused — remove it only after verifying no watcher survives.`
-      : claim.holder
-        ? `already armed for ${parsed.request} (pid ${claim.holder}); not doubling it.`
-        : `pidfile for ${parsed.request} is unreadable; not doubling an unknown watcher.`;
+    const message = heldBy(parsed.request, claim);
     note(redactSecrets(message));
     log(message);
     return 0;
@@ -610,10 +727,10 @@ export function stall(
  * module's installed path loaded it and ran nothing, with no output and exit 0
  * (reported 2026-09-08 from a consumer on 0.24.1, after a stall alert whose own
  * Re-arm line was the command that did it). `ax worker stall` is the way in
- * now; this guard stays because `worker start` still spawns this file by path,
- * and a silent no-op is the one failure a watcher must never have.
+ * for a person or an agent; this guard is the way in for the detached child
+ * `armStallWatcher` spawns by path, and it is the ONLY place the loop runs — a
+ * silent no-op here is the one failure a watcher must never have.
  */
-const self = fileURLToPath(import.meta.url);
 const entered = () => {
   const invoked = process.argv[1];
   if (typeof invoked !== 'string' || invoked === '') return false;
@@ -624,4 +741,4 @@ const entered = () => {
     return false;
   }
 };
-if (entered()) process.exitCode = stall(process.argv.slice(2));
+if (entered()) process.exitCode = watch(process.argv.slice(2));
