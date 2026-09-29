@@ -44,6 +44,12 @@ export interface DeliveryResult {
   ok: boolean;
   via?: 'direct' | 'relay';
   queued?: { run: string };
+  /**
+   * The id Orca gave the message it accepted — the relay message on the relay
+   * path. A reply to it carries this as `thread_id`, which is how `ledger.ts`
+   * pairs an answer with its question. Absent when the receipt names none.
+   */
+  messageId?: string;
   error?: string;
   /**
    * Why this delivery cannot be answered, when it cannot — absent whenever
@@ -133,7 +139,7 @@ export function deliver(o: Delivery, seams: SendSeams = {}): DeliveryResult {
   const unattributed = attributionGap();
   if (prop(attempt.parsed, 'ok') === true) {
     seq.commit();
-    return unattributed === undefined ? { ok: true, via: 'direct' } : { ok: true, via: 'direct', unattributed };
+    return { ok: true, via: 'direct', ...receiptId(attempt.parsed), ...(unattributed === undefined ? {} : { unattributed }) };
   }
 
   if (!attempt.text.includes('dispatch_run_mismatch'))
@@ -180,8 +186,8 @@ export function deliver(o: Delivery, seams: SendSeams = {}): DeliveryResult {
     seq.commit();
     const gap = unattributed === undefined ? {} : { unattributed };
     return parent.queued
-      ? { ok: true, via: 'relay', queued: { run: parent.queued.run }, ...gap }
-      : { ok: true, via: 'relay', ...gap };
+      ? { ok: true, via: 'relay', queued: { run: parent.queued.run }, ...receiptId(relay.parsed), ...gap }
+      : { ok: true, via: 'relay', ...receiptId(relay.parsed), ...gap };
   }
   return { ok: false, error: `relay via parent failed: ${sendError(relay)}` };
 }
@@ -214,6 +220,13 @@ export function sendToPeer(o: {
     { address: resolved.address, targetName: o.target, text, type: o.type },
     seams,
   );
+}
+
+/** Orca's receipt: `{message:{id}}` for one recipient, `{relay:{messageId}}` when Orca itself queued it. */
+function receiptId(parsed: unknown): { messageId?: string } {
+  const result = prop(parsed, 'result');
+  const id = str(prop(prop(result, 'message'), 'id')) || str(prop(prop(result, 'relay'), 'messageId'));
+  return id ? { messageId: id } : {};
 }
 
 function sendError(r: { parsed: unknown; text: string }): string {

@@ -94,6 +94,11 @@ import {
 // reverting the fix left the suite green.
 import { createReceiver, type SenderInfo, startReceiverIfOwned } from './receive.ts';
 
+// What the OPERATOR sees of all of this: renderers, the widget above the
+// editor, and the ledger of who is waiting on whom. Presentation only — it
+// reads `details`, never decides a route (`./render.ts`).
+import { createPeerView } from './render.ts';
+
 // The subagent-vs-lead latch, shared with orca-report and orca-checkpoint.
 import { createSessionOwner, isSubagentSession, sessionIdOf } from '../shared/session.ts';
 
@@ -429,6 +434,8 @@ export function recordReplyRoute(messageId: string, route: PeerReplyRoute): void
   replyRoutes.set(messageId, route);
 }
 
+const view = createPeerView({ routeOf: (id) => replyRoutes.get(id) });
+
 
 // The loop's collaborators, wired to the real ones. `runId` is a getter
 // because the Run is bound during `session_start`, long after this runs, and
@@ -481,6 +488,7 @@ const receiver = createReceiver({
   rememberInjected,
   compactInjected,
   recordRoute: recordReplyRoute,
+  delivered: (details) => view.delivered(details),
 });
 
 // A SUBAGENT MUST NOT PUBLISH ITSELF AS ITS PARENT.
@@ -534,6 +542,8 @@ export function replyToReceived(
 const owner = createSessionOwner();
 
 export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
+  view.registerRenderers(pi);
+
   // Replying is a TOOL, not a shell command the model has to compose.
   //
   // Four review rounds were spent on the shell form: an interpolated argument
@@ -547,6 +557,7 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
   // injection class is gone by construction.
   pi.registerTool({
     name: 'peer_reply',
+    ...view.tool('peer_reply'),
     description:
       'Reply to a peer-message received from another Orca agent session. ' +
       'Routes by the message id shown on that message; you never supply an address.',
@@ -633,6 +644,12 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
               text: out.unattributed === undefined ? delivered : `${delivered}\n\nUNATTRIBUTED: ${out.unattributed}`,
             },
           ],
+          details: {
+            peer: route.peer,
+            messageId: message_id,
+            outcome: out.queued ? 'queued' : (out.via ?? 'direct'),
+            ...(out.unattributed === undefined ? {} : { unattributed: true }),
+          },
         };
       }
       return {
@@ -658,6 +675,7 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
   // text, so wrapping them would add a surface without removing a hazard.
   pi.registerTool({
     name: 'peer_send',
+    ...view.tool('peer_send'),
     description:
       'Send a message to another Orca agent session by its peer name. ' +
       'Use peer_list to see the names. A peer is a session with its own operator ' +
@@ -717,12 +735,24 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
             text: out.unattributed === undefined ? delivered : `${delivered}\n\nUNATTRIBUTED: ${out.unattributed}`,
           },
         ],
+        // `messageId` is what a reply will carry as its thread: the ledger
+        // pairs the answer with this question by it.
+        details: {
+          peer,
+          type: type ?? 'status',
+          text: answer,
+          at: Date.now(),
+          outcome: out.queued ? 'queued' : (out.via ?? 'direct'),
+          ...(out.messageId ? { messageId: out.messageId } : {}),
+          ...(out.unattributed === undefined ? {} : { unattributed: true }),
+        },
       };
     },
   });
 
   pi.registerTool({
     name: 'peer_list',
+    ...view.tool('peer_list'),
     description:
       'List the Orca agent sessions reachable as peers on this machine — the model ' +
       'and thinking level each published about itself, and how deep it sits in the ' +
@@ -761,20 +791,31 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
       // because an operator relaying "answer terminal 01a036ee" is reading
       // exactly that. Without the column, resolving it meant cross-referencing
       // `orca terminal list --json` by hand (measured 2026-08-25).
-      const lines = live.map(
-        (p) =>
-          `${p.peer}${p.self ? '  (you)' : ''}  ${p.model || '?'}${p.level ? `:${p.level}` : ''}  ${depth(depthOf(p.worktree, tree))}  ${p.sessionId ? shortId(p.sessionId) : '?'}  ${p.worktree}`,
+      const rows = live.map((p) => ({
+        peer: p.peer,
+        self: Boolean(p.self),
+        model: p.model || '',
+        level: p.level || '',
+        depth: depthOf(p.worktree, tree),
+        id: p.sessionId ? shortId(p.sessionId) : '',
+        worktree: p.worktree,
+      }));
+      const lines = rows.map(
+        (r) =>
+          `${r.peer}${r.self ? '  (you)' : ''}  ${r.model || '?'}${r.level ? `:${r.level}` : ''}  ${depth(r.depth)}  ${r.id || '?'}  ${r.worktree}`,
       );
       return {
         content: [
           { type: 'text', text: ['PEER  MODEL  DEPTH  ID  WORKTREE', ...lines].join('\n') },
         ],
+        details: { rows },
       };
     },
   });
 
   pi.registerTool({
     name: 'peer_read',
+    ...view.tool('peer_read'),
     description:
       "Read the tail of another session's own transcript — what it has been " +
       'saying, as opposed to what it said to you. Accepts a peer name, a worktree ' +
@@ -821,12 +862,14 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
             ].join('\n'),
           },
         ],
+        details: { peer, path: found.path, messages: found.messages ?? [] },
       };
     },
   });
 
   pi.registerTool({
     name: 'peer_children',
+    ...view.tool('peer_children'),
     description:
       'List the sessions dispatched from this worktree, with their board status, ' +
       'last checkpoint, and whether they are still live.',
@@ -850,12 +893,14 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
         content: [
           { type: 'text', text: ['CHILD  STATUS  LIVE  CHECKPOINT', ...lines].join('\n') },
         ],
+        details: { rows: kids.map((c) => ({ name: c.name, status: c.status, live: Boolean(c.live), checkpoint: c.checkpoint })) },
       };
     },
   });
 
   pi.registerTool({
     name: 'peer_diagnostics',
+    ...view.tool('peer_diagnostics'),
     description:
       'Read what this session\'s communication channel could not deliver or ' +
       'intentionally withheld — persisted across restart. Sequence gaps, ' +
@@ -966,10 +1011,20 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
     markTurnCompleted(channel);
   });
 
+  // The ledger reads every peer tool's result `details`, the same records a
+  // restart replays from the branch (`view.bind`).
+  pi.on('tool_result', (event, ctx) => {
+    if (owner.isForeign(ctx)) return;
+    try {
+      view.toolResult(event);
+    } catch {}
+  });
+
   pi.on('session_start', (_event, ctx) => {
     if (isSubagentSession(ctx)) return;
     owner.claim(ctx);
     if (owner.isForeign(ctx)) return;
+    view.bind(ctx);
     try {
       if (!process.env.ORCA_TERMINAL_HANDLE) return; // not an Orca pane
       if (
