@@ -120,6 +120,36 @@ test('a bump from an unprovisioned checkout is not refused for that checkout\u20
   assert.match(r.out, /git add package\.json pnpm-lock\.yaml && git commit/);
 });
 
+test('#274: a pnpm-workspace.yaml the install rewrote is part of the printed commit, and a dirty one is refused first', () => {
+  // Measured 2026-09-29 on chatnow_bot: its `minimumReleaseAgeExclude` lists
+  // every ax version, pnpm appends the new one on install, and the printed
+  // `git add package.json pnpm-lock.yaml` left it behind in the tree.
+  const root = repo();
+  const workspace = join(root, 'pnpm-workspace.yaml');
+  writeFileSync(workspace, "minimumReleaseAgeExclude:\n  - '@flosrn/ax@0.5.2'\n");
+  execFileSync('git', ['add', 'pnpm-workspace.yaml'], { cwd: root });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'workspace'], { cwd: root });
+  const exec = fakeExec({
+    onInstall: at => {
+      installAs(at, '0.6.6');
+      writeFileSync(join(at, 'pnpm-workspace.yaml'), "minimumReleaseAgeExclude:\n  - '@flosrn/ax@0.5.2 || 0.6.6'\n");
+    },
+  });
+  const r = run(['0.6.6'], { root, exec });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /git add package\.json pnpm-lock\.yaml pnpm-workspace\.yaml && git commit/);
+
+  const dirty = repo();
+  writeFileSync(join(dirty, 'pnpm-workspace.yaml'), "packages: []\n");
+  execFileSync('git', ['add', 'pnpm-workspace.yaml'], { cwd: dirty });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'workspace'], { cwd: dirty });
+  writeFileSync(join(dirty, 'pnpm-workspace.yaml'), "packages: ['apps/*']\n");
+  const refused = run(['0.6.6'], { root: dirty, exec: fakeExec({ onInstall: at => installAs(at, '0.6.6') }) });
+  assert.equal(refused.code, 1);
+  assert.match(refused.out, /pnpm-workspace\.yaml/);
+  assert.ok(!refused.calls.some(line => line.startsWith('pnpm install')), 'nothing was installed over a dirty workspace file');
+});
+
 test('a frozen lockfile does not defeat the bump: the install is told the lockfile is changing', () => {
   // Measured 2026-08-24 on ofmchat (pnpm 11, a MakerKit workspace): `ax pin
   // 0.11.2` refused with "pnpm install refused the new pin: exit 1", because a
@@ -173,6 +203,9 @@ test('a pnpm patch pinned to the version being left refuses BEFORE anything move
     join(root, 'pnpm-workspace.yaml'),
     "packages:\n  - 'apps/*'\n\npatchedDependencies:\n  '@flosrn/ax@0.5.2': patches/@flosrn__ax@0.5.2.patch\n  other@1.0.0: patches/other@1.0.0.patch\n",
   );
+  // Tracked, as in every real consumer: the bump's cleanliness guard reads it.
+  execFileSync('git', ['add', 'pnpm-workspace.yaml'], { cwd: root });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'workspace'], { cwd: root });
   const before = readFileSync(join(root, 'package.json'), 'utf8');
   const r = run(['0.6.6'], { root });
 

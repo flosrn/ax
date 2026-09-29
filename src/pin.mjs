@@ -53,6 +53,9 @@ const RELEASE = /^v?([0-9]+\.[0-9]+\.[0-9]+)$/;
 const INSTALL_TIMEOUT_MS = 600_000;
 export const pinExec = (bin, args, at) => execRun(bin, args, { cwd: at, timeout: INSTALL_TIMEOUT_MS });
 
+/** Every file a bump may change: the pin, its lockfile, and the workspace file pnpm rewrites (#274). */
+const BUMP_FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
+
 /**
  * THE pnpm PATCHES KEYED ON A VERSION OF ax OTHER THAN THE ONE BEING PINNED.
  *
@@ -181,16 +184,18 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   }
   const changing = current !== target;
   if (changing) {
-    // Ownership of the DIFF this verb creates, not of the repo: if the two
-    // files it is about to change already carry someone's edits, moving the
-    // pin would weld this bump to work that is not its own.
-    const dirty = exec('git', ['status', '--porcelain', '--', 'package.json', 'pnpm-lock.yaml'], root);
+    // Ownership of the DIFF this verb creates, not of the repo: if the files
+    // it is about to change already carry someone's edits, moving the pin
+    // would weld this bump to work that is not its own. pnpm-workspace.yaml is
+    // one of them (#274): pnpm appends the new version to a
+    // `minimumReleaseAgeExclude` entry that enumerates them.
+    const dirty = exec('git', ['status', '--porcelain', '--', ...BUMP_FILES], root);
     if (dirty.error || dirty.status !== 0) {
       return refuse(`git cannot answer whether package.json is clean: ${String(dirty.error ?? dirty.stderr ?? '').trim() || `exit ${dirty.status}`}`);
     }
     if (String(dirty.stdout ?? '').trim() !== '') {
       return refuse(
-        'package.json or pnpm-lock.yaml already carries uncommitted changes — this bump refuses to weld its diff to work that is not its own',
+        `${BUMP_FILES.join(', ')} already carry uncommitted changes — this bump refuses to weld its diff to work that is not its own`,
         'commit or stash those changes first, then re-run',
       );
     }
@@ -234,15 +239,18 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
       // the guard above then refuses on the next run, until a human restored
       // them — the repair used to be printed, never performed.
       const reason = installRefusal(installed);
-      const lockTracked = String(exec('git', ['ls-files', '--', 'pnpm-lock.yaml'], root).stdout ?? '').trim() !== '';
-      const restored = exec('git', ['checkout', '--', 'package.json', ...(lockTracked ? ['pnpm-lock.yaml'] : [])], root);
+      // Every tracked bump file, all proven clean above (#274 adds the workspace
+      // file pnpm may rewrite before it refuses).
+      const tracked = String(exec('git', ['ls-files', '--', ...BUMP_FILES], root).stdout ?? '').split('\n').map(line => line.trim()).filter(Boolean);
+      const restoring = tracked.includes('package.json') ? tracked : ['package.json', ...tracked];
+      const restored = exec('git', ['checkout', '--', ...restoring], root);
       if (restored.error || restored.status !== 0) {
         return refuse(
           `pnpm install refused the new pin: ${reason} — and package.json could not be restored: ${String(restored.error ?? restored.stderr ?? '').trim() || `exit ${restored.status}`}`,
-          `git checkout -- package.json pnpm-lock.yaml && pnpm install   # back to ${current}`,
+          `git checkout -- ${restoring.join(' ')} && pnpm install   # back to ${current}`,
         );
       }
-      return refuse(`pnpm install refused the new pin: ${reason} — package.json${lockTracked ? ' and pnpm-lock.yaml are' : ' is'} back on ${current}`, `pnpm install   # only if the refused install touched node_modules; then re-run: ax pin ${asked}`);
+      return refuse(`pnpm install refused the new pin: ${reason} — ${restoring.join(' and ')} ${restoring.length === 1 ? 'is' : 'are'} back on ${current}`, `pnpm install   # only if the refused install touched node_modules; then re-run: ax pin ${asked}`);
     }
   } else {
     note(`already pinned to ${target} — re-proving the installed package and doctor`);
@@ -351,7 +359,16 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   ok('doctor coherent under the new pin');
 
   // The git gesture stays yours, message included — see the header for why this
-  // verb never runs it. A verification-only invocation earned no diff.
-  if (changing) fix(`git add package.json pnpm-lock.yaml && git commit -m "chore(deps): bump ${PACKAGE_NAME} to ${target}" && git push`);
+  // verb never runs it. A verification-only invocation earned no diff. It
+  // stages every bump file the install actually changed (#274), no more.
+  if (changing) {
+    const changed = exec('git', ['status', '--porcelain', '--', ...BUMP_FILES], root);
+    const touched = String(changed.stdout ?? '')
+      .split('\n')
+      .map(line => line.slice(3).trim())
+      .filter(Boolean);
+    const files = ['package.json', 'pnpm-lock.yaml', ...BUMP_FILES.filter(file => !['package.json', 'pnpm-lock.yaml'].includes(file) && touched.includes(file))];
+    fix(`git add ${files.join(' ')} && git commit -m "chore(deps): bump ${PACKAGE_NAME} to ${target}" && git push`);
+  }
   return 0;
 }
