@@ -18,7 +18,10 @@
 //      names — that host's own inventory, asked because `dispatch.hosts.<host>`
 //      in ax.config.json is what says how to reach it (#76);
 //   4. `orca orchestration worker-list --json` — Orca's own accounting, printed
-//      FOR COMPARISON ONLY, never as the count.
+//      FOR COMPARISON ONLY, never as the count. Since Orca 867d38397893 an
+//      unscoped list is the Run BOUND to the calling terminal, so a live or
+//      unknown row it lacks is asked of the Run its own record names
+//      (`worker-list --run <run>`, once per Run) before it reads ABSENT.
 // A live pane whose worker-list entry is absent or `retained` is exactly the
 // F-048 shape, and it is reported as a failure with the release that repairs it.
 //
@@ -56,6 +59,24 @@
 // whose pane died is the row an operator most has to act on. Which verb — or
 // none — is ./continuation.mjs, the answer `ax worker tail` prints too.
 //
+// A DEAD ROW IS ITS OWN REPOSITORY'S DECISION (F6c). The store is host-global,
+// so read from gapila on 2026-09-29 the default view listed ofmchat's gone
+// worktrees and counted 310 MORT rows and 26 settlement debts, almost none of
+// them gapila's — while `settle` refuses a foreign record from here. Capacity
+// and overlap stay machine facts (VIVANT and INCONNU rows of every repository
+// are listed, and both counts are unchanged); a MORT row or a dead attempt of
+// another repository is one count naming `--all`, and its branch is not read
+// with this checkout's `gh`. A record naming no repository is unknown, never
+// foreign (F-028), and a checkout `gh` cannot name keeps every row.
+//
+// A STRANDED REMOTE START IS ASKED ABOUT WHERE IT RAN (F2). A worker-start
+// written ahead on `--on <host>` that never answered may have opened a pane,
+// and #2120's orchestrator had to ssh to gapicore to rule out a duplicate.
+// This verb guesses no ownership by worktree name; it asks that host (the
+// same memoized ask the rows use) which live panes no receipt in this store
+// names, prints them with their worktree, and names the replay
+// (`ax worker start --resume`) that answers for the record itself.
+//
 // TWO COUNTS, AND THE LABEL SAYS WHICH GATES (#88). This verb used to end with
 // `N live pane(s) — this is the cap count`, where N was every live pane on the
 // machine: the store is host-global (./record.mjs), so read from one checkout it
@@ -92,7 +113,7 @@ import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
 import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { hostReader, hostScopes, terminalInventory } from './pane.mjs';
-import { argvValue, defaultStore } from './record.mjs';
+import { argvValue, defaultStore, recordedRun } from './record.mjs';
 import { livePanes } from './slots.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
@@ -152,7 +173,7 @@ function describeRecord(dir, file) {
   try {
     rec = JSON.parse(readFileSync(join(dir, file), 'utf8'));
   } catch (error) {
-    return { request: stem, taskId: null, dispatchId: null, handle: null, repo: '', unsettled: null, why: `record unreadable: ${error.message}` };
+    return { request: stem, taskId: null, dispatchId: null, handle: null, repo: '', unsettled: null, pending: undefined, claims: [], why: `record unreadable: ${error.message}` };
   }
 
   const request = typeof rec.request === 'string' && rec.request !== '' ? rec.request : stem;
@@ -187,9 +208,31 @@ function describeRecord(dir, file) {
   // `start.mjs` inherits the recorded placement and refuses a contradicting
   // one, #11 — but the pairing is what makes THIS phase's answer this phase's.)
   let latestHost;
+  // A worker-start written ahead that NEVER CONCLUDED — no exit, no receipt:
+  // the STRANDED shape, whose mutation may have run (F2). Its host is kept so
+  // the listing can ask that host which panes nobody claims; it establishes
+  // nothing about this record's own pane.
+  let pending;
+  // Every terminal ANY receipt of this record named, agent or setup: the panes
+  // this store accounts for, which is what makes the others unclaimed.
+  const claims = [];
   for (const ph of phases) {
     const result = ph !== null && typeof ph === 'object' && ph.receipt !== null && typeof ph.receipt === 'object' ? ph.receipt.result : undefined;
-    if (result === null || typeof result !== 'object') continue;
+    // `undefined` where this phase cannot say: not a worker-start, or no argv
+    // recorded. Only a phase that names its own placement may claim `local`.
+    const on = ph?.name !== 'worker-start' || !Array.isArray(ph.argv) ? undefined : argvValue(ph.argv, '--on') ?? '';
+    if (result === null || typeof result !== 'object') {
+      // Never concluded is `exit` absent or null, whatever text came back:
+      // measured on qual-gapicore (2026-09-28), the STRANDED shape is
+      // `exit: null, transport: 'spawnSync orca ETIMEDOUT'` beside a receipt
+      // `{unparseable: ''}` — the call timed out, its mutation may have run.
+      if (on !== undefined && (ph.exit === undefined || ph.exit === null)) pending = on;
+      continue;
+    }
+    pending = undefined;
+    for (const effect of Array.isArray(result.effects) ? result.effects : []) {
+      if (effect !== null && typeof effect === 'object' && effect.kind === 'terminal' && typeof effect.id === 'string') claims.push(effect.id);
+    }
     // Display metadata only: which task this request is about. It labels the
     // line and decides nothing — the pane and the dispatch below come from the
     // usable receipt alone.
@@ -197,9 +240,6 @@ function describeRecord(dir, file) {
       const seen = (result.task ?? {}).id ?? result.taskId;
       if (typeof seen === 'string') labelTask = seen;
     }
-    // `undefined` where this phase cannot say: not a worker-start, or no argv
-    // recorded. Only a phase that names its own placement may claim `local`.
-    const on = ph.name !== 'worker-start' || !Array.isArray(ph.argv) ? undefined : argvValue(ph.argv, '--on') ?? '';
     if (usablePhase(ph)) {
       latest = result;
       latestHost = on;
@@ -212,7 +252,7 @@ function describeRecord(dir, file) {
   }
 
   if (latest === null) {
-    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, why: 'no usable receipt yet' };
+    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, pending: unsettled === null ? pending : undefined, claims, why: 'no usable receipt yet' };
   }
 
   const tid = (latest.task ?? {}).id ?? latest.taskId;
@@ -225,6 +265,8 @@ function describeRecord(dir, file) {
     repo,
     host: latestHost,
     unsettled: handle === null ? unsettled : null,
+    pending: undefined,
+    claims,
     why: handle === null ? 'no agent pane in the last usable receipt' : '',
   };
 }
@@ -233,9 +275,14 @@ function describeRecord(dir, file) {
  * Orca's accounting, indexed by both keys it exposes. Unreadable is NOT fatal:
  * this list is the suspect, not the witness — but its unreadability is named on
  * every line rather than shown as an absence of workers.
+ *
+ * `runId` scopes it. Since Orca 867d38397893 (worker-list-run-scope.ts) the
+ * UNSCOPED list is the Run bound to the calling terminal, so a dispatch of
+ * another Run is absent from it by scope, not by fact: a live or unknown row
+ * that list lacks is asked of its own recorded Run before it reads ABSENT.
  */
-function workerIndex(run) {
-  const out = run(['orchestration', 'worker-list', '--json']);
+function workerIndex(run, runId = '') {
+  const out = run(['orchestration', 'worker-list', ...(runId === '' ? [] : ['--run', runId]), '--json']);
   const receipt = out.receipt ?? {};
   if (out.status !== 0 || receipt.ok !== true || !('result' in receipt) || !Array.isArray(receipt.result.workers)) {
     const detail = receipt.unparseable ?? out.stderr ?? '';
@@ -248,7 +295,8 @@ function workerIndex(run) {
     if (typeof worker.dispatchId === 'string') byDispatch.set(worker.dispatchId, worker);
     if (typeof worker.agentTerminalHandle === 'string') byHandle.set(worker.agentTerminalHandle, worker);
   }
-  return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length };
+  const scope = receipt.result.scope;
+  return { ok: true, byDispatch, byHandle, total: receipt.result.workers.length, run: scope !== null && typeof scope === 'object' && typeof scope.run === 'string' ? scope.run : '' };
 }
 
 // THE HOSTS A RECORD NAMES, and THIS CHECKOUT'S DECLARATION of them, live in
@@ -405,13 +453,57 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // answer and neither pays for it twice.
   const branchAnswers = new Map();
 
-  const views = files.map(file => {
-    const row = describeRecord(dir, file);
+  // ITS OWN RUN'S WORKER-LIST, memoized per Run: the Run a record's phases
+  // name (`--run`, `recordedRun`). `null` where no Run is recorded, where it is
+  // the list already read, or where that list does not answer — an unread list
+  // is never an empty one (F-028).
+  const runLists = new Map();
+  const ownRun = file => {
+    let runId = '';
+    try {
+      runId = recordedRun(join(dir, file));
+    } catch {
+      return null;
+    }
+    if (!runId || runId === workers.run) return null;
+    if (!runLists.has(runId)) {
+      const listed = workerIndex(run, runId);
+      runLists.set(runId, listed.ok ? { runId, index: listed } : null);
+    }
+    return runLists.get(runId);
+  };
+
+  // EVERY TERMINAL THIS STORE ACCOUNTS FOR — any receipt's agent or setup pane
+  // — so that a pane a host carries and no record names can be told apart from
+  // one another dispatch owns (F2).
+  const rows = files.map(file => ({ file, row: describeRecord(dir, file) }));
+  const claimed = new Set(rows.flatMap(({ row }) => row.claims));
+
+  // WHICH REPOSITORY A ROW IS (F6c): only this checkout's rows, and those
+  // naming none (unknown is never foreign, F-028), carry a MORT decision in the
+  // default view. Another repository's dead row is continued and settled from
+  // its own checkout — `settle` refuses it here — so it is COUNTED, and listed
+  // under `--all`. A checkout `gh` cannot name keeps every row, as before.
+  const ours = row => slug === '' || row.repo === '' || row.repo.toLowerCase() === slug.trim().toLowerCase();
+
+  const strandedOn = host => {
+    const scope = scopes.scopeFor(host);
+    if (scope.ok !== true) return { host, ok: false, panes: [] };
+    return { host, ok: true, panes: [...scope.byHandle.values()].filter(terminal => terminal.orphaned !== true && !claimed.has(terminal.handle)) };
+  };
+
+  const views = rows.map(({ file, row }) => {
     // EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first list
     // decides a local dispatch, an unknown placement, and any handle it already
     // carries; a remote handle it does not carry is put to that host itself.
     const { verdict, asked } = hosts.verdictFor(row.handle, row.why, row.host);
     const { pane, detail } = verdict;
+    // A WORKER-START THAT NEVER ANSWERED ON A NAMED HOST (F2) — the STRANDED
+    // shape. Nothing establishes this record's pane, and nothing here guesses
+    // one by worktree name; what the host CAN say is which of its live panes
+    // no record claims, and one of those is the pane this dispatch may have
+    // opened. Asked through the same memoized reader the rows use.
+    const stranded = typeof row.pending === 'string' && row.pending !== '' ? strandedOn(row.pending) : null;
     // A row left unknowable by the LOCAL list's own omission — a record whose
     // placement no phase could name, so no host could be asked for it. That is
     // the only case the blanket disclosure below still explains.
@@ -422,17 +514,31 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     if (!workers.ok) {
       state = 'ILLISIBLE';
     } else {
-      entry = (row.dispatchId !== null ? workers.byDispatch.get(row.dispatchId) : undefined)
-        // The comparison column, and only that: a record with no usable receipt
-        // still names its dispatch in the failed one, so looking it up here is
-        // what turns a permanent `ABSENT` into Orca's real accounting for it.
-        // Never used for the pane or for a release — those stay on the usable
-        // receipt, because a mispaired dispatch releases the wrong child.
-        ?? (row.unsettled?.dispatchId ? workers.byDispatch.get(row.unsettled.dispatchId) : undefined)
-        ?? (row.handle !== null ? workers.byHandle.get(row.handle) : undefined);
-      if (entry === undefined) state = 'ABSENT';
+      // The comparison column, and only that: a record with no usable receipt
+      // still names its dispatch in the failed one, so looking it up here is
+      // what turns a permanent `ABSENT` into Orca's real accounting for it.
+      // Never used for the pane or for a release — those stay on the usable
+      // receipt, because a mispaired dispatch releases the wrong child.
+      const lookup = index =>
+        (row.dispatchId !== null ? index.byDispatch.get(row.dispatchId) : undefined)
+        ?? (row.unsettled?.dispatchId ? index.byDispatch.get(row.unsettled.dispatchId) : undefined)
+        ?? (row.handle !== null ? index.byHandle.get(row.handle) : undefined);
+      entry = lookup(workers);
+      // ITS OWN RUN, where the bound Run's list lacks it and the column can
+      // change a reading: a VIVANT row absent from worker-list is the F-048
+      // failure this verb prints with a release, and an INCONNU row is one an
+      // operator arbitrates on. A MORT row keeps what the default list said.
+      let foreignRun = '';
+      if (entry === undefined && pane !== 'MORT') {
+        const listed = ownRun(file);
+        if (listed !== null) {
+          foreignRun = listed.runId;
+          entry = lookup(listed.index);
+        }
+      }
+      if (entry === undefined) state = foreignRun === '' ? 'ABSENT' : `ABSENT from Run ${foreignRun}`;
       else {
-        if (typeof entry.dispatchId === 'string') matched.add(entry.dispatchId);
+        if (typeof entry.dispatchId === 'string' && foreignRun === '') matched.add(entry.dispatchId);
         state = `${entry.workerState ?? '?'}/${entry.terminalState ?? '?'}`;
       }
     }
@@ -485,12 +591,18 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     // VIVANT row is never asked: a working child's branch has an open PR by
     // construction, and replacing that child is the mutation this verdict
     // exists to prevent.
+    //
+    // AND ONLY FOR A ROW THIS VIEW CAN SHOW (F6c): another repository's dead
+    // row is counted in the default view, so its branch is read under `--all`
+    // alone — asking this checkout's `gh` about another repository's branch is
+    // a read that cannot answer it.
+    const mine = ours(row);
     const continuation =
-      pane === 'MORT'
+      pane === 'MORT' && (all || mine)
         ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers, run })
         : NO_CONTINUATION;
 
-    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation };
+    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine };
   });
 
   // THE DEFAULT VIEW (#70, ruled 2026-09-02). Measured on this machine: 189
@@ -527,11 +639,21 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // the fix is the one an operator acts on — a continuation that names a
   // command under no route (an unreadable delivery mode, #3) would otherwise
   // be hidden by the very predicate that exists to stop hiding repairs.
+  //
+  // AND A DEAD ROW IS THIS REPOSITORY'S DECISION (F6c, measured 2026-09-29 from
+  // gapila: 356 records, 14 of them gapila's). The store is host-global, and
+  // capacity and overlap are machine facts, so VIVANT and INCONNU rows stay
+  // whatever repository they name. A MORT row or a dead attempt is not: its
+  // continuation is read and its ending written from its own checkout —
+  // `settle` refuses a foreign record — so here it is one count, and `--all`
+  // lists it.
   const carries = view => view.continuation.route !== null || view.continuation.failed !== '' || view.continuation.fix !== '';
-  const shown = all ? views : views.filter(view => (view.pane === 'MORT' ? carries(view) : !view.deadAttempt));
+  const dead = view => view.pane === 'MORT' || view.deadAttempt;
+  const shown = all ? views : views.filter(view => (view.pane === 'MORT' ? view.mine && carries(view) : !view.deadAttempt));
   const hidden = views.length - shown.length;
-  const withheldMort = views.filter(view => view.pane === 'MORT' && !carries(view)).length;
-  const withheldAttempts = views.filter(view => view.deadAttempt).length;
+  const withheldMort = views.filter(view => view.mine && view.pane === 'MORT' && !carries(view)).length;
+  const withheldAttempts = views.filter(view => view.mine && view.deadAttempt).length;
+  const withheldForeign = views.filter(view => !view.mine && dead(view)).length;
 
   // The columns are sized on what is PRINTED: padding every line to the widest
   // request in the store would put the hidden rows' width back into the receipt.
@@ -542,7 +664,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
 
   section(`${hidden > 0 ? `${shown.length} of ${views.length}` : String(views.length)} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
 
-  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation } of shown) {
+  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine } of shown) {
     const suffix = leaked === null
       ? ''
       : leakedLive
@@ -595,6 +717,23 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // child whose work already landed.
       if (continuation.failed !== '') note(`the continuation of this row is undecided: ${continuation.failed}`);
       if (continuation.fix !== '') fix(continuation.fix);
+      // THE STRANDED REMOTE START (F2): what its host says, and the replay
+      // that answers for this record. The replay re-sends the RECORDED request
+      // identity, so Orca answers the first call's outcome rather than
+      // creating a second worker (F-001) — `start`'s own repair for this state.
+      if (stranded !== null) {
+        if (!stranded.ok) {
+          note(`this record's worker-start on '${stranded.host}' never answered, and that host could not be asked which panes it holds`);
+        } else if (stranded.panes.length === 0) {
+          note(`this record's worker-start on '${stranded.host}' never answered, and every live pane '${stranded.host}' holds is claimed by a record here`);
+        } else {
+          const named = stranded.panes.slice(0, 5).map(terminal => `${terminal.handle} (${terminal.worktreePath ?? 'no worktree named'})`).join(', ');
+          note(`this record's worker-start on '${stranded.host}' never answered — ${stranded.panes.length} live pane(s) there no record claims: ${named}`);
+        }
+        // `start` refuses a record another repository wrote (a request-id
+        // collision), so a foreign record's replay is typed from its checkout.
+        fix(`${mine ? '' : `cd <your ${row.repo} checkout> && `}ax worker start --resume --request ${row.request}   # replays the recorded call, never a second request: its receipt names the pane`);
+      }
     }
   }
 
@@ -633,6 +772,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   }
   if (!all && withheldAttempts > 0) {
     note(`${withheldAttempts} unsettled record(s) whose pane is MORT — ax worker settle <request> writes the ending, ax worker ls --all names them`);
+  }
+  if (!all && withheldForeign > 0) {
+    note(`${withheldForeign} record(s) of other repositories whose pane is MORT are not shown — each is continued or settled from its own checkout: ax worker ls --all`);
   }
   // THE OMISSION SET, now only what it really is (#76): the hosts that could
   // NOT be asked, each with the reason it answered — a host that answered

@@ -56,7 +56,7 @@ function repo(hosts = {}, caps = {}) {
  * about (#165). A record without it names no placement at all, which is the
  * shape every test written before #165 uses.
  */
-function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets', worktree = '', delivery = '' } = {}) {
+function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widgets', worktree = '', delivery = '', runId = '' } = {}) {
   const { path } = claimRecord(dir, request);
   initRecord(path, { request, orca: 'orca', repo: named, delivery });
   for (const phase of phases) {
@@ -69,6 +69,7 @@ function writeRecord(dir, request, phases, { on = '', repo: named = 'acme/widget
         phase.name,
         ...(on === '' ? [] : ['--on', on]),
         ...(worktree === '' ? [] : ['--worktree', `path:${worktree}`, '--agent', 'omp']),
+        ...(runId === '' ? [] : ['--run', runId]),
         '--json',
       ],
     });
@@ -115,7 +116,7 @@ const taskCreated = (taskId = 'task_aaa') => ({ ok: true, result: { task: { id: 
  * reply that never claims to have read its own scope — can be pinned too. An
  * environment absent from `hosts`, or one carrying `fail`, could not answer.
  */
-function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], workers = [], ready = true, terminalFail = false, workerFail = false, hosts = {} } = {}) {
+function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], workers = [], runs = null, ready = true, terminalFail = false, workerFail = false, hosts = {} } = {}) {
   const calls = [];
   const run = args => {
     calls.push(args);
@@ -167,9 +168,15 @@ function fakeRunner({ terminals = [], omittedHostIds = [], hostIds = ['local'], 
           };
     }
     if (args[0] === 'orchestration' && args[1] === 'worker-list') {
-      return workerFail
-        ? { status: 1, stdout: '', stderr: 'boom', receipt: { unparseable: 'boom', error: 'x' } }
-        : { status: 0, stdout: '', stderr: '', receipt: { ok: true, result: { workers } } };
+      if (workerFail) return { status: 1, stdout: '', stderr: 'boom', receipt: { unparseable: 'boom', error: 'x' } };
+      // `runs` models Orca 867d38397893 (worker-list-run-scope.ts): the
+      // unscoped list is the Run BOUND to the calling terminal, and another
+      // Run's dispatches answer only under `--run`. Without it, the list is
+      // every Dispatch, as it was before that build.
+      if (runs === null) return { status: 0, stdout: '', stderr: '', receipt: { ok: true, result: { workers } } };
+      const asked = args.includes('--run') ? args[args.indexOf('--run') + 1] : '';
+      const scope = asked === '' ? { run: 'run_bound', source: 'bound' } : { run: asked, source: 'flag' };
+      return { status: 0, stdout: '', stderr: '', receipt: { ok: true, result: { workers: asked === '' ? workers : runs[asked] ?? [], scope } } };
     }
     throw new Error(`unexpected call: ${args.join(' ')}`);
   };
@@ -696,11 +703,13 @@ test('#91: a pane the first list already carries survives a host that stops answ
   assert.doesNotMatch(out, /could not be asked/, 'a host whose answer would change nothing is no omission');
 });
 
-test('#91: a record that named no pane spends no ask on its host', () => {
+test('#91: a record whose start ANSWERED with no pane spends no ask on its host', () => {
   const dir = store();
-  // A write-ahead record has no handle to classify, so the host's answer cannot
-  // change its row — and a round trip per such record is a cost with no reader.
-  writeRecord(dir, 'inflight-far', [{ name: 'worker-start' }], { on: 'gapicore' });
+  // A refused worker-start has no handle to classify and cannot have opened a
+  // pane, so the host's answer cannot change its row — and a round trip per
+  // such record is a cost with no reader. (A start that never answered at all
+  // is the other case: it may have run, and F2 below asks its host.)
+  writeRecord(dir, 'inflight-far', [{ name: 'worker-start', exit: 1, receipt: { ok: false, error: { code: 'invalid_argument', message: 'refused' } } }], { on: 'gapicore' });
   const run = fakeRunner({ terminals: [], hosts: { gapicore: { terminals: [] } } });
 
   const { lineWith, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
@@ -1308,4 +1317,83 @@ test('occupancy of a dead recorded worker names the tree, the record, and live S
   assert.doesNotMatch(out, /worker term_setup|worker term_shell|VIVANT.*term_setup|VIVANT.*term_shell/, 'auxiliaries are not attributed as workers');
   assert.match(out, /host 'gapicore' could not be asked/, 'unknown remote stays a host fact');
   assert.doesNotMatch(out, /far-unknown.*occup|occup.*far-unknown|term_far.*occup/, 'the unasked remote is not occupancy');
+});
+
+// ── F2: a dispatch on another host, as #2120's orchestrator met it ──────────
+
+test('F2: a remote worker-start that never answered names the unclaimed panes its host carries, and the replay', () => {
+  // Reported from #2120: the first dispatch ended STRANDED (a write-ahead
+  // worker-start on gapicore with no receipt), this verb printed `pane INCONNU ·
+  // no usable receipt yet` and nothing else, and ruling out a duplicate took an
+  // ssh to the VPS. The host's own list answers it: a live pane there that no
+  // record claims is the one this dispatch may have opened.
+  const dir = store();
+  const path = writeRecord(dir, '2120-work', [{ name: 'task-create', receipt: taskCreated('task_f960') }, { name: 'worker-start' }], { on: 'gapicore' });
+  // The phase as a timed-out call leaves it, measured on qual-gapicore
+  // (2026-09-28): no exit, the transport's error, an empty unparseable receipt.
+  const rec = JSON.parse(readFileSync(path, 'utf8'));
+  Object.assign(rec.attempts[0].phases[1], { exit: null, transport: 'spawnSync orca ETIMEDOUT', receipt: { unparseable: '', error: 'SyntaxError: Unexpected end of JSON input' } });
+  writeFileSync(path, JSON.stringify(rec));
+  writeRecord(dir, 'owned-far', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_o', handle: 'term_owned' }) }], { on: 'gapicore' });
+  const run = fakeRunner({
+    terminals: [],
+    omittedHostIds: ['runtime:7930a317'],
+    hosts: { gapicore: { terminals: [pane('term_owned'), pane('term_setup_ignored'), { ...pane('term_ab55'), worktreePath: '/home/harness/orca/workspaces/gapila/2120-work' }] } },
+  });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('2120-work'), /pane INCONNU .*no usable receipt yet/, 'the disposition is unchanged: nothing was established');
+  assert.match(out, /on 'gapicore' never answered.*term_ab55 .*\/home\/harness\/orca\/workspaces\/gapila\/2120-work/, `the unclaimed pane on that host is named with its worktree:\n${out}`);
+  assert.doesNotMatch(out, /never answered.*term_owned/, 'a pane another record owns is not a suspect');
+  assert.doesNotMatch(out, /never answered.*term_setup_ignored/, "a pane any record's receipt named is not a suspect either");
+  assert.match(out, /→ ax worker start --resume --request 2120-work/, 'the replay that answers it without a second request');
+  assert.equal(run.calls.filter(args => args.includes('--environment')).length, 1, 'one ask per host, shared with the rows');
+});
+
+test("F2: a live pane of another Run is compared with ITS Run's worker-list, never flagged as F-048 drift", () => {
+  // Orca 867d38397893: an unscoped worker-list is the Run bound to the calling
+  // terminal. A child of another Run was absent from it by scope, so this verb
+  // printed the F-048 failure and a worker-release over a healthy child.
+  const dir = store();
+  writeRecord(dir, 'far-live', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_fl', handle: 'term_far_live' }) }], { on: 'gapicore', runId: 'run_far' });
+  const run = fakeRunner({
+    terminals: [],
+    omittedHostIds: ['runtime:7930a317'],
+    hosts: { gapicore: { terminals: [pane('term_far_live')] } },
+    workers: [],
+    // `reclaimable`, not `retained`: a retained terminal is F-048 by this
+    // verb's own reading whatever Run lists it, and this test is about the Run.
+    runs: { run_far: [{ dispatchId: 'ctx_fl', workerState: 'ready', terminalState: 'reclaimable', agentTerminalHandle: 'term_far_live' }] },
+  });
+
+  const { out, lineWith } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo(declared) }));
+  assert.match(lineWith('far-live'), /pane VIVANT · worker-list ready\/reclaimable/, out);
+  assert.ok(run.calls.some(args => args.join(' ') === 'orchestration worker-list --run run_far --json'), 'asked of its own Run');
+  assert.doesNotMatch(out, /✗ far-live|that is F-048|worker-release --dispatch ctx_fl/, 'no drift is claimed over a child its own Run lists');
+});
+
+// ── F6c: the default view is this repository's decisions ────────────────────
+
+test("F6c: another repository's dead rows are counted, never listed or offered a verb this checkout cannot run", () => {
+  // Measured 2026-09-29 from the gapila checkout: 356 records, 14 of them
+  // gapila's; the default view listed ofmchat's gone worktrees with a
+  // continuation that could only be read from ofmchat, and its debt line
+  // offered `ax worker settle` over 26 records settle refuses from here.
+  const dir = store();
+  writeRecord(dir, '117-normalize', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_theirs', handle: 'term_theirs' }) }], { repo: 'goodluckagency/ofmchat', worktree: join(tmpdir(), 'ax-ls-gone-117-normalize') });
+  writeRecord(dir, 'theirs-attempt', [
+    { name: 'worker-start', receipt: { ok: true, result: { dispatchId: 'ctx_ta', state: 'failed', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_ta' }] } } },
+  ], { repo: 'goodluckagency/ofmchat' });
+  writeRecord(dir, 'mine-attempt', [
+    { name: 'worker-start', receipt: { ok: true, result: { dispatchId: 'ctx_ma', state: 'failed', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_ma' }] } } },
+  ]);
+  const run = () => fakeRunner({ terminals: [] });
+
+  const shown = capture(() => ls([], { runner: run(), env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+  assert.doesNotMatch(shown.out, /117-normalize/, `a dead row of another repository is not this reader's decision:\n${shown.out}`);
+  assert.match(shown.out, /1 unsettled record\(s\) whose pane is MORT — ax worker settle <request>/, 'the debt this checkout can pay');
+  assert.match(shown.out, /2 record\(s\) of other repositories whose pane is MORT are not shown.*ax worker ls --all/, 'the rest is counted, with the view that lists it');
+
+  const all = capture(() => ls(['--all'], { runner: run(), env: { ORCA_DISPATCH_STORE: dir }, cwd: repo() }));
+  assert.match(all.out, /117-normalize/, '--all still lists every record');
 });
