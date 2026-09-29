@@ -39,8 +39,8 @@
 // records can name ONE terminal: counting rows there reports two panes for one
 // and refuses a dispatch the machine had room for.
 
-import { liveInventory, worktreeOccupancy } from './pane.mjs';
-import { agentTerminal, argvValue, scanStore } from './record.mjs';
+import { hostScopes, liveInventory, worktreeOccupancy } from './pane.mjs';
+import { agentTerminal, argvValue, defaultStore, scanStore } from './record.mjs';
 
 /**
  * Every recorded agent pane of a store, keyed by handle:
@@ -330,4 +330,36 @@ export function livePanes({ store, local, scopes, repo = '' }) {
     missing: panes.missing,
     reason: panes.reason,
   };
+}
+
+/**
+ * `livePanes` over this machine's own store, asked of every host `config`
+ * declares — the FAIL-CLOSED measurement a caller deciding room reads, shared
+ * by `ax worker dispatch` (its cap and its placement) and `ax worker hosts`, so
+ * the host lines that read prints are counted exactly as the dispatch counts
+ * them.
+ *
+ * An unreadable store or an unreadable record is `{ cannot, repair }`, never a
+ * count of zero (F-028); an ENOENT store is the one real zero (`missing`).
+ * Otherwise `{ slots, scopes }`: this count, and the host reader it asked, for
+ * a caller that also names the hosts that could not be asked.
+ */
+export function liveCount({ run, env, config, local, repo = '' }) {
+  const store = defaultStore(env);
+  const scopes = hostScopes(run, () => ({ ok: true, config }));
+  const slots = livePanes({ store, local, scopes, repo });
+  if (slots.reason !== '' && !slots.missing) {
+    return {
+      cannot: `the dispatch store ${store} cannot be read, so live panes cannot be counted: ${slots.reason.slice(0, 160)}`,
+      repair: `ls -ld ${store}`,
+    };
+  }
+  if (slots.unreadable.length > 0) {
+    const first = slots.unreadable[0];
+    return {
+      cannot: `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live panes cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+      repair: `ax worker ls --store ${store}   # see every record, then repair or remove the unreadable one`,
+    };
+  }
+  return { slots, scopes };
 }

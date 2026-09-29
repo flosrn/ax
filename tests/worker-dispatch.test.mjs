@@ -26,6 +26,7 @@ import { createRunner } from '../src/orca-bin.mjs';
 // either string moved.
 import { READY_LABEL } from '../src/triage/spec.mjs';
 import { dispatch, requestIdFor, retiredKnobs, trackerRepoOf } from '../src/worker/dispatch.mjs';
+import { hosts } from '../src/worker/host-placement.mjs';
 // The listing verb, imported because #161's proposition crosses both: the
 // number `ax worker ls` prints and the number this fence refuses on are ONE
 // reader's answer, and a suite that could only see one of them is how they
@@ -1409,6 +1410,55 @@ test('a host carrying earlier placed panes has fewer slots: they are counted on 
   assert.equal(r.code, 0, r.out);
   assert.match(r.started[0], /--on gapicore /);
   assert.match(r.out, /netcup-vie[^\n]*no free slot/);
+});
+
+test('`ax worker hosts` prints the per-host lines a dispatch dry run places by, and creates nothing', () => {
+  // #271's numbers: one live worker on gapicore, 16384 MB slices, 12500 MB footprint.
+  const slice = (freeMb, maxWorkers) => ({
+    maxWorkers,
+    footprint: { memoryMb: 12500, cpuPercent: 100 },
+    memory: { maxMb: 16384, workMb: 16384 - freeMb, freeMb, hostAvailableMb: 20000 },
+  });
+  const fleet = [computeHost('gapicore', slice(12924, 4)), computeHost('netcup-vie', slice(16000, 3))];
+  const orca = { hostTerminals: { gapicore: [{ handle: 'term_gc' }], 'netcup-vie': [] } };
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  livePane(join(home, 'store'), 'gc-1', { handle: 'term_gc', on: 'gapicore' });
+  const hostLines = out => out.split('\n').filter(line => line.includes("· host '"));
+
+  const dry = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0', '--dry-run'], { home, hosts: fleet, orca });
+  assert.equal(dry.code, 0, dry.out);
+
+  const { runner, calls } = fakeOrca(orca);
+  const read = capture(() =>
+    hosts([], {
+      runner,
+      env: { HOME: home, ORCA_DISPATCH_STORE: join(home, 'store'), HARNESSOS_SOURCE: '/src/harnessos' },
+      cwd: dry.root,
+      capacity: () => ({ ok: true, capacity: { observedAt: '2026-09-26T08:00:00Z', hosts: fleet } }),
+    }),
+  );
+
+  assert.equal(read.code, 0, read.out);
+  assert.deepEqual(hostLines(read.out), hostLines(dry.out), 'one computation, two callers');
+  assert.match(read.out, /host 'gapicore' skipped: no free slot \(memory 0 /);
+  assert.match(read.out, /host 'netcup-vie': 1 free slot/);
+  assert.ok(calls.every(line => !/task-create|worker-start|worktree create|repo list/.test(line)), `a read creates nothing and proves nothing: ${calls.join(' | ')}`);
+});
+
+test('`ax worker hosts` takes no argument, and a capacity it cannot read is an inability', () => {
+  const usage = capture(() => hosts(['--on']));
+  assert.equal(usage.code, 2);
+
+  const unread = capture(() =>
+    hosts([], {
+      runner: fakeOrca().runner,
+      env: { HARNESSOS_SOURCE: '/src/harnessos' },
+      cwd: repo(),
+      capacity: () => ({ ok: false, reason: 'the capacity report could not be read (bun x): ssh: gapicore unreachable', repair: 'bun x --json' }),
+    }),
+  );
+  assert.equal(unread.code, 3);
+  assert.match(unread.out, /CANNOT ESTABLISH — the capacity report could not be read/);
 });
 
 test('the repository cap is checked before placement, so its refusal names the cap', () => {

@@ -69,17 +69,17 @@ import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { checkoutSkew, installCommand } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
-import { hostScopes, terminalInventory } from './pane.mjs';
+import { terminalInventory } from './pane.mjs';
 import { peerRun, peerSessionId } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
 import { defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
-import { livePanes } from './slots.mjs';
+import { liveCount } from './slots.mjs';
 import { reportPathFor } from './report.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
-import { capacityOf, harnessosSource, hostDeclarations, operatorMac, placeHost } from './host-placement.mjs';
+import { capacityOf, countedConfig, harnessosSource, hostDeclarations, operatorMac, placeHost } from './host-placement.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // The landed facts this dispatch's notes carry, and the SHARED reader that
@@ -744,7 +744,7 @@ export function dispatch(
     fleet = capacity({ source: source.path });
     if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
     declarations = hostDeclarations(fleet.capacity, dispatchConfig.hosts);
-    counted = { ...config, dispatch: { ...dispatchConfig, hosts: { ...dispatchConfig.hosts, ...declarations } } };
+    counted = countedConfig(config, declarations);
   }
   const room = capRoom({ run, env, config: counted, repo: trackerRepo });
   if (room.cannot) return cannot(room.cannot, room.repair);
@@ -1201,7 +1201,6 @@ function capRoom({ run, env, config, repo }) {
   if (!local.ok) {
     return { cannot: local.reason, repair: 'orca open   # the cap is counted, never assumed — it does not fail open', lines: [] };
   }
-  const store = defaultStore(env);
 
   // The retired knob is refused BEFORE any host is asked: a shell artefact
   // reading as the cap in force is not a reason to spend an ssh round trip.
@@ -1224,23 +1223,9 @@ function capRoom({ run, env, config, repo }) {
   // remote children are working, for exactly as long as the local scope omits
   // their host; counting the dispatch index would miss a pane a repair phase
   // recorded, which is the number `ls` was already printing (#161).
-  const scopes = hostScopes(run, () => ({ ok: true, config }));
-  const slots = livePanes({ store, local, scopes, repo });
-  if (slots.reason !== '' && !slots.missing) {
-    return {
-      cannot: `the dispatch store ${store} cannot be read, so live panes cannot be counted: ${slots.reason.slice(0, 160)}`,
-      repair: `ls -ld ${store}`,
-      lines: [],
-    };
-  }
-  if (slots.unreadable.length > 0) {
-    const first = slots.unreadable[0];
-    return {
-      cannot: `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live panes cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
-      repair: `ax worker ls --store ${store}   # see every record, then repair or remove the unreadable one`,
-      lines: [],
-    };
-  }
+  const counted = liveCount({ run, env, config, local, repo });
+  if (counted.cannot) return { cannot: counted.cannot, repair: counted.repair, lines: [] };
+  const { slots, scopes } = counted;
 
   const live = slots.live;
   const repoCap = repoCapOf(config);

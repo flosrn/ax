@@ -203,6 +203,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls [--all]', 'capacity and overlap; --all: MORT rows and dead attempts'],
+      ['hosts', 'free slots per compute host, as placement counts them'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 're-dispatch? 0 dead · 1 live · 2 duplicate · 3 unknown'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],

@@ -1,6 +1,6 @@
 // Which compute host a dispatch with no `--on` lands on (plan 2026-09-26-001,
-// U10). Worktree placement ON a host is ./placement.mjs; this module only
-// chooses the host.
+// U10), and how many free slots each host has. Worktree placement ON a host is
+// ./placement.mjs; this module only chooses the host.
 //
 // HARNESSOS MEASURES HEADROOM, AX COMPUTES SLOTS (KTD9). `bun scripts/capacity.ts
 // --json` in the HarnessOS checkout reports, per compute host, the harness
@@ -26,6 +26,11 @@
 // and a report that carries no slice maximum is a host whose reservation cannot
 // be computed — skipped by name, never answered from free memory (F-028).
 //
+// `ax worker hosts` prints the same per-host lines without choosing a host:
+// `hostSlots` is the one computation, and dispatch and that read both call it,
+// over the same live count (`liveCount`, ./slots.mjs). It stops before the
+// costly grounds, so it never spends an Orca repository lookup or an ssh proof.
+//
 // THE MAC IS NEVER A FALLBACK (R10). Placement runs only on the operator Mac —
 // detected as HarnessOS's own `localHost` detects it (`scripts/infra.ts`): the
 // darwin machine is the operator — and when no host can take the worker the
@@ -43,6 +48,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { run as execRun } from '../exec.mjs';
+import { bad, fix, note, section } from '../log.mjs';
+import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
+import { declarationOf } from './hosts.mjs';
+import { terminalInventory } from './pane.mjs';
+import { liveCount } from './slots.mjs';
 
 /** The declaration fields a capacity entry carries for `proveHost` (./hosts.mjs). */
 const DECLARED = ['ssh', 'cgroup', 'diskPath', 'diskFloorGb', 'memFreeFloorMb'];
@@ -117,6 +127,16 @@ export function hostDeclarations(capacity, overrides = {}) {
   }
   return declarations;
 }
+
+/**
+ * The config the live panes are counted with: `dispatch.hosts` widened by the
+ * capacity report's declarations, so a pane placed earlier on a host this
+ * repository never declared is asked of that host instead of left unaskable.
+ */
+export const countedConfig = (config, declarations) => ({
+  ...config,
+  dispatch: { ...(config.dispatch ?? {}), hosts: { ...(config.dispatch?.hosts ?? {}), ...declarations } },
+});
 
 /** Why the report itself passes over a host, or '' when it does not. */
 function reportSkip(entry) {
@@ -224,4 +244,49 @@ export function placeHost({ capacity, declarations, liveOn, repoFor, prove }) {
     return { ok: true, host, declaration, repoId: repo.id, grounds, lines, skipped };
   }
   return { ok: false, lines, skipped };
+}
+
+/**
+ * `ax worker hosts` — each compute host's free slots, as a dispatch with no
+ * `--on` would count them, without dispatching. Read-only: it reads the
+ * capacity report and the live panes, and asks no host for a proof.
+ *
+ * Exit 0 once every host is answered for (a host with no slot is an answer),
+ * 2 on an argument, 3 when the report or the live count cannot be read.
+ */
+export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.env, cwd = process.cwd(), capacity = capacityOf } = {}) {
+  if (argv.length > 0) {
+    process.stderr.write(`ax worker hosts: unexpected argument "${argv[0]}" (it takes none)\n`);
+    return 2;
+  }
+  const cannot = (message, repair) => {
+    bad(`CANNOT ESTABLISH — ${message}`);
+    fix(repair);
+    return 3;
+  };
+
+  const declared = declarationOf(cwd)();
+  const config = declared.ok ? declared.config : {};
+  const source = harnessosSource({ env, config });
+  if (!source.ok) return cannot(source.reason, source.repair);
+  const fleet = capacity({ source: source.path });
+  if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
+
+  const bin = runner ? 'injected' : resolve();
+  if (!bin) return cannot('no Orca CLI on this machine, so the live workers on each host cannot be counted', 'orca open   # then re-run: ax worker hosts');
+  const run = runner ?? createRunner({ bin });
+  const ready = runtimeReady(run);
+  if (!ready.ready) return cannot(ready.reason, 'orca open   # then re-run: ax worker hosts');
+  const local = terminalInventory(run);
+  if (!local.ok) return cannot(local.reason, 'orca open   # the live count is read, never assumed');
+
+  const counted = countedConfig(config, hostDeclarations(fleet.capacity, config.dispatch?.hosts));
+  const live = liveCount({ run, env, config: counted, local });
+  if (live.cannot) return cannot(live.cannot, live.repair);
+
+  section(`${fleet.capacity.hosts.length} compute host(s)${fleet.capacity.observedAt ? `, capacity observed ${fleet.capacity.observedAt}` : ''}`);
+  const { lines } = hostSlots({ capacity: fleet.capacity, liveOn: host => live.slots.hosts.get(host) ?? { live: 0, unmeasured: 0 } });
+  for (const line of lines) note(line);
+  if (!declared.ok) note(`read without this checkout's dispatch.hosts overrides: ${declared.reason}`);
+  return 0;
 }
