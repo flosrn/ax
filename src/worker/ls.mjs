@@ -488,7 +488,6 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // join is by the task the record's own task-create named, in the Run its own
   // phases name, and only a task with exactly ONE dispatch there is joined:
   // two are a choice this verb does not make (F-028).
-  let fromShow = 0;
   if (workers.ok) {
     for (const { file, row } of rows) {
       if (row.handle !== null || row.dispatchId !== null || row.unsettled !== null || typeof row.taskId !== 'string') continue;
@@ -500,9 +499,8 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
         ? { ok: true, handle: worker.agentTerminalHandle, host: row.pending, from: 'worker-list' }
         : { ...createdPane(run, worker.dispatchId), from: 'worker-show' };
       if (!bound.ok) continue;
-      Object.assign(row, { handle: bound.handle, dispatchId: worker.dispatchId, host: bound.host, pending: undefined, why: '', origin: `${bound.handle} from ${bound.from} of ${worker.dispatchId}` });
+      Object.assign(row, { handle: bound.handle, dispatchId: worker.dispatchId, host: bound.host, pending: undefined, why: '', origin: `from ${bound.from} of ${worker.dispatchId}` });
       row.claims.push(bound.handle);
-      fromShow += 1;
     }
   }
   const claimed = new Set(rows.flatMap(({ row }) => row.claims));

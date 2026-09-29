@@ -1064,6 +1064,24 @@ test('F2: a new-top-level record whose receipt names no tree says nothing record
   assert.doesNotMatch(r.out, /re-run this verb/, 'a read whose answer cannot change is not offered as the repair');
 });
 
+test('F2: a tree its own host no longer lists is gone — silent, as a removed local tree is, never a re-run loop', () => {
+  // Live from gapila after the fix above: 2120-work's tree was removed by hand,
+  // and every such row read "'gapicore' lists no worktree at …  run it, then
+  // re-run this verb". The host answered for its own worktrees; re-asking it
+  // cannot bring the tree back.
+  const dir = store();
+  topLevel(dir, '2120-gone', { dispatchId: 'ctx_gone', handle: 'term_gone', effects: [{ kind: 'worktree', action: 'created_top_level', id: 'repo-1::/srv/orca/2120-gone' }] });
+  const r = verdict(
+    { workers: [dispatch('ctx_gone', 'term_gone')], terminals: [], hosts: { gapicore: { terminals: [] } }, worktrees: [{ path: '/srv/orca/other', repoId: 'repo-1', branch: 'refs/heads/other' }] },
+    [TASK],
+    { ORCA_DISPATCH_STORE: dir },
+    { cwd: repo({ gapicore: { ssh: 'gapicore' } }), exec: fakeExec().exec },
+  );
+
+  assert.doesNotMatch(r.out, /lists no worktree|undecided|re-run this verb/, r.out);
+  assert.equal(r.code, 0);
+});
+
 // ── #205: a record that could not have created a task is not an inability ────
 // Measured on this host: two of 288 records carry no task id because their one
 // `task-create` was FENCED — exit 1, `ok: false`, `consumer_fenced`, no result,

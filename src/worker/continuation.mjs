@@ -221,7 +221,12 @@ function remoteBranch(host, selector, repoArg, run, recorded) {
   // Compared as strings on `/`: nothing here resolves a symlink or stats a
   // directory on another machine (../worker/placement.mjs).
   const mine = rows.filter(row => String(row?.path ?? '').replace(/\/+$/, '') === path.replace(/\/+$/, ''));
-  if (mine.length === 0) return unread(`'${host}' lists no worktree at ${path}`);
+  // A TREE ITS OWN HOST NO LONGER LISTS IS GONE, the remote twin of a local
+  // tree already removed (`localBranch`): the host answered for its worktrees,
+  // so there is nothing to ask and nothing to continue with. Printed as an
+  // unread question it asked the operator to re-run a read whose answer could
+  // not change (measured on 2120-work, whose tree was removed by hand).
+  if (mine.length === 0) return { branch: '' };
   if (mine.length > 1) return unread(`'${host}' lists ${mine.length} worktrees at ${path}, so nothing here can say which branch this pane worked on`);
   const branch = String(mine[0].branch ?? '').replace(/^refs\/heads\//, '').trim();
   if (branch === '' || /\s/.test(branch)) return unread(`the row '${host}' gave for ${path} carries no branch`);
