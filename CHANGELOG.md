@@ -8,6 +8,33 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.28.0](https://github.com/flosrn/ax/compare/v0.27.0...v0.28.0) (2026-09-29)
+
+
+### Features
+
+* **worker:** ax worker hosts prints each compute host's free slots ([ec462a4](https://github.com/flosrn/ax/commit/ec462a40e9d000a4c833a771f310f1f5290aef76))
+* **worker:** the stall watcher announces a worker Orca reports parked on a prompt ([c94df73](https://github.com/flosrn/ax/commit/c94df737835eaeda795676bf813aae282e7daf51))
+
+
+### Bug Fixes
+
+* **dispatch:** say why a remote child's global git identity is not the pin ([9bc091c](https://github.com/flosrn/ax/commit/9bc091c9b1156cc747fb53db853dd03298568f73))
+* **peer:** name the stall watcher's alerts for the watcher, not this session ([dc4e5f0](https://github.com/flosrn/ax/commit/dc4e5f0b8eaae6e2093a23f2da81ecc405573d7d))
+* **peer:** read worker-show's camelCase handle and worktree in resolveChildRoute ([6f7ad71](https://github.com/flosrn/ax/commit/6f7ad71245cfa4b80524f201f40f97bd1da1b035)), closes [#269](https://github.com/flosrn/ax/issues/269)
+* **placement:** a live worker reserves its footprint in the slice ([14fa45e](https://github.com/flosrn/ax/commit/14fa45e6feb287dd46fd8bf5ec709f57b43177d9)), closes [#271](https://github.com/flosrn/ax/issues/271)
+* **pr-gate:** pin every hand merge a refusal prints to the validated head ([9c54a69](https://github.com/flosrn/ax/commit/9c54a691b756b10ba534b752c7d5fb801a738cf6))
+* **worker/gate:** ask both Run-scoped lists about the task's own Run, and read unbound panes ([5bd17e5](https://github.com/flosrn/ax/commit/5bd17e580d79f0d8ebdcd08d3b9682b4910b98dc))
+* **worker:** `ax worker stall` detaches the watcher and returns ([fb9672b](https://github.com/flosrn/ax/commit/fb9672b5623f44a6f32a15671c55468b93a2a9c9)), closes [#270](https://github.com/flosrn/ax/issues/270)
+* **worker:** a remote continuation reads the tree its start's receipt names ([4324453](https://github.com/flosrn/ax/commit/4324453d12bca690c982eb665a761974a4fc7b76))
+* **worker:** a stall pidfile whose holder is proven dead is taken over ([f17a9e8](https://github.com/flosrn/ax/commit/f17a9e8c9216dc8b14e9784ec1e67e5ff31131c6)), closes [#270](https://github.com/flosrn/ax/issues/270)
+* **worker:** a tree its own host no longer lists ends the continuation, never a re-run loop ([3131ffc](https://github.com/flosrn/ax/commit/3131ffc57cc2ea682c0128a7bcd19719c752ac3b))
+* **worker:** ls asks a stranded remote start's host, reads each record's own Run, and scopes dead rows to this repository ([ce6a611](https://github.com/flosrn/ax/commit/ce6a6119db4c35583083d3de9987276f1ee060ef))
+* **worker:** ls reads the pane a start created the way gate does — one createdPane reader ([21b9707](https://github.com/flosrn/ax/commit/21b97070b22d59ba935e2ff52833397f385d998d))
+* **worker:** release establishes a remote pane on its own host and its own Run ([8eb2305](https://github.com/flosrn/ax/commit/8eb2305b37bda210a812c0cbd05401b7a8251be1))
+* **worker:** tail reads a bare remote handle on the host its record names ([e7023a8](https://github.com/flosrn/ax/commit/e7023a8eb5343cefdf663989b3f717ca7b843377))
+* **worker:** tell a remote child where its Report goes ([52822ca](https://github.com/flosrn/ax/commit/52822ca37f7e6c2d8033d6a7f9d5e055e74f52c1))
+
 ## [0.27.0](https://github.com/flosrn/ax/compare/v0.26.5...v0.27.0) (2026-09-27)
 
 
