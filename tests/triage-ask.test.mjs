@@ -1,10 +1,12 @@
 // `ax triage ask` — the child's escalation, and every refusal that keeps the
 // questions on the wire identical to the `Q<n>:` lines on record.
 //
-// The transport shapes are the measured ones (shipped runtime, 2026-08-22):
-// `ask --json` answers a BARE object — `answer`, `messageId`, `timedOut`,
-// `cancelled`, `connectionLost`, `timeoutMs` — and errors arrive as the usual
-// `{ok:false, error:{code}}` envelope. Every fake below speaks exactly that.
+// The transport shapes are the measured ones. Up to Orca 06a607a1d7
+// (2026-09-06) `ask --json` answered a BARE object — `answer`, `messageId`,
+// `timedOut`, `cancelled`, `connectionLost`, `timeoutMs`; since then it prints
+// the same fields inside the `{ok:true, result:{…}}` envelope every sibling verb
+// prints (#284). Errors arrive as the `{ok:false, error:{code}}` envelope either
+// way. The fakes below speak both success shapes.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -692,6 +694,35 @@ test('a resumed ask that times out again stays PENDING under the same id', () =>
 
   assert.equal(r.code, 4);
   assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'pending');
+});
+
+// #284, measured from gapila on 2026-09-29 (triage #2145 and #2141): the
+// running Orca prints `{ok:true, result:{answer, messageId, …}}`, ax read the
+// fields at the top level, and an ANSWERED question exited 3 as "unrecognized
+// receipt" with its record left `asking`.
+const enveloped = result => ({ ok: true, result });
+
+test('#284: an answered ask in the {ok, result} envelope prints the ruling and settles the record', () => {
+  const root = repo();
+  const store = join(root, 'store');
+  recordWithAsk(store, 'triage-acme-widgets-7', { state: 'pending', messageId: 'msg_q9', at: '2026-08-27T02:00:00Z' });
+  const orca = fakeOrca({ bare: enveloped({ ...ANSWERED, messageId: 'msg_q9', threadId: 'msg_q9', answerMessageId: 'msg_a9' }) });
+  const r = run(['--resume', 'msg_q9'], { root, orca });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /A1: bug\./);
+  assert.equal(askOf(store, 'triage-acme-widgets-7').state, 'answered');
+});
+
+test('#284: a timed-out ask in the envelope is PENDING, exit 4, resuming the same id', () => {
+  const root = repo();
+  record(join(root, 'store'), 'triage-acme-widgets-7');
+  draft(root, 'triage-acme-widgets-7', 'Q1: really?\n');
+  const orca = fakeOrca({ bare: enveloped({ answer: null, messageId: 'msg_q9', threadId: 'msg_q9', timedOut: true, cancelled: false, connectionLost: false, timeoutMs: 5000 }), status: 1 });
+  const r = run(['--issue', '7', '--timeout-ms', '5000'], { root, orca });
+
+  assert.equal(r.code, 4, r.out);
+  assert.match(r.out, /ax triage ask --resume msg_q9 --timeout-ms 5000/);
 });
 
 test('two records claiming one message id are NOT guessed between', () => {

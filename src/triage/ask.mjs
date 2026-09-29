@@ -8,14 +8,15 @@
 // records, and then the answer closes a question that is not on file. Here the
 // two cannot diverge, because there is only one source.
 //
-// The transport is Orca's, measured from the shipped runtime on 2026-08-22
-// (app.asar, orchestration.ask): the call BLOCKS until answered; `--json` prints
-// a BARE object (no ok/result envelope) whose fields are `answer`, `messageId`,
-// `threadId`, `timedOut`, `cancelled`, `connectionLost`, `timeoutMs`; a timeout
-// leaves the question PENDING under `messageId`, and `--resume <messageId>` goes
-// back to waiting on that same question. Errors (`dispatch_inactive`,
-// `question_not_found`, …) come as the usual envelope. From an active Dispatch
-// the question defaults to its owning Run mailbox, so no addressing is needed.
+// The transport is Orca's. The call BLOCKS until answered; `--json` prints the
+// outcome — `answer`, `messageId`, `threadId`, `timedOut`, `cancelled`,
+// `connectionLost`, `timeoutMs` — inside the `{ok:true, result:{…}}` envelope
+// since Orca 06a607a1d7 (2026-09-06), and as a BARE object before it (measured
+// 2026-08-22); both are read (#284). A timeout leaves the question PENDING under
+// `messageId`, and `--resume <messageId>` goes back to waiting on that same
+// question. Errors (`dispatch_inactive`, `question_not_found`, …) come as the
+// `{ok:false}` envelope. From an active Dispatch the question defaults to its
+// owning Run mailbox, so no addressing is needed.
 //
 // Exit codes follow the house grammar (ADR 0003, worker/start.mjs):
 //   0  answered — the ruling is printed, and the draft is the next edit
@@ -382,21 +383,31 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     }
     return cannot(`orca refused the ask (${code || 'no code'}): ${detail}`);
   }
+  // THE SUCCESS SHAPE, BOTH GENERATIONS (#284). Up to Orca 06a607a1d7
+  // (2026-09-06) `ask --json` printed the outcome as a BARE object; since then it
+  // prints it inside `{ok:true, result:{…}}` like every sibling verb
+  // (question-handler.ts, "ask used to print a bare object"). Reading the fields
+  // at the top level made every successful ask on the new runtime an
+  // "unrecognized receipt" — measured 2026-09-29 on gapila #2145 and #2141,
+  // where an ANSWERED question exited 3 and its record stayed `asking`. The
+  // envelope is unwrapped only when it says ok; the bare shape still reads as
+  // itself, so a machine on an older Orca keeps working.
+  const outcome = receipt.ok === true && receipt.result !== null && typeof receipt.result === 'object' ? receipt.result : receipt;
   // An id is the ONLY thing that makes a surviving question recoverable, so a
   // receipt without one is an unknown outcome and not a pending question. Both
   // halves matter: settling `pending` with a null id would block every later ask
   // on a question nothing can resume, and the repair line below printed
   // `--resume undefined` when the runtime answered without one.
-  const minted = typeof receipt.messageId === 'string' && receipt.messageId !== '' ? receipt.messageId : '';
-  if ((receipt.timedOut === true || receipt.cancelled === true) && minted === '') {
+  const minted = typeof outcome.messageId === 'string' && outcome.messageId !== '' ? outcome.messageId : '';
+  if ((outcome.timedOut === true || outcome.cancelled === true) && minted === '') {
     return cannot(
-      `the wait ended (${receipt.timedOut === true ? 'timed out' : 'cancelled'}) and the receipt named NO message id — a question may be open and nothing here can resume it; this pass stays recorded as issued-outcome-unknown`,
+      `the wait ended (${outcome.timedOut === true ? 'timed out' : 'cancelled'}) and the receipt named NO message id — a question may be open and nothing here can resume it; this pass stays recorded as issued-outcome-unknown`,
       'ax triage status   # the mailbox is the authority on whether a question landed, and names the id if one did',
     );
   }
-  if (receipt.timedOut === true) {
+  if (outcome.timedOut === true) {
     settle('pending', { messageId: minted });
-    bad(`no answer within ${receipt.timeoutMs ?? timeout}ms — the question is PENDING, not dead`);
+    bad(`no answer within ${outcome.timeoutMs ?? timeout}ms — the question is PENDING, not dead`);
     note(redactSecrets(`message ${minted} stays open on the parent's mailbox; do not report, do not end your turn, do not decide it yourself`));
     // The global command delegates to the exact package version this repo
     // pinned. A parked child copies this repair verbatim, so it must use the
@@ -404,19 +415,19 @@ export function ask(argv = [], { resolve = resolveOrca, runner, exec = defaultEx
     fix(redactSecrets(`ax triage ask --resume ${minted} --timeout-ms ${timeout}   # goes back to waiting on the SAME question`));
     return 4;
   }
-  if (receipt.cancelled === true) {
+  if (outcome.cancelled === true) {
     // A cut wait leaves a question that MAY exist under this id — so the
     // lifecycle stays `pending` rather than closing, and the id is on record
     // for the resume the repair names.
     settle('pending', { messageId: minted });
     return cannot(
-      `the wait was cut (${receipt.connectionLost === true ? 'connection lost' : 'cancelled'}) — question ${minted} may still be pending`,
+      `the wait was cut (${outcome.connectionLost === true ? 'connection lost' : 'cancelled'}) — question ${minted} may still be pending`,
       `ax triage ask --resume ${minted}   # nothing was lost; go back to waiting`,
     );
   }
-  if (typeof receipt.answer === 'string') {
-    settle('answered', { messageId: receipt.messageId ?? null });
-    raw(redactSecrets(receipt.answer));
+  if (typeof outcome.answer === 'string') {
+    settle('answered', { messageId: outcome.messageId ?? null });
+    raw(redactSecrets(outcome.answer));
     note('revise the draft with what this decides — drop the Q<n>: lines the rulings close — and only then report');
     return 0;
   }
