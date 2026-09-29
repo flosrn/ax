@@ -767,11 +767,10 @@ test('a dispatch route is DERIVED, and its own payload is not consulted', async 
       attributed: true,
       kind: 'dispatch',
     }),
-    deriveRoute: () => ({
-      run: `run:${'d'.repeat(20)}`,
-      peer: 'child:probe-mail',
-      environment: 'gapicore',
-    }),
+    // The id comes from the ADDRESS Orca minted (`dispatch:<id>`), the one thing
+    // about this sender the runtime and not the payload decided.
+    deriveRoute: (id) =>
+      id === 'ctx_mail' ? { run: `run:${'d'.repeat(20)}`, peer: 'child:probe-mail', environment: 'gapicore' } : null,
     recordRoute: (id, route) => routes.push({ id, route }),
     spawn: () => {
       attempt += 1;
@@ -785,6 +784,7 @@ test('a dispatch route is DERIVED, and its own payload is not consulted', async 
               messages: [
                 {
                   id: 'm1',
+                  from_handle: 'dispatch:ctx_mail',
                   type: 'worker_done',
                   payload: JSON.stringify({ replyTo: `run:${'a'.repeat(20)}` }),
                 },
@@ -1219,6 +1219,32 @@ test('a stall-watch or card status wakes the session, because nothing else will 
   }
 });
 
+/** A watcher alert exactly as `src/worker/stall.mjs` sends it, under this session's own handle. */
+function watcherAlert(id: string, alert: string, subject: string, body = 'x') {
+  return {
+    id,
+    type: 'status',
+    subject,
+    body,
+    from_handle: 'term_self',
+    sender_attribution: 'pane',
+    payload: JSON.stringify({ watch: { alert, request: '149-work', dispatchId: 'ctx_1' } }),
+  };
+}
+
+async function withSelfHandle<T>(run: () => Promise<T>): Promise<T> {
+  const previous = process.env.ORCA_TERMINAL_HANDLE;
+  process.env.ORCA_TERMINAL_HANDLE = 'term_self';
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.ORCA_TERMINAL_HANDLE;
+    else process.env.ORCA_TERMINAL_HANDLE = previous;
+  }
+}
+
+const DERIVED_CHILD = { run: `run:${'d'.repeat(12)}`, peer: 'child:149-work', environment: 'netcup-vie' };
+
 /**
  * THE ALERT ARRIVES UNDER THIS SESSION'S OWN HANDLE, AND MUST STILL BE HEARD.
  *
@@ -1241,53 +1267,115 @@ test('a stall-watch or card status wakes the session, because nothing else will 
  * own words still dies here, which is the noise the fence was built for.
  */
 test('a watcher alert under this session own handle is heard; an echo of its own words still is not', async () => {
-  const previous = process.env.ORCA_TERMINAL_HANDLE;
-  process.env.ORCA_TERMINAL_HANDLE = 'term_self';
-  try {
-    const alert = await deliverPane(
+  await withSelfHandle(async () => {
+    const asked: string[] = [];
+    const alert = await deliverWithRealIdentity(
+      watcherAlert('m1', 'gone', "stall-watch: dispatched worker '149-work' is GONE without reporting"),
+      // A NORMALLY REGISTERED session, which is what makes the route assertion
+      // mean anything: our own handle publishes a Run, so the pane fallback WOULD
+      // resolve one — and the reply would land back here and die on the fence,
+      // with `peer_reply` reporting success. A GONE child has no pane to answer
+      // from either, so its dispatch route is not even asked for.
       {
-        id: 'm1',
-        type: 'status',
-        subject: "stall-watch: dispatched worker '149-work' is GONE without reporting",
-        body: 'Dispatch ctx_1 for request 149-work has NO PANE LEFT.',
-        from_handle: 'term_self',
+        paneRoute: () => CHILD_RUN,
+        deriveRoute: (id) => {
+          asked.push(id);
+          return DERIVED_CHILD;
+        },
       },
-      // A NORMALLY REGISTERED session, which is what makes the second half of
-      // this assertion mean anything: our own handle publishes a Run, so the
-      // pane fallback WOULD resolve one and record it. The watcher has exited by
-      // then and the reply would land back here and die on the fence, with
-      // `peer_reply` reporting success — so the route must never be taken.
-      { paneRoute: () => CHILD_RUN },
     );
     expect(alert.sent).toHaveLength(1);
     expect(alert.sentOptions[0]).toEqual({ triggerTurn: true });
     expect(alert.notes.join('\n')).toContain('stall watcher alert under our own handle');
     expect(alert.routes).toEqual([]);
+    expect(asked).toEqual([]);
     expect(alert.answerable).toEqual([false]);
     expect(String(alert.sent[0]?.content ?? '')).toContain('[NO REPLY ROUTE]');
 
-    const card = await deliverPane({
-      id: 'm2',
-      type: 'status',
-      subject: "card: '149-work' published a checkpoint",
-      body: 'in-review\t1/4 · DECISION: portails',
-      from_handle: 'term_self',
-    });
-    expect(card.sent).toHaveLength(1);
-
-    const echo = await deliverPane({
+    const echo = await deliverWithRealIdentity({
       id: 'm3',
       type: 'worker_done',
       subject: 'peer:149-work',
       body: 'my own report, back down the relay',
       from_handle: 'term_self',
+      sender_attribution: 'pane',
     });
     expect(echo.sent).toEqual([]);
     expect(echo.notes.join('\n')).toContain('dropped a message this session sent itself');
-  } finally {
-    if (previous === undefined) delete process.env.ORCA_TERMINAL_HANDLE;
-    else process.env.ORCA_TERMINAL_HANDLE = previous;
-  }
+  });
+});
+
+/**
+ * A CARD IS A LIVE CHILD ASKING, AND IT IS ANSWERED THERE.
+ *
+ * Measured 2026-09-29 on gapila #2122: a remote worker published `DECISION:`
+ * asking the orchestrator to rule on three points; the watcher relayed it and
+ * the delivery said `Do NOT try peer_reply`, blaming a failed Dispatch that had
+ * not failed. The watcher is the wrong destination (it exited) and so is the Run
+ * the alert arrived on (ours). The child is not: the payload names its dispatch,
+ * and the route is DERIVED from this session's own write-ahead record — the same
+ * join a `child:<slug>` report uses — never read from the message.
+ */
+test("a watcher's card is answered at the child it names, never at this session's own Run", async () => {
+  await withSelfHandle(async () => {
+    const asked: string[] = [];
+    const h = await deliverWithRealIdentity(
+      watcherAlert('m2', 'card', "card: '149-work' published a checkpoint", 'in-review\tDECISION: portails'),
+      {
+        paneRoute: () => CHILD_RUN,
+        deriveRoute: (id) => {
+          asked.push(id);
+          return id === 'ctx_1' ? DERIVED_CHILD : null;
+        },
+      },
+    );
+    expect(asked).toEqual(['ctx_1']);
+    expect(h.routes).toEqual([{ id: 'm2', route: { ...DERIVED_CHILD, threadId: 'm2' } }]);
+    expect(h.answerable).toEqual([true]);
+    expect(String(h.sent[0]?.content ?? '')).not.toContain('[NO REPLY ROUTE]');
+  });
+});
+
+/**
+ * THE WATCHER IS WHAT ORCA WITNESSED, NEVER WHAT A HANDLE CLAIMS.
+ *
+ * `from_handle` is a string any process can write with `--from term_<ours>`; Orca
+ * then publishes `sender_attribution: 'unattributed'`. The same subject and card
+ * payload from such a sender must earn nothing — with a derived route it would
+ * aim this session's answer into one of its own children's Runs.
+ */
+test('a card claiming our handle without Orca witnessing it earns no route to any child', async () => {
+  await withSelfHandle(async () => {
+    const asked: string[] = [];
+    const h = await deliverWithRealIdentity(
+      { ...watcherAlert('m4', 'card', "card: '149-work' published a checkpoint"), sender_attribution: 'unattributed' },
+      {
+        paneRoute: () => CHILD_RUN,
+        deriveRoute: (id) => {
+          asked.push(id);
+          return DERIVED_CHILD;
+        },
+      },
+    );
+    expect(asked).toEqual([]);
+    expect(h.routes).toEqual([]);
+  });
+});
+
+test('a card whose child cannot be resolved says the watcher relayed it, not that a Dispatch failed', async () => {
+  await withSelfHandle(async () => {
+    const h = await deliverWithRealIdentity(
+      watcherAlert('m2', 'card', "card: '149-work' published a checkpoint"),
+      { paneRoute: () => CHILD_RUN, deriveRoute: () => null },
+    );
+    expect(h.routes).toEqual([]);
+    expect(h.answerable).toEqual([false]);
+    const content = String(h.sent[0]?.content ?? '');
+    expect(content).toContain('[NO REPLY ROUTE]');
+    expect(content).toContain('stall watcher');
+    expect(content).toContain('child:149-work');
+    expect(content).not.toContain('settled `failed`');
+  });
 });
 
 /**

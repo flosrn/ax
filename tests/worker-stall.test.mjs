@@ -869,6 +869,36 @@ test('every alert is issued in the WAKE delivery form, with its words unchanged'
   assert.match(card[0][card[0].indexOf('--subject') + 1], /published a checkpoint/);
 });
 
+// The receiver routes an answer to the CHILD a card is about, never back to the
+// watcher that relayed it (it has exited) nor to the orchestrator's own Run it
+// arrived under. It can only do that from a dispatch id it looks up in its own
+// write-ahead store, so each alert names the dispatch and the alert kind in its
+// payload; the subject stays the readable half.
+test('every alert names its kind and its dispatch in the payload', () => {
+  const payloadOf = args => JSON.parse(args[args.indexOf('--payload') + 1]);
+  const silence = sends(
+    invoke({ runner: fakeRunner({ cursors: [7, 7, 7, 7] }), env: { ORCA_STALL_AFTER: '2', ORCA_STALL_LIFETIME: '20' } }).calls,
+  );
+  assert.deepEqual(payloadOf(silence[0]), { watch: { alert: 'silent', request: 'req-watch', dispatchId: 'ctx_t1' } });
+
+  const gone = sends(
+    invoke({
+      runner: fakeRunner({ cursors: [null], worktrees: [''] }),
+      recordOptions: { on: '' },
+      env: { ORCA_STALL_AFTER: '30', ORCA_STALL_LIFETIME: '60' },
+    }).calls,
+  );
+  assert.deepEqual(payloadOf(gone[0]), { watch: { alert: 'gone', request: 'req-watch', dispatchId: 'ctx_t1' } });
+
+  const card = sends(
+    invoke({
+      runner: fakeRunner({ cursors: [1, 2, 3, 4, 5], cards: ['in-progress\t1/4 · Work · task', 'in-review\t1/4 · DECISION: portails'] }),
+      env: { ORCA_STALL_LIFETIME: '3' },
+    }).calls,
+  );
+  assert.deepEqual(payloadOf(card[0]), { watch: { alert: 'card', request: 'req-watch', dispatchId: 'ctx_t1' } });
+});
+
 test('a wake that fails to deliver changes nothing but the log', () => {
   // ADR 0025 fail-open: the watcher mutates nothing and its verdict is not the
   // notification's. The retry must not quietly downgrade to the non-waking form

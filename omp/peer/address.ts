@@ -8,9 +8,9 @@
  *      address "the 1657 spike". `terminal list --json` answers
  *      `name: null, agent: null, model: null` for every pane, so the readable
  *      name has to be derived and the model has to be published.
- *   2. ATTRIBUTION. Orca injects a pending message into a running OMP session
- *      as `attribution: "user"` — byte-identical to something the operator
- *      typed. `../orca-peer.ts` wraps every delivery for exactly that reason.
+ *   2. ATTRIBUTION. Orca's own delivery into an OMP session is `role: "user"` —
+ *      once the peer's words, now a content-free pointer (see `./index.ts`) —
+ *      so the receiver wraps every delivery as `role: "custom"` instead.
  *
  * The naming rule that decides an address lives HERE alone; every reader joins
  * against it rather than restating it, so no second copy can disagree about

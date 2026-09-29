@@ -288,12 +288,26 @@ const refusalLine = (alert, out) =>
 // cannot demote the alert silently.
 //
 // The words of each alert are unchanged, and so are its subjects: `stall-watch:`
-// and `card:` are read on the far side by `WATCHER_ALERT` in
-// `omp/peer/receive.ts`, which is also what exempts an alert arriving under the
-// orchestrator's OWN handle from that loop's self-send drop — this process
-// inherits the dispatching pane's environment and names no `--from`, so Orca
-// resolves its sender to that pane (`./capability.mjs`).
+// and `card:` are read on the far side by `WATCHER_SUBJECT` in
+// `omp/peer/attribution.ts`, which is also what exempts an alert arriving under
+// the orchestrator's OWN handle from the receive loop's self-send drop — this
+// process inherits the dispatching pane's environment and names no `--from`, so
+// Orca resolves its sender to that pane (`./capability.mjs`).
+//
+// The PAYLOAD is the machine half: `{ watch: { alert, request, dispatchId } }`.
+// The receiver looks the dispatch id up in its OWN write-ahead store to route an
+// answer to the child a card is about — never to this process, which has exited
+// by the time anyone reads the alert, and never to the Run it arrived on.
 const WAKE_TYPE = 'status';
+
+function wake(run, fields, request, alert, subject, body) {
+  return run([
+    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
+    '--subject', redactSecrets(subject), '--body', redactSecrets(body),
+    '--payload', JSON.stringify({ watch: { alert, request, dispatchId: fields.dispatchId } }),
+    '--json',
+  ]);
+}
 
 function alertStall(run, fields, request, silentSeconds, status, signal) {
   const terminalRepair = ['orca terminal read', '--terminal', fields.handle];
@@ -317,11 +331,7 @@ function alertStall(run, fields, request, silentSeconds, status, signal) {
     `State: orca orchestration worker-show --dispatch ${fields.dispatchId} --json`,
     `Re-arm: ax worker stall --request ${request}`,
   ].join('\n');
-  return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
-    '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' has gone silent`),
-    '--body', redactSecrets(body), '--json',
-  ]);
+  return wake(run, fields, request, 'silent', `stall-watch: dispatched worker '${request}' has gone silent`, body);
 }
 
 /**
@@ -345,11 +355,7 @@ function alertPrompt(run, fields, request, wait, status) {
     `Inspect: ${inspect.join(' ')}`,
     `State: orca orchestration worker-show --dispatch ${fields.dispatchId} --json`,
   ].join('\n');
-  return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
-    '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' is waiting on a prompt`),
-    '--body', redactSecrets(body), '--json',
-  ]);
+  return wake(run, fields, request, 'prompt', `stall-watch: dispatched worker '${request}' is waiting on a prompt`, body);
 }
 
 /**
@@ -375,11 +381,7 @@ function alertGone(run, fields, request, status) {
     `Transcript: ax worker transcript ${request}`,
     `State: orca orchestration worker-show --dispatch ${fields.dispatchId} --json`,
   ].join('\n');
-  return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
-    '--subject', redactSecrets(`stall-watch: dispatched worker '${request}' is GONE without reporting`),
-    '--body', redactSecrets(body), '--json',
-  ]);
+  return wake(run, fields, request, 'gone', `stall-watch: dispatched worker '${request}' is GONE without reporting`, body);
 }
 
 function alertCard(run, fields, request, card, worktreePath) {
@@ -392,10 +394,7 @@ function alertCard(run, fields, request, card, worktreePath) {
     `Remote worker '${request}' published a deliberate worktree checkpoint at ${worktreePath}.`,
     `Inspect: ${repair.join(' ')}`,
   ].join('\n');
-  return run([
-    'orchestration', 'send', '--to', `run:${fields.run}`, '--type', WAKE_TYPE,
-    '--subject', redactSecrets(`card: '${request}' published a checkpoint`), '--body', redactSecrets(body), '--json',
-  ]);
+  return wake(run, fields, request, 'card', `card: '${request}' published a checkpoint`, body);
 }
 
 /**

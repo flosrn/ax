@@ -36,14 +36,28 @@ export interface SenderIdentity {
   name: string;
   model: string;
   attributed: boolean;
-  /** How the sender was established. Absent means the pane-witness path. */
-  kind?: 'pane' | 'dispatch';
+  /**
+   * How the sender was established. `pane` (or absent) is Orca's witness of a
+   * live pane on THIS runtime. `dispatch` is a worker we started, named from our
+   * own write-ahead record because a worker has no pane key by contract.
+   * `watcher` is this session's own detached stall watcher (`src/worker/stall.mjs`),
+   * witnessed as this pane because it inherits it, speaking `about` a child.
+   *
+   * The distinction is load-bearing in `./receive.ts`: being NAMED is not being
+   * AUTHORISED. A dispatch sender may be read and answered, and it may not hand
+   * this session a reply address nor borrow its authority to relay to a third
+   * party. A watcher is never answered at all: an answer goes to the child it is
+   * about.
+   */
+  kind?: 'pane' | 'dispatch' | 'watcher';
+  /** `watcher` only: the request of the dispatched worker the alert is about. */
+  about?: string;
 }
 
 /**
  * The stall watcher's two subject prefixes, and the request each one quotes.
- * The same contract `src/worker/stall.mjs` writes and `WATCHER_ALERT` in
- * `./receive.ts` reads; change all three together.
+ * The same contract `src/worker/stall.mjs` writes; this is its one reader, and
+ * `kind: 'watcher'` is what the receive loop keys on.
  */
 const WATCHER_SUBJECT = /^(?:stall-watch|card):[^']*(?:'([^']{1,120})')?/;
 
@@ -277,11 +291,16 @@ export function senderIdentity(
   // below would sign a remote worker's checkpoint card with this session's own
   // name — reported from the #2120 wave as "cards signed as the orchestrator".
   // The witness is ours, so the subject is our own child process's words and
-  // may name it; it buys nothing else (`receive.ts` still records no route for
-  // it). Another pane writing the same prefix keeps its own name.
+  // may name it. Its own provenance, because it is neither a peer nor this
+  // session: `receive.ts` exempts it from the self-echo drop and never routes a
+  // reply to it — only, for a card, to the child it is `about`. Another pane
+  // writing the same prefix keeps its own name.
   const self = (process.env.ORCA_TERMINAL_HANDLE ?? '').trim();
   const alert = self !== '' && handle === self ? WATCHER_SUBJECT.exec(String(msg.subject ?? '').trim()) : null;
-  if (alert !== null) return { name: alert[1] ? `watcher:${alert[1]}` : 'watcher', model: '', attributed: true, kind: 'pane' };
+  if (alert !== null) {
+    const about = alert[1] ?? '';
+    return { name: about ? `watcher:${about}` : 'watcher', model: '', attributed: true, kind: 'watcher', about };
+  }
 
   // Attribution is the WITNESS, not the name lookup. When Orca is briefly
   // unreachable the worktree name is unknown, but Orca's verdict remains —
