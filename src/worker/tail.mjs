@@ -55,7 +55,7 @@ import { bad, fix, note, ok } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { continuationFor } from './continuation.mjs';
 import { briefDelivered } from './delivered.mjs';
-import { readPane } from './pane.mjs';
+import { readPane, recordedHost } from './pane.mjs';
 import { defaultStore, dispatchIndex, requestIdOk } from './record.mjs';
 
 /**
@@ -202,9 +202,27 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
   // whenever a record holds phases dispatched onto different hosts. (A
   // `--replace` is no longer one of those: it inherits the recorded placement
   // and refuses a contradicting one, #11.)
+  //
+  // AND A BARE HANDLE GETS ITS RUNTIME THE SAME WAY (F2). `term_…` carries no
+  // host, and the runtime asked about it answers for its own registry alone:
+  // measured on Orca 867d38397893, a gapicore handle read on this Mac is
+  // `terminal_handle_stale` while `--environment gapicore` shows it running.
+  // Reported from #2120's gapicore worker, where this verb exited 3 on exactly
+  // that — so the records naming the handle say where it lives, and two that
+  // disagree are a refusal, never a pick.
   let handle = target;
   let environment;
-  if (!TERMINAL_HANDLE.test(target)) {
+  if (TERMINAL_HANDLE.test(target)) {
+    const placed = recordedHost(dispatchIndex(defaultStore(env)), target);
+    if (!placed.ok) {
+      return refuse(
+        `${target} is recorded on ${placed.hosts.length} hosts (${placed.hosts.join(', ')}) — reading it on a guess reads the wrong machine`,
+        `orca terminal read --terminal ${target} --environment <host> --json   # name the host yourself; ax worker ls --all shows which record placed it where`,
+      );
+    }
+    environment = placed.host || undefined;
+    if (environment) note(`${target} is on '${environment}' (from this host's dispatch store)`);
+  } else {
     if (!requestIdOk(target)) return refuse(`'${target}' is neither a terminal handle (term_…) nor a request id`, 'ax worker ls   # the requests and live handles of this machine');
     const index = dispatchIndex(defaultStore(env));
     const rows = [...index.byDispatch.entries()]
@@ -273,7 +291,17 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
       return code;
     }
     if (refusal.kind === 'error') {
-      return refuse(`${handle}: ${refusal.code} ${refusal.message}`.trim(), 'ax worker ls   # the handle may have moved or the pane may be gone');
+      // `terminal_handle_stale` is what a runtime answers for a handle outside
+      // its OWN registry (Orca 867d38397893, `getLiveLeafForHandle`), so for a
+      // handle no record placed it cannot tell a dead pane from one on another
+      // host — and the repair says which read tells them apart.
+      const elsewhere = refusal.code === 'terminal_handle_stale' && !environment;
+      return refuse(
+        `${handle}: ${refusal.code} ${refusal.message}`.trim(),
+        elsewhere
+          ? `orca terminal read --terminal ${handle} --environment <host> --json   # no record here places this handle on a host, and this runtime answers stale for any pane it does not own`
+          : 'ax worker ls   # the handle may have moved or the pane may be gone',
+      );
     }
     // F-028: an absent container is a NAMED inability, never a silent zero.
     // This is the exact key that got read as `result.output` and cost a live pane.
@@ -286,7 +314,7 @@ export function tail(argv = [], { resolve = resolveOrca, runner, env = process.e
     if (refusal.kind === 'null-status') {
       return refuse(
         `${handle} returned no status. That is the shape \`--lines\` produces, and it is not an empty terminal.`,
-        'orca terminal read --terminal ' + handle + ' --json   # never with --lines',
+        `orca terminal read --terminal ${handle}${environment ? ` --environment ${environment}` : ''} --json   # never with --lines`,
       );
     }
     return refuse(`${handle}: result.terminal.tail is ${refusal.got}, not a list.`, 'ax worker ls   # the receipt shape changed; re-establish before acting on it');

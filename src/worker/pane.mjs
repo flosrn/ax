@@ -284,15 +284,19 @@ export function hostScopes(run, declarations) {
 }
 
 /**
- * THE VERDICT FOR ONE RECORDED HANDLE, asking the host that can decide it.
+ * THE VERDICT FOR ONE RECORDED HANDLE, asking the host that can decide it —
+ * and the address every later call about that pane must use.
  *
  * The composition of the two readers above, and the one every verb that judges
- * a recorded pane goes through: `ax worker ls` counts and lists with it, and
- * `ax worker gate` authorises with it (#192). A second composition is how one
- * of them starts reading an absence as a corpse where the other does not — the
- * exact divergence #192 was filed on, where the listing asked a record's host
- * and the gate did not, so the gate rounded every remote absence to "down" and
- * printed a permission over it.
+ * a recorded pane goes through: `ax worker ls` counts and lists with it,
+ * `ax worker gate` authorises with it (#192), and `ax worker release` reads,
+ * samples and re-checks with it (F2). A second composition is how one of them
+ * starts reading an absence as a corpse where the other does not — the exact
+ * divergence #192 was filed on, where the listing asked a record's host and the
+ * gate did not, so the gate rounded every remote absence to "down" and printed
+ * a permission over it. F2 was the same divergence a third time: `release`
+ * judged a gapicore pane against this Mac's list alone, answered "pane not
+ * establishable", and the pane was closed by hand.
  *
  * EACH PANE IS JUDGED BY THE ANSWER THAT CAN DECIDE IT (#76). The first,
  * unscoped list decides a local dispatch, an unknown placement, and any handle
@@ -306,24 +310,64 @@ export function hostScopes(run, declarations) {
  * established the owner and must keep the conservative answer.
  */
 export function hostReader(scopes, local) {
+  /**
+   * One recorded handle, located: its verdict, whether the answer came from the
+   * host itself (which is what lets an absence be a corpse rather than an
+   * omission, see paneVerdict), the inventory row that carried it (`null` when
+   * none did), and `environment` — the `--environment` a read or a close of
+   * that pane must name: `''` when this runtime's own list carried it, the
+   * host's name when that host's list did. Measured on Orca 867d38397893, a
+   * handle is resolved in the registry of the runtime that ANSWERS the call
+   * (`getLiveLeafForHandle`), so the same handle read without the environment
+   * is `terminal_handle_stale` — a live pane reported as a dead one.
+   */
+  const locate = (handle, why, host) => {
+    // No handle: nothing a host could answer about. Presence in the first
+    // list: proven alive, and no scope can take that back.
+    if (handle === null || local.byHandle.has(handle) || host === undefined || host === '') {
+      const row = handle === null ? undefined : local.byHandle.get(handle);
+      return { verdict: paneVerdict(handle, why, local, { host }), asked: false, terminal: row ?? null, environment: '' };
+    }
+    const scope = scopes.scopeFor(host);
+    const asked = scope.ok === true;
+    return {
+      verdict: paneVerdict(handle, why, scope, { host, asked }),
+      asked,
+      terminal: asked ? scope.byHandle.get(handle) ?? null : null,
+      environment: host,
+    };
+  };
   return {
-    /**
-     * The verdict for ONE recorded handle, and whether the answer behind it came
-     * from the host itself — which is what lets an absence be a corpse rather
-     * than an omission (see paneVerdict).
-     */
+    locate,
+    /** The verdict alone, for the readers that act on nothing but it. */
     verdictFor(handle, why, host) {
-      // No handle: nothing a host could answer about. Presence in the first
-      // list: proven alive, and no scope can take that back.
-      if (handle === null || local.byHandle.has(handle) || host === undefined || host === '') {
-        return { verdict: paneVerdict(handle, why, local, { host }), asked: false };
-      }
-      const scope = scopes.scopeFor(host);
-      return { verdict: paneVerdict(handle, why, scope, { host, asked: scope.ok === true }), asked: scope.ok === true };
+      const { verdict, asked } = locate(handle, why, host);
+      return { verdict, asked };
     },
     /** Every host that was asked and could not answer, with what it answered. */
     unaskable: () => scopes.unaskable(),
   };
+}
+
+/**
+ * THE HOST A HANDLE WAS DISPATCHED ONTO, read from the records that name it.
+ *
+ * A `term_…` handle carries no host, and the runtime that is asked about it
+ * answers only for its own registry — so a verb handed a bare handle must find
+ * the host the same way a verb handed a request does: from the store's own
+ * `worker-start --on` (`dispatchIndex(...).byDispatch`, ./record.mjs). `host`
+ * is `''` for a local dispatch and for a handle no record names (this runtime
+ * is then the only one anything points at, and its answer is still read as the
+ * answer it is). Two records placing one handle on two hosts is a
+ * disagreement, never a pick (F-028): `ok: false` names both.
+ */
+export function recordedHost(index, handle) {
+  const hosts = new Set();
+  for (const entry of index.byDispatch.values()) {
+    if (entry.handle === handle) hosts.add(entry.env ?? '');
+  }
+  if (hosts.size > 1) return { ok: false, hosts: [...hosts].map(host => host || 'local') };
+  return { ok: true, host: hosts.size === 1 ? [...hosts][0] : '', recorded: hosts.size === 1 };
 }
 
 /**

@@ -238,6 +238,57 @@ test("a remote request's pane is read on the runtime its own worker-start named"
   assert.ok(calls.some(line => line.includes('--environment envx')), 'the pane is read on its own host');
 });
 
+/**
+ * The runtime split measured on Orca 867d38397893: a handle is resolved in the
+ * registry of the runtime that ANSWERS the call (`getLiveLeafForHandle`,
+ * orca-runtime-build-pty-terminal-summary.ts), so a gapicore handle read on
+ * this Mac's runtime is `terminal_handle_stale` while the same read with
+ * `--environment gapicore` shows the pane running. This stub answers exactly so.
+ */
+function hostedRunner(host, receipt) {
+  const calls = [];
+  const runner = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' };
+      const at = args.indexOf('--environment');
+      if (at !== -1 && args[at + 1] === host) return { status: 0, stdout: receipt, stderr: '' };
+      return { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'terminal_handle_stale', message: 'terminal_handle_stale' } }), stderr: '' };
+    },
+  });
+  return { runner, calls };
+}
+
+test("F2: a remote pane named by its HANDLE is read on the host its record names, not answered stale", () => {
+  // Reported from the gapicore worker of #2120: `ax worker tail <handle>` exited
+  // 3 on `terminal_handle_stale` while `orca terminal read --terminal <h>
+  // --environment gapicore` showed the pane running. The request path already
+  // carried the host; the handle path read every pane on this machine.
+  const env = storeWith({ '2120-work': [{ dispatchId: 'ctx_cf95', pane: HANDLE, on: 'gapicore', state: 'ready' }] });
+  const { runner, calls } = hostedRunner('gapicore', alive(['working']));
+  const r = capture(() => tail([HANDLE], { runner, env }));
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /ALIVE/);
+  assert.match(r.out, /on 'gapicore'/, 'the host the pane was resolved to is stated');
+  assert.ok(calls.some(line => line.startsWith('terminal read') && line.includes('--environment gapicore')), 'read where it lives');
+});
+
+test('F2: a handle two records place on two different hosts is refused, never read on a guess', () => {
+  const env = storeWith({
+    'a-1': [{ dispatchId: 'ctx_a', pane: HANDLE, on: 'gapicore' }],
+    'b-1': [{ dispatchId: 'ctx_b', pane: HANDLE, on: 'netcup-vie' }],
+  });
+  const { runner, calls } = hostedRunner('gapicore', alive(['working']));
+  const r = capture(() => tail([HANDLE], { runner, env }));
+
+  assert.equal(r.code, 3);
+  assert.match(r.out, /gapicore/);
+  assert.match(r.out, /netcup-vie/);
+  assert.equal(calls.filter(line => line.startsWith('terminal read')).length, 0, 'nothing was read');
+});
+
 test('a request the store maps to no pane cannot establish, and names the route that needs none', () => {
   const env = storeWith({});
   const { runner, calls } = fakeRunner({ receipt: alive([]) });
