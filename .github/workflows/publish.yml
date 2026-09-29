@@ -151,6 +151,14 @@ jobs:
   # success rather than the release's. A skipped publish (bootstrap not done, or a
   # release-please run that created no release) means no notification.
   #
+  # AND AFTER THE REGISTRY SERVES IT (#283). A successful `npm publish` is not a
+  # served version: it ends "Your package is being processed and may take a few
+  # minutes to become available", and gapila's bump failed with
+  # ERR_PNPM_NO_MATCHING_VERSION on 0.28.2, 0.29.0 and 0.29.1 — each dispatched
+  # the moment publish returned. 0.29.0 was served ~20 minutes after it. So the
+  # exact version is polled, online, before anyone is told — and a version still
+  # unserved after the bound is a warning, not a red release (below).
+  #
   # FAILS OPEN, ON PURPOSE. The token and the consumer list are operational
   # config, not release inputs: a missing one prints what is missing and exits 0.
   # A release that already tagged and published must not report red because a
@@ -164,12 +172,42 @@ jobs:
     needs: [release, publish]
     if: ${{ always() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release.outputs.tag_name }}
       CONSUMERS: ${{ vars.AX_CONSUMERS }}
       GH_TOKEN: ${{ secrets.AX_CONSUMER_DISPATCH_TOKEN }}
     steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Wait until npm serves the release
+        id: served
+        run: |
+          set -uo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          # Nobody to tell: the next step says why, and nothing is worth waiting for.
+          if [ -z "${GH_TOKEN:-}" ] || [ -z "${CONSUMERS:-}" ]; then
+            echo "served=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 45 minutes, every 30 s: the measured processing time was ~20.
+          for attempt in $(seq 1 90); do
+            if [ "$(npm view "@flosrn/ax@$VERSION" version --prefer-online 2>/dev/null)" = "$VERSION" ]; then
+              echo "npm serves @flosrn/ax@$VERSION (attempt $attempt)"
+              echo "served=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::warning title=Not announced::npm still does not serve @flosrn/ax@$VERSION after 45 minutes, so no consumer was told — re-run this job once it does. Consumers still pick it up on their own Dependabot pass."
+          echo "served=false" >> "$GITHUB_OUTPUT"
+
       - name: Dispatch ax-release to every consumer
+        if: ${{ steps.served.outputs.served != 'false' }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"

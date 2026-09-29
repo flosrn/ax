@@ -71,7 +71,13 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.t
 const WALK_DEPTH = 4;
 const TEST_WAIT_MS = 10 * 60_000;
 const RELEASE_WAIT_MS = 10 * 60_000;
-const NPM_WAIT_MS = 5 * 60_000;
+/**
+ * npm's post-publish processing, not a deploy step: `npm publish` ends with
+ * "Your package is being processed and may take a few minutes to become
+ * available", and on 2026-09-29 0.29.0 was served ~20 minutes after it. The
+ * 5-minute wait this replaced gave up on every release that day (#283).
+ */
+const NPM_WAIT_MS = 30 * 60_000;
 const MERGE_COMMIT_WAIT_MS = 60_000;
 const POLL_MS = 15_000;
 const MERGE_COMMIT_POLL_MS = 5_000;
@@ -119,6 +125,17 @@ export async function deploy(
       return String(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version ?? '');
     } catch {
       return '';
+    }
+  }
+
+  /** The ax pin a consumer's manifest declares now, or null when it is unread. */
+  function declaredPin(dir) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+      const pinned = pkg.devDependencies?.[PKG] ?? pkg.dependencies?.[PKG];
+      return typeof pinned === 'string' ? pinned : null;
+    } catch {
+      return null;
     }
   }
 
@@ -205,13 +222,18 @@ export async function deploy(
     }
   }
 
+  /**
+   * The EXACT version, read ONLINE. A bare `npm view <pkg> version` answered
+   * from a cached packument — 0.28.2 while the registry already served 0.29.0
+   * (#283) — so the release is asked for by name, past the cache.
+   */
   async function waitForNpm(version) {
     const deadline = now() + NPM_WAIT_MS;
     for (;;) {
-      const out = exec('npm', ['view', PKG, 'version'], { timeout: 30_000 });
+      const out = exec('npm', ['view', `${PKG}@${version}`, 'version', '--prefer-online'], { timeout: 30_000 });
       if (succeeded(out) && out.stdout.trim() === version) return true;
       if (now() >= deadline) return false;
-      await sleep(10_000);
+      await sleep(30_000);
     }
   }
 
@@ -234,20 +256,63 @@ export async function deploy(
     }
     const here = branch.stdout.trim();
     const main = origin.stdout.trim().replace(/^origin\//, '');
-    if (here === main) return null;
+    if (here === main) return { main };
     return {
       reason: `checked out on ${here}, not ${main} — a bump pushed from here lands on ${here}, and ${main} keeps its pin`,
       repair: `bump from a checkout of ${main}: git -C ${dir} worktree add <path> ${main} && cd <path> && ax pin <version>`,
     };
   }
 
-  function pinConsumer({ dir, pinned }, version) {
-    const off = offDefault(dir);
-    if (off) {
-      bad(`${dir}: ${off.reason}`);
-      fix(off.repair);
+  /**
+   * THE CHECKOUT AGAINST ITS ORIGIN, before anything is decided (#283). A
+   * checkout only BEHIND is fast-forwarded — it must be clean — and its pin
+   * re-read: measured 2026-09-29, chatnow_bot's main was one commit behind an
+   * origin that already carried the release, and pinning the stale checkout
+   * committed a duplicate that could not be pushed. A checkout AHEAD holds
+   * commits origin lacks, and a bump push would publish them with it — the
+   * reason `ax pin` never pushes (src/pin.mjs) — so it is refused by name.
+   * An unread count is never zero (F-028).
+   */
+  function syncWithOrigin(dir, main) {
+    const fetched = git(dir, ['fetch', '-q', 'origin', main]);
+    if (!succeeded(fetched)) return { verdict: 'unreadable', reason: `git fetch origin ${main} failed — ${(fetched.stderr || '').split('\n')[0] || `exit ${fetched.status}`}`, repair: `git -C ${dir} fetch origin ${main}   # then re-run` };
+    const count = range => {
+      const out = git(dir, ['rev-list', '--count', range]);
+      const n = succeeded(out) ? Number.parseInt(out.stdout.trim(), 10) : Number.NaN;
+      return Number.isInteger(n) ? n : null;
+    };
+    const behind = count(`HEAD..origin/${main}`);
+    const ahead = count(`origin/${main}..HEAD`);
+    if (behind === null || ahead === null) return { verdict: 'unreadable', reason: `how far ${main} is from origin/${main} is unread`, repair: `git -C ${dir} status -sb   # then re-run` };
+    if (ahead > 0) {
+      return { verdict: 'diverged', reason: `${ahead} commit(s) origin/${main} does not have — a bump pushed from here would publish them too`, repair: `git -C ${dir} log origin/${main}..HEAD   # push or drop them first, then re-run` };
+    }
+    if (behind === 0) return null;
+    const state = git(dir, ['status', '--porcelain']);
+    if (!succeeded(state) || state.stdout.trim() !== '') {
+      return { verdict: 'dirty', reason: `${behind} commit(s) behind origin/${main} and not clean, so it cannot be fast-forwarded`, repair: `cd ${dir} && git status   # commit or stash what is there, then re-run this script` };
+    }
+    const pulled = git(dir, ['pull', '-q', '--ff-only', 'origin', main]);
+    if (!succeeded(pulled)) return { verdict: 'unreadable', reason: `git pull --ff-only failed — ${(pulled.stderr || '').split('\n')[0] || `exit ${pulled.status}`}`, repair: `git -C ${dir} pull --ff-only origin ${main}   # then re-run` };
+    note(`${dir}: fast-forwarded ${behind} commit(s) from origin/${main}`);
+    return null;
+  }
+
+  function pinConsumer({ dir, pinned: listed }, version) {
+    const placed = offDefault(dir);
+    if (placed.reason) {
+      bad(`${dir}: ${placed.reason}`);
+      fix(placed.repair);
       return 'off-default';
     }
+    const synced = syncWithOrigin(dir, placed.main);
+    if (synced) {
+      bad(`${dir}: ${synced.reason}`);
+      fix(synced.repair);
+      return synced.verdict;
+    }
+    // The pin as the (possibly just fast-forwarded) manifest declares it.
+    const pinned = declaredPin(dir) ?? listed;
     if (pinned === version) {
       ok(`${dir} already pins ${version}`);
       return 'current';
@@ -271,11 +336,16 @@ export async function deploy(
       fix(`cd ${dir} && ax pin ${version}   # read its findings; pin owns migration, install proof and doctor`);
       return 'pin-failed';
     }
+    // Every file the install rewrote is the bump's: pnpm also appends the
+    // version to a `minimumReleaseAgeExclude` entry that enumerates them
+    // (chatnow_bot), and leaving that behind broke the next `pull --rebase`
+    // (#274, #283).
     const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(dir, f)));
-    const add = git(dir, ['add', '--', 'package.json', ...lock]);
+    const workspace = existsSync(join(dir, 'pnpm-workspace.yaml')) && !succeeded(git(dir, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
+    const add = git(dir, ['add', '--', 'package.json', ...lock, ...workspace]);
     if (!succeeded(add)) {
       bad(`${dir}: git add failed — ${(add.stderr || '').split('\n')[0]}`);
-      fix(`cd ${dir} && git add package.json ${lock.join(' ')} && git commit -m "chore(deps): bump ${PKG} to ${version}" && git push`);
+      fix(`cd ${dir} && git add package.json ${[...lock, ...workspace].join(' ')} && git commit -m "chore(deps): bump ${PKG} to ${version}" && git push`);
       return 'commit-failed';
     }
     const commit = git(dir, ['commit', '-m', `chore(deps): bump ${PKG} to ${version}`]);
@@ -512,7 +582,7 @@ export async function deploy(
     const head = git(root, ['log', '--oneline', '-1']);
     const fetched = git(root, ['fetch', '-q', 'origin', 'main']);
     const behind = succeeded(fetched) ? git(root, ['rev-list', '--count', 'HEAD..origin/main']) : null;
-    const served = exec('npm', ['view', PKG, 'version'], { cwd: root, timeout: 60_000 });
+    const served = exec('npm', ['view', PKG, 'version', '--prefer-online'], { cwd: root, timeout: 60_000 });
     const registry = succeeded(served) ? served.stdout.trim() : '';
     note(`here         ${declaredVersion(root) || '?'} · ${(head.stdout || '').trim() || 'unreadable HEAD'}`);
     note(`             ${behind === null ? 'origin unreachable — behind-count UNKNOWN' : `${behind.stdout.trim()} commit(s) behind origin/main`}`);
@@ -531,10 +601,10 @@ export async function deploy(
 
   if (pinsOnly) {
     section('pins only');
-    const served = exec('npm', ['view', PKG, 'version'], { cwd: root, timeout: 60_000 });
+    const served = exec('npm', ['view', PKG, 'version', '--prefer-online'], { cwd: root, timeout: 60_000 });
     if (!succeeded(served) || served.stdout.trim() === '') {
       bad('the registry did not answer a version, so there is nothing a consumer may be pinned to');
-      fix(`npm view ${PKG} version   # then re-run`);
+      fix(`npm view ${PKG} version --prefer-online   # then re-run`);
       return 3;
     }
     const registry = served.stdout.trim();
@@ -644,8 +714,8 @@ export async function deploy(
   ok(`${RELEASE_WORKFLOW} workflow completed for ${mergeSha.slice(0, 7)}`);
 
   if (!(await waitForNpm(version))) {
-    bad(`npm still does not serve ${version} after 5 minutes — the registry may be lagging`);
-    fix(`npm view ${PKG} version   # once it answers ${version}, re-run with the pins: node scripts/deploy.mjs`);
+    bad(`npm still does not serve ${version} after ${NPM_WAIT_MS / 60_000} minutes — the release is merged and tagged; only the registry is missing`);
+    fix(`npm view ${PKG}@${version} version --prefer-online   # once it answers ${version}: node scripts/deploy.mjs --pins-only`);
     return 1;
   }
   ok(`npm serves ${PKG}@${version}`);

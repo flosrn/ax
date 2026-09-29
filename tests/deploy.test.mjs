@@ -111,16 +111,33 @@ function fakeExec(s) {
     const fail = (stderr, status = 1) => ({ status, stdout: '', stderr });
 
     if (bin === 'npm') {
-      if (args[0] === 'view') return ok(`${s.npmVersion}\n`);
+      if (args[0] === 'view') {
+        // `npmServedAt`: the clock time from which the registry serves the
+        // release (npm's post-publish processing). Before it, the exact version
+        // is a 404 and the bare package answers the previous release.
+        const served = s.npmServedAt === undefined || s.clock.now() >= s.npmServedAt;
+        const exact = String(args[1] ?? '').lastIndexOf('@') > 0;
+        if (exact) return served ? ok(`${s.npmVersion}\n`) : fail('npm error code E404\n');
+        return ok(`${served ? s.npmVersion : '0.24.5'}\n`);
+      }
       return fail(`unexpected npm ${args.join(' ')}`);
     }
     if (bin === 'ssh') return fail('ssh must not run in this suite\n');
     if (bin === 'ax') return ok('');
     if (bin === 'git') {
       if (args[0] === 'status') return ok('');
+      if (args[0] === 'pull' && args.includes('--ff-only')) s.onPull?.(opts.cwd);
       if (args[0] === 'pull' || args[0] === 'fetch' || args[0] === 'add' || args[0] === 'commit' || args[0] === 'push') return ok('');
       if (args[0] === 'log') return ok('ccccccc chore: release\n');
-      if (args[0] === 'rev-list') return ok('0\n');
+      // Per consumer: how far its checkout is behind / ahead of origin.
+      if (args[0] === 'rev-list') {
+        const rev = s.revs?.[opts.cwd] ?? {};
+        if (args.includes('HEAD..origin/main')) return ok(`${rev.behind ?? 0}\n`);
+        if (args.includes('origin/main..HEAD')) return ok(`${rev.ahead ?? 0}\n`);
+        return ok('0\n');
+      }
+      // `git diff --quiet -- pnpm-workspace.yaml`: exit 1 when pnpm rewrote it.
+      if (args[0] === 'diff') return s.workspaceRewritten?.[opts.cwd] ? fail('', 1) : ok('');
       // Which branch a consumer checkout is on, and which one its origin names
       // default. Unlisted checkouts are on `main`, as a released consumer is.
       if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) return ok(`${s.branches?.[opts.cwd] ?? 'main'}\n`);
@@ -179,8 +196,9 @@ function fakeExec(s) {
 async function runDeploy(extra = {}, argv = ['--skip-pins'], { seed = () => ({}) } = {}) {
   const roots = mkdtempSync(join(tmpdir(), 'ax-deploy-roots-'));
   const s = scenario({ ...extra, ...seed(roots) });
-  const { exec, calls } = fakeExec(s);
   const clock = fakeClock();
+  s.clock = clock;
+  const { exec, calls } = fakeExec(s);
   try {
     const { code, out } = await capture(() =>
       deploy([`--roots=${roots}`, ...argv], { exec, sleep: clock.sleep, now: clock.now, root: roots }),
@@ -454,4 +472,74 @@ test('a consumer checked out on a feature branch is refused: the bump would land
   assert.equal(pushedFrom(r.s.onFeature), false, 'nothing pushed to the feature branch');
   assert.match(r.out, /on-feature.*feat\/wallet-contacts-ignore-menu, not main/);
   assert.notEqual(r.code, 0, r.out);
+});
+
+// ── #283: the release pipeline's timing and the consumer's own state ───────
+
+const consumerAt = (dir, pinned = '0.24.0') => {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': pinned } }));
+  return dir;
+};
+
+test('#283: a registry that serves the release 15 minutes after publish is waited for, and asked online', async () => {
+  // Measured 2026-09-29: npm answered 0.29.0 ~20 minutes after `npm publish`
+  // ("being processed"), and the 5-minute wait gave up on 0.29.1 every time.
+  const r = await runDeploy({ npmServedAt: 15 * 60_000, after: [greenRun(NEW_RUN, HEAD)] });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /npm serves @flosrn\/ax@0\.24\.6/);
+  const views = r.calls.filter(c => c.bin === 'npm' && c.args[0] === 'view');
+  assert.ok(views.length > 0 && views.every(c => c.args.includes('--prefer-online')), 'a cached packument answered 0.28.2 while the registry served 0.29.0');
+  assert.ok(views.every(c => c.args[1] === `@flosrn/ax@${VERSION}`), 'the release is asked for by its exact version');
+});
+
+test('#283: a consumer behind its origin is fast-forwarded first — and one whose origin already pins the release is current', async () => {
+  // Measured 2026-09-29: chatnow_bot's main was one commit behind origin,
+  // which already carried the 0.29.1 bump. deploy pinned the stale checkout,
+  // committed a duplicate, and left it diverged when the push was rejected.
+  const r = await runDeploy({}, ['--pins-only'], {
+    seed: roots => {
+      const stale = consumerAt(join(roots, 'stale'));
+      return {
+        stale,
+        revs: { [stale]: { behind: 1, ahead: 0 } },
+        onPull: dir => consumerAt(dir, VERSION),
+      };
+    },
+  });
+  const on = cmd => r.calls.filter(c => c.cwd === r.s.stale && c.bin === cmd.bin && c.args[0] === cmd.verb);
+  assert.equal(on({ bin: 'git', verb: 'fetch' }).length > 0, true, 'the consumer is fetched before anything is decided');
+  assert.ok(on({ bin: 'git', verb: 'pull' }).some(c => c.args.includes('--ff-only')), r.out);
+  assert.equal(on({ bin: 'ax', verb: 'pin' }).length, 0, 'origin already pins the release: nothing to bump');
+  assert.equal(on({ bin: 'git', verb: 'push' }).length, 0);
+  assert.match(r.out, /stale.*already pins 0\.24\.6/);
+  assert.equal(r.code, 0, r.out);
+});
+
+test('#283: a consumer with commits its origin lacks is refused — a bump push would publish them', async () => {
+  const r = await runDeploy({}, ['--pins-only'], {
+    seed: roots => {
+      const ahead = consumerAt(join(roots, 'ahead'));
+      return { ahead, revs: { [ahead]: { behind: 0, ahead: 2 } } };
+    },
+  });
+  const touched = verb => r.calls.some(c => c.cwd === r.s.ahead && (c.bin === 'ax' || c.args[0] === verb) && (c.bin === 'ax' ? c.args[0] === 'pin' : true));
+  assert.equal(touched('push'), false, r.out);
+  assert.equal(r.calls.some(c => c.cwd === r.s.ahead && c.bin === 'ax'), false, 'no pin over unpublished local commits');
+  assert.match(r.out, /ahead.*2 commit\(s\) origin\/main does not have/);
+  assert.notEqual(r.code, 0, r.out);
+});
+
+test('#283/#274: a pnpm-workspace.yaml the install rewrote is committed with the bump', async () => {
+  const r = await runDeploy({}, ['--pins-only'], {
+    seed: roots => {
+      const listed = consumerAt(join(roots, 'listed'));
+      writeFileSync(join(listed, 'pnpm-workspace.yaml'), "minimumReleaseAgeExclude:\n  - '@flosrn/ax@0.24.0'\n");
+      return { listed, workspaceRewritten: { [listed]: true } };
+    },
+  });
+  const add = r.calls.find(c => c.cwd === r.s.listed && c.bin === 'git' && c.args[0] === 'add');
+  assert.ok(add, r.out);
+  assert.ok(add.args.includes('pnpm-workspace.yaml'), `staged: ${add.args.join(' ')}`);
+  assert.equal(r.code, 0, r.out);
 });
