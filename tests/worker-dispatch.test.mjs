@@ -210,8 +210,13 @@ function fakeOrca({ seen = true, cursors = ['1', '2'], parent = 'repo-id::/paren
   return { runner, calls };
 }
 
-/** A dispatch store record naming the child's pane, as `ax worker start` leaves it. */
-function record(store, request, handle = 'term_child') {
+/**
+ * A dispatch store record naming the child's pane, as `ax worker start` leaves it.
+ * `tree` adds the `{kind:'worktree'}` effect Orca's receipt carries for the tree
+ * it placed the child in — for a remote child, the only place its path is ever
+ * written.
+ */
+function record(store, request, handle = 'term_child', tree = '') {
   mkdirSync(store, { recursive: true });
   writeFileSync(
     join(store, `${request}.json`),
@@ -230,7 +235,7 @@ function record(store, request, handle = 'term_child') {
               identity: 'id-1',
               argv: ['stub-orca', 'orchestration', 'worker-start'],
               exit: 0,
-              receipt: { ok: true, result: { dispatchId: 'ctx_1', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: handle }] } },
+              receipt: { ok: true, result: { dispatchId: 'ctx_1', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: handle }, ...(tree === '' ? [] : [{ kind: 'worktree', action: 'created_top_level', id: `abc::${tree}` }])] } },
             },
           ],
         },
@@ -323,7 +328,7 @@ const run = (argv, options = {}) => {
       })(),
       startFn: options.realStart ? undefined : (args, context) => {
         started.push(args.join(' '));
-        record(store, options.request ?? REQUEST);
+        record(store, options.request ?? REQUEST, 'term_child', options.recordTree ?? '');
         return options.startCodes ? options.startCodes.shift() : 0;
       },
       setupFn: options.setupFn ?? (() => 0),
@@ -1299,6 +1304,46 @@ test('--worktree with --on takes an exact remote selector, and reaches the dispa
   assert.doesNotMatch(r.out, /is not a directory on this host/);
   assert.ok(r.started[0].includes(`--worktree ${selector}`), r.started[0]);
   assert.ok(r.calls.every(line => !line.startsWith('worktree list --repo id:abc --environment')), 'an explicit selector asks the host nothing');
+});
+
+/** The brief a dispatch wrote, read back from the `--spec-file` it handed `ax worker start`. */
+const briefOf = started => readFileSync(started.match(/--spec-file (\S+)/)[1], 'utf8');
+
+test('a --on dispatch into a tree the host creates tells the child where its Report goes, and prints the path the receiver reads', () => {
+  // Reported from gapila #2120 (worker on gapicore): the brief said "the Report
+  // path cannot be established", the child asked twice, and the orchestrator
+  // rebuilt the path by hand from report.mjs. `new-top-level` makes the host
+  // create the tree inside the start call, so no absolute path exists when the
+  // brief is written — but Orca pastes that brief into the agent terminal it
+  // created IN that tree, so the path under the child's own worktree root is
+  // exactly the file the receiver derives from the record afterwards.
+  const tree = '/home/harness/orca/workspaces/probe/gap-353-loading-states';
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], { root: onFar(), recordTree: tree });
+
+  assert.equal(r.code, 0);
+  assert.match(r.started[0], /--worktree new-top-level/);
+  const text = briefOf(r.started[0]);
+  assert.doesNotMatch(text, /cannot name where it goes/);
+  assert.ok(text.includes(`<your worktree>/.scratch/report/${REQUEST}.md`), 'the child is told the path under the tree it was started in');
+  assert.match(text, /git rev-parse --show-toplevel/, 'and how to read that root, since nothing printed it beforehand');
+  const expected = reportPathFor({ worktree: tree, request: REQUEST }).path;
+  assert.match(r.out, new RegExp(`report\\s+${expected.replaceAll('.', '\\.')}`), `the dispatching session is handed ${expected}, from the record`);
+});
+
+test('a --on dispatch into a tree the host already carries names that tree’s Report path in the brief', () => {
+  const tree = '/srv/orca/probe/.worktrees/gap-353-loading-states';
+  const reused = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--wait', '0'], {
+    root: onFar(),
+    orca: { repos: [{ id: 'abc', path: '/srv/orca/probe', worktreeBasePath: '.worktrees' }], hostTrees: [{ path: tree, isMainWorktree: false, repoId: 'abc' }] },
+  });
+  assert.equal(reused.code, 0);
+  assert.ok(briefOf(reused.started[0]).includes(reportPathFor({ worktree: tree, request: REQUEST }).path));
+
+  // The operator's own exact selector carries the path just the same.
+  const kept = '/srv/orca/probe/.worktrees/kept';
+  const named = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'far', '--repo-id', 'abc', '--worktree', `id:abc::${kept}`, '--wait', '0'], { root: onFar() });
+  assert.equal(named.code, 0);
+  assert.ok(briefOf(named.started[0]).includes(reportPathFor({ worktree: kept, request: REQUEST }).path));
 });
 
 test('--worktree with --on refuses a local path spelling, naming the forms a host resolves', () => {

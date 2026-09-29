@@ -5,11 +5,13 @@
 // through a full ticket-and-placement pipeline. The cursor predicate here is
 // this verb's own disposition, as pane.mjs's header prescribes.
 
+import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import { installCommand } from '../delegation.mjs';
 import { bad, fix, note, ok, section, warn } from '../log.mjs';
 import { defaultStore, recordModelPolicy, workerPane } from './record.mjs';
+import { reportPath } from './report.mjs';
 import { equipment } from './child.mjs';
 import { readPane } from './pane.mjs';
 import { dispatchProof } from './transcript.mjs';
@@ -49,6 +51,18 @@ export function verify({ run, env, on, wait, worktree, request, ticket, instruct
   if (worktree !== '') note(`worktree  ${worktree}`);
   note(`request   ${request}`);
   note(`pane      ${pane === '' ? 'unnamed by the receipt' : pane}`);
+  // The Report path the RECEIVER will open, from the record it will read — the
+  // one function both sides cross (./report.mjs). For a child on another host
+  // this is the first moment the path exists at all: its tree was created inside
+  // the start call and is named only by the receipt's worktree effect. Printed
+  // so the dispatching session never rebuilds it by hand (gapila #2120).
+  let derived;
+  try {
+    derived = reportPath(JSON.parse(readFileSync(recordPath, 'utf8')));
+  } catch (error) {
+    derived = { reason: `the record could not be read (${String(error?.message ?? error).slice(0, 160)}), so the Report path cannot be established` };
+  }
+  note(`report    ${derived.path ?? `unestablished — ${derived.reason}`}`);
   note(`lineage   ${lineage}`);
 
   if (wait === 0) {

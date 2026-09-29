@@ -71,10 +71,10 @@ import { setup as setupVerb } from '../worktree/setup.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
 import { terminalInventory } from './pane.mjs';
 import { peerRun, peerSessionId } from './peers.mjs';
-import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, untilSeen } from './placement.mjs';
+import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, remoteTreeOf, untilSeen } from './placement.mjs';
 import { defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
 import { liveCount } from './slots.mjs';
-import { reportPathFor } from './report.mjs';
+import { reportPathFor, reportPathWithin } from './report.mjs';
 import { verify } from './verify.mjs';
 import { start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
@@ -837,9 +837,10 @@ export function dispatch(
   let worktree = '';
   // The tree this dispatch will place the child in, AS THIS HOST CAN NAME IT —
   // which is not always `worktree`: a dry run predicts a path it does not
-  // create, and a child on another host has one this host cannot name at all.
-  // It is the selector Orca is given, and it is what the Report path is derived
-  // from, so the brief cannot name a tree the dispatch did not use.
+  // create, and a child on another host is named only by a selector that
+  // carries its path (reuse, or an exact `--worktree`). It is what the Report
+  // path is derived from, so the brief cannot name a tree the dispatch did not
+  // use.
   let selector = '';
 
   // No target: the compute host with the most free slots, or a refusal naming
@@ -914,6 +915,7 @@ export function dispatch(
     }
 
     place.push('--on', on, '--worktree', remote, '--repo', repoId, '--name', request, '--agent', flags.agent);
+    selector = remoteTreeOf(remote);
     // `--setup skip` is exactly what left a child with no URLs, so it is only
     // ever composed for a throwaway probe.
     if (probe) place.push('--setup', 'skip');
@@ -1019,10 +1021,14 @@ export function dispatch(
   // and the rule lives once in ./report.mjs — the same function the receiver
   // crosses when the completion arrives. It is derived from the two values this
   // dispatch is about to record: the tree it places the child in and the request
-  // id. A child on another host answers a named inability rather than a path,
-  // because nothing here can name that tree, and a guess would send the Report
-  // where the receiver does not look.
-  const report = reportPathFor({ worktree: selector, request });
+  // id. A child on another host whose tree the host has yet to create
+  // (`new-top-level`, or a selector the host resolves) has no path this side can
+  // name, but the brief is pasted into the agent terminal Orca created IN that
+  // tree — so it is told the path under its own worktree root, which is the file
+  // the receiver derives from the record's effect once the host has named it
+  // (reported from gapila #2120: an inability here left the child asking twice
+  // and its orchestrator rebuilding the path by hand).
+  const report = on !== '' && selector === '' ? reportPathWithin(request) : reportPathFor({ worktree: selector, request });
   const brief = renderBrief({
     model: policy.selector,
     instruction,
@@ -1037,7 +1043,13 @@ export function dispatch(
     report,
     delivery: flags.delivery,
   });
-  note(report.path ? `the child's Report goes to ${report.path}, and the brief says so` : `no Report path for this dispatch: ${report.reason}`);
+  note(
+    report.path
+      ? `the child's Report goes to ${report.path}, and the brief says so`
+      : report.within
+        ? `the child's Report goes to ${report.within} under the tree '${on}' creates for it, and the brief says so — the receipt below names it once the record does`
+        : `no Report path for this dispatch: ${report.reason}`,
+  );
 
   // The options `ax worker start` owns and RECORDS, as against the placement
   // argv forwarded to Orca after `--`. `--because` and `--tracker-repo` belong

@@ -517,6 +517,21 @@ export function remoteSelectorFor(value) {
   };
 }
 
+/**
+ * The absolute path a remote selector CARRIES, or `''` when it carries none.
+ *
+ * Only two forms name the tree by path: `id:<repo>::/<path>` (what reuse
+ * composes, and the unambiguous form the refusals advertise) and
+ * `path:/<path>`. `new-top-level` has no path until the host creates it, and
+ * `name:`/`branch:`/`issue:` resolve on the host — reading a path into them
+ * would be a guess, so they answer `''` and the caller says so.
+ */
+export function remoteTreeOf(selector) {
+  const value = String(selector ?? '');
+  const tail = value.startsWith('path:') ? value.slice(5) : /^(?:id:)?[^:]+::(\/.+)$/.exec(value)?.[1] ?? '';
+  return tail.startsWith('/') ? tail : '';
+}
+
 /** Poll the selector a dispatch will use, on evidence, against a deadline. */
 export function untilSeen({ run, worktree, deadline, now, sleep, tickMs }) {
   for (;;) {

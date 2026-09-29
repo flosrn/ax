@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import test, { after } from 'node:test';
 
 import { CONTEXT_PATH } from '../src/worktree/context.mjs';
-import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor } from '../src/worker/placement.mjs';
+import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, remoteTreeOf } from '../src/worker/placement.mjs';
 
 const roots = [];
 after(() => {
@@ -474,5 +474,17 @@ test('an exact remote selector is accepted, and a local path spelling is refused
     assert.equal(refusal.ok, false, local);
     assert.match(refusal.reason, /exact remote selector/);
     assert.match(refusal.repair, /id:<repo-id>::<path>/);
+  }
+});
+
+test('a remote selector yields a tree path only when it carries one, and never a guess', () => {
+  // The Report path a brief names is derived from this answer, so a selector the
+  // HOST resolves (by name, branch, issue) must answer nothing here: reading a
+  // path into it would tell the child a file the receiver never opens.
+  assert.equal(remoteTreeOf('id:abc::/srv/orca/acme/.worktrees/t'), '/srv/orca/acme/.worktrees/t');
+  assert.equal(remoteTreeOf('abc::/srv/orca/acme/.worktrees/t'), '/srv/orca/acme/.worktrees/t');
+  assert.equal(remoteTreeOf('path:/srv/orca/acme/.worktrees/t'), '/srv/orca/acme/.worktrees/t');
+  for (const none of ['new-top-level', 'name:t', 'branch:feat/t', 'issue:12', 'path:relative/t', 'id:abc', '']) {
+    assert.equal(remoteTreeOf(none), '', none);
   }
 });

@@ -15,6 +15,15 @@
 // already and has no record yet, so it crosses `reportPathFor` instead; the
 // brief is handed the ANSWER and never the recipe (./brief.mjs).
 //
+// A THIRD CALLER HOLDS ONLY THE REQUEST: a dispatch onto another host with
+// `--worktree new-top-level`, whose tree the host creates inside the start call
+// — after the brief is written, and at a path (a taken name is suffixed) no
+// read beforehand can establish. What IS established is where the brief lands:
+// Orca pastes it into the agent terminal it created in that very tree, so the
+// file under the child's own worktree root is the file the receiver later
+// derives from the record's effect. `reportPathWithin` answers that tail, and
+// nothing else — it never invents the root (F-028).
+//
 // The request is checked against `requestIdOk` — the same grammar every other
 // worker verb uses — so a `../../outside` cannot join() out of `.scratch/report`.
 
@@ -35,10 +44,12 @@ export const REPORT_DIR = join('.scratch', 'report');
  * rule, and two copies disagree the day one moves, so that caller crosses this
  * function too (`src/worker/brief.mjs` receives the ANSWER, never the recipe).
  *
- * A worktree this host cannot name is an absence, not a location: a child placed
- * on another host (`--worktree new-top-level`) has no path here, and a relative
- * one would resolve against whatever process read it. Both are named inabilities
- * (F-028), because the receiver opens the derived path and nothing else.
+ * A worktree nobody named is an absence, not a location, and a relative one
+ * would resolve against whatever process read it. Both are named inabilities
+ * (F-028), because the receiver opens the derived path and nothing else. A tree
+ * on another host is named here whenever its selector carries the path (reuse,
+ * or an exact `--worktree`); one the host has yet to create goes through
+ * `reportPathWithin` instead.
  */
 export function reportPathFor({ worktree = '', request = '' } = {}) {
   if (!isAbsolute(worktree)) {
@@ -53,6 +64,20 @@ export function reportPathFor({ worktree = '', request = '' } = {}) {
     return { reason: 'the request violates the request-id grammar, so the Report path cannot be established' };
   }
   return { path: join(worktree, REPORT_DIR, `${request}.md`) };
+}
+
+/**
+ * `{ within }` | `{ reason }`: the Report's path RELATIVE to the worktree the
+ * child was started in, for a dispatch whose tree has no path yet
+ * (`--on <host> --worktree new-top-level`). The root is the child's to read from
+ * where it stands; the receiver resolves the same tail against the worktree the
+ * record's effect names, which is that same tree.
+ */
+export function reportPathWithin(request = '') {
+  if (!requestIdOk(request)) {
+    return { reason: 'the request violates the request-id grammar, so the Report path cannot be established' };
+  }
+  return { within: join(REPORT_DIR, `${request}.md`) };
 }
 
 /**

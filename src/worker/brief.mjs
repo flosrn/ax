@@ -241,17 +241,22 @@ const PRECEDENCE =
 /**
  * The Report: the work artifact, as against the Summary the completion carries.
  *
- * `report` is `{ path }` | `{ reason }` — the answer of ./report.mjs, never a
- * recipe this renderer applies. Nothing here knows how the path is built, so
- * there is exactly one rule and the brief cannot drift from what the receiver
- * opens.
+ * `report` is `{ path }` | `{ within }` | `{ reason }` — the answer of
+ * ./report.mjs, never a recipe this renderer applies. Nothing here knows how
+ * the path is built, so there is exactly one rule and the brief cannot drift
+ * from what the receiver opens.
  *
- * An inability is rendered as one: a child on another host has no path this host
- * can name (`--worktree new-top-level`), and inventing one would send the Report
+ * `{ within }` is a child on another host whose tree the host creates inside
+ * the dispatch: its root has no name when this is written, but it is the
+ * directory the child starts in, so the path is rendered under a placeholder
+ * the child resolves from where it stands — the same `<your worktree>` the
+ * remote addendum's board-card command already uses.
+ *
+ * An inability is rendered as one: inventing a path would send the Report
  * where nothing looks while reading like an answer (F-028).
  */
 function reportContract(report) {
-  const { path = '', reason = '' } = report ?? {};
+  const { path = '', within = '', reason = '' } = report ?? {};
   const shape = [
     '  `## CRITERIA` is its FIRST section: one line per acceptance criterion your ticket names,',
     '  quoted closely enough to be found again, each followed by the evidence you observed for it —',
@@ -261,18 +266,28 @@ function reportContract(report) {
     '  criteria are read hardest.',
   ];
   const head =
-    path === ''
+    within !== ''
       ? [
-          '- **Your REPORT is a file, and this dispatch cannot name where it goes:**',
-          `      ${reason || 'nothing derived one, so the Report path cannot be established'}.`,
-          '  Say that on your completion instead of choosing a path — a location nothing derived is a',
-          '  location nothing reads. Its shape is unchanged:',
-        ]
-      : [
           '- **Your REPORT is a file, and this dispatch already decided where it goes:**',
-          `      ${path}`,
-          '  Write it there and nowhere else — never a path you pick, never pane text.',
-        ];
+          `      <your worktree>/${within}`,
+          '  `<your worktree>` is the root of the worktree this session was started in —',
+          '  `git rev-parse --show-toplevel` prints it. The host created that tree for this dispatch, after',
+          '  this brief was written, which is the only reason its path is not spelled out here; the',
+          '  receiver opens exactly this file under it. Write it there and nowhere else — never a path you',
+          '  pick, never pane text — and pass that absolute path, resolved, as `--report-path`.',
+        ]
+      : path === ''
+        ? [
+            '- **Your REPORT is a file, and this dispatch cannot name where it goes:**',
+            `      ${reason || 'nothing derived one, so the Report path cannot be established'}.`,
+            '  Say that on your completion instead of choosing a path — a location nothing derived is a',
+            '  location nothing reads. Its shape is unchanged:',
+          ]
+        : [
+            '- **Your REPORT is a file, and this dispatch already decided where it goes:**',
+            `      ${path}`,
+            '  Write it there and nowhere else — never a path you pick, never pane text.',
+          ];
   return [
     ...head,
     ...shape,
@@ -359,10 +374,10 @@ function markerLine(model, instruction) {
  *
  * `host` is '' for a local child. `contract` is '' when the project declares
  * none, and MECHANICS takes its place. `operator` is `{ name, text }` or null.
- * `report` is what ./report.mjs answered for this dispatch — `{ path }` or
- * `{ reason }` — and a caller that passes neither gets the inability, because a
- * brief that silently drops the artifact is how the artifact went missing in the
- * first place.
+ * `report` is what ./report.mjs answered for this dispatch — `{ path }`,
+ * `{ within }` or `{ reason }` — and a caller that passes none of them gets the
+ * inability, because a brief that silently drops the artifact is how the
+ * artifact went missing in the first place.
  *
  * A project's contract and an operator's notes are placed VERBATIM — not
  * trimmed, not re-wrapped, not re-indented. They were written by someone who
