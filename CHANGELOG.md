@@ -8,6 +8,19 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.29.0](https://github.com/flosrn/ax/compare/v0.28.2...v0.29.0) (2026-09-29)
+
+
+### Features
+
+* **peer:** show peer traffic as conversations, with who waits on whom ([4bf10a9](https://github.com/flosrn/ax/commit/4bf10a9107a9a29a271e9d40c11d351e0d1fa304))
+* **peer:** show peer traffic as conversations, with who waits on whom above the editor ([4debfe1](https://github.com/flosrn/ax/commit/4debfe139649a1079780b63226858d2aa10087f3))
+
+
+### Bug Fixes
+
+* **peer:** do not await answers to unattributed questions ([#279](https://github.com/flosrn/ax/issues/279)) ([f53aefd](https://github.com/flosrn/ax/commit/f53aefde1f918d795513f90a17ca8f5d359813d9))
+
 ## [0.28.2](https://github.com/flosrn/ax/compare/v0.28.1...v0.28.2) (2026-09-29)
 
 
