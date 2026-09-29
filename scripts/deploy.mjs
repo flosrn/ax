@@ -215,7 +215,39 @@ export async function deploy(
     }
   }
 
+  /**
+   * THE BUMP LANDS ON THE BRANCH THE CHECKOUT IS ON. `git push` publishes the
+   * checked-out branch, so a consumer sitting on a feature branch received the
+   * release there while its default branch kept the old pin — measured
+   * 2026-09-29, chatnow_bot's 0.28.0 bump went to
+   * feat/wallet-contacts-ignore-menu and was reported "pinned". Its manifest is
+   * that branch's too, so even "already pins" is not an answer about the
+   * default branch. Asked first, and an unread answer is never "on main"
+   * (F-028). The checkout is someone's working tree: switching its branch is
+   * not this script's gesture, so it is refused by name.
+   */
+  function offDefault(dir) {
+    const branch = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const origin = git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    if (!succeeded(branch) || !succeeded(origin)) {
+      return { reason: `which branch this checkout is on, or which one origin names default, is unread — ${((branch.stderr || origin.stderr) ?? '').split('\n')[0] || 'no answer'}`, repair: `git -C ${dir} remote set-head origin --auto   # then re-run` };
+    }
+    const here = branch.stdout.trim();
+    const main = origin.stdout.trim().replace(/^origin\//, '');
+    if (here === main) return null;
+    return {
+      reason: `checked out on ${here}, not ${main} — a bump pushed from here lands on ${here}, and ${main} keeps its pin`,
+      repair: `bump from a checkout of ${main}: git -C ${dir} worktree add <path> ${main} && cd <path> && ax pin <version>`,
+    };
+  }
+
   function pinConsumer({ dir, pinned }, version) {
+    const off = offDefault(dir);
+    if (off) {
+      bad(`${dir}: ${off.reason}`);
+      fix(off.repair);
+      return 'off-default';
+    }
     if (pinned === version) {
       ok(`${dir} already pins ${version}`);
       return 'current';

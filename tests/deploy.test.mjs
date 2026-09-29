@@ -13,7 +13,7 @@
 // same head is not the attributable run.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -105,8 +105,8 @@ function fakeClock() {
 
 function fakeExec(s) {
   const calls = [];
-  const exec = (bin, args) => {
-    calls.push({ bin, args });
+  const exec = (bin, args, opts = {}) => {
+    calls.push({ bin, args, cwd: opts.cwd });
     const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' });
     const fail = (stderr, status = 1) => ({ status, stdout: '', stderr });
 
@@ -115,11 +115,16 @@ function fakeExec(s) {
       return fail(`unexpected npm ${args.join(' ')}`);
     }
     if (bin === 'ssh') return fail('ssh must not run in this suite\n');
+    if (bin === 'ax') return ok('');
     if (bin === 'git') {
       if (args[0] === 'status') return ok('');
       if (args[0] === 'pull' || args[0] === 'fetch' || args[0] === 'add' || args[0] === 'commit' || args[0] === 'push') return ok('');
       if (args[0] === 'log') return ok('ccccccc chore: release\n');
       if (args[0] === 'rev-list') return ok('0\n');
+      // Which branch a consumer checkout is on, and which one its origin names
+      // default. Unlisted checkouts are on `main`, as a released consumer is.
+      if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) return ok(`${s.branches?.[opts.cwd] ?? 'main'}\n`);
+      if (args[0] === 'symbolic-ref') return ok('origin/main\n');
       return fail(`unexpected git ${args.join(' ')}`);
     }
     if (bin !== 'gh') return fail(`unexpected binary ${bin}\n`);
@@ -171,9 +176,9 @@ function fakeExec(s) {
   return { exec, calls };
 }
 
-async function runDeploy(extra = {}, argv = ['--skip-pins']) {
+async function runDeploy(extra = {}, argv = ['--skip-pins'], { seed = () => ({}) } = {}) {
   const roots = mkdtempSync(join(tmpdir(), 'ax-deploy-roots-'));
-  const s = scenario(extra);
+  const s = scenario({ ...extra, ...seed(roots) });
   const { exec, calls } = fakeExec(s);
   const clock = fakeClock();
   try {
@@ -422,4 +427,31 @@ test('an unread Test run refuses: no conclusion was observed', async () => {
   assert.equal(merged(r), false, r.out);
   assert.notEqual(r.code, 0, r.out);
   assert.match(r.out, /unread/i);
+});
+
+test('a consumer checked out on a feature branch is refused: the bump would land on that branch', async () => {
+  // Measured 2026-09-29 rolling 0.28.0 out: chatnow_bot's checkout sat on
+  // feat/wallet-contacts-ignore-menu, and `git push` published
+  // "chore(deps): bump @flosrn/ax to 0.28.0" to that feature branch while
+  // main kept 0.26.3 — reported as pinned.
+  const r = await runDeploy({}, ['--pins-only'], {
+    seed: roots => {
+      const consumer = dir => {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': '0.24.0' } }));
+        return dir;
+      };
+      const onMain = consumer(join(roots, 'on-main'));
+      const onFeature = consumer(join(roots, 'on-feature'));
+      return { onMain, onFeature, branches: { [onFeature]: 'feat/wallet-contacts-ignore-menu' } };
+    },
+  });
+
+  const pinnedIn = dir => r.calls.some(c => c.bin === 'ax' && c.args[0] === 'pin' && c.cwd === dir);
+  const pushedFrom = dir => r.calls.some(c => c.bin === 'git' && c.args[0] === 'push' && c.cwd === dir);
+  assert.equal(pinnedIn(r.s.onMain) && pushedFrom(r.s.onMain), true, r.out);
+  assert.equal(pinnedIn(r.s.onFeature), false, 'no pin in a checkout off the default branch');
+  assert.equal(pushedFrom(r.s.onFeature), false, 'nothing pushed to the feature branch');
+  assert.match(r.out, /on-feature.*feat\/wallet-contacts-ignore-menu, not main/);
+  assert.notEqual(r.code, 0, r.out);
 });
