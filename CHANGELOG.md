@@ -8,6 +8,17 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.28.1](https://github.com/flosrn/ax/compare/v0.28.0...v0.28.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **deploy:** refuse a consumer checkout that is not on its default branch ([0e0a9fc](https://github.com/flosrn/ax/commit/0e0a9fcd794a0dc589ea345887be28b138ffc464))
+* **peer:** say at once that a pane was rebound to another Run, with both ways back ([2c8d949](https://github.com/flosrn/ax/commit/2c8d94948c78f7b06f6d97a54e4f9697d6f403e5))
+* **pin:** name a stale pnpm patch before moving, say pnpm's own refusal, and leave nothing behind ([7a14843](https://github.com/flosrn/ax/commit/7a14843dda5c18f0d8ec961bb5de2a7e08bbdfdd))
+* **worker:** settle reads a record's own Run, its host, and the pane its start created ([f804574](https://github.com/flosrn/ax/commit/f804574ee01f29edf57541c894e1a1786a31eef5))
+* **worktree:** refuse a worktree holding populated submodules before cleanup runs ([7c8fe73](https://github.com/flosrn/ax/commit/7c8fe735013fd307ef1f0daedf41da291ac30ca1))
+
 ## [0.28.0](https://github.com/flosrn/ax/compare/v0.27.0...v0.28.0) (2026-09-29)
 
 
