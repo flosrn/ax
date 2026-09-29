@@ -200,7 +200,7 @@ function invoke(argv, { run = fakeRunner(), env = {}, gateFn, arm, startDeps = {
   process.stderr.write = chunk => (chunks.push(String(chunk)), true);
   let code;
   try {
-    code = start(argv, { runner: run, env: fullEnv, sleep: () => {}, gateFn, arm, ...startDeps });
+    code = start(argv, { runner: startDeps.makeRunner ? undefined : run, env: fullEnv, sleep: () => {}, gateFn, arm, ...startDeps });
   } finally {
     process.stdout.write = outWrite;
     process.stderr.write = errWrite;
@@ -529,6 +529,137 @@ test('replace verifies task-update read-back before opening a new attempt (F-003
   assert.equal(record.attempts.length, 1);
 });
 
+// ── A dead Dispatch Orca still holds active (#275) ───────────────────────────
+//
+// Measured 2026-09-29 on gapila `2122-work`: the pane was closed by hand, the
+// gate proved it dead and answered 0, and `--replace` refused "task-update did
+// not read back ready" — Orca refuses `ready` while any Dispatch of the task is
+// `pending`/`dispatched` (867d38397893, db/tasks/task-status-transition.ts:
+// "cannot move to ready while Dispatch … is active"), and a closed pane does
+// not settle one. Only `orca orchestration worker-stop --dispatch` did.
+
+const notStartable = dispatchId => {
+  const body = {
+    ok: false,
+    error: {
+      code: 'task_not_startable',
+      message: `Task task_abc123 cannot move to ready while Dispatch ${dispatchId} is active.`,
+      data: { taskId: 'task_abc123', dispatchId },
+    },
+  };
+  return { status: 1, stdout: JSON.stringify(body), stderr: '', receipt: body };
+};
+
+/** fakeRunner, whose first task-update Orca refuses over `held`, and whose worker-stop settles it (or not). */
+function heldRunner({ held = 'ctx_abc123', settles = true } = {}) {
+  const base = fakeRunner();
+  let stopped = false;
+  const run = args => {
+    const line = args.join(' ');
+    if (line.includes('worker-stop')) {
+      base.calls.push([...args]);
+      stopped = settles;
+      return receipt({ dispatchId: held, state: settles ? 'stopped' : 'stop_unknown', processAction: 'none' });
+    }
+    if (line.includes('task-update') && !stopped) {
+      base.calls.push([...args]);
+      return notStartable(held);
+    }
+    return base(args);
+  };
+  run.calls = base.calls;
+  return run;
+}
+
+test('replace stops the dead Dispatch Orca still holds active — one this record started — then returns the task to ready', () => {
+  const home = scratch();
+  invoke(freshArgs(home), { env: { HOME: home } });
+  const run = heldRunner();
+  const r = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 0, r.out);
+  const lines = run.calls.map(call => call.join(' '));
+  const stop = lines.findIndex(line => line.startsWith('orchestration worker-stop --dispatch ctx_abc123'));
+  assert.notEqual(stop, -1, lines.join(' | '));
+  assert.ok(stop < lines.findIndex(line => line.includes('worker-start')), 'the stop precedes the replacement');
+  assert.equal(lines.filter(line => line.includes('task-update')).length, 2, 'refused, then read back ready');
+  assert.match(r.out, /ctx_abc123/);
+});
+
+test('replace never stops a Dispatch this record did not start: it refuses, naming the stop verb', () => {
+  const home = scratch();
+  invoke(freshArgs(home), { env: { HOME: home } });
+  const run = heldRunner({ held: 'ctx_stranger' });
+  const r = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /REFUSED/);
+  assert.match(r.out, /orca orchestration worker-stop --dispatch ctx_stranger/);
+  assert.equal(run.calls.filter(call => call.includes('worker-stop')).length, 0, 'nothing stopped on a guess');
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0);
+});
+
+test('replace whose stop does not free the task refuses, naming the stop verb, and starts nothing', () => {
+  const home = scratch();
+  invoke(freshArgs(home), { env: { HOME: home } });
+  const run = heldRunner({ settles: false });
+  const r = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /orca orchestration worker-stop --dispatch ctx_abc123/);
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0);
+});
+
+test('a task-update that does not read back ready names what Orca said and a repair', () => {
+  const home = scratch();
+  invoke(freshArgs(home), { env: { HOME: home } });
+  const r = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, run: fakeRunner({ updateStatus: 'working' }), gateFn: () => 0 });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /working/, 'the status Orca read back, quoted');
+  assert.match(r.out, /→ /, 'every refusal names its repair');
+});
+
+test('replace returns the task to ready in the Run the record named, not the caller-bound Run', () => {
+  const home = scratch();
+  invoke(freshArgs(home), { env: { HOME: home } });
+  const run = fakeRunner();
+  const r = invoke(['--replace', '--request', 'req-1'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(r.code, 0, r.out);
+  const update = run.calls.find(call => call.includes('task-update'));
+  assert.equal(update[update.indexOf('--run') + 1], 'run_parent', update.join(' '));
+});
+
+test('a remote new-top-level worker-start gets Orca’s full 110s transport budget plus slack; task-create and ordinary reads stay at 30s', () => {
+  const home = scratch();
+  const opts = [];
+  const run = remoteRunner();
+  const r = invoke(freshArgs(home, '2122-work', REMOTE_PLACEMENT), {
+    env: { HOME: home },
+    // Using `runner` here would bypass createRunner's timeout option. The
+    // injected makeRunner observes the same selection the real call receives.
+    startDeps: {
+      resolve: () => 'orca',
+      makeRunner: option => { opts.push(option); return run; },
+    },
+    run: undefined,
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(opts.some(option => option.timeoutMs >= 110_000), JSON.stringify(opts));
+  assert.ok(opts.some(option => option.timeoutMs === undefined), 'task-create keeps the ordinary runner budget');
+});
+
+test('a remote worker-start replay gets the same long budget, never a shorter one than the recorded first call', () => {
+  const home = scratch();
+  const first = invoke(freshArgs(home, '2122-work', REMOTE_PLACEMENT), { env: { HOME: home }, run: remoteRunner() });
+  assert.equal(first.code, 0, first.out);
+  const opts = [];
+  const run = remoteRunner();
+  const r = invoke(['--resume', '--request', '2122-work'], {
+    env: { HOME: home },
+    startDeps: { resolve: () => 'orca', makeRunner: option => { opts.push(option); return run; } },
+    run: undefined,
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(opts.some(option => option.timeoutMs >= 110_000), JSON.stringify(opts));
+});
+
 test('replace reuses the task, opens one attempt, and omits --run from worker-start argv', () => {
   const home = scratch();
   const first = invoke(freshArgs(home), { env: { HOME: home } });
@@ -796,6 +927,19 @@ test('a remote replace whose host cannot list its worktrees cannot establish, na
   assert.equal(r.code, 3, r.out);
   assert.match(r.out, /orca worktree list --repo id:45d78ba4-b25a-43ed-96e1-add67078bcd2 --environment netcup-vie --json/);
   assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'nothing issued');
+  assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0);
+});
+
+test('a second replace refuses when the reused tree is now gone, instead of treating its exact selector as proof of existence', () => {
+  const home = scratch();
+  remoteRecord(home);
+  const once = invoke(['--replace', '--request', '2122-work'], { env: { HOME: home }, run: remoteRunner(), gateFn: () => 0 });
+  assert.equal(once.code, 0, once.out);
+  const run = remoteRunner({ listed: [] });
+  const twice = invoke(['--replace', '--request', '2122-work'], { env: { HOME: home }, run, gateFn: () => 0 });
+  assert.equal(twice.code, 1, twice.out);
+  assert.match(twice.out, new RegExp(REMOTE_TREE));
+  assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0);
   assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0);
 });
 

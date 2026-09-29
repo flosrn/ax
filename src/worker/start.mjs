@@ -73,9 +73,10 @@ import {
   workerStartArgv,
   workerStartTrees,
 } from './record.mjs';
-import { CREATION_FLAGS, reinstateRemote } from './placement.mjs';
+import { CREATION_FLAGS, reinstateRemote, remoteRepoOf, remoteTreeOf } from './placement.mjs';
 import { briefDelivered } from './delivered.mjs';
 import { armStallWatcher } from './stall.mjs';
+import { dispatchIdsOf } from './transcript.mjs';
 
 // No sleep here any more: nothing in this verb waits on a pane. The cursor
 // polling that used to live in `ensureSpecSubmitted` is gone with it, and the
@@ -383,26 +384,41 @@ function withoutCreation(argv) {
 function reinstateTree(path, inherited, { run, request }) {
   const on = argvValue(inherited, '--on') ?? '';
   if (on === '') return { passthru: inherited };
-  if ((argvValue(inherited, '--worktree') ?? '') !== 'new-top-level') return { passthru: withoutCreation(inherited) };
+  const selector = argvValue(inherited, '--worktree') ?? '';
+  // After the FIRST replacement, the newest attempt records its `id:`
+  // selector, not `new-top-level`. The selector is still only an address, not
+  // evidence that the host continues to list the tree; a later replacement
+  // asks the host again before returning the task to ready.
+  const existing = selector !== 'new-top-level';
+  if (existing && remoteTreeOf(selector) === '') return { passthru: withoutCreation(inherited) };
 
   let trees;
-  try {
-    trees = workerStartTrees(path);
-  } catch (error) {
-    return { cannot: `the newest worker-start's receipt is unreadable: ${String(error)}`, repair: `ax worker start --show --request ${request}` };
-  }
-  if (trees === null) {
-    return {
-      cannot: `the newest worker-start's receipt names no effects, so whether it created a tree on '${on}' is unknown — and reissuing new-top-level mints ${request}-2 beside one if it did`,
-      repair: `ax worker start --show --request ${request}   # and orca worktree list --environment ${on} --json`,
-    };
-  }
-  if (trees.length === 0) {
-    note(redactSecrets(`the recorded worker-start placed no tree on '${on}' (its receipt names none), so the recorded new-top-level is reissued`));
-    return { passthru: inherited };
-  }
-  if (trees.length > 1) {
-    return { cannot: `the newest worker-start's receipt names ${trees.length} trees (${trees.join(', ')}), so which one the slice lives in cannot be read`, repair: `ax worker start --show --request ${request}` };
+  if (existing) {
+    const repo = remoteRepoOf(selector);
+    const tree = remoteTreeOf(selector);
+    if (repo === '') {
+      return { cannot: `the recorded selector ${JSON.stringify(selector)} carries a path but no repository to ask '${on}' about`, repair: `ax worker start --show --request ${request}` };
+    }
+    trees = [`${repo.slice(3)}::${tree}`];
+  } else {
+    try {
+      trees = workerStartTrees(path);
+    } catch (error) {
+      return { cannot: `the newest worker-start's receipt is unreadable: ${String(error)}`, repair: `ax worker start --show --request ${request}` };
+    }
+    if (trees === null) {
+      return {
+        cannot: `the newest worker-start's receipt names no effects, so whether it created a tree on '${on}' is unknown — and reissuing new-top-level mints ${request}-2 beside one if it did`,
+        repair: `ax worker start --show --request ${request}   # and orca worktree list --environment ${on} --json`,
+      };
+    }
+    if (trees.length === 0) {
+      note(redactSecrets(`the recorded worker-start placed no tree on '${on}' (its receipt names none), so the recorded new-top-level is reissued`));
+      return { passthru: inherited };
+    }
+    if (trees.length > 1) {
+      return { cannot: `the newest worker-start's receipt names ${trees.length} trees (${trees.join(', ')}), so which one the slice lives in cannot be read`, repair: `ax worker start --show --request ${request}` };
+    }
   }
 
   const found = reinstateRemote({ on, treeId: trees[0], run });
@@ -500,6 +516,26 @@ function reservedRefusal(passthru) {
   if (!taken) return '';
   return `worker-start passthrough may not carry ${taken}: ax owns ${RESERVED.join(', ')} — they are the recorded dispatch identity`;
 }
+
+/**
+ * A REMOTE WORKER-START IS NOT A 30s GESTURE (#275). Orca 867d38397893
+ * budgets readiness at 60s and its CLI client adds 50s transport grace
+ * (shared/orchestration-timing-budgets.ts:6-8,23-27; cli/runtime/client.ts:
+ * 182-193): 110s for a cold create, setup and prompt handoff. The ordinary
+ * 30s `createRunner` killed the caller while Orca still worked — exit null,
+ * `spawnSync orca ETIMEDOUT`; 2122-work then replayed the recorded identity
+ * under `--resume` and its dispatch came up at 13:04:29, ~41s after its
+ * creation at 13:03:49. 2107-work's cold remote start took ~78s; both
+ * qual-gapicore and qual-netcup-vie timed out at ax's 30s boundary. Give
+ * this PHASE Orca's whole outer budget plus 10s process overhead; every
+ * short read and task-create keeps the normal runner, and `--resume` gets
+ * the same budget for the same recorded argv. A timeout STILL means UNKNOWN
+ * and the exact replay, never permission to mint another identity (F-001).
+ */
+export const REMOTE_WORKER_START_TIMEOUT_MS = 120_000;
+
+const phaseTimeout = full =>
+  full.includes('worker-start') && argvValue(full, '--on') ? REMOTE_WORKER_START_TIMEOUT_MS : undefined;
 
 function phaseRun(path, name, args, { bin, execute, identity = newIdentity(), now }) {
   const full = [bin, ...args];
@@ -722,6 +758,73 @@ function resume(path, context) {
   return finishUsable(path, recovered);
 }
 
+/** What an Orca answer said, in one line, for a refusal that quotes it. */
+function said(out) {
+  const receipt = out?.receipt ?? {};
+  if (receipt.error) return `${receipt.error.code ?? 'error'}: ${String(receipt.error.message ?? '').slice(0, 200)}`;
+  const status = receipt.result?.task?.status ?? receipt.result?.state;
+  if (status !== undefined) return `status ${JSON.stringify(status)}`;
+  return String(receipt.unparseable ?? out?.stderr ?? `exit ${out?.status}`).replace(/\s+/g, ' ').trim().slice(0, 200) || `exit ${out?.status}`;
+}
+
+/**
+ * RETURN THE TASK TO `ready`, AND FREE IT FROM A DISPATCH ONLY ORCA STILL
+ * THINKS IS ALIVE (#275). Orca refuses `ready` while any Dispatch of the task
+ * is `pending`/`dispatched` — "cannot move to ready while Dispatch … is
+ * active; stop or settle its worker first" (867d38397893,
+ * db/tasks/task-status-transition.ts) — and a pane that died or was closed by
+ * hand does not settle its Dispatch. Measured 2026-09-29 on gapila
+ * `2122-work`: the gate proved the pane dead, this refused "task-update did
+ * not read back ready", and only `orca orchestration worker-stop --dispatch`
+ * typed by hand let the same replace through.
+ *
+ * That stop is issued here, and it is not a mutation on a guess: it is called
+ * only after the gate — under this same lock — answered that EVERY dispatch of
+ * the task is a proven corpse, only for the Dispatch Orca itself names in its
+ * refusal, and only when an attempt of THIS record started it. A Dispatch
+ * another record started is refused naming the stop, because that record is
+ * not this replace's to act for. Orca's own read-back after the stop is the
+ * verdict, never the stop's receipt.
+ */
+function returnToReady(path, task, runId, context) {
+  const update = () => context.run(['orchestration', 'task-update', '--id', task, '--run', runId, '--status', 'ready', '--json']);
+  const ready = out => out.status === 0 && taskUpdateOk(out.receipt);
+  const again = `ax worker start --replace --request ${context.request}`;
+  const first = update();
+  if (ready(first)) return null;
+
+  const error = first.receipt?.error ?? {};
+  const held = error.code === 'task_not_startable' ? String(error.data?.dispatchId ?? '') : '';
+  if (held === '') {
+    return refuse(
+      `task-update did not read back ready; not replacing — Orca answered ${said(first)}`,
+      `ax worker gate ${task} --run ${runId}   # read what Orca holds for this task, then ${again}`,
+    );
+  }
+  const stop = `orca orchestration worker-stop --dispatch ${held} --json`;
+  let mine;
+  try {
+    mine = dispatchIdsOf(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    mine = new Set();
+  }
+  if (!mine.has(held)) {
+    return refuse(
+      `Orca holds Dispatch ${held} of ${task} active, and no attempt of this record started it — this replace stops nothing on another record's behalf`,
+      `${stop}   # once you have read that its pane is dead; then ${again}`,
+    );
+  }
+
+  note(redactSecrets(`Orca still holds Dispatch ${held} active although the gate proved its pane dead — stopping it so the task can return to ready`));
+  const stopped = context.run(['orchestration', 'worker-stop', '--dispatch', held, '--json']);
+  const second = update();
+  if (ready(second)) return null;
+  return refuse(
+    `the stop of ${held} did not free the task (worker-stop: ${said(stopped)}; task-update: ${said(second)}); not replacing`,
+    `${stop}   # read the state it settles to, then ${again}`,
+  );
+}
+
 /**
  * The replacement itself, under the record's replace lock.
  *
@@ -777,10 +880,8 @@ function replaceLocked(path, passthru, context) {
   }
   if (gateCode === 3) return cannot('the live-agent gate could not answer', `ax worker start --resume --request ${context.request}`);
 
-  const updated = context.run(['orchestration', 'task-update', '--id', task, '--status', 'ready', '--json']);
-  if (updated.status !== 0 || !taskUpdateOk(updated.receipt)) {
-    return refuse('task-update did not read back ready; not replacing');
-  }
+  const unready = returnToReady(path, task, runId, context);
+  if (unready !== null) return unready;
 
   attemptNew(path);
   const identity = newIdentity();
@@ -931,7 +1032,11 @@ export function start(
   if (!bin) return cannot('no Orca CLI on this machine', 'orca open   # then retry the same request');
   const makeRun = target => runner ?? makeRunner({ bin: target });
   const run = makeRun(bin);
-  const execute = full => (runner ? runner(full.slice(1)) : makeRunner({ bin: full[0] })(full.slice(1)));
+  const execute = full => {
+    if (runner) return runner(full.slice(1));
+    const timeoutMs = phaseTimeout(full);
+    return makeRunner({ bin: full[0], ...(timeoutMs === undefined ? {} : { timeoutMs }) })(full.slice(1));
+  };
   const context = {
     request: parsed.request,
     runId: parsed.runId,
