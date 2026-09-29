@@ -21,8 +21,16 @@ import { worktreeFindings } from './worktree/doctor.mjs';
  *
  * Every finding names the command that repairs it. A check that reports a
  * problem without its fix gets ignored, which is the same as not existing.
+ *
+ * `project` narrows the question to what a COMMIT carries (#276): the config,
+ * managed files, pin and wiring — not this checkout's recorded worktree state,
+ * which lives in untracked files (`.env.local`, node_modules) no commit holds.
+ * `ax pin` asks it that way, because a bump made from a fresh worktree of the
+ * default branch otherwise failed on "is not recorded → ax worktree setup"
+ * whatever version it pinned. A doctor older than this ignores the flag and
+ * grades both halves, which is how every pin behaved before.
  */
-export function doctor(cwd = process.cwd()) {
+export function doctor(cwd = process.cwd(), { project = false } = {}) {
   const { root, main, isWorktree } = repoPaths(cwd);
   if (!root) {
     section('ax doctor');
@@ -371,13 +379,18 @@ export function doctor(cwd = process.cwd()) {
   //    command because it answers the same question this one already asks, and a
   //    coherence check nobody runs is not a check.
   section('worktree');
-  for (const finding of worktreeFindings({ root, main, config })) {
-    if (finding.level === 'bad') fail(finding.message, finding.fix);
-    else if (finding.level === 'note') {
-      note(finding.message);
-      if (finding.fix) fix(finding.fix);
-    } else {
-      ok(finding.message);
+  if (project) {
+    note("worktree: not graded (--project) — this checkout's recorded state is no commit's content");
+    fix('ax doctor   # grades it');
+  } else {
+    for (const finding of worktreeFindings({ root, main, config })) {
+      if (finding.level === 'bad') fail(finding.message, finding.fix);
+      else if (finding.level === 'note') {
+        note(finding.message);
+        if (finding.fix) fix(finding.fix);
+      } else {
+        ok(finding.message);
+      }
     }
   }
 

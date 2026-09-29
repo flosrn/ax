@@ -301,7 +301,15 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   // And a doctor that could not RUN is a different state from a checkout it
   // refused: one is incoherent, the other was never graded (F-028). Reporting the
   // second as the first sends someone to repair findings that do not exist.
-  const doctor = exec(join(root, 'bin', 'ax'), ['doctor'], root);
+  //
+  // AND IT GRADES WHAT THE PIN COMMIT CARRIES (#276): `--project`. This
+  // checkout's recorded worktree state (`.env.local`, node_modules) is no
+  // commit's content, and a bump made from a fresh worktree of the default
+  // branch — where scripts/deploy.mjs sends an off-default consumer — failed
+  // on exactly that, whatever version it pinned. The doctor called here is the
+  // NEW version's; one older than the flag ignores it and grades both halves,
+  // which is how this verb behaved before.
+  const doctor = exec(join(root, 'bin', 'ax'), ['doctor', '--project'], root);
   if (doctor.error) {
     // The repair must NOT be the path that just failed. This branch is reached on
     // ENOENT (no committed bootstrap) and EACCES (present, not executable), and

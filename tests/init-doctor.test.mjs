@@ -950,3 +950,39 @@ test('outside a git repository, doctor says so instead of scanning upwards', () 
   assert.equal(doctor(orphan), 1);
   rmSync(orphan, { recursive: true, force: true });
 });
+
+// #276. `ax pin` refuses a bump the doctor rejects, and a fresh worktree of the
+// default branch — where scripts/deploy.mjs sends a consumer that is checked
+// out elsewhere — fails doctor's WORKTREE half (no install, no recorded
+// address) whatever version is pinned. Measured 2026-09-29 bumping three
+// consumers to 0.28.1: every finding was `→ ax worktree setup`, none was about
+// anything the pin commit carries. `--project` grades what a commit carries.
+test('--project grades the project half alone; plain doctor still grades the worktree', () => {
+  const capture = fn => {
+    const written = [];
+    const stdout = process.stdout.write;
+    process.stdout.write = chunk => (written.push(String(chunk)), true);
+    try {
+      return { code: fn(), out: written.join('') };
+    } finally {
+      process.stdout.write = stdout;
+    }
+  };
+  // Empty directories are no commit's content: a real `apps/web` carries files.
+  for (const app of ['web', 'e2e']) writeFileSync(join(dir, 'apps', app, '.gitkeep'), '');
+  git('add', '-A');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'the project as init left it');
+  const tree = join(mkdtempSync(join(tmpdir(), 'ax-scope-')), 'fresh');
+  git('worktree', 'add', '-q', '-b', 'scope-probe', tree);
+  try {
+    const whole = capture(() => doctor(tree));
+    assert.ok(whole.code > 0, 'an unprovisioned worktree is incoherent as a worktree');
+    assert.match(whole.out, /ax worktree setup|node_modules/);
+
+    const project = capture(() => doctor(tree, { project: true }));
+    assert.equal(project.code, 0, project.out);
+    assert.match(project.out, /worktree: not graded \(--project\)/);
+  } finally {
+    git('worktree', 'remove', '--force', tree);
+  }
+});

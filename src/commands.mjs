@@ -89,6 +89,9 @@ export const COMMANDS = [
     section: 'PROJECT',
     summary: 'is this checkout coherent? exit 0 when it is',
     agentLine: "`ax doctor` — check this checkout's config, project wiring and recorded worktree state.",
+    // `--project` is what `ax pin` asks for (#276): a pin commit carries the
+    // project half, never this checkout's recorded worktree state.
+    options: [['--project', "grade what a commit carries, not this checkout's worktree state"]],
   },
   {
     name: 'worktree',

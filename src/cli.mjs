@@ -30,7 +30,7 @@ import { debugAs } from './debug-as/index.mjs';
  * unparsed wherever the command owns its own arguments.
  */
 const runners = argv => ({
-  doctor: () => (doctor() === 0 ? 0 : 1),
+  doctor: ({ flag }) => (doctor(undefined, { project: flag('project') }) === 0 ? 0 : 1),
   init: ({ root, flag, value }) => {
     if (!root) {
       fatal('ax init must run inside a git repository');

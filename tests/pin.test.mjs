@@ -76,7 +76,7 @@ function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, initRun = {
         if (onInstall) onInstall(at);
         return { stdout: '', stderr: '', ...install };
       }
-      if (bin.endsWith('/bin/ax') && args[0] === 'doctor') return { stdout: '', stderr: '', ...doctor };
+      if (bin.endsWith('/bin/ax') && args[0] === 'doctor') return { stdout: '', stderr: '', ...(typeof doctor === 'function' ? doctor(args) : doctor) };
       if (bin.endsWith('/bin/ax') && args[0] === 'init') return { stdout: '', stderr: '', ...initRun };
       return { status: 1, stdout: '', stderr: `unexpected: ${bin} ${args.join(' ')}` };
     },
@@ -99,6 +99,25 @@ test('a full bump: exact version written, install proven from node_modules, doct
   assert.match(r.out, /doctor coherent/);
   assert.match(r.out, /git add package\.json pnpm-lock\.yaml && git commit -m "chore\(deps\): bump @flosrn\/ax to 0\.6\.6" && git push/);
   assert.ok(r.calls.every(line => !line.startsWith('git commit') && !line.startsWith('git push')), 'the git gesture stays the caller\'s');
+});
+
+test('a bump from an unprovisioned checkout is not refused for that checkout\u2019s recorded worktree state', () => {
+  // #276, measured 2026-09-29: bumping three consumers' main to 0.28.1 from
+  // fresh worktrees of main (where scripts/deploy.mjs sends an off-default
+  // consumer), every doctor finding was "… is not recorded → ax worktree
+  // setup" — untracked state no pin commit carries — and the pin refused.
+  const exec = fakeExec({
+    onInstall: at => installAs(at, '0.6.6'),
+    doctor: args =>
+      args.includes('--project')
+        ? { status: 0, stdout: '  ✓ checkout is coherent\n' }
+        : { status: 1, stdout: '  ✗ apps/web/.env.local is missing\n      → ax worktree setup\n' },
+  });
+  const r = run(['0.6.6'], { exec });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /doctor coherent under the new pin/);
+  assert.match(r.out, /git add package\.json pnpm-lock\.yaml && git commit/);
 });
 
 test('a frozen lockfile does not defeat the bump: the install is told the lockfile is changing', () => {
@@ -265,7 +284,7 @@ test('--init regenerates the managed state the new version introduced, then grad
 
   assert.equal(r.code, 0, r.out);
   const init = r.calls.findIndex(line => /bin\/ax init$/.test(line));
-  const doctor = r.calls.findIndex(line => /bin\/ax doctor$/.test(line));
+  const doctor = r.calls.findIndex(line => /bin\/ax doctor( --project)?$/.test(line));
   assert.ok(init !== -1, `ax init was never run: ${r.calls.join(' | ')}`);
   assert.ok(init < doctor, 'init must run BEFORE the grading it exists to satisfy');
   assert.match(r.out, /git add/, 'the commit line now includes what init wrote');
@@ -353,7 +372,7 @@ test('already on the version re-proves disk and doctor without reinstalling', ()
   assert.match(r.out, /installed @flosrn\/ax 0\.5\.2, proven/);
   assert.match(r.out, /doctor coherent/);
   assert.ok(r.calls.every(line => !line.startsWith('pnpm install')), 'verification does not reinstall an unchanged pin');
-  assert.ok(r.calls.some(line => line.endsWith('/bin/ax doctor')));
+  assert.ok(r.calls.some(line => /\/bin\/ax doctor( --project)?$/.test(line)));
   assert.doesNotMatch(r.out, /git add/, 'verification-only runs earn no commit');
 });
 
