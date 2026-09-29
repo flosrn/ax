@@ -32,6 +32,14 @@ const dispatch = (id, handle, state = 'failed') => ({
  * for the orphaned case); `tasks: null` is an unreadable task-list, and
  * `workerListFails`/`workerListShape` are the two ways read 1 can fail to
  * answer — a missing command, and a receipt with no `workers` container.
+ *
+ * `workers`/`tasks` are what the two Run-scoped lists answer UNSCOPED — i.e.
+ * for the Run bound to the calling terminal, Orca's default
+ * (worker-list-run-scope.ts at 867d38397893). `runs` holds OTHER Runs: a list
+ * asked with `--run <id>` answers `runs[id]`, and a Run absent from it holds
+ * nothing. Leaving `runs` empty keeps the old single-scope fixture. `shows`
+ * is `worker-show --dispatch <id>` keyed by dispatch id: the `result` it
+ * answers, and an id absent from it fails the read.
  */
 function fakeRunner({
   workers = [],
@@ -46,6 +54,8 @@ function fakeRunner({
   hosts = {},
   worktrees = null,
   ready = true,
+  runs = {},
+  shows = {},
 } = {}) {
   const calls = [];
   const receipt = result => ({ status: 0, stdout: '', stderr: '', receipt: { ok: true, result } });
@@ -63,10 +73,16 @@ function fakeRunner({
     if (args[0] === 'status') {
       return ready ? receipt({ runtime: { reachable: true } }) : broken('not running');
     }
+    const at = args.indexOf('--run');
+    const scoped = at !== -1 && Object.keys(runs).length > 0 ? (runs[args[at + 1]] ?? {}) : null;
     if (line.includes('worker-list')) {
       if (workerListFails) return broken('Unknown command: orchestration worker-list');
       if (workerListShape) return receipt({});
-      return receipt({ workers });
+      return receipt({ workers: scoped === null ? workers : (scoped.workers ?? []) });
+    }
+    if (line.includes('worker-show')) {
+      const id = args[args.indexOf('--dispatch') + 1];
+      return shows[id] === undefined ? broken(`Unknown dispatch ${id}`) : receipt(shows[id]);
     }
     if (args[0] === 'terminal' && args[1] === 'list') {
       // The host's OWN inventory, served by that host's runtime: `local` in its
@@ -88,7 +104,7 @@ function fakeRunner({
     }
     if (line.includes('task-list')) {
       if (tasks === null) return { status: 0, stdout: 'not json at all', stderr: '', receipt: { unparseable: 'not json at all', error: 'x' } };
-      return receipt({ tasks: tasks.map(id => ({ id })) });
+      return receipt({ tasks: (scoped === null ? tasks : (scoped.tasks ?? [])).map(id => ({ id })) });
     }
     return receipt({});
   };
@@ -175,12 +191,14 @@ const started = ({ dispatchId, handle }) => ({
  *
  * `on` is the host that placement named, `worktree`/`repoId` the rest of it,
  * and `stranded` the phase that never concluded — the shape `--resume` exists
- * for, and the one an outcome-unknown mutation leaves behind.
+ * for, and the one an outcome-unknown mutation leaves behind. `run` is the
+ * `--run` `ax worker start` writes into every task-create argv; left empty,
+ * the record names no Run (the shape of the oldest records).
  */
-function record(dir, request, { dispatchId = 'ctx_rec', handle = 'term_rec', on = '', worktree = '', repoId = '', stranded = false, delivery = '' } = {}) {
+function record(dir, request, { dispatchId = 'ctx_rec', handle = 'term_rec', on = '', worktree = '', repoId = '', stranded = false, delivery = '', run = '' } = {}) {
   const { path } = claimRecord(dir, request);
   initRecord(path, { request, orca: 'orca', repo: 'acme/widgets', delivery });
-  phaseBegin(path, { name: 'task-create', identity: `id-create-${request}`, argv: ['orca', 'orchestration', 'task-create', '--json'] });
+  phaseBegin(path, { name: 'task-create', identity: `id-create-${request}`, argv: ['orca', 'orchestration', 'task-create', ...(run === '' ? [] : ['--run', run]), '--json'] });
   phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { task: { id: TASK }, mutation: { requestId: 'r', replayed: false } } }) });
   phaseBegin(path, {
     name: 'worker-start',
@@ -434,15 +452,167 @@ test('an unreachable runtime is probed before any read, and refuses', () => {
   assert.match(r.out, /orca open/);
 });
 
-test('the three reads happen in order, and --run scopes the task-list', () => {
+test('the three reads happen in order, and --run scopes BOTH Run-scoped lists', () => {
+  // worker-list is Run-scoped exactly as task-list is: unscoped, it answers the
+  // Run bound to the calling terminal (Orca worker-list-run-scope.ts). Scoping
+  // only task-list is how #2107 read "exists and has no Dispatch" off two
+  // different Runs.
   const r = verdict({ workers: [], terminals: [], tasks: [TASK] }, [TASK, '--run', 'run_4a38bd284217']);
   assert.equal(r.code, 0);
   assert.deepEqual(r.calls, [
     ['status', '--json'],
-    ['orchestration', 'worker-list', '--json'],
+    ['orchestration', 'worker-list', '--run', 'run_4a38bd284217', '--json'],
     ['terminal', 'list', '--json'],
     ['orchestration', 'task-list', '--run', 'run_4a38bd284217', '--json'],
   ]);
+});
+
+// ── #2107: a task of ANOTHER Run, gated from a terminal bound to this one ────
+// Measured 2026-09-29 (gapila): `ax worker gate 2107-work` from a terminal
+// bound to run_fe0d11eaf4fb answered CANNOT ESTABLISH for a record that names
+// its own Run (run_351d18262762) in every task-create argv — and the offered
+// `--run` then answered "First launch, safe to start" over a `dispatched` task
+// whose Dispatch still retained a pane, because worker-list stayed on the
+// bound Run while task-list moved to the named one.
+
+const FOREIGN = 'run_351d18262762';
+
+test('#2107: --run never pairs a named Run\'s task-list with the bound Run\'s worker-list', () => {
+  const r = verdict(
+    {
+      workers: [],
+      tasks: [],
+      terminals: ['term_live'],
+      runs: { [FOREIGN]: { tasks: [TASK], workers: [dispatch('ctx_live', 'term_live', 'ready')] } },
+    },
+    [TASK, '--run', FOREIGN],
+  );
+  assert.doesNotMatch(r.out, /First launch/, 'a Dispatch in the named Run is not "no Dispatch"');
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /STOP — one live agent \(ctx_live\)/);
+});
+
+test('#2107: the Run a record names is the Run the gate asks, stated — a foreign-Run corpse is established', () => {
+  const dir = store();
+  record(dir, '2107-work', { dispatchId: 'ctx_dead', handle: 'term_gone', run: FOREIGN });
+  const r = verdict(
+    {
+      workers: [],
+      tasks: [],
+      terminals: [],
+      runs: { [FOREIGN]: { tasks: [TASK], workers: [dispatch('ctx_dead', 'term_gone')] } },
+    },
+    ['2107-work'],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, new RegExp(`Run ${FOREIGN}.*2107-work`), 'the Run substitution is stated, never silent');
+  assert.match(r.out, /MORT +ctx_dead/);
+  assert.deepEqual(
+    r.calls.filter(c => c[1] === 'worker-list' || c[1] === 'task-list'),
+    [
+      ['orchestration', 'worker-list', '--run', FOREIGN, '--json'],
+      ['orchestration', 'task-list', '--run', FOREIGN, '--json'],
+    ],
+  );
+});
+
+test('#2107: a foreign-Run record whose pane still lives answers STOP, not cannot-establish', () => {
+  const dir = store();
+  record(dir, '2107-work', { dispatchId: 'ctx_live', handle: 'term_live', run: FOREIGN });
+  const r = verdict(
+    { workers: [], tasks: [], terminals: ['term_live'], runs: { [FOREIGN]: { tasks: [TASK], workers: [dispatch('ctx_live', 'term_live', 'ready')] } } },
+    ['2107-work'],
+    { ORCA_DISPATCH_STORE: dir },
+  );
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /STOP — one live agent \(ctx_live\)/);
+});
+
+test('#2107: records of one task that name two Runs cannot establish, and name each record to read', () => {
+  const dir = store();
+  record(dir, '2107-work', { run: FOREIGN });
+  record(dir, '2107-resume', { run: 'run_other' });
+  const r = verdict({ workers: [], tasks: [TASK], terminals: [] }, [TASK], { ORCA_DISPATCH_STORE: dir });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /CANNOT ESTABLISH — the records of task_bedfd180d2e6 name 2 Runs/);
+  assert.match(r.out, new RegExp(`→ cat ${dir}/2107-work\\.json`));
+  assert.match(r.out, new RegExp(`→ cat ${dir}/2107-resume\\.json`));
+  assert.equal(r.calls.length, 0, 'nothing is asked of a Run the records cannot agree on');
+});
+
+test('#2107: an explicit --run outranks the recorded one', () => {
+  const dir = store();
+  record(dir, '2107-work', { run: FOREIGN });
+  const r = verdict({ workers: [], tasks: [], terminals: [], runs: { run_named: { tasks: [TASK] } } }, [TASK, '--run', 'run_named'], { ORCA_DISPATCH_STORE: dir });
+  assert.ok(r.calls.some(c => c.join(' ') === 'orchestration worker-list --run run_named --json'), JSON.stringify(r.calls));
+});
+
+// ── #2107: a Dispatch whose worker-list row binds no pane ───────────────────
+// Measured 2026-09-29: ctx_44751b4a84a6 (task_953c10094f93) was `failed` at
+// stage agent_readiness with `agentTerminalHandle: null` in worker-list, and
+// its record's worker-start receipt was an `invalid_argument` naming no
+// Dispatch — so nothing attributed it and the gate answered INCONNU. Yet
+// `worker-show --dispatch` carried the agent pane it created (role agent, on
+// gapicore), and gapicore's own terminal list still held that pane, running.
+
+const unbound = (host = 'gapicore') => ({
+  worker: {
+    dispatchId: 'ctx_unbound',
+    agentTerminalHandle: null,
+    effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: 'term_unbound' }],
+    startOptions: host === '' ? { on: null, serverName: null } : { on: 'dac48ac5', serverName: host },
+  },
+});
+
+test('#2107: a pane-less worker-list row is judged by the agent pane worker-show names, on its host', () => {
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_unbound', null)],
+      terminals: [],
+      omittedHostIds: ['runtime:dac48ac5'],
+      hosts: { gapicore: { terminals: ['term_unbound'] } },
+      shows: { ctx_unbound: unbound() },
+    },
+    [TASK],
+    {},
+    { cwd: repo({ gapicore: { ssh: 'gapicore' } }) },
+  );
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /STOP — one live agent \(ctx_unbound\)/);
+  assert.match(r.out, /→ orca terminal read --terminal term_unbound --environment gapicore --json/, 'the read reaches the host the pane lives on');
+});
+
+test('#2107: the pane worker-show names, absent from its host\'s own answer, is a proven corpse', () => {
+  const r = verdict(
+    {
+      workers: [dispatch('ctx_unbound', null)],
+      terminals: [],
+      omittedHostIds: ['runtime:dac48ac5'],
+      hosts: { gapicore: { terminals: [] } },
+      shows: { ctx_unbound: unbound() },
+    },
+    [TASK],
+    {},
+    { cwd: repo({ gapicore: { ssh: 'gapicore' } }) },
+  );
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /MORT +ctx_unbound/);
+});
+
+test('#2107: a pane-less row whose worker-show cannot be read stays unproven, and names that read', () => {
+  const r = verdict({ workers: [dispatch('ctx_unbound', null)], terminals: [], shows: {} });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /Unknown dispatch ctx_unbound/, 'the reason the read failed, quoted');
+  assert.match(r.out, /→ orca orchestration worker-show --dispatch ctx_unbound --json/);
+});
+
+test('#2107: a worker-show that names no host for its pane never lets an absence be a death', () => {
+  const show = unbound();
+  delete show.worker.startOptions;
+  const r = verdict({ workers: [dispatch('ctx_unbound', null)], terminals: [], omittedHostIds: ['runtime:dac48ac5'], shows: { ctx_unbound: show } });
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /INCONNU ctx_unbound/);
 });
 
 test('another task\'s dispatches are not this task\'s: rows are filtered by taskId', () => {

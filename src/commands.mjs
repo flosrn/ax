@@ -287,9 +287,13 @@ re-dispatch from one (#192).
 Liveness is judged by the same reader \`ax worker ls\` uses: a record says where
 its pane was placed, so a local corpse stays a corpse when an unrelated remote
 host is omitted, and a pane placed with \`--on <host>\` is asked of that host.
-A same-named local worktree never answers for a remote attempt.
+A same-named local worktree never answers for a remote attempt. A dispatch
+whose worker-list row binds no pane is judged by the agent pane \`worker-show\`
+names, on the host that start placed it.
 
-  --run <run_id>   name the Run \`task-list\` is bounded to
+  --run <run_id>   the Run both \`worker-list\` and \`task-list\` are asked about;
+                   default: the Run this task's records name, else the Run
+                   bound to the calling terminal
 
 Exit: 0 / 1 / 2 / 3 as above`,
       release: `A pane closes because the WORK LANDED, never because the session said it was done.

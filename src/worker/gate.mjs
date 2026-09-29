@@ -7,8 +7,8 @@
 //   every dispatch's terminal is gone          -> 0, the corpses of F-003 are not agents
 //   one terminal is still live                 -> 1, it is working
 //   two are live                               -> 2, the duplicate itself
-//   the task is in no list we can read         -> 3, and `task-list` is Run-scoped, so this
-//                                                  covers "wrong id" AND "another Run"
+//   the task is in no list we can read         -> 3, and both lists are Run-scoped, so this
+//                                                  covers "wrong id" AND "a Run no record names"
 //
 // Until 2026-08-09 the bash/python original answered 3 for the FIRST of those
 // as well as the last, because it read only `worker-list` and therefore saw one
@@ -38,6 +38,24 @@
 // (omission is per host, ./pane.mjs), and a pane placed with `--on <env>` is
 // put to THAT host through the same reader `ax worker ls` uses. The refusal is
 // then the case nothing could decide, not the case nobody asked about.
+//
+// BOTH RUN-SCOPED LISTS ARE ASKED ABOUT ONE RUN, AND A RECORD NAMES IT (#2107).
+// `worker-list` and `task-list` each answer, unscoped, the Run bound to the
+// calling terminal (Orca `resolveWorkerListRunScope`). Until 2026-09-29 only
+// `task-list` took `--run`, so the offered `--run` paired a named Run's task
+// with the bound Run's (empty) dispatches and answered "first launch, safe to
+// start" over a `dispatched` task — the `--replace` fence reached that same
+// pairing. Now `--run` scopes both, and without it the Run is the one this
+// task's records wrote into their task-create (`recordedRun`), stated; records
+// that disagree refuse. A task of another Run is then judged on its facts, not
+// read as an absence an operator must walk processes to explain.
+//
+// A ROW THAT BINDS NO PANE IS NOT YET UNPROVEN (#2107). worker-list's
+// `agentTerminalHandle` is the pane Orca BOUND, and a start that failed at
+// agent_readiness binds none while its created pane runs on. `worker-show`
+// names that pane and the host its start placed it on, so it is asked before
+// the row is called INCONNU; an unreadable answer stays INCONNU and names that
+// read as the repair.
 //
 // AND A RECORDED MUTATION WHOSE OUTCOME IS UNKNOWN OUTRANKS AN EMPTY LIST. A
 // `worker-start` that never concluded may have COMMITTED (F-001): Orca can hold
@@ -83,7 +101,7 @@
 // second contract: it is a string that names no task, which is still 3.
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { resolveOrca, createRunner, runtimeReady } from '../orca-bin.mjs';
 import { defaultExec } from '../exec.mjs';
@@ -91,7 +109,7 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
-import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, scanStore, taskIdScan } from './record.mjs';
+import { agentTerminal, defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
 
 /**
  * The task a REQUEST id names, read from the dispatch record store, or null.
@@ -144,6 +162,41 @@ export function namedList(out, key, command) {
   const rows = result[key];
   if (!Array.isArray(rows)) return { ok: false, reason: `'${command}' answered "${key}" as ${typeof rows}, not a list` };
   return { ok: true, rows };
+}
+
+/**
+ * THE AGENT PANE OF A DISPATCH WHOSE worker-list ROW BINDS NONE (#2107).
+ *
+ * `agentTerminalHandle` is the pane worker-list has BOUND, and a start that
+ * failed at `agent_readiness` never binds it — yet the pane was created, and
+ * may still be running. Measured 2026-09-29 on ctx_44751b4a84a6: null in
+ * worker-list, while `worker-show` named the agent pane among the worker's
+ * effects and gapicore's own terminal list still held it. That read is Orca's
+ * record of what the start did, so it is asked before the row is called
+ * unproven — through the same `agentTerminal` reading every receipt gets.
+ *
+ * The HOST is the start's own placement: `startOptions.on` null is this
+ * runtime (`''`); a remote start names its environment in `serverName`, the
+ * name `--on`/`--environment` take. Anything less is `undefined` — the
+ * conservative branch where no absence is a death (F-028).
+ */
+function unboundPane(run, dispatchId) {
+  const out = run(['orchestration', 'worker-show', '--dispatch', dispatchId, '--json']);
+  if (out.status !== 0) {
+    const detail = String(out.stderr || out.stdout || '').trim().slice(0, 200);
+    return { ok: false, reason: `its worker-show failed (exit ${out.status})${detail ? `: ${detail}` : ''}` };
+  }
+  const worker = out.receipt?.result?.worker;
+  if (worker === null || typeof worker !== 'object') return { ok: false, reason: 'its worker-show answered no "worker"' };
+  const handle = agentTerminal(worker);
+  if (handle === null) return { ok: false, reason: 'its worker-show names no agent pane among the effects' };
+  const start = worker.startOptions;
+  let host;
+  if (start !== null && typeof start === 'object' && 'on' in start) {
+    if (start.on === null) host = '';
+    else if (typeof start.serverName === 'string' && start.serverName !== '') host = start.serverName;
+  }
+  return { ok: true, handle, host };
 }
 
 /**
@@ -201,6 +254,7 @@ function uncertainMutations(store, task) {
   }
   const rows = [];
   const setAside = [];
+  const runs = new Map();
   for (const { file, stem } of scan.records) {
     const path = join(store, file);
     let named;
@@ -227,6 +281,15 @@ function uncertainMutations(store, task) {
       };
     }
     if (named !== task) continue;
+    // The Run this record was dispatched in (#2107), when it names one: the
+    // oldest records carry no `--run`, and those leave the lists on Orca's
+    // bound-Run default exactly as before.
+    try {
+      const recorded = recordedRun(path);
+      runs.set(recorded, [...(runs.get(recorded) ?? []), path]);
+    } catch {
+      // no Run recorded: nothing to scope by, and nothing is inferred instead
+    }
     let verdict;
     try {
       verdict = phaseVerdict(path, 'last');
@@ -236,7 +299,7 @@ function uncertainMutations(store, task) {
     }
     if (verdict.verdict === 'unknown') rows.push({ request: stem, evidence: String(verdict.evidence).slice(0, 300) });
   }
-  return { ok: true, rows, setAside };
+  return { ok: true, rows, setAside, runs };
 }
 
 export function gate(argv = [], { resolve = resolveOrca, runner, env = process.env, exec = defaultExec, cwd = process.cwd() } = {}) {
@@ -273,61 +336,6 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     section(`gate ${task}`);
   }
 
-  const bin = runner ? 'injected' : resolve({ env });
-  if (!bin) {
-    bad('CANNOT ESTABLISH — no Orca CLI on this machine, so no dispatch can be counted');
-    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
-    fix('orca open   # bring up the Orca runtime, then re-run this gate');
-    return 3;
-  }
-  const run = runner ?? createRunner({ bin });
-
-  // The execution gate of the socle. Unlike `ax board`, an unreachable runtime
-  // is not a skip here: "I could not ask" must never read as "nobody is there".
-  const ready = runtimeReady(run);
-  if (!ready.ready) {
-    bad(`CANNOT ESTABLISH — ${ready.reason}`);
-    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
-    fix('orca open   # bring up the Orca runtime, then re-run this gate');
-    return 3;
-  }
-
-  // Read 1: the dispatches. Its absence is the one that must never be silent —
-  // on a host where `orchestration worker-list` does not exist (the VPS ships a
-  // different command set; the 2026-08-09 duplicate was born there) an empty
-  // read would authorise the re-dispatch it exists to forbid.
-  const workers = namedList(run(['orchestration', 'worker-list', '--json']), 'workers', 'orca orchestration worker-list');
-  if (!workers.ok) {
-    bad(`CANNOT ESTABLISH — ${workers.reason} (absent on this host?)`);
-    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
-    fix('orca open   # then re-run; if worker-list is missing here, gate from the host that has it');
-    return 3;
-  }
-
-  // Read 2: which panes still exist. This is what makes a Dispatch row a live
-  // agent or a corpse, and nothing else does — so it goes through the shared
-  // inventory (src/worker/pane.mjs), which refuses a TRUNCATED list and reports
-  // whether every host was asked. Reading `terminals` by hand here missed both,
-  // and "absent from the list" is precisely what "no live agent" is read from.
-  const terminals = terminalInventory(run);
-  if (!terminals.ok) {
-    bad(`CANNOT ESTABLISH — ${terminals.reason}`);
-    note('Without the terminal list, a dead dispatch and a working agent are the same row.');
-    fix('orca open   # bring up the Orca runtime, then re-run this gate');
-    return 3;
-  }
-
-  // Read 3: does the task exist at all? A failure here is NOT an answer — it is
-  // an ignorance, and it is reported as one.
-  const listArgs = ['orchestration', 'task-list'];
-  if (runId) listArgs.push('--run', runId);
-  listArgs.push('--json');
-  const tasks = namedList(run(listArgs), 'tasks', 'orca orchestration task-list');
-  const listed = tasks.ok;
-  const known = listed && tasks.rows.some(t => t.id === task);
-
-  const rows = workers.rows.filter(w => w.taskId === task);
-
   // THE STORE, ONCE — the provenance every disposition below stands on. It is
   // the same store this verb already resolves a request id through, so it adds
   // no second source of truth: what it answers is which record produced a
@@ -359,6 +367,83 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   // consulted.
   for (const aside of uncertain.setAside) note(`set aside ${aside.file}: it created no task (${aside.ground}), so it is unrelated to ${task}.`);
 
+  // WHICH RUN IS ASKED (#2107). `worker-list` and `task-list` are BOTH
+  // Run-scoped: unscoped, each answers the Run bound to the calling terminal
+  // (Orca `resolveWorkerListRunScope`), so they must always be asked about the
+  // same Run. An explicit `--run` names it; otherwise the records of this task
+  // do, since `ax worker start` writes `--run` into every task-create. A task
+  // dispatched from another Run then reads as the facts it has — dispatches,
+  // panes, corpses — instead of an absence the operator must walk processes to
+  // explain. The substitution is stated, like the request one above.
+  if (runId === '') {
+    const recorded = [...uncertain.runs.entries()];
+    if (recorded.length > 1) {
+      bad(`CANNOT ESTABLISH — the records of ${task} name ${recorded.length} Runs (${recorded.map(([id]) => id).join(', ')}), and a task lives in exactly one.`);
+      note('Asking either Run would judge the task by a list the other contradicts; read the records before any re-dispatch.');
+      for (const [, paths] of recorded) for (const path of paths) fix(`cat ${path}   # the --run its task-create carries`);
+      return 3;
+    }
+    if (recorded.length === 1) {
+      const [[id, paths]] = recorded;
+      runId = id;
+      note(`Run ${id}, as recorded by ${paths.map(path => basename(path, '.json')).join(', ')}`);
+    }
+  }
+
+  const bin = runner ? 'injected' : resolve({ env });
+  if (!bin) {
+    bad('CANNOT ESTABLISH — no Orca CLI on this machine, so no dispatch can be counted');
+    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
+    fix('orca open   # bring up the Orca runtime, then re-run this gate');
+    return 3;
+  }
+  const run = runner ?? createRunner({ bin });
+
+  // The execution gate of the socle. Unlike `ax board`, an unreachable runtime
+  // is not a skip here: "I could not ask" must never read as "nobody is there".
+  const ready = runtimeReady(run);
+  if (!ready.ready) {
+    bad(`CANNOT ESTABLISH — ${ready.reason}`);
+    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
+    fix('orca open   # bring up the Orca runtime, then re-run this gate');
+    return 3;
+  }
+
+  // Read 1: the dispatches. Its absence is the one that must never be silent —
+  // on a host where `orchestration worker-list` does not exist (the VPS ships a
+  // different command set; the 2026-08-09 duplicate was born there) an empty
+  // read would authorise the re-dispatch it exists to forbid. Scoped to the
+  // SAME Run as read 3, always (#2107).
+  const scope = runId ? ['--run', runId] : [];
+  const workers = namedList(run(['orchestration', 'worker-list', ...scope, '--json']), 'workers', 'orca orchestration worker-list');
+  if (!workers.ok) {
+    bad(`CANNOT ESTABLISH — ${workers.reason} (absent on this host?)`);
+    note('Count the worktree\'s agent processes from the system side before any re-dispatch.');
+    fix('orca open   # then re-run; if worker-list is missing here, gate from the host that has it');
+    return 3;
+  }
+
+  // Read 2: which panes still exist. This is what makes a Dispatch row a live
+  // agent or a corpse, and nothing else does — so it goes through the shared
+  // inventory (src/worker/pane.mjs), which refuses a TRUNCATED list and reports
+  // whether every host was asked. Reading `terminals` by hand here missed both,
+  // and "absent from the list" is precisely what "no live agent" is read from.
+  const terminals = terminalInventory(run);
+  if (!terminals.ok) {
+    bad(`CANNOT ESTABLISH — ${terminals.reason}`);
+    note('Without the terminal list, a dead dispatch and a working agent are the same row.');
+    fix('orca open   # bring up the Orca runtime, then re-run this gate');
+    return 3;
+  }
+
+  // Read 3: does the task exist at all? A failure here is NOT an answer — it is
+  // an ignorance, and it is reported as one.
+  const tasks = namedList(run(['orchestration', 'task-list', ...scope, '--json']), 'tasks', 'orca orchestration task-list');
+  const listed = tasks.ok;
+  const known = listed && tasks.rows.some(t => t.id === task);
+
+  const rows = workers.rows.filter(w => w.taskId === task);
+
   // The panes, judged by the answer that can decide each one — the same reader
   // `ax worker ls` counts with (./pane.mjs `hostReader`). A row this store does
   // not attribute keeps `undefined` for its host, which is `paneVerdict`'s
@@ -371,30 +456,50 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   const unproven = [];
   if (rows.length > 0) note(`Dispatches for ${task}: ${rows.length}`);
   for (const w of rows) {
-    const handle = typeof w.agentTerminalHandle === 'string' ? w.agentTerminalHandle : null;
+    let handle = typeof w.agentTerminalHandle === 'string' ? w.agentTerminalHandle : null;
     const prov = typeof w.dispatchId === 'string' ? index.byDispatch.get(w.dispatchId) : undefined;
-    const verdict = hosts.verdictFor(handle, 'this dispatch recorded no pane, so nothing here proves it ended', prov === undefined ? undefined : prov.env).verdict;
-    if (verdict.pane === 'VIVANT') live.push(w);
+    let host = prov === undefined ? undefined : prov.env;
+    let why = 'this dispatch recorded no pane, so nothing here proves it ended';
+    let read = '';
+    if (handle === null && typeof w.dispatchId === 'string') {
+      const bound = unboundPane(run, w.dispatchId);
+      if (bound.ok) {
+        handle = bound.handle;
+        if (host === undefined) host = bound.host;
+      } else {
+        why = `worker-list binds this dispatch no pane, and ${bound.reason}`;
+        read = `orca orchestration worker-show --dispatch ${w.dispatchId} --json   # the pane this dispatch created, and the host it created it on`;
+      }
+    }
+    const verdict = hosts.verdictFor(handle, why, host).verdict;
+    if (verdict.pane === 'VIVANT') live.push({ w, handle, host });
     else if (verdict.pane === 'MORT') dead.push({ w, prov });
-    else unproven.push({ w, prov, detail: verdict.detail });
+    else unproven.push({ w, prov, detail: verdict.detail, read });
     const label = verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'MORT   ' : 'INCONNU';
     note(
-      `${label} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(w.agentTerminalHandle ?? '—').slice(0, 24)}` +
+      `${label} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(handle ?? '—').slice(0, 24)}` +
+        `${handle !== null && handle !== w.agentTerminalHandle ? ' (from worker-show)' : ''}` +
         `${verdict.pane === 'VIVANT' ? '' : ` · ${verdict.detail}`}`,
     );
   }
 
   // A LIVE AGENT IS THE MOST CONCRETE REFUSAL, so it answers first: the operator
-  // has a pane to go and read, which no other branch here can offer.
+  // has a pane to go and read, which no other branch here can offer. A pane on
+  // another host is read THROUGH that host (#2107): the local runtime answers
+  // `terminal_handle_stale` for a handle it does not own.
+  const at = host => (typeof host === 'string' && host !== '' ? ` --environment ${host}` : '');
   if (live.length === 1) {
-    bad(`STOP — one live agent (${live[0].dispatchId}). DO NOT re-dispatch: it is working.`);
+    const [{ w, handle, host }] = live;
+    bad(`STOP — one live agent (${w.dispatchId}). DO NOT re-dispatch: it is working.`);
     note('A `failed` Dispatch describes the receipt, never the process.');
-    fix(`ax worker tail ${live[0].agentTerminalHandle}   # read it instead of re-dispatching`);
+    fix(at(host) === ''
+      ? `ax worker tail ${handle}   # read it instead of re-dispatching`
+      : `orca terminal read --terminal ${handle}${at(host)} --json   # read it on '${host}' instead of re-dispatching`);
     return 1;
   }
   if (live.length > 1) {
     bad(`DUPLICATE — ${live.length} live agents on one task, therefore one working tree.`);
-    for (const w of live) fix(`orca terminal close --terminal ${w.agentTerminalHandle}`);
+    for (const { handle, host } of live) fix(`orca terminal close --terminal ${handle}${at(host)}`);
     note('Keep the current Dispatch\'s. Then warn the survivor: its tree mixes two sets of writes, so it must re-read everything with `git diff`.');
     note('Check reflog / upstream / dangling too.');
     return 2;
@@ -453,6 +558,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     }
     for (const row of unproven) {
       if (row.prov !== undefined) fix(`ax worker tail ${row.prov.request}   # the record behind ${row.w.dispatchId}: is its pane still emitting?`);
+      if (row.read !== '') fix(row.read);
     }
     fix('ax worker ls   # every record, the pane it named and the host that answered for it');
     return 3;
