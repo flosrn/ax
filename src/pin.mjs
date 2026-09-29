@@ -53,6 +53,58 @@ const RELEASE = /^v?([0-9]+\.[0-9]+\.[0-9]+)$/;
 const INSTALL_TIMEOUT_MS = 600_000;
 export const pinExec = (bin, args, at) => execRun(bin, args, { cwd: at, timeout: INSTALL_TIMEOUT_MS });
 
+/**
+ * THE pnpm PATCHES KEYED ON A VERSION OF ax OTHER THAN THE ONE BEING PINNED.
+ *
+ * A patch is keyed on an exact `name@version`, and pnpm refuses an install in
+ * which a declared patch matches nothing (ERR_PNPM_UNUSED_PATCH). So a consumer
+ * carrying a local patch of the ax it has cannot move to any other ax until the
+ * patch goes. Measured 2026-09-29 rolling 0.28.0 out: ofmchat and a worktree of
+ * it carried `'@flosrn/ax@0.26.3': patches/@flosrn__ax@0.26.3.patch`, and this
+ * verb rewrote the manifest, ran the install and said only "exit 1". Whether
+ * the release carries what the patch changed is the consumer's judgement, so
+ * this names the patch and both ways past it, before anything moves.
+ *
+ * pnpm keeps the map in two places: `patchedDependencies` in
+ * pnpm-workspace.yaml, read here as the indented lines under that top-level
+ * key (no YAML parser: this package has no runtime dependencies), and
+ * `pnpm.patchedDependencies` in package.json.
+ */
+function stalePatches(root, manifest, target) {
+  const own = `${PACKAGE_NAME}@`;
+  const found = [];
+  const workspace = join(root, 'pnpm-workspace.yaml');
+  if (existsSync(workspace)) {
+    let inside = false;
+    for (const line of readFileSync(workspace, 'utf8').split('\n')) {
+      if (/^patchedDependencies:\s*$/.test(line)) {
+        inside = true;
+        continue;
+      }
+      if (/^\S/.test(line)) inside = false;
+      const entry = inside ? /^\s+(['"]?)([^'"\s:]+)\1\s*:\s*(.*)$/.exec(line) : null;
+      if (entry && entry[2].startsWith(own)) found.push({ key: entry[2], file: entry[3].trim().replace(/^(['"])(.*)\1$/, '$2'), where: 'pnpm-workspace.yaml' });
+    }
+  }
+  const declared = manifest.pnpm?.patchedDependencies;
+  if (declared !== null && typeof declared === 'object') {
+    for (const [key, file] of Object.entries(declared)) if (key.startsWith(own)) found.push({ key, file: String(file), where: 'package.json' });
+  }
+  return found.filter(patch => patch.key !== `${own}${target}`);
+}
+
+/**
+ * Why an install refused, in pnpm's own words. pnpm prints its `ERR_PNPM_*`
+ * line on STDOUT, so a detail read from stderr alone was "exit 1" — the cause
+ * sat in the other stream.
+ */
+function installRefusal(installed) {
+  const lines = stream => String(stream ?? '').split('\n').map(line => line.trim()).filter(Boolean);
+  const both = [...lines(installed.stderr), ...lines(installed.stdout)];
+  const coded = both.find(line => /ERR_PNPM_|^ERR!|\bERROR\b/.test(line));
+  return String(installed.error ?? '').trim() || coded || lines(installed.stderr).slice(-3).join(' | ') || lines(installed.stdout).slice(-3).join(' | ') || `exit ${installed.status}`;
+}
+
 export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   const usageError = message => {
     process.stderr.write(`ax pin: ${message}\n${USAGE}\n`);
@@ -144,6 +196,19 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     }
 
     note(`${current} → ${target}`);
+    // Asked before the dry short-circuit on purpose: a dry run answers what the
+    // real run would do, and the real run cannot install past this patch.
+    // Answering 0 there would print a plan that the next command refutes.
+    const stale = stalePatches(root, manifest, target);
+    if (stale.length > 0) {
+      const [patch] = stale;
+      bad(
+        `${patch.where} patches ${patch.key} (${patch.file}), and pnpm refuses any install in which a declared patch matches nothing — no other ${PACKAGE_NAME} can be installed while it stands`,
+      );
+      fix(`pnpm patch-remove ${patch.key}   # when ${target} already carries what the patch changed, then re-run: ax pin ${asked}`);
+      fix(`pnpm patch ${PACKAGE_NAME}@${target}   # otherwise re-cut it against ${target}, commit it, then re-run: ax pin ${asked}`);
+      return 1;
+    }
     if (dry) {
       note('dry run — package.json untouched, nothing installed');
       return 0;
@@ -162,8 +227,22 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     // gesture printed at the end stages it.
     const installed = exec('pnpm', ['install', '--no-frozen-lockfile'], root);
     if (installed.error || installed.status !== 0) {
-      const detail = String(installed.error ?? '').trim() || String(installed.stderr ?? '').split('\n').filter(Boolean).slice(-3).join(' | ') || `exit ${installed.status}`;
-      return refuse(`pnpm install refused the new pin: ${detail}`, `git checkout -- package.json && pnpm install   # back to ${current}`);
+      // AN INSTALL THAT REFUSED LEAVES NOTHING BEHIND. Both files were proven
+      // clean above, so restoring them from git undoes exactly this verb's
+      // write and nothing else. Measured 2026-09-29 rolling 0.28.0 out: two
+      // consumers were left declaring 0.28.0 with 0.26.3 on disk, the half-state
+      // the guard above then refuses on the next run, until a human restored
+      // them — the repair used to be printed, never performed.
+      const reason = installRefusal(installed);
+      const lockTracked = String(exec('git', ['ls-files', '--', 'pnpm-lock.yaml'], root).stdout ?? '').trim() !== '';
+      const restored = exec('git', ['checkout', '--', 'package.json', ...(lockTracked ? ['pnpm-lock.yaml'] : [])], root);
+      if (restored.error || restored.status !== 0) {
+        return refuse(
+          `pnpm install refused the new pin: ${reason} — and package.json could not be restored: ${String(restored.error ?? restored.stderr ?? '').trim() || `exit ${restored.status}`}`,
+          `git checkout -- package.json pnpm-lock.yaml && pnpm install   # back to ${current}`,
+        );
+      }
+      return refuse(`pnpm install refused the new pin: ${reason} — package.json${lockTracked ? ' and pnpm-lock.yaml are' : ' is'} back on ${current}`, `pnpm install   # only if the refused install touched node_modules; then re-run: ax pin ${asked}`);
     }
   } else {
     note(`already pinned to ${target} — re-proving the installed package and doctor`);

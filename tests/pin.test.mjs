@@ -142,6 +142,60 @@ test('an install that served another version is refused — the proof is the dis
   assert.doesNotMatch(r.out, /git add/, 'no commit line for a bump that did not happen');
 });
 
+test('a pnpm patch pinned to the version being left refuses BEFORE anything moves, naming the patch', () => {
+  // Measured 2026-09-29 rolling 0.28.0 out: ofmchat and its worktree carry
+  // `patchedDependencies: '@flosrn/ax@0.26.3': patches/@flosrn__ax@0.26.3.patch`,
+  // so pnpm refuses every other version with ERR_PNPM_UNUSED_PATCH — and this
+  // verb said only "pnpm install refused the new pin: exit 1", after rewriting
+  // the manifest. Whether the release carries the patched fix is the consumer's
+  // call; the verb names the patch and the two ways past it.
+  const root = repo();
+  writeFileSync(
+    join(root, 'pnpm-workspace.yaml'),
+    "packages:\n  - 'apps/*'\n\npatchedDependencies:\n  '@flosrn/ax@0.5.2': patches/@flosrn__ax@0.5.2.patch\n  other@1.0.0: patches/other@1.0.0.patch\n",
+  );
+  const before = readFileSync(join(root, 'package.json'), 'utf8');
+  const r = run(['0.6.6'], { root });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /@flosrn\/ax@0\.5\.2/);
+  assert.match(r.out, /patches\/@flosrn__ax@0\.5\.2\.patch/);
+  assert.match(r.out, /pnpm patch-remove @flosrn\/ax@0\.5\.2/);
+  assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), before, 'the manifest is untouched');
+  assert.ok(!r.calls.some(line => line.startsWith('pnpm install')), 'nothing was installed');
+});
+
+test('an install refusal pnpm printed on STDOUT is the refusal\u2019s reason, never a bare exit code', () => {
+  const exec = fakeExec({
+    install: { status: 1, stdout: 'Progress: resolved 1772\n[ERR_PNPM_UNUSED_PATCH] The following patches were not used: other@1.0.0\n\nEither remove them from "patchedDependencies" or update them\n', stderr: '' },
+  });
+  const r = run(['0.6.6'], { exec });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /pnpm install refused the new pin: \[ERR_PNPM_UNUSED_PATCH\] The following patches were not used: other@1\.0\.0/);
+});
+
+test('an install that refused leaves the pin where it was, lockfile included', () => {
+  // Measured 2026-09-29 rolling 0.28.0 out: ofmchat and a worktree of it were
+  // left declaring 0.28.0 with 0.26.3 on disk — the rollback was printed as
+  // advice and never performed, and the guard then refused the next run.
+  const root = repo();
+  writeFileSync(join(root, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+  execFileSync('git', ['add', 'pnpm-lock.yaml'], { cwd: root });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'lock'], { cwd: root });
+  const before = { manifest: readFileSync(join(root, 'package.json'), 'utf8'), lock: readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8') };
+  const exec = fakeExec({
+    onInstall: at => writeFileSync(join(at, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n# half-written\n"),
+    install: { status: 1, stdout: '[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/@flosrn%2Fax: Not Found\n', stderr: '' },
+  });
+  const r = run(['0.6.6'], { root, exec });
+
+  assert.equal(r.code, 1);
+  assert.match(r.out, /package\.json and pnpm-lock\.yaml are back on 0\.5\.2/);
+  assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), before.manifest);
+  assert.equal(readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8'), before.lock);
+});
+
 test('a doctor that refuses the new pin blocks the commit line AND prints what it found', () => {
   // Measured 2026-08-28: `@flosrn/ax@0.14.4` was announced to
   // goodluckagency/ofmchat, its bump workflow ran `ax pin 0.14.4`, and the run
