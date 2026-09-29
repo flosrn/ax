@@ -98,9 +98,21 @@
 //   * release a worker that is not settled. Orca refuses (`only a succeeded or
 //     failed worker can release`), and cancelling a live session is a different
 //     decision, which this verb never makes: it names `worker-stop` and stops.
-//   * release a pane on another execution host: `worker-release` answers
-//     `federation_unsupported` and retains the pane (measured 2026-08-14). That
-//     row names `orca terminal close --environment <env>` instead.
+//   * release a pane its record places on another host BEFORE asking that host.
+//     A record's `worker-start --on <env>` names where its pane lives, and this
+//     Mac's own list omits that runtime — so the pane is located, sampled and
+//     re-checked through ./pane.mjs `hostReader`, which asks the host itself
+//     (`terminal list/read --environment <env>`). Reported from #2120's gapicore
+//     worker (F2): judged against the local list alone, the pane was "not
+//     establishable" and got closed by hand. The release itself stays ONE call
+//     on the home runtime: `worker-release --dispatch` federates to the
+//     execution host when that host advertises
+//     `orchestration.federation-release-archive.v1` (Orca 867d38397893,
+//     federated-worker-release.ts), and a host that does not answers `retained
+//     · federation_unsupported · none` — which the post-call re-check, asked of
+//     that same host, reports as NOT established, naming
+//     `orca terminal close --terminal <h> --environment <env>`. (The 2026-08-14
+//     measurement that made every remote row a KEEP predates that capability.)
 //   * remove a worktree, delete a branch, or touch git state. Ever.
 //
 // EVERY CLOSE IS WRITE-AHEAD (F-001)
@@ -155,7 +167,8 @@ import { planProject, readManifest } from '../plan.mjs';
 import { createRunner, parseReceipt, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { paneReadable, readPane, terminalInventory } from './pane.mjs';
+import { declarationOf } from './hosts.mjs';
+import { hostReader, hostScopes, paneReadable, readPane, terminalInventory } from './pane.mjs';
 import {
   argvValue,
   claimRecord,
@@ -169,6 +182,7 @@ import {
   phaseEnd,
   phaseExit,
   phaseVerdict,
+  recordedRun,
   requestIdOk,
   attemptSettle,
 } from './record.mjs';
@@ -325,9 +339,16 @@ function recordedReleaseResult(dir, dispatchId) {
  * Orca's own worker inventory. The handle is read from BOTH keys it has been
  * seen under, newest first: `agentTerminalHandle` is the one the current runtime
  * fills, `resource.terminalHandle` the one the bash classifier read alone.
+ *
+ * `runId` scopes the list. It matters since Orca 867d38397893
+ * (worker-list-run-scope.ts): an UNSCOPED list is the Run bound to the calling
+ * terminal (`result.scope.source: bound`), no longer every Dispatch the
+ * database holds — so a dispatch of another Run is absent from it by scope,
+ * not by fact. The sweep reads the default list, and a row it lacks is asked
+ * of its own recorded Run where that changes a verdict (see `ownRun` below).
  */
-function workerInventory(run) {
-  const out = run(['orchestration', 'worker-list', '--json']);
+function workerInventory(run, runId = '') {
+  const out = run(['orchestration', 'worker-list', ...(runId === '' ? [] : ['--run', runId]), '--json']);
   const receipt = out.receipt ?? {};
   if (out.status !== 0 || receipt.ok !== true || !('result' in receipt)) {
     const detail = receipt.unparseable ?? out.stderr ?? '';
@@ -861,7 +882,8 @@ function releaseBinding(path, dispatchId, argv, index, bin) {
  * false for every outcome an operator still owns — a refusal, and above all an
  * outcome nobody knows.
  */
-function releaseOne(dir, dispatchId, { bin, execute, handle = '', stillThere }) {
+function releaseOne(dir, dispatchId, { bin, execute, handle = '', environment = '', stillThere }) {
+  const onHost = environment === '' ? '' : ` --environment ${environment}`;
   const attempt = (path, index, argv) => {
     const out = execute(argv);
     phaseEnd(path, index, { exit: out.status, receiptText: out.stdout, stderr: out.stderr, error: out.error });
@@ -1017,14 +1039,14 @@ function releaseOne(dir, dispatchId, { bin, execute, handle = '', stillThere }) 
       return {
         settled: false,
         line: `${detail}  — Orca closed nothing, and whether pane ${handle || 'this dispatch'} is still there could not be established`,
-        repair: `orca terminal list --json   # establish whether that pane is open, then close it by handle if it is`,
+        repair: `orca terminal list${onHost} --json   # establish whether that pane is open, then close it by handle if it is`,
       };
     }
     if (live) {
       return {
         settled: false,
         line: `${detail}  — Orca closed nothing and pane ${handle} is still in the terminal list, so this release is NOT established`,
-        repair: `orca terminal close --terminal ${handle}   # the pane this dispatch opened is still open; a release that closed nothing settles nothing`,
+        repair: `orca terminal close --terminal ${handle}${onHost}   # the pane this dispatch opened is still open; a release that closed nothing settles nothing`,
       };
     }
     return { settled: true, line: `${detail}   (nothing was open)`, repair: '' };
@@ -1153,6 +1175,10 @@ export function release(
 
   const terminals = terminalInventory(run);
   if (!terminals.ok) return cannot(terminals.reason, 'orca terminal list --json   # a pane that cannot be seen must never be judged closed');
+  // THE HOST A RECORD NAMES IS ASKED FOR ITS OWN PANES (F2), through the reader
+  // `ls` and `gate` judge with (./pane.mjs `hostReader`): at most one ask per
+  // host, and only for a handle this runtime's list does not carry.
+  const hosts = hostReader(hostScopes(run, declarationOf(cwd)), terminals);
 
   const store = storeArg || defaultStore(env);
   const index = dispatchIndex(store);
@@ -1227,11 +1253,48 @@ export function release(
   // never a bucket beside them (see `caused` below).
   let unplacedByCause = 0;
 
-  for (const row of rows) {
+  // The worker-list of the Run a record's own phases name (`--run`, the read
+  // `recordedRun` makes), memoized per Run; `null` where no Run is recorded or
+  // its list did not answer — an unread list, never an empty one (F-028).
+  const runLists = new Map();
+  const ownRun = path => {
+    let runId = '';
+    try {
+      runId = recordedRun(path);
+    } catch {
+      return null;
+    }
+    if (!runId) return null;
+    if (!runLists.has(runId)) {
+      const listed = workerInventory(run, runId);
+      runLists.set(runId, listed.ok ? listed : null);
+    }
+    return runLists.get(runId);
+  };
+
+  for (let row of rows) {
     if (only !== '' && row.dispatchId !== only) continue;
     matched += 1;
 
-    const terminal = row.handle === '' ? undefined : terminals.byHandle.get(row.handle);
+    // WHERE THE PANE LIVES, from the record that dispatched it (`--on`, `''`
+    // for local) — `undefined` for a row this host recorded no request for,
+    // which keeps paneVerdict's conservative answer. `environment` is what every
+    // later read and close of that pane must name.
+    const entry = index.byDispatch.get(row.dispatchId);
+    const located = row.handle === '' ? null : hosts.locate(row.handle, '', entry === undefined ? undefined : entry.env);
+    const terminal = located?.terminal ?? undefined;
+    const environment = located?.environment ?? '';
+    const onHost = environment === '' ? '' : ` --environment ${environment}`;
+    // A LIVE PANE THE BOUND RUN DOES NOT LIST IS ASKED OF ITS OWN RUN. Only
+    // there does the difference change a verdict: a store-only row skips the
+    // settled-state rule below, so a working child of another Run whose pull
+    // request merged would be offered to worker-release. Asked once per Run,
+    // and a record naming no Run, or a list that does not answer, leaves the
+    // row exactly as the store gave it.
+    if (!row.known && entry !== undefined && terminal !== undefined && terminal.orphaned !== true) {
+      const listed = ownRun(join(store, entry.file))?.rows.find(worker => worker.dispatchId === row.dispatchId);
+      if (listed !== undefined) row = { ...listed, handle: row.handle };
+    }
     // Canonical on both sides: the proof calls below ask the filesystem and git
     // about this path, and a raw `/scope/../elsewhere` from an inventory names a
     // tree other than the one it reads like.
@@ -1276,7 +1339,7 @@ export function release(
     //     measured on a host; every repository this machine dispatches lives on
     //     github.com, and a key-format change touches three readers and every
     //     record already written.
-    const entry = index.byDispatch.get(row.dispatchId);
+    // (`entry` is the record read above, where the pane was located.)
     const belongsTo = entry?.repo ?? '';
     const placed = noProof
       ? 'ours'
@@ -1395,16 +1458,16 @@ export function release(
       // answered `1 pane not establishable` on a LOCAL dispatch whose PR was
       // already merged, because one paired remote runtime was omitted.
       //
-      // The record's own `--on` settles it, and `''` (a local dispatch) is the
-      // only claim made here: the receipt names `local` among the hosts it read,
-      // so that pane's runtime WAS covered. A remote row stays unprovable —
-      // this store names hosts by environment name and the receipt namespaces
-      // runtimes, and no mapping between the two is established.
-      const owner = index.byDispatch.get(row.dispatchId)?.env;
-      const localProven = owner === '' && Array.isArray(terminals.hosts) && terminals.hosts.includes('local');
-      if (terminals.omitted && !localProven) {
+      // The record's own `--on` settles it. `''` (a local dispatch) is covered
+      // by a list that names `local` among the hosts it read; a remote record is
+      // put to THAT host (F2), whose own list covers its own panes — so an
+      // absence there is a corpse there, and a host that could not be asked
+      // leaves the pane UNKNOWN. The rule is paneVerdict's, read through the
+      // same `hostReader` `ls` and `gate` use; no environment name is ever
+      // matched against the runtime ids a receipt namespaces.
+      if (located.verdict.pane !== 'MORT') {
         tally.unprovable += 1;
-        caused(`pane ${row.handle} is absent from a terminal list that omitted hosts — UNKNOWN here, never a corpse`);
+        caused(`pane ${row.handle}: ${located.verdict.detail} — UNKNOWN here, never a corpse`);
       } else {
         tally.gone += 1;
         caused(`pane ${row.handle} is gone — the terminal this dispatch opened no longer exists`);
@@ -1422,7 +1485,7 @@ export function release(
           // UNKNOWN and keep the #160 process read. Never reopen, kill, or
           // mint a release identity from here.
           const shown = workerShow(run, row.dispatchId);
-          const gonePrefix = `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane ${row.handle} is gone from the runtime`;
+          const gonePrefix = `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane ${row.handle} is gone from ${environment === '' ? 'the runtime' : `'${environment}'`}`;
           if (shown.known && exactOperatorClose(shown.result)) {
             const archive = establishedArchive(shown.result.terminalResource ?? null, row.dispatchId);
             const archiveText =
@@ -1441,7 +1504,11 @@ export function release(
             lines.push({
               level: 'note',
               text: `${gonePrefix} — ${why}`,
-              repair: processReadRepair(worktree, row.dispatchId),
+              // A process on another host is read THERE: a local `pgrep` over a
+              // path that only exists on that host answers about this machine.
+              repair: environment === ''
+                ? processReadRepair(worktree, row.dispatchId)
+                : `orca worktree ps --environment ${environment} --json   # what still runs on '${environment}' (#160): read it before anything is killed, never by name alone`,
             });
           }
         }
@@ -1459,6 +1526,10 @@ export function release(
       continue;
     }
 
+    // A pane THIS runtime's list carries while saying it runs on another
+    // execution host (a paired runtime id, not a declared environment name).
+    // A pane located through its host's own list reads `local` there — that
+    // host's local — and takes the release path below (F2).
     const host = String(terminal.executionHostId ?? 'local');
     if (host !== 'local') {
       keep(
@@ -1471,7 +1542,7 @@ export function release(
     if (row.workerState === 'unsupervised') {
       keep(
         `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · a context-only dispatch owns no terminal for release to close`,
-        `orca terminal close --terminal ${row.handle}`,
+        `orca terminal close --terminal ${row.handle}${onHost}`,
       );
       continue;
     }
@@ -1518,7 +1589,7 @@ export function release(
       const stopSuffix = `${
         row.ownership === 'owned'
           ? ''
-          : `; a processAction: none or state stop_unknown means this pane is not Orca-owned and only \`orca terminal close --terminal ${row.handle}\` frees it`
+          : `; a processAction: none or state stop_unknown means this pane is not Orca-owned and only \`orca terminal close --terminal ${row.handle}${onHost}\` frees it`
       }; a dispatch_inactive answer can arrive AFTER the pane was closed, so re-run this verb rather than reading it as a no-op`;
       keep(
         `${row.dispatchId} · ${row.workerState}/${row.terminalState} · pane VIVANT · not settled, so not releasable${
@@ -1531,10 +1602,10 @@ export function release(
                 : ''
         }`,
         row.ownership === 'user_owned'
-          ? `orca terminal close --terminal ${row.handle}   # closing a live pane is still your decision — a stop would answer processAction: none`
+          ? `orca terminal close --terminal ${row.handle}${onHost}   # closing a live pane is still your decision — a stop would answer processAction: none`
           : row.workerState === 'ready'
             ? `orca orchestration worker-stop --dispatch ${row.dispatchId} --json   # cancelling a live session is a different decision${stopSuffix}`
-            : `orca terminal close --terminal ${row.handle}   # a ${row.workerState} worker cannot be released`,
+            : `orca terminal close --terminal ${row.handle}${onHost}   # a ${row.workerState} worker cannot be released`,
       );
       continue;
     }
@@ -1564,6 +1635,7 @@ export function release(
     candidates.push({
       ...row,
       worktree,
+      environment,
       request: entry?.request ?? null,
       issuedAt: entry?.issuedAt ?? null,
       kind: entry?.kind ?? '',
@@ -1597,14 +1669,19 @@ export function release(
         });
   }
 
-  const before = new Map(candidates.map(candidate => [candidate.dispatchId, readPane(run, candidate.handle, { limit: 1 })]));
+  // Sampled WHERE THE PANE LIVES: a remote handle read on this runtime answers
+  // `terminal_handle_stale`, which `whole` rejects — the row would be KEEP for
+  // ever, however quiet the pane (F2).
+  const sample = candidate => readPane(run, candidate.handle, { limit: 1, environment: candidate.environment });
+  const before = new Map(candidates.map(candidate => [candidate.dispatchId, sample(candidate)]));
   if (candidates.length > 0) sleep(gap * 1000);
-  const after = new Map(candidates.map(candidate => [candidate.dispatchId, readPane(run, candidate.handle, { limit: 1 })]));
+  const after = new Map(candidates.map(candidate => [candidate.dispatchId, sample(candidate)]));
 
   const toClose = [];
   for (const candidate of candidates) {
     const a = before.get(candidate.dispatchId);
     const b = after.get(candidate.dispatchId);
+    const onHost = candidate.environment === '' ? '' : ` --environment ${candidate.environment}`;
     // A pane is QUIET only when BOTH reads came back whole. `paneReadable` is the
     // watchers' lenient predicate — it accepts a receipt that named its own
     // inability — and a destructive verdict cannot be taken on one: two refused
@@ -1628,7 +1705,7 @@ export function release(
     if (!readable) {
       verdict = 'KEEP';
       why = 'the pane cannot be established — a pane nobody can read is never judged closed';
-      repair = `orca terminal read --terminal ${candidate.handle} --json   # why the pane cannot be read; --no-proof will not close it either (it bypasses the artifact, never the movement rule), so close it yourself with orca terminal close --terminal ${candidate.handle} once you have`;
+      repair = `orca terminal read --terminal ${candidate.handle}${onHost} --json   # why the pane cannot be read; --no-proof will not close it either (it bypasses the artifact, never the movement rule), so close it yourself with orca terminal close --terminal ${candidate.handle}${onHost} once you have`;
     } else if (!candidate.proof.landed) {
       verdict = 'KEEP';
       why = candidate.proof.detail;
@@ -1638,7 +1715,7 @@ export function release(
       // something. --no-proof does not bypass this; it only bypasses the artifact.
       verdict = 'BUSY';
       why = `${candidate.proof.detail}, but the pane is still moving`;
-      repair = `orca orchestration worker-read --dispatch ${candidate.dispatchId} --json   # the work landed and this pane is still printing: re-run this verb once it is quiet, or close it yourself with orca terminal close --terminal ${candidate.handle}`;
+      repair = `orca orchestration worker-read --dispatch ${candidate.dispatchId} --json   # the work landed and this pane is still printing: re-run this verb once it is quiet, or close it yourself with orca terminal close --terminal ${candidate.handle}${onHost}`;
     } else {
       verdict = 'CLOSE';
       why = candidate.proof.detail;
@@ -1676,8 +1753,14 @@ export function release(
       `${tally.pending} release in flight · ${tally.unprovable} pane not establishable · ` +
       `${tally.foreign} in another repository · ${tally.unplaced} no repository on record`,
   );
-  if (tally.unprovable > 0) {
+  if (tally.unprovable > 0 && terminals.omitted) {
     note(`hosts omitted from this terminal list (${terminals.omittedHosts.join(', ')}): a handle absent from it is UNKNOWN here, never a corpse`);
+  }
+  // A HOST A RECORD NAMED AND THAT COULD NOT BE ASKED, once per host with what
+  // it answered — the other half of "pane not establishable" (F2).
+  for (const [host, scope] of hosts.unaskable()) {
+    note(`host '${host}' could not be asked, so its panes stay UNKNOWN, never gone: ${scope.reason}`);
+    fix(`orca terminal list --environment ${host} --json   # ask it yourself, then re-run this verb`);
   }
   if (tally.unplaced + unplacedByCause > 0) {
     note(
@@ -1710,6 +1793,7 @@ export function release(
     const outcome = releaseOne(dir, candidate.dispatchId, {
       bin,
       handle: candidate.handle,
+      environment: candidate.environment,
       // ASKED AFTER THE CALL, not before: the question a `processAction: none`
       // raises is whether the pane is open NOW, and the inventory read at the
       // top of this run predates the mutation. Lazy, so the ordinary close pays
@@ -1718,14 +1802,14 @@ export function release(
       //
       // AND AN ABSENT HANDLE ONLY PROVES CLOSURE IF THE READ COVERED THE HOST
       // (F-028, the rule `../worktree/reclaim.mjs` states as "an unqueried host
-      // is not an empty one"). Every candidate here is LOCAL by construction —
-      // a pane whose `executionHostId` is anything else is kept above, because
-      // `worker-release` answers `federation_unsupported` for it (measured
-      // 2026-08-14) — so the host to check for is `local`, and a refreshed read
-      // that does not name it establishes nothing rather than an empty machine.
+      // is not an empty one"). The read is asked of the host the pane was
+      // located on — this runtime for a local pane, `--environment <env>` for a
+      // remote one (F2), whose own list names `local` for ITS local — and a
+      // refreshed read that does not name `local` establishes nothing rather
+      // than an empty machine.
       stillThere: () => {
         if (!candidate.handle) return false;
-        const now = terminalInventory(run);
+        const now = terminalInventory(run, { environment: candidate.environment });
         if (!now.ok) return null;
         if (!Array.isArray(now.hosts) || !now.hosts.includes('local')) return null;
         const row = now.byHandle.get(candidate.handle);

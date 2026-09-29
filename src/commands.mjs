@@ -321,6 +321,11 @@ sits at: an Orca-placed child is a candidate from any checkout of its repository
 another repository's row is counted and named, and a record naming no repository
 is UNKNOWN and closes nothing — read its pane, then --no-proof closes it.
 
+A pane dispatched with --on <env> is read where it lives: its record names the
+host, this checkout's dispatch.hosts says how to reach it, and the list, both
+liveness samples and the post-release check are asked with --environment <env>.
+The release itself federates through the home runtime.
+
 Exit: 0 report or every release settled - 1 a release did not settle - 2 usage
       3 cannot establish (no CLI, silent runtime, unreadable inventory, no gh)`,
 

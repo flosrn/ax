@@ -14,6 +14,7 @@
 // Offline by construction: the Orca runner is injected and `gh`/`git` are a
 // stubbed exec, so no runtime is touched and nothing is ever released for real.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -515,6 +516,151 @@ test('a pane on another execution host is never offered to worker-release', () =
   assert.match(r.out, /pane REMOTE on gapicore/);
   assert.match(r.out, /orca terminal close --terminal term_ctx_remote --environment gapicore/);
   assert.match(r.out, /0 closeable/);
+});
+
+// ── F2: a dispatch recorded on another host ─────────────────────────────────
+//
+// Reported from #2120's gapicore worker: `ax worker release --dispatch <id>`
+// answered "pane not establishable" and the orchestrator closed the pane and
+// removed the worktree by hand. Measured on Orca 867d38397893: this Mac's
+// `terminal list` omits the paired runtime, a handle is resolved only in the
+// registry of the runtime that answers (`getLiveLeafForHandle`), and
+// `worker-release --dispatch` on the home runtime FEDERATES to the execution host
+// when it advertises `orchestration.federation-release-archive.v1`
+// (federated-worker-release.ts) — which gapicore does. The stub below answers the
+// pane only where it lives.
+
+/** A checkout declaring `gapicore`, the one thing that says how to reach it. */
+function declaringCheckout() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-release-hosts-')));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  writeFileSync(
+    join(dir, 'ax.config.json'),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', hosts: { gapicore: { ssh: 'harness@gapicore' } } } }),
+  );
+  return dir;
+}
+
+function remoteOrca({ handle, worktreePath, cursors = [5, 5], afterRelease = null, runs = {} }) {
+  const calls = [];
+  let reads = 0;
+  let released = false;
+  const onHost = args => args[args.indexOf('--environment') + 1] === 'gapicore' && args.includes('--environment');
+  const listed = present => JSON.stringify({ ok: true, result: { terminals: present ? [{ handle, orphaned: false, worktreePath, executionHostId: 'local' }] : [], hostScope: { hostIds: ['local'], omittedHostIds: [] }, truncated: false } });
+  const runner = createRunner({
+    bin: 'stub-orca',
+    exec: (bin, args) => {
+      calls.push(args.join(' '));
+      const line = args.join(' ');
+      if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ ok: true, result: { runtime: { reachable: true } } }), stderr: '' };
+      // Measured on this Mac (Orca 867d38397893, worker-list-run-scope.ts): an
+      // unscoped worker-list lists the Run BOUND to the calling terminal
+      // (`scope.source: bound`), so a dispatch of another Run is absent from it
+      // and appears only under `--run <its run>`.
+      if (line.includes('worker-list')) {
+        const asked = args.includes('--run') ? args[args.indexOf('--run') + 1] : '';
+        const scope = asked === '' ? { run: 'run_bound_elsewhere', source: 'bound' } : { run: asked, source: 'flag' };
+        return { status: 0, stdout: JSON.stringify({ ok: true, result: { workers: runs[asked] ?? [], scope } }), stderr: '' };
+      }
+      if (line.startsWith('terminal list')) {
+        if (onHost(args)) return { status: 0, stdout: listed(!(released && afterRelease === 'gone')), stderr: '' };
+        return { status: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [], hostScope: { hostIds: ['local'], omittedHostIds: ['runtime:7930a317'] }, truncated: false } }), stderr: '' };
+      }
+      if (line.startsWith('terminal read')) {
+        if (!onHost(args)) return { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'terminal_handle_stale', message: 'terminal_handle_stale' } }), stderr: '' };
+        reads += 1;
+        return { status: 0, stdout: JSON.stringify({ ok: true, result: { terminal: { handle, status: 'running', latestCursor: cursors[Math.min(reads - 1, cursors.length - 1)], tail: [] } } }), stderr: '' };
+      }
+      if (line.includes('worker-release')) {
+        released = true;
+        const id = args[args.indexOf('--dispatch') + 1];
+        const result = afterRelease === 'unsupported'
+          ? { dispatchId: id, state: 'retained', reason: 'federation_unsupported', processAction: 'none', archive: null }
+          : { dispatchId: id, state: 'released', processAction: 'closed_agent_terminal', archive: { source: 'terminal', status: 'captured' } };
+        return { status: 0, stdout: JSON.stringify({ ok: true, result: { ...result, mutation: { requestId: args[args.indexOf('--retry-request') + 1], replayed: false } } }), stderr: '' };
+      }
+      return { status: 1, stdout: JSON.stringify({ ok: false, error: { code: 'unexpected' } }), stderr: '' };
+    },
+  });
+  return { runner, calls };
+}
+
+/** The 2120-work record's shape: `worker-start --on gapicore`, ready receipt, agent pane. */
+function remoteRecord(dir, request, dispatchId, handle, runId = 'run_ffe427d624e2') {
+  writeFileSync(
+    join(dir, `${request}.json`),
+    JSON.stringify({
+      request,
+      host: 'test',
+      orca: 'stub-orca',
+      createdAt: '2026-08-20T10:00:00.000Z',
+      repo: 'owner/repo',
+      kind: 'implementation',
+      attempts: [{ n: 1, settled: false, phases: [{
+        name: 'task-create',
+        identity: 'id-0',
+        argv: ['stub-orca', 'orchestration', 'task-create', '--run', runId, '--spec', 'x', '--json'],
+        exit: 0,
+        receipt: { ok: true, result: { task: { id: 'task_f960' } } },
+      }, {
+        name: 'worker-start',
+        identity: 'id-1',
+        argv: ['stub-orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--worktree', 'new-top-level', '--name', request, '--json'],
+        exit: 0,
+        receipt: { ok: true, result: { dispatchId, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', action: 'created', id: handle }] } },
+      }] }],
+    }),
+  );
+}
+
+const remoteRelease = (argv, { afterRelease = null, cursors, runs } = {}) => {
+  const dir = store();
+  const handle = 'term_ab55e94f';
+  remoteRecord(dir, '2120-work', 'ctx_cf95', handle);
+  const { runner, calls } = remoteOrca({ handle, worktreePath: '/home/harness/orca/workspaces/gapila/2120-work', afterRelease, cursors, runs });
+  const { exec } = fakeExec({ answers: { 'gh pr list': { status: 0, stdout: JSON.stringify([{ number: 2136, headRefName: 'flosrn/2120-work' }]), stderr: '' } } });
+  const result = capture(() => release([...argv, '--store', dir, '--gap', '0'], { runner, exec, env: { HOME: dir }, cwd: declaringCheckout(), sleep: () => {} }));
+  return { ...result, calls, dir };
+};
+
+test('F2: a pane on a declared host is established where it lives, and its release goes out', () => {
+  const r = remoteRelease(['--close', '--dispatch', '2120-work']);
+
+  assert.doesNotMatch(r.out, /1 pane not establishable/, r.out);
+  assert.match(r.out, /ctx_cf95 .*pane QUIET .*CLOSE .*PR #2136 merged/);
+  assert.ok(r.calls.some(line => line === 'terminal list --environment gapicore --json'), 'asked of the host the record names');
+  assert.ok(r.calls.filter(line => line.startsWith('terminal read') && line.includes('--environment gapicore')).length === 2, 'both liveness samples are read where the pane lives');
+  assert.ok(r.calls.some(line => line.includes('worker-release --dispatch ctx_cf95')), 'the home runtime federates the release');
+  assert.match(r.out, /ctx_cf95 {2}released · closed_agent_terminal/);
+  assert.equal(r.code, 0);
+});
+
+test("F2: a dispatch of another Run is judged by ITS Run's worker-list, never as absent from the bound one", () => {
+  // The bound Run's list does not carry ctx_cf95, so it used to enter as a
+  // store-only row (`known: false`) that skips the settled-state rule — a still
+  // working child whose PR merged was offered to worker-release.
+  const working = { dispatchId: 'ctx_cf95', workerState: 'ready', terminalState: 'retained', agentTerminalHandle: 'term_ab55e94f', resource: null };
+  const r = remoteRelease(['--close', '--dispatch', 'ctx_cf95'], { runs: { run_ffe427d624e2: [working] } });
+
+  assert.ok(r.calls.includes('orchestration worker-list --run run_ffe427d624e2 --json'), 'its own Run is asked');
+  assert.match(r.out, /ctx_cf95 · ready\/retained · pane VIVANT · not settled/);
+  assert.ok(r.calls.every(line => !line.includes('worker-release')), 'a working child is never released');
+});
+
+test('F2: a host that retains the pane (federation_unsupported) is checked THERE, and the close names that host', () => {
+  const r = remoteRelease(['--close', '--dispatch', 'ctx_cf95'], { afterRelease: 'unsupported' });
+
+  assert.equal(r.code, 1, 'a release that closed nothing settles nothing');
+  assert.match(r.out, /pane term_ab55e94f is still in the terminal list/);
+  assert.match(r.out, /orca terminal close --terminal term_ab55e94f --environment gapicore/);
+});
+
+test('F2: a pane still moving on its host is BUSY, and its repairs name that host', () => {
+  const r = remoteRelease(['--dispatch', 'ctx_cf95'], { cursors: [5, 9] });
+
+  assert.match(r.out, /ctx_cf95 .*pane WORKING .*BUSY/);
+  assert.match(r.out, /orca terminal close --terminal term_ab55e94f --environment gapicore/);
+  assert.ok(r.calls.every(line => !line.includes('worker-release')));
 });
 
 test('a handle absent from a scope that omits hosts is UNKNOWN, never a corpse', () => {
