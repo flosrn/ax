@@ -20,10 +20,12 @@
 // consumers by reading manifests, never from a remembered list: the 2026-08-26
 // run claimed "everywhere" off a scan that had errored, and the honest
 // inventory afterwards is the shape this step encodes (F-028: an errored
-// inventory is unknown, not empty). (5) `ax pin <version>` in each consumer —
-// the pin verb owns migration, install proof and doctor — then commit and push,
-// with one pull --rebase retry because a busy main rejects the first push
-// routinely. (6) Fast-forward THIS checkout: release-please bumps the version on
+// inventory is unknown, not empty). (5) Pin each consumer REPOSITORY once, on
+// origin's default branch, from a temporary worktree of it: install, `ax pin
+// <version>` — the pin verb owns migration, install proof and doctor — commit,
+// push, with one rebase retry because a busy main rejects the first push
+// routinely. The checkout the walk found is never mutated (#286). (6)
+// Fast-forward THIS checkout: release-please bumps the version on
 // origin, so the tree that produced the release still read the previous one until
 // 2026-08-26, when npm served 0.13.0 and the repository said 0.12.3.
 //
@@ -39,8 +41,8 @@
 // not about a consuming repository — a verb would teach every consumer a
 // gesture only one machine can perform.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -125,17 +127,6 @@ export async function deploy(
       return String(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version ?? '');
     } catch {
       return '';
-    }
-  }
-
-  /** The ax pin a consumer's manifest declares now, or null when it is unread. */
-  function declaredPin(dir) {
-    try {
-      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-      const pinned = pkg.devDependencies?.[PKG] ?? pkg.dependencies?.[PKG];
-      return typeof pinned === 'string' ? pinned : null;
-    } catch {
-      return null;
     }
   }
 
@@ -237,139 +228,172 @@ export async function deploy(
     }
   }
 
+  const firstLine = out => (out.stderr || out.stdout || '').split('\n').find(line => line.trim() !== '')?.trim() || `exit ${out.status}`;
+
   /**
-   * THE BUMP LANDS ON THE BRANCH THE CHECKOUT IS ON. `git push` publishes the
-   * checked-out branch, so a consumer sitting on a feature branch received the
-   * release there while its default branch kept the old pin — measured
-   * 2026-09-29, chatnow_bot's 0.28.0 bump went to
-   * feat/wallet-contacts-ignore-menu and was reported "pinned". Its manifest is
-   * that branch's too, so even "already pins" is not an answer about the
-   * default branch. Asked first, and an unread answer is never "on main"
-   * (F-028). The checkout is someone's working tree: switching its branch is
-   * not this script's gesture, so it is refused by name.
+   * A CONSUMER IS A REPOSITORY, NOT THE CHECKOUT THE WALK FOUND (#286). The walk
+   * finds working trees — a primary checkout on a feature branch, a linked
+   * worktree of another, a checkout whose install lags its manifest — and each
+   * is somebody's. So a consumer is keyed by its common git dir plus the
+   * manifest's path inside it: two checkouts of one repository are one bump
+   * (v1-walk-harness is a worktree of ofmchat). The default branch is the one
+   * origin names; an unread answer is refused by name, never assumed `main`
+   * (F-028).
    */
-  function offDefault(dir) {
-    const branch = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  function repositoryOf(dir) {
+    const common = git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+    const prefix = git(dir, ['rev-parse', '--show-prefix']);
+    if (!succeeded(common) || !succeeded(prefix)) {
+      return { reason: `not a readable git checkout — ${firstLine(succeeded(common) ? prefix : common)}`, repair: `git -C ${dir} status   # a consumer is pinned through its repository; repair this checkout, then re-run` };
+    }
     const origin = git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-    if (!succeeded(branch) || !succeeded(origin)) {
-      return { reason: `which branch this checkout is on, or which one origin names default, is unread — ${((branch.stderr || origin.stderr) ?? '').split('\n')[0] || 'no answer'}`, repair: `git -C ${dir} remote set-head origin --auto   # then re-run` };
+    if (!succeeded(origin)) {
+      return { reason: `which branch origin names default is unread — ${firstLine(origin)}`, repair: `git -C ${dir} remote set-head origin --auto   # then re-run` };
     }
-    const here = branch.stdout.trim();
-    const main = origin.stdout.trim().replace(/^origin\//, '');
-    if (here === main) return { main };
     return {
-      reason: `checked out on ${here}, not ${main} — a bump pushed from here lands on ${here}, and ${main} keeps its pin`,
-      repair: `bump from a checkout of ${main}: git -C ${dir} worktree add <path> ${main} && cd <path> && ax pin <version>`,
+      key: `${common.stdout.trim()}\0${prefix.stdout.trim()}`,
+      prefix: prefix.stdout.trim(),
+      main: origin.stdout.trim().replace(/^origin\//, ''),
     };
   }
 
   /**
-   * THE CHECKOUT AGAINST ITS ORIGIN, before anything is decided (#283). A
-   * checkout only BEHIND is fast-forwarded — it must be clean — and its pin
-   * re-read: measured 2026-09-29, chatnow_bot's main was one commit behind an
-   * origin that already carried the release, and pinning the stale checkout
-   * committed a duplicate that could not be pushed. A checkout AHEAD holds
-   * commits origin lacks, and a bump push would publish them with it — the
-   * reason `ax pin` never pushes (src/pin.mjs) — so it is refused by name.
-   * An unread count is never zero (F-028).
+   * The ax pin origin's default branch declares — the only pin a release moves.
+   * `null` when that manifest declares none; `undefined` when it is unread.
    */
-  function syncWithOrigin(dir, main) {
-    const fetched = git(dir, ['fetch', '-q', 'origin', main]);
-    if (!succeeded(fetched)) return { verdict: 'unreadable', reason: `git fetch origin ${main} failed — ${(fetched.stderr || '').split('\n')[0] || `exit ${fetched.status}`}`, repair: `git -C ${dir} fetch origin ${main}   # then re-run` };
-    const count = range => {
-      const out = git(dir, ['rev-list', '--count', range]);
-      const n = succeeded(out) ? Number.parseInt(out.stdout.trim(), 10) : Number.NaN;
-      return Number.isInteger(n) ? n : null;
-    };
-    const behind = count(`HEAD..origin/${main}`);
-    const ahead = count(`origin/${main}..HEAD`);
-    if (behind === null || ahead === null) return { verdict: 'unreadable', reason: `how far ${main} is from origin/${main} is unread`, repair: `git -C ${dir} status -sb   # then re-run` };
-    if (ahead > 0) {
-      return { verdict: 'diverged', reason: `${ahead} commit(s) origin/${main} does not have — a bump pushed from here would publish them too`, repair: `git -C ${dir} log origin/${main}..HEAD   # push or drop them first, then re-run` };
+  function pinOnOrigin(dir, { main, prefix }) {
+    const shown = git(dir, ['show', `origin/${main}:${prefix}package.json`]);
+    if (!succeeded(shown)) return undefined;
+    try {
+      const pkg = JSON.parse(shown.stdout);
+      const pinned = pkg.devDependencies?.[PKG] ?? pkg.dependencies?.[PKG];
+      return typeof pinned === 'string' ? pinned : null;
+    } catch {
+      return undefined;
     }
-    if (behind === 0) return null;
-    const state = git(dir, ['status', '--porcelain']);
-    if (!succeeded(state) || state.stdout.trim() !== '') {
-      return { verdict: 'dirty', reason: `${behind} commit(s) behind origin/${main} and not clean, so it cannot be fast-forwarded`, repair: `cd ${dir} && git status   # commit or stash what is there, then re-run this script` };
-    }
-    const pulled = git(dir, ['pull', '-q', '--ff-only', 'origin', main]);
-    if (!succeeded(pulled)) return { verdict: 'unreadable', reason: `git pull --ff-only failed — ${(pulled.stderr || '').split('\n')[0] || `exit ${pulled.status}`}`, repair: `git -C ${dir} pull --ff-only origin ${main}   # then re-run` };
-    note(`${dir}: fast-forwarded ${behind} commit(s) from origin/${main}`);
-    return null;
   }
 
-  function pinConsumer({ dir, pinned: listed }, version) {
-    const placed = offDefault(dir);
-    if (placed.reason) {
-      bad(`${dir}: ${placed.reason}`);
-      fix(placed.repair);
-      return 'off-default';
-    }
-    const synced = syncWithOrigin(dir, placed.main);
-    if (synced) {
-      bad(`${dir}: ${synced.reason}`);
-      fix(synced.repair);
-      return synced.verdict;
-    }
-    // The pin as the (possibly just fast-forwarded) manifest declares it.
-    const pinned = declaredPin(dir) ?? listed;
-    if (pinned === version) {
-      ok(`${dir} already pins ${version}`);
-      return 'current';
-    }
-    const state = git(dir, ['status', '--porcelain']);
-    if (!succeeded(state)) {
-      bad(`${dir}: git status failed — ${(state.stderr || '').split('\n')[0] || `exit ${state.status}`}`);
-      fix(`cd ${dir} && git status   # not a healthy checkout; repair it, then re-run`);
+  /**
+   * THE BUMP IS MADE IN A DETACHED WORKTREE OF origin/<default>, NEVER IN THE
+   * CHECKOUT (#286). Measured releasing 0.29.2: running `ax pin` and `git push`
+   * in the checkout the walk found pinned 1 consumer of 5. Two sat on feature
+   * branches, where a push lands on that branch (chatnow_bot's 0.28.0 bump did,
+   * 2026-09-29); one's install lagged its manifest, so its own ax refused to
+   * run (ofmchat-engine, 0.28.1 installed under 0.29.1, right after the #283
+   * sync had fast-forwarded a checkout four sessions were using); one was a
+   * worktree of another. A worktree of origin's tip carries none of that: no
+   * branch but the one pushed to, no local commit published with the bump, no
+   * edit mixed into it. It is INSTALLED FIRST because the global ax delegates
+   * to the version the manifest declares, and a tree with no install of its
+   * own is answered by the primary checkout's — the stale one. It is removed
+   * whatever happens, so a failed step is repaired on origin and re-run.
+   */
+  function pinConsumer({ dir }, version, seen) {
+    const repo = repositoryOf(dir);
+    if (repo.reason) {
+      bad(`${dir}: ${repo.reason}`);
+      fix(repo.repair);
       return 'unreadable';
     }
-    if (state.stdout.trim() !== '') {
-      bad(`${dir}: working tree is not clean — refusing to mix the bump with local work`);
-      fix(`cd ${dir} && git status   # commit or stash what is there, then re-run this script`);
-      return 'dirty';
+    if (seen.has(repo.key)) {
+      note(`${dir}: same repository as ${seen.get(repo.key)} — its ${repo.main} is bumped once, there`);
+      return 'same-repository';
     }
-    note(`${dir}: ${pinned} → ${version}`);
-    const pin = exec('ax', ['pin', version], { cwd: dir, timeout: 600_000 });
+    seen.set(repo.key, dir);
+    const fetched = git(dir, ['fetch', '-q', 'origin', repo.main]);
+    if (!succeeded(fetched)) {
+      bad(`${dir}: git fetch origin ${repo.main} failed — ${firstLine(fetched)}`);
+      fix(`git -C ${dir} fetch origin ${repo.main}   # then re-run`);
+      return 'unreadable';
+    }
+    const pinned = pinOnOrigin(dir, repo);
+    if (pinned === undefined) {
+      bad(`${dir}: the ${PKG} pin on origin/${repo.main} is unread`);
+      fix(`git -C ${dir} show origin/${repo.main}:${repo.prefix}package.json   # then re-run`);
+      return 'unreadable';
+    }
+    if (pinned === null) {
+      note(`${dir}: origin/${repo.main} declares no ${PKG} — only a branch adopted it, and a release bumps default branches`);
+      return 'not-on-default';
+    }
+    if (pinned === version) {
+      ok(`${dir}: origin/${repo.main} already pins ${version}`);
+      return 'current';
+    }
+
+    const parent = mkdtempSync(join(tmpdir(), 'ax-pin-'));
+    const tree = join(parent, 'tree');
+    const added = git(dir, ['worktree', 'add', '-q', '--detach', tree, `origin/${repo.main}`]);
+    if (!succeeded(added)) {
+      rmSync(parent, { recursive: true, force: true });
+      bad(`${dir}: no worktree of origin/${repo.main} — ${firstLine(added)}`);
+      fix(`git -C ${dir} worktree add --detach <path> origin/${repo.main}   # read why, then re-run`);
+      return 'worktree-failed';
+    }
+    try {
+      note(`${dir}: ${pinned} → ${version} on origin/${repo.main}, from a worktree of it`);
+      return bump(dir, join(tree, repo.prefix), version, repo.main);
+    } finally {
+      const removed = git(dir, ['worktree', 'remove', '--force', tree]);
+      rmSync(parent, { recursive: true, force: true });
+      if (!succeeded(removed) && !succeeded(git(dir, ['worktree', 'prune']))) {
+        bad(`${dir}: the temporary worktree ${tree} is still registered`);
+        fix(`git -C ${dir} worktree prune`);
+      }
+    }
+  }
+
+  /** Install, pin, commit and push from `at`, a worktree of origin/<main> of the consumer at `dir`. */
+  function bump(dir, at, version, main) {
+    const long = args => exec('git', args, { cwd: at, timeout: 600_000 });
+    const rerun = 'node scripts/deploy.mjs --pins-only';
+    const install = exec('pnpm', ['install', '--frozen-lockfile'], { cwd: at, timeout: 600_000 });
+    if (!succeeded(install)) {
+      bad(`${dir}: pnpm install --frozen-lockfile refused origin/${main} as it stands — ${firstLine(install)}`);
+      fix(`${rerun}   # once ${main} installs frozen again`);
+      return 'install-failed';
+    }
+    const pin = exec('ax', ['pin', version], { cwd: at, timeout: 600_000 });
     process.stdout.write(pin.stdout ?? '');
     if (!succeeded(pin)) {
-      bad(`${dir}: ax pin exited ${pin.status}`);
-      fix(`cd ${dir} && ax pin ${version}   # read its findings; pin owns migration, install proof and doctor`);
+      bad(`${dir}: ax pin ${version} exited ${pin.status} on origin/${main}`);
+      fix(`${rerun}   # once the findings above are repaired on ${main}`);
       return 'pin-failed';
     }
     // Every file the install rewrote is the bump's: pnpm also appends the
     // version to a `minimumReleaseAgeExclude` entry that enumerates them
     // (chatnow_bot), and leaving that behind broke the next `pull --rebase`
-    // (#274, #283).
-    const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(dir, f)));
-    const workspace = existsSync(join(dir, 'pnpm-workspace.yaml')) && !succeeded(git(dir, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
-    const add = git(dir, ['add', '--', 'package.json', ...lock, ...workspace]);
+    // (#274, #283). The pin that ran is the consumer's CURRENT version, which
+    // may predate #274 and print a commit line without it.
+    const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(at, f)));
+    const workspace = existsSync(join(at, 'pnpm-workspace.yaml')) && !succeeded(git(at, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
+    const add = git(at, ['add', '--', 'package.json', ...lock, ...workspace]);
     if (!succeeded(add)) {
-      bad(`${dir}: git add failed — ${(add.stderr || '').split('\n')[0]}`);
-      fix(`cd ${dir} && git add package.json ${[...lock, ...workspace].join(' ')} && git commit -m "chore(deps): bump ${PKG} to ${version}" && git push`);
+      bad(`${dir}: git add failed — ${firstLine(add)}`);
+      fix(`${rerun}   # read why the bump files could not be staged`);
       return 'commit-failed';
     }
-    const commit = git(dir, ['commit', '-m', `chore(deps): bump ${PKG} to ${version}`]);
+    // Consumer hooks run here (ofmchat: oxlint and a full typecheck), hence the
+    // install above and the install-sized timeout.
+    const commit = long(['commit', '-m', `chore(deps): bump ${PKG} to ${version}`]);
     if (!succeeded(commit)) {
-      if (/nothing to commit/.test(commit.stdout + commit.stderr)) {
-        ok(`${dir}: bump already committed`);
-      } else {
-        bad(`${dir}: git commit failed — ${(commit.stderr || commit.stdout || '').split('\n')[0]}`);
-        fix(`cd ${dir} && git commit -m "chore(deps): bump ${PKG} to ${version}"   # hooks may have refused; read their output`);
-        return 'commit-failed';
-      }
+      bad(`${dir}: git commit failed on origin/${main} — ${firstLine(commit)}`);
+      fix(`${rerun}   # a hook may have refused, or ax pin changed nothing; read the output above`);
+      return 'commit-failed';
     }
-    let push = git(dir, ['push']);
+    const target = `HEAD:refs/heads/${main}`;
+    let push = long(['push', '-q', 'origin', target]);
     if (!succeeded(push)) {
-      note(`${dir}: push rejected — retrying after pull --rebase`);
-      const rebase = git(dir, ['pull', '--rebase']);
-      push = succeeded(rebase) ? git(dir, ['push']) : push;
+      note(`${dir}: push rejected — rebasing onto origin/${main} once`);
+      const rebase = long(['pull', '-q', '--rebase', 'origin', main]);
+      push = succeeded(rebase) ? long(['push', '-q', 'origin', target]) : rebase;
       if (!succeeded(push)) {
-        bad(`${dir}: push failed — ${(push.stderr || '').split('\n')[0]}`);
-        fix(`cd ${dir} && git pull --rebase && git push`);
+        bad(`${dir}: push to origin/${main} failed — ${firstLine(push)}`);
+        fix(`${rerun}   # the bump is rebuilt on origin/${main}'s new tip`);
         return 'push-failed';
       }
     }
-    ok(`${dir}: pinned, committed, pushed`);
+    ok(`${dir}: pinned on origin/${main}, committed, pushed`);
     return 'pinned';
   }
 
@@ -379,7 +403,8 @@ export async function deploy(
     if (skipPins) note('--skip-pins: consumers left as they are');
     else {
       section('consumers');
-      for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version) });
+      const seen = new Map();
+      for (const consumer of list) verdicts.push({ dir: consumer.dir, verdict: pinConsumer(consumer, version, seen) });
     }
 
     section('compute hosts');
@@ -390,7 +415,7 @@ export async function deploy(
     let failed = 0;
     for (const { dir, verdict } of verdicts) {
       note(`${dir}  ${verdict}`);
-      if (!['pinned', 'current'].includes(verdict)) failed = 1;
+      if (!['pinned', 'current', 'same-repository', 'not-on-default'].includes(verdict)) failed = 1;
     }
     return failed;
   }

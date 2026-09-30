@@ -103,8 +103,8 @@ test('a full bump: exact version written, install proven from node_modules, doct
 
 test('a bump from an unprovisioned checkout is not refused for that checkout\u2019s recorded worktree state', () => {
   // #276, measured 2026-09-29: bumping three consumers' main to 0.28.1 from
-  // fresh worktrees of main (where scripts/deploy.mjs sends an off-default
-  // consumer), every doctor finding was "… is not recorded → ax worktree
+  // fresh worktrees of main (where scripts/deploy.mjs makes every bump, #286),
+  // every doctor finding was "… is not recorded → ax worktree
   // setup" — untracked state no pin commit carries — and the pin refused.
   const exec = fakeExec({
     onInstall: at => installAs(at, '0.6.6'),

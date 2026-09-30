@@ -13,10 +13,11 @@
 // same head is not the attributable run.
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 
 import { deploy } from '../scripts/deploy.mjs';
 
@@ -123,25 +124,19 @@ function fakeExec(s) {
       return fail(`unexpected npm ${args.join(' ')}`);
     }
     if (bin === 'ssh') return fail('ssh must not run in this suite\n');
-    if (bin === 'ax') return ok('');
+    // `ax pin`, as far as a consumer's files go: the pin, its lockfile, and the
+    // version pnpm appends to a `minimumReleaseAgeExclude` entry (#274).
+    if (bin === 'ax') {
+      if (s.realGit && args[0] === 'pin') writeConsumer(opts.cwd, args[1]);
+      s.onPin?.(opts.cwd);
+      return ok('');
+    }
+    if (bin === 'pnpm') return s.installRefused ? fail('ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile"\n') : ok('');
     if (bin === 'git') {
+      if (s.realGit) return realGit(args, opts.cwd);
       if (args[0] === 'status') return ok('');
-      if (args[0] === 'pull' && args.includes('--ff-only')) s.onPull?.(opts.cwd);
       if (args[0] === 'pull' || args[0] === 'fetch' || args[0] === 'add' || args[0] === 'commit' || args[0] === 'push') return ok('');
       if (args[0] === 'log') return ok('ccccccc chore: release\n');
-      // Per consumer: how far its checkout is behind / ahead of origin.
-      if (args[0] === 'rev-list') {
-        const rev = s.revs?.[opts.cwd] ?? {};
-        if (args.includes('HEAD..origin/main')) return ok(`${rev.behind ?? 0}\n`);
-        if (args.includes('origin/main..HEAD')) return ok(`${rev.ahead ?? 0}\n`);
-        return ok('0\n');
-      }
-      // `git diff --quiet -- pnpm-workspace.yaml`: exit 1 when pnpm rewrote it.
-      if (args[0] === 'diff') return s.workspaceRewritten?.[opts.cwd] ? fail('', 1) : ok('');
-      // Which branch a consumer checkout is on, and which one its origin names
-      // default. Unlisted checkouts are on `main`, as a released consumer is.
-      if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) return ok(`${s.branches?.[opts.cwd] ?? 'main'}\n`);
-      if (args[0] === 'symbolic-ref') return ok('origin/main\n');
       return fail(`unexpected git ${args.join(' ')}`);
     }
     if (bin !== 'gh') return fail(`unexpected binary ${bin}\n`);
@@ -193,7 +188,11 @@ function fakeExec(s) {
   return { exec, calls };
 }
 
-async function runDeploy(extra = {}, argv = ['--skip-pins'], { seed = () => ({}) } = {}) {
+/**
+ * `inspect` reads the scenario's repositories BEFORE the roots are removed —
+ * the consumer tests assert on what origin and the checkout hold afterwards.
+ */
+async function runDeploy(extra = {}, argv = ['--skip-pins'], { seed = () => ({}), inspect = () => ({}) } = {}) {
   const roots = mkdtempSync(join(tmpdir(), 'ax-deploy-roots-'));
   const s = scenario({ ...extra, ...seed(roots) });
   const clock = fakeClock();
@@ -203,7 +202,7 @@ async function runDeploy(extra = {}, argv = ['--skip-pins'], { seed = () => ({})
     const { code, out } = await capture(() =>
       deploy([`--roots=${roots}`, ...argv], { exec, sleep: clock.sleep, now: clock.now, root: roots }),
     );
-    return { code, out, calls, s };
+    return { code, out, calls, s, seen: inspect(s, calls) };
   } finally {
     rmSync(roots, { recursive: true, force: true });
   }
@@ -447,40 +446,7 @@ test('an unread Test run refuses: no conclusion was observed', async () => {
   assert.match(r.out, /unread/i);
 });
 
-test('a consumer checked out on a feature branch is refused: the bump would land on that branch', async () => {
-  // Measured 2026-09-29 rolling 0.28.0 out: chatnow_bot's checkout sat on
-  // feat/wallet-contacts-ignore-menu, and `git push` published
-  // "chore(deps): bump @flosrn/ax to 0.28.0" to that feature branch while
-  // main kept 0.26.3 — reported as pinned.
-  const r = await runDeploy({}, ['--pins-only'], {
-    seed: roots => {
-      const consumer = dir => {
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': '0.24.0' } }));
-        return dir;
-      };
-      const onMain = consumer(join(roots, 'on-main'));
-      const onFeature = consumer(join(roots, 'on-feature'));
-      return { onMain, onFeature, branches: { [onFeature]: 'feat/wallet-contacts-ignore-menu' } };
-    },
-  });
-
-  const pinnedIn = dir => r.calls.some(c => c.bin === 'ax' && c.args[0] === 'pin' && c.cwd === dir);
-  const pushedFrom = dir => r.calls.some(c => c.bin === 'git' && c.args[0] === 'push' && c.cwd === dir);
-  assert.equal(pinnedIn(r.s.onMain) && pushedFrom(r.s.onMain), true, r.out);
-  assert.equal(pinnedIn(r.s.onFeature), false, 'no pin in a checkout off the default branch');
-  assert.equal(pushedFrom(r.s.onFeature), false, 'nothing pushed to the feature branch');
-  assert.match(r.out, /on-feature.*feat\/wallet-contacts-ignore-menu, not main/);
-  assert.notEqual(r.code, 0, r.out);
-});
-
-// ── #283: the release pipeline's timing and the consumer's own state ───────
-
-const consumerAt = (dir, pinned = '0.24.0') => {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': pinned } }));
-  return dir;
-};
+// ── #283: the release pipeline's timing ─────────────────────────────────────
 
 test('#283: a registry that serves the release 15 minutes after publish is waited for, and asked online', async () => {
   // Measured 2026-09-29: npm answered 0.29.0 ~20 minutes after `npm publish`
@@ -493,53 +459,191 @@ test('#283: a registry that serves the release 15 minutes after publish is waite
   assert.ok(views.every(c => c.args[1] === `@flosrn/ax@${VERSION}`), 'the release is asked for by its exact version');
 });
 
-test('#283: a consumer behind its origin is fast-forwarded first — and one whose origin already pins the release is current', async () => {
-  // Measured 2026-09-29: chatnow_bot's main was one commit behind origin,
-  // which already carried the 0.29.1 bump. deploy pinned the stale checkout,
-  // committed a duplicate, and left it diverged when the push was rejected.
-  const r = await runDeploy({}, ['--pins-only'], {
+// ── #286: a consumer is pinned on origin's default branch, never in its checkout ──
+//
+// Measured 2026-09-30 releasing 0.29.2: deploy pinned 1 consumer of 5. It ran
+// `ax pin` and `git push` INSIDE each consumer's working checkout, so a
+// checkout on a feature branch was refused (chatnow_bot, ofmchat), a checkout
+// whose install lagged its manifest could not run its own ax (ofmchat-engine,
+// 0.28.1 installed under a 0.29.1 pin), and a second worktree of one repository
+// was a consumer of its own (v1-walk-harness, a worktree of ofmchat). Each was
+// pinned by hand from a worktree of origin/main. These run real git against a
+// bare origin; only `ax pin` and `pnpm install` are faked.
+
+const GIT_HOME = mkdtempSync(join(tmpdir(), 'ax-deploy-git-'));
+writeFileSync(join(GIT_HOME, 'config'), '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n');
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: join(GIT_HOME, 'config'), GIT_CONFIG_NOSYSTEM: '1' };
+after(() => rmSync(GIT_HOME, { recursive: true, force: true }));
+
+function realGit(args, cwd) {
+  const out = spawnSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV });
+  return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '', error: out.error };
+}
+
+function git(cwd, ...args) {
+  const out = realGit(args, cwd);
+  if (out.status !== 0) throw new Error(`git ${args.join(' ')} in ${cwd}: ${out.stderr}`);
+  return out.stdout.trim();
+}
+
+/** A consumer's bump files at `pinned`; the workspace file only where one exists. */
+function writeConsumer(dir, pinned, { workspace = existsSync(join(dir, 'pnpm-workspace.yaml')) } = {}) {
+  writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': pinned } }, null, 2)}\n`);
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), `lockfileVersion: '9.0'\n# @flosrn/ax ${pinned}\n`);
+  if (workspace) {
+    const path = join(dir, 'pnpm-workspace.yaml');
+    const listed = existsSync(path) ? /@flosrn\/ax@([^']*)'/.exec(readFileSync(path, 'utf8'))?.[1] ?? '' : '';
+    writeFileSync(path, `minimumReleaseAgeExclude:\n  - '@flosrn/ax@${listed === '' ? pinned : `${listed} || ${pinned}`}'\n`);
+  }
+}
+
+/** A consumer checkout on `main` whose bare origin holds the same commit. */
+function consumerRepo(roots, name, { pinned = '0.24.0', workspace = false } = {}) {
+  const checkout = join(roots, name);
+  const origin = join(roots, '.origins', `${name}.git`);
+  mkdirSync(checkout, { recursive: true });
+  mkdirSync(join(roots, '.origins'), { recursive: true });
+  git(checkout, 'init', '-q', '-b', 'main');
+  writeConsumer(checkout, pinned, { workspace });
+  git(checkout, 'add', '-A');
+  git(checkout, 'commit', '-qm', 'init');
+  git(roots, 'clone', '-q', '--bare', checkout, origin);
+  git(checkout, 'remote', 'add', 'origin', origin);
+  git(checkout, 'fetch', '-q', 'origin');
+  git(checkout, 'branch', '-q', '-u', 'origin/main');
+  git(checkout, 'remote', 'set-head', 'origin', 'main');
+  return { checkout, origin };
+}
+
+/** Somebody else's commit on origin's main, made from a scratch clone. */
+function pushFromElsewhere(roots, origin, file, content, message) {
+  const scratch = mkdtempSync(join(roots, '.scratch-'));
+  git(scratch, 'clone', '-q', origin, 'c');
+  writeFileSync(join(scratch, 'c', file), content);
+  git(join(scratch, 'c'), 'add', file);
+  git(join(scratch, 'c'), 'commit', '-qm', message);
+  git(join(scratch, 'c'), 'push', '-q', 'origin', 'HEAD:main');
+}
+
+const subjects = origin => git(origin, 'log', '--format=%s', 'main').split('\n');
+const worktreesOf = checkout => git(checkout, 'worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).length;
+const BUMP = `chore(deps): bump @flosrn/ax to ${VERSION}`;
+
+test('#286: a checkout on a feature branch, with local commits and edits, is pinned on origin/main — and left exactly as it was', async () => {
+  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
     seed: roots => {
-      const stale = consumerAt(join(roots, 'stale'));
+      const repo = consumerRepo(roots, 'app');
+      git(repo.checkout, 'checkout', '-q', '-b', 'feat/panel');
+      writeFileSync(join(repo.checkout, 'notes.md'), 'local\n');
+      git(repo.checkout, 'add', 'notes.md');
+      git(repo.checkout, 'commit', '-qm', 'local work');
+      writeConsumer(repo.checkout, '0.23.0');
+      return { repo, headBefore: git(repo.checkout, 'rev-parse', 'HEAD') };
+    },
+    inspect: ({ repo }) => ({
+      pinOnMain: JSON.parse(git(repo.origin, 'show', 'main:package.json')).devDependencies['@flosrn/ax'],
+      subjects: subjects(repo.origin),
+      branches: git(repo.origin, 'branch', '--format=%(refname:short)'),
+      branch: git(repo.checkout, 'rev-parse', '--abbrev-ref', 'HEAD'),
+      head: git(repo.checkout, 'rev-parse', 'HEAD'),
+      edit: readFileSync(join(repo.checkout, 'package.json'), 'utf8'),
+      worktrees: worktreesOf(repo.checkout),
+    }),
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.seen.pinOnMain, VERSION, r.out);
+  assert.deepEqual(r.seen.subjects, [BUMP, 'init'], 'the bump sits on origin/main alone: the local commit is not published');
+  assert.equal(r.seen.branches, 'main', 'nothing pushed to the feature branch');
+  assert.equal(r.seen.branch, 'feat/panel');
+  assert.equal(r.seen.head, r.s.headBefore);
+  assert.match(r.seen.edit, /0\.23\.0/, 'the local edit is still there');
+  assert.equal(r.seen.worktrees, 1, 'the temporary worktree is removed');
+
+  const install = r.calls.findIndex(c => c.bin === 'pnpm' && c.args[0] === 'install');
+  const pin = r.calls.findIndex(c => c.bin === 'ax' && c.args[0] === 'pin');
+  assert.ok(install >= 0 && install < pin, 'the worktree is installed before its ax runs: delegation needs an install at the declared version (ofmchat-engine)');
+  assert.equal(r.calls[install].cwd, r.calls[pin].cwd);
+  assert.ok(!r.calls[pin].cwd.startsWith(r.s.repo.checkout), `pinned in ${r.calls[pin].cwd}, not in the checkout`);
+  assert.equal(existsSync(r.calls[pin].cwd), false, 'the temporary worktree is gone from disk');
+  assert.equal(r.calls.some(c => c.cwd === r.s.repo.checkout && (c.bin === 'ax' || c.bin === 'pnpm' || ['push', 'pull', 'commit', 'add', 'checkout'].includes(c.args[0]))), false, 'nothing runs in the checkout but reads and a fetch');
+});
+
+test('#286: origin/main already pinning the release is current — no worktree, and a checkout behind it is not pulled', async () => {
+  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
+    seed: roots => {
+      const repo = consumerRepo(roots, 'app');
+      pushFromElsewhere(roots, repo.origin, 'package.json', `${JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': VERSION } })}\n`, BUMP);
+      return { repo, headBefore: git(repo.checkout, 'rev-parse', 'HEAD') };
+    },
+    inspect: ({ repo }) => ({ head: git(repo.checkout, 'rev-parse', 'HEAD'), subjects: subjects(repo.origin) }),
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /app.*origin\/main already pins 0\.24\.6/);
+  assert.equal(r.calls.some(c => c.bin === 'git' && c.args[0] === 'worktree'), false, r.out);
+  assert.equal(r.calls.some(c => c.bin === 'ax' || c.bin === 'pnpm'), false, r.out);
+  assert.equal(r.seen.head, r.s.headBefore, 'the checkout is somebody\'s working tree: it is not fast-forwarded');
+  assert.deepEqual(r.seen.subjects, [BUMP, 'init']);
+});
+
+test('#286: two checkouts of one repository bump its main once', async () => {
+  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
+    seed: roots => {
+      const repo = consumerRepo(roots, 'app');
+      git(repo.checkout, 'worktree', 'add', '-q', '-b', 'feat/walk', join(roots, 'walk'));
+      return { repo };
+    },
+    inspect: ({ repo }) => ({ subjects: subjects(repo.origin) }),
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.seen.subjects, [BUMP, 'init'], r.out);
+  assert.equal(r.calls.filter(c => c.bin === 'ax' && c.args[0] === 'pin').length, 1, r.out);
+  assert.match(r.out, /walk.*same repository as .*app/);
+});
+
+test('#286/#274: a pnpm-workspace.yaml the install rewrote is committed with the bump', async () => {
+  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
+    seed: roots => ({ repo: consumerRepo(roots, 'app', { workspace: true }) }),
+    inspect: ({ repo }) => ({ workspace: git(repo.origin, 'show', 'main:pnpm-workspace.yaml') }),
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.seen.workspace, /0\.24\.0 \|\| 0\.24\.6/, r.out);
+});
+
+test('#286: a push rejected because origin/main moved is rebased onto it once, and lands', async () => {
+  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
+    seed: roots => {
+      const repo = consumerRepo(roots, 'app');
+      let moved = false;
       return {
-        stale,
-        revs: { [stale]: { behind: 1, ahead: 0 } },
-        onPull: dir => consumerAt(dir, VERSION),
+        repo,
+        onPin: () => {
+          if (moved) return;
+          moved = true;
+          pushFromElsewhere(roots, repo.origin, 'README.md', 'busy main\n', 'someone else');
+        },
       };
     },
+    inspect: ({ repo }) => ({ subjects: subjects(repo.origin) }),
   });
-  const on = cmd => r.calls.filter(c => c.cwd === r.s.stale && c.bin === cmd.bin && c.args[0] === cmd.verb);
-  assert.equal(on({ bin: 'git', verb: 'fetch' }).length > 0, true, 'the consumer is fetched before anything is decided');
-  assert.ok(on({ bin: 'git', verb: 'pull' }).some(c => c.args.includes('--ff-only')), r.out);
-  assert.equal(on({ bin: 'ax', verb: 'pin' }).length, 0, 'origin already pins the release: nothing to bump');
-  assert.equal(on({ bin: 'git', verb: 'push' }).length, 0);
-  assert.match(r.out, /stale.*already pins 0\.24\.6/);
+
   assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.seen.subjects, [BUMP, 'someone else', 'init'], r.out);
 });
 
-test('#283: a consumer with commits its origin lacks is refused — a bump push would publish them', async () => {
-  const r = await runDeploy({}, ['--pins-only'], {
-    seed: roots => {
-      const ahead = consumerAt(join(roots, 'ahead'));
-      return { ahead, revs: { [ahead]: { behind: 0, ahead: 2 } } };
-    },
+test('#286: an install origin/main refuses pins nothing, pushes nothing, and still removes the worktree', async () => {
+  const r = await runDeploy({ realGit: true, installRefused: true }, ['--pins-only'], {
+    seed: roots => ({ repo: consumerRepo(roots, 'app') }),
+    inspect: ({ repo }) => ({ subjects: subjects(repo.origin), worktrees: worktreesOf(repo.checkout) }),
   });
-  const touched = verb => r.calls.some(c => c.cwd === r.s.ahead && (c.bin === 'ax' || c.args[0] === verb) && (c.bin === 'ax' ? c.args[0] === 'pin' : true));
-  assert.equal(touched('push'), false, r.out);
-  assert.equal(r.calls.some(c => c.cwd === r.s.ahead && c.bin === 'ax'), false, 'no pin over unpublished local commits');
-  assert.match(r.out, /ahead.*2 commit\(s\) origin\/main does not have/);
+
   assert.notEqual(r.code, 0, r.out);
-});
-
-test('#283/#274: a pnpm-workspace.yaml the install rewrote is committed with the bump', async () => {
-  const r = await runDeploy({}, ['--pins-only'], {
-    seed: roots => {
-      const listed = consumerAt(join(roots, 'listed'));
-      writeFileSync(join(listed, 'pnpm-workspace.yaml'), "minimumReleaseAgeExclude:\n  - '@flosrn/ax@0.24.0'\n");
-      return { listed, workspaceRewritten: { [listed]: true } };
-    },
-  });
-  const add = r.calls.find(c => c.cwd === r.s.listed && c.bin === 'git' && c.args[0] === 'add');
-  assert.ok(add, r.out);
-  assert.ok(add.args.includes('pnpm-workspace.yaml'), `staged: ${add.args.join(' ')}`);
-  assert.equal(r.code, 0, r.out);
+  assert.equal(r.calls.some(c => c.bin === 'ax'), false, r.out);
+  assert.deepEqual(r.seen.subjects, ['init']);
+  assert.equal(r.seen.worktrees, 1);
+  assert.match(r.out, /ERR_PNPM_OUTDATED_LOCKFILE/);
+  assert.match(r.out, /node scripts\/deploy\.mjs --pins-only/);
 });

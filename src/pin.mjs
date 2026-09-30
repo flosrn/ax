@@ -313,8 +313,8 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
   // AND IT GRADES WHAT THE PIN COMMIT CARRIES (#276): `--project`. This
   // checkout's recorded worktree state (`.env.local`, node_modules) is no
   // commit's content, and a bump made from a fresh worktree of the default
-  // branch — where scripts/deploy.mjs sends an off-default consumer — failed
-  // on exactly that, whatever version it pinned. The doctor called here is the
+  // branch — where scripts/deploy.mjs makes every bump (#286) — failed on
+  // exactly that, whatever version it pinned. The doctor called here is the
   // NEW version's; one older than the flag ignores it and grades both halves,
   // which is how this verb behaved before.
   const doctor = exec(join(root, 'bin', 'ax'), ['doctor', '--project'], root);
