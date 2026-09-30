@@ -8,6 +8,16 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.29.2](https://github.com/flosrn/ax/compare/v0.29.1...v0.29.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **pin:** a bump owns the pnpm-workspace.yaml the install rewrote ([8052efd](https://github.com/flosrn/ax/commit/8052efda90cad1b2172056357eb3bb0c28b8f2a4)), closes [#274](https://github.com/flosrn/ax/issues/274)
+* **release:** scope concurrency to the release and publish jobs, so the notifier's npm wait holds no later release ([1be33ee](https://github.com/flosrn/ax/commit/1be33eed48bf0a260957ee08e66a1bc5c26fcd92)), closes [#283](https://github.com/flosrn/ax/issues/283)
+* **release:** tell consumers only once npm serves the version; deploy waits for it and syncs each consumer first ([25bce96](https://github.com/flosrn/ax/commit/25bce9651f0ed05665cecf63cc7646a42b554761))
+* **triage:** read `ax triage ask`'s outcome inside Orca's {ok, result} envelope ([ec5be20](https://github.com/flosrn/ax/commit/ec5be20019c91600043de55584238116d15e1d34)), closes [#284](https://github.com/flosrn/ax/issues/284)
+
 ## [0.29.1](https://github.com/flosrn/ax/compare/v0.29.0...v0.29.1) (2026-09-29)
 
 
