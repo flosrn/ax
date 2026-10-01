@@ -173,6 +173,10 @@ The terminal a dispatched session runs in, owned by the Orca runtime and read th
 receipts. The only liveness signal a repair path cannot forge.
 _Avoid_: terminal (ambiguous with the CLI noun), session (the agent inside, not the surface).
 
+**Preparation terminal**:
+A terminal created for the finite work needed to make a new worktree ready for its agent.
+It is distinct from the agent's pane, a continuing service and a shell opened by the operator.
+
 **Inventory**:
 The runtime's own list of the panes it still owns, indexed by handle. A truncated or absent
 list is a refusal to answer, never an empty machine.
