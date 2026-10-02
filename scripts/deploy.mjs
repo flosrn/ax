@@ -21,8 +21,9 @@
 // run claimed "everywhere" off a scan that had errored, and the honest
 // inventory afterwards is the shape this step encodes (F-028: an errored
 // inventory is unknown, not empty). (5) Pin each consumer REPOSITORY once, on
-// origin's default branch, from a temporary worktree of it: install, `ax pin
-// <version>` — the pin verb owns migration, install proof and doctor — commit,
+// origin's default branch, from a temporary worktree of it: install with the
+// lockfile that tree has (pnpm-lock.yaml, else bun.lock, else package-lock.json),
+// `ax pin <version>` — the pin verb owns migration, install proof and doctor — commit,
 // push, with one rebase retry because a busy main rejects the first push
 // routinely. The checkout the walk found is never mutated (#286). (6)
 // Fast-forward THIS checkout: release-please bumps the version on
@@ -347,12 +348,26 @@ export async function deploy(
   function bump(dir, at, version, main) {
     const long = args => exec('git', args, { cwd: at, timeout: 600_000 });
     const rerun = 'node scripts/deploy.mjs --pins-only';
-    const install = exec('pnpm', ['install', '--frozen-lockfile'], { cwd: at, timeout: 600_000 });
+    // A bun repo has no pnpm-lock.yaml. Sending it to pnpm --frozen-lockfile
+    // refuses the pin (harnessos, 0.29.3). The lockfile present names the installer.
+    const [installBin, installArgs] = existsSync(join(at, 'pnpm-lock.yaml'))
+      ? ['pnpm', ['install', '--frozen-lockfile']]
+      : existsSync(join(at, 'bun.lock')) || existsSync(join(at, 'bun.lockb'))
+        ? ['bun', ['install', '--frozen-lockfile']]
+        : existsSync(join(at, 'package-lock.json'))
+          ? ['npm', ['ci']]
+          : ['pnpm', ['install', '--frozen-lockfile']];
+    const install = exec(installBin, installArgs, { cwd: at, timeout: 600_000 });
     if (!succeeded(install)) {
-      bad(`${dir}: pnpm install --frozen-lockfile refused origin/${main} as it stands — ${firstLine(install)}`);
+      bad(`${dir}: ${installBin} ${installArgs.join(' ')} refused origin/${main} as it stands — ${firstLine(install)}`);
       fix(`${rerun}   # once ${main} installs frozen again`);
       return 'install-failed';
     }
+    // Captured before `ax pin`: that verb always runs pnpm install, which
+    // writes pnpm-lock.yaml even into a bun repo (harnessos, 0.29.3). A
+    // lockfile the tree did not have is not part of the bump.
+    const owned = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(at, f)));
+    const hadWorkspace = existsSync(join(at, 'pnpm-workspace.yaml'));
     const pin = exec('ax', ['pin', version], { cwd: at, timeout: 600_000 });
     process.stdout.write(pin.stdout ?? '');
     if (!succeeded(pin)) {
@@ -365,8 +380,8 @@ export async function deploy(
     // (chatnow_bot), and leaving that behind broke the next `pull --rebase`
     // (#274, #283). The pin that ran is the consumer's CURRENT version, which
     // may predate #274 and print a commit line without it.
-    const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(at, f)));
-    const workspace = existsSync(join(at, 'pnpm-workspace.yaml')) && !succeeded(git(at, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
+    const lock = owned.filter((f) => existsSync(join(at, f)));
+    const workspace = hadWorkspace && existsSync(join(at, 'pnpm-workspace.yaml')) && !succeeded(git(at, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
     const add = git(at, ['add', '--', 'package.json', ...lock, ...workspace]);
     if (!succeeded(add)) {
       bad(`${dir}: git add failed — ${firstLine(add)}`);
