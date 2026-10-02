@@ -18,6 +18,18 @@
  * disagree with the session it restarted. A rewind that abandons a reply
  * re-opens the question, which is what the active branch says.
  *
+ * WHAT TAKES A ROW OFF
+ * A question used to leave only through `peer_reply` on that exact id, so the
+ * ledger only grew: measured 2026-10-01 in unobserve-mac, 26 rows "needs you",
+ * eight of them from a worker its watcher had already reported gone, none ever
+ * closable because that coordinator answered through `orca orchestration send`.
+ * Three facts on the branch now close a row as well. The watcher reports the
+ * worker `gone` (`about` names it). A dispatched worker or its watcher asks
+ * again: one blocked on `ask` holds one question at a time, so the newer
+ * replaces the older. A pane peer does not, and keeps every question. Last,
+ * the operator dismisses rows with `/peers`, recorded as a `DISMISS` session
+ * entry so the replay agrees. A shell command line is never read for any of this.
+ *
  * Presentation only. Nothing here authorises a route or gates a send; the
  * reply route is `receive.ts`'s alone.
  */
@@ -25,8 +37,14 @@ import { headline } from './view.ts';
 
 export interface Row {
   id: string;
+  /** The name shown: who spoke, or who was asked. */
   peer: string;
+  /** The worker the row is about, the same for its pane, its dispatch and its watcher. */
+  subject: string;
+  /** `details.kind` of the message: dispatch · watcher · pane, '' when unrecorded. */
+  kind: string;
   line: string;
+  /** Epoch ms; 0 when neither the message nor its session entry carries a time. */
   at: number;
 }
 
@@ -42,6 +60,12 @@ export interface Ledger {
 }
 
 const ALERT_CAP = 20;
+
+/** The custom session entry `/peers` writes: `{ ids: string[], alerts: boolean }`. */
+export const DISMISS = '@flosrn/ax/peer-dismiss';
+
+/** Kinds whose sender is a worker that holds one blocking question at a time. */
+const ONE_ASK: Record<string, true> = { dispatch: true, watcher: true };
 
 /** Orca message types that ask the receiver for something. */
 const ASKING: Record<string, true> = { question: true, escalation: true, decision_gate: true };
@@ -71,6 +95,27 @@ export function needsYou(details: Record<string, unknown>): boolean {
   return ASKING[str(details.type)] === true || /\bDECISION:/.test(str(details.body));
 }
 
+/**
+ * One name for one worker: `child:hos-u8`, `watcher:hos-u8` and the pane
+ * `hos-u8·557c` all speak about `hos-u8`.
+ */
+export function subjectOf(name: string): string {
+  return name.replace(/^(?:child|watcher):/, '').replace(/·[0-9a-f]+$/, '');
+}
+
+/** The message's own time, else its session entry's: a record from before `at` existed. */
+function timeOf(d: Record<string, unknown>, e: Record<string, unknown>): number {
+  const own = num(d.at);
+  if (own > 0) return own;
+  const stamped = Date.parse(str(e.timestamp));
+  return Number.isFinite(stamped) ? stamped : 0;
+}
+
+function close(ledger: Ledger, keep: (row: Row) => boolean): void {
+  for (const [id, row] of ledger.owed) if (!keep(row)) ledger.owed.delete(id);
+  for (const [id, row] of ledger.awaiting) if (!keep(row)) ledger.awaiting.delete(id);
+}
+
 /** The name the operator knows: a watcher alert is about its worker. */
 export function speakerOf(details: Record<string, unknown>): string {
   return details.kind === 'watcher' && str(details.about) ? str(details.about) : str(details.peer);
@@ -82,20 +127,39 @@ export function observe(ledger: Ledger, entry: unknown): boolean {
   if (e.type === 'custom_message' && e.customType === 'peer-message') {
     const d = rec(e.details);
     const id = str(d.messageId);
-    const at = num(d.at);
+    const at = timeOf(d, e);
     const peer = speakerOf(d);
+    const subject = subjectOf(peer);
+    const kind = str(d.kind);
     const body = str(d.body);
     const thread = str(d.threadId);
     if (thread && thread !== id) ledger.awaiting.delete(thread);
+    // Gone first: a worker that is gone can neither answer nor be answered.
+    if (kind === 'watcher' && d.alert === 'gone') close(ledger, (row) => row.subject !== subject);
     if (id) {
-      ledger.asked.set(id, headline(body));
-      if (needsYou(d)) ledger.owed.set(id, { id, peer, line: headline(body), at });
+      const line = headline(body) || (str(d.type) ? `(${str(d.type)}, no text recorded)` : '');
+      ledger.asked.set(id, line);
+      if (needsYou(d)) {
+        if (ONE_ASK[kind]) for (const [old, row] of ledger.owed) if (row.subject === subject && ONE_ASK[row.kind]) ledger.owed.delete(old);
+        ledger.owed.set(id, { id, peer, subject, kind, line, at });
+      }
     }
     const lost = num(d.lostBefore);
-    if (lost > 0) alert(ledger, { id, peer, line: `${lost} earlier message${lost > 1 ? 's' : ''} never arrived`, at });
-    if (d.kind === 'watcher' && str(d.refused))
-      alert(ledger, { id, peer, line: WATCHER_ALERT[str(d.alert)] ?? 'watcher alert with no reply route', at });
+    if (lost > 0) alert(ledger, { id, peer, subject, kind: 'lost', line: `${lost} earlier message${lost > 1 ? 's' : ''} never arrived`, at });
+    if (kind === 'watcher' && str(d.refused))
+      alert(ledger, { id, peer, subject, kind: 'watcher', line: WATCHER_ALERT[str(d.alert)] ?? 'watcher alert with no reply route', at });
     return true;
+  }
+
+  if (e.type === 'custom' && e.customType === DISMISS) {
+    const data = rec(e.data);
+    const ids = Array.isArray(data.ids) ? data.ids.filter((i): i is string => typeof i === 'string') : [];
+    for (const i of ids) {
+      ledger.owed.delete(i);
+      ledger.awaiting.delete(i);
+    }
+    if (data.alerts === true) ledger.alerts = [];
+    return ids.length > 0 || data.alerts === true;
   }
 
   const m = rec(e.message);
@@ -112,7 +176,10 @@ export function observe(ledger: Ledger, entry: unknown): boolean {
       const line = headline(str(d.text));
       // An unattributed send reached a recipient with no route back, so no
       // answer can ever close it; listing it would wait forever.
-      if (d.unattributed !== true) ledger.awaiting.set(id, { id, peer: str(d.peer), line, at: num(d.at) });
+      if (d.unattributed !== true) {
+        const peer = str(d.peer);
+        ledger.awaiting.set(id, { id, peer, subject: subjectOf(peer), kind: '', line, at: timeOf(d, e) });
+      }
       ledger.asked.set(id, line);
       return true;
     }
@@ -124,7 +191,9 @@ export function observe(ledger: Ledger, entry: unknown): boolean {
   }
 }
 
+/** One alert per worker and cause, in its latest state: `silent` then `gone` reads `gone`. */
 function alert(ledger: Ledger, row: Row): void {
+  ledger.alerts = ledger.alerts.filter((a) => !(a.subject === row.subject && a.kind === row.kind));
   ledger.alerts.push(row);
   if (ledger.alerts.length > ALERT_CAP) ledger.alerts = ledger.alerts.slice(-ALERT_CAP);
 }

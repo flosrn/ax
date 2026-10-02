@@ -98,6 +98,9 @@ import { createReceiver, type SenderInfo, startReceiverIfOwned } from './receive
 // editor, and the ledger of who is waiting on whom. Presentation only — it
 // reads `details`, never decides a route (`./render.ts`).
 import { createPeerView } from './render.ts';
+// `/peers`: the operator's own way to read and empty that ledger.
+import { peersCommand } from './command.ts';
+import { DISMISS } from './ledger.ts';
 
 // The subagent-vs-lead latch, shared with orca-report and orca-checkpoint.
 import { createSessionOwner, isSubagentSession, sessionIdOf } from '../shared/session.ts';
@@ -915,6 +918,28 @@ export default function (pi, seams: { deliver?: typeof deliver } = {}): void {
     execute: async () => ({
       content: [{ type: 'text', text: renderDelivery(readDelivery()) }],
     }),
+  });
+
+  // The operator empties the widget: before this, only the model could
+  // (`peer_reply`, `peer_diagnostics`). The dismissal is a session entry FIRST,
+  // so the replay in `view.bind` keeps it across a restart; a host that cannot
+  // record it still clears the screen, and says the clear will not survive.
+  pi.registerCommand?.('peers', {
+    description: 'List peer questions and alerts; /peers clear <id> | old | alerts | all empties them.',
+    handler: async (args, cmdCtx) => {
+      const out = peersCommand(String(args ?? ''), view.ledger(), Date.now());
+      const say = [...out.say];
+      if (out.dismiss) {
+        try {
+          pi.appendEntry(DISMISS, out.dismiss);
+        } catch (error) {
+          say.push(`not recorded (${String(error)}): this clear lasts until the session restarts`);
+        }
+        view.dismiss(out.dismiss);
+      }
+      const ui = cmdCtx?.ui;
+      if (typeof ui?.notify === 'function') ui.notify(say.join('\n'));
+    },
   });
 
   // THE MODEL IS READ FROM WHAT ACTUALLY SERVED ON THE ACTIVE BRANCH, NOT

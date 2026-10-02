@@ -5,7 +5,7 @@
  * code unit and markdown is one source line per rendered line.
  */
 import { expect, test } from 'bun:test';
-import { bubble, fold, headline, type Kit, MAX_WIDTH, type Paint } from './view.ts';
+import { ago, bubble, fold, headline, type Kit, MAX_WIDTH, type Paint, partition, status, widget } from './view.ts';
 
 const kit: Kit = {
   markdown: (text, width) => text.split('\n').flatMap((l) => (l.length <= width ? [l] : l.match(new RegExp(`.{1,${width}}`, 'g')) ?? [''])),
@@ -70,4 +70,44 @@ test('a headline drops markdown emphasis and a card status column but keeps iden
   expect(headline('**Do you keep `0042_ledger_backfill`?**\nmore')).toBe('Do you keep 0042_ledger_backfill?');
   expect(headline('in-review\tDECISION: rule on the merge gate')).toBe('DECISION: rule on the merge gate');
   expect(headline('\n\n- first item')).toBe('first item');
+});
+
+// ─── the peers widget the operator could not empty ──────────────────────────
+
+const HOUR = 3_600_000;
+const NOW = Date.parse('2026-10-01T22:52:38Z');
+const row = (id: string, peer: string, subject: string, line: string, hoursAgo: number) => ({ id, peer, subject, kind: '', line, at: NOW - hoursAgo * HOUR });
+
+test('an unknown time shows no age, and days read as days', () => {
+  expect(ago(0, NOW)).toBe('');
+  expect(ago(NOW - 27 * HOUR, NOW)).toBe('27h');
+  expect(ago(NOW - 72 * HOUR, NOW)).toBe('3d');
+});
+
+test('one line per peer with its count, and rows older than a day fold into one dim count', () => {
+  const owed = [
+    row('a', 'hos-u16·557c', 'hos-u16', 'may I update?', 1),
+    row('b', 'hos-u16·557c', 'hos-u16', 'all 33 match, ok?', 0.5),
+    row('c', 'hos-u1-series', 'hos-u1-series', 'DECISION: git --version', 27),
+    row('d', 'ax', 'ax', '(question, no text recorded)', 0),
+  ];
+  const view = partition({ owed, awaiting: [], alerts: [] }, NOW);
+  const out = widget(view, 100, NOW, kit, plain);
+  expect(out.filter((l) => l.includes('hos-u16'))).toHaveLength(1);
+  expect(out.find((l) => l.includes('hos-u16'))).toContain('×2');
+  expect(out.find((l) => l.includes('hos-u16'))).toContain('all 33 match, ok?');
+  expect(out.some((l) => l.includes('hos-u1-series'))).toBe(false);
+  expect(out.at(-1)).toContain('1 older than a day · /peers');
+  expect(status(view, plain)).toBe('peers: 3 needs you');
+});
+
+test('a ledger holding only old rows says nothing in the footer, and the widget only counts them', () => {
+  const view = partition({ owed: [row('c', 'hos-u1', 'hos-u1', 'old', 30)], awaiting: [], alerts: [] }, NOW);
+  expect(status(view, plain)).toBeUndefined();
+  expect(widget(view, 100, NOW, kit, plain).join('\n')).toContain('1 older than a day · /peers');
+});
+
+test('the alert line names the operator\'s way to clear it', () => {
+  const view = partition({ owed: [], awaiting: [], alerts: [row('g', 'hos-u8', 'hos-u8', 'worker gone', 2)] }, NOW);
+  expect(widget(view, 100, NOW, kit, plain).join('\n')).toContain('hos-u8: worker gone · /peers clear alerts');
 });
