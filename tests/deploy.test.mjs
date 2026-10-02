@@ -121,6 +121,7 @@ function fakeExec(s) {
         if (exact) return served ? ok(`${s.npmVersion}\n`) : fail('npm error code E404\n');
         return ok(`${served ? s.npmVersion : '0.24.5'}\n`);
       }
+      if (args[0] === 'ci') return ok('');
       return fail(`unexpected npm ${args.join(' ')}`);
     }
     if (bin === 'ssh') return fail('ssh must not run in this suite\n');
@@ -132,6 +133,7 @@ function fakeExec(s) {
       return ok('');
     }
     if (bin === 'pnpm') return s.installRefused ? fail('ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile"\n') : ok('');
+    if (bin === 'bun') return ok('');
     if (bin === 'git') {
       if (s.realGit) return realGit(args, opts.cwd);
       if (args[0] === 'status') return ok('');
@@ -487,9 +489,11 @@ function git(cwd, ...args) {
 }
 
 /** A consumer's bump files at `pinned`; the workspace file only where one exists. */
-function writeConsumer(dir, pinned, { workspace = existsSync(join(dir, 'pnpm-workspace.yaml')) } = {}) {
+function writeConsumer(dir, pinned, { workspace = existsSync(join(dir, 'pnpm-workspace.yaml')), lock } = {}) {
+  const kind = lock ?? (existsSync(join(dir, 'bun.lock')) && !existsSync(join(dir, 'pnpm-lock.yaml')) ? 'bun' : 'pnpm');
   writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'consumer', devDependencies: { '@flosrn/ax': pinned } }, null, 2)}\n`);
-  writeFileSync(join(dir, 'pnpm-lock.yaml'), `lockfileVersion: '9.0'\n# @flosrn/ax ${pinned}\n`);
+  if (kind === 'bun') writeFileSync(join(dir, 'bun.lock'), `{"lockfileVersion":1}\n`);
+  else writeFileSync(join(dir, 'pnpm-lock.yaml'), `lockfileVersion: '9.0'\n# @flosrn/ax ${pinned}\n`);
   if (workspace) {
     const path = join(dir, 'pnpm-workspace.yaml');
     const listed = existsSync(path) ? /@flosrn\/ax@([^']*)'/.exec(readFileSync(path, 'utf8'))?.[1] ?? '' : '';
@@ -498,13 +502,13 @@ function writeConsumer(dir, pinned, { workspace = existsSync(join(dir, 'pnpm-wor
 }
 
 /** A consumer checkout on `main` whose bare origin holds the same commit. */
-function consumerRepo(roots, name, { pinned = '0.24.0', workspace = false } = {}) {
+function consumerRepo(roots, name, { pinned = '0.24.0', workspace = false, lock = 'pnpm' } = {}) {
   const checkout = join(roots, name);
   const origin = join(roots, '.origins', `${name}.git`);
   mkdirSync(checkout, { recursive: true });
   mkdirSync(join(roots, '.origins'), { recursive: true });
   git(checkout, 'init', '-q', '-b', 'main');
-  writeConsumer(checkout, pinned, { workspace });
+  writeConsumer(checkout, pinned, { workspace, lock });
   git(checkout, 'add', '-A');
   git(checkout, 'commit', '-qm', 'init');
   git(roots, 'clone', '-q', '--bare', checkout, origin);
@@ -646,4 +650,16 @@ test('#286: an install origin/main refuses pins nothing, pushes nothing, and sti
   assert.equal(r.seen.worktrees, 1);
   assert.match(r.out, /ERR_PNPM_OUTDATED_LOCKFILE/);
   assert.match(r.out, /node scripts\/deploy\.mjs --pins-only/);
+});
+
+test('a bun.lock consumer is installed with bun, not pnpm', async () => {
+  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
+    seed: roots => ({ repo: consumerRepo(roots, 'app', { lock: 'bun' }) }),
+    inspect: ({ repo }) => ({ subjects: subjects(repo.origin) }),
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.calls.some(c => c.bin === 'pnpm'), false, r.out);
+  assert.deepEqual(r.calls.find(c => c.bin === 'bun')?.args, ['install', '--frozen-lockfile']);
+  assert.deepEqual(r.seen.subjects, [BUMP, 'init']);
 });

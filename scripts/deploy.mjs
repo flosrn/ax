@@ -21,8 +21,9 @@
 // run claimed "everywhere" off a scan that had errored, and the honest
 // inventory afterwards is the shape this step encodes (F-028: an errored
 // inventory is unknown, not empty). (5) Pin each consumer REPOSITORY once, on
-// origin's default branch, from a temporary worktree of it: install, `ax pin
-// <version>` — the pin verb owns migration, install proof and doctor — commit,
+// origin's default branch, from a temporary worktree of it: install with the
+// lockfile that tree has (pnpm-lock.yaml, else bun.lock, else package-lock.json),
+// `ax pin <version>` — the pin verb owns migration, install proof and doctor — commit,
 // push, with one rebase retry because a busy main rejects the first push
 // routinely. The checkout the walk found is never mutated (#286). (6)
 // Fast-forward THIS checkout: release-please bumps the version on
@@ -347,9 +348,18 @@ export async function deploy(
   function bump(dir, at, version, main) {
     const long = args => exec('git', args, { cwd: at, timeout: 600_000 });
     const rerun = 'node scripts/deploy.mjs --pins-only';
-    const install = exec('pnpm', ['install', '--frozen-lockfile'], { cwd: at, timeout: 600_000 });
+    // A bun repo has no pnpm-lock.yaml. Sending it to pnpm --frozen-lockfile
+    // refuses the pin (harnessos, 0.29.3). The lockfile present names the installer.
+    const [installBin, installArgs] = existsSync(join(at, 'pnpm-lock.yaml'))
+      ? ['pnpm', ['install', '--frozen-lockfile']]
+      : existsSync(join(at, 'bun.lock')) || existsSync(join(at, 'bun.lockb'))
+        ? ['bun', ['install', '--frozen-lockfile']]
+        : existsSync(join(at, 'package-lock.json'))
+          ? ['npm', ['ci']]
+          : ['pnpm', ['install', '--frozen-lockfile']];
+    const install = exec(installBin, installArgs, { cwd: at, timeout: 600_000 });
     if (!succeeded(install)) {
-      bad(`${dir}: pnpm install --frozen-lockfile refused origin/${main} as it stands — ${firstLine(install)}`);
+      bad(`${dir}: ${installBin} ${installArgs.join(' ')} refused origin/${main} as it stands — ${firstLine(install)}`);
       fix(`${rerun}   # once ${main} installs frozen again`);
       return 'install-failed';
     }
