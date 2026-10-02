@@ -652,14 +652,18 @@ test('#286: an install origin/main refuses pins nothing, pushes nothing, and sti
   assert.match(r.out, /node scripts\/deploy\.mjs --pins-only/);
 });
 
-test('a bun.lock consumer is installed with bun, not pnpm', async () => {
-  const r = await runDeploy({ realGit: true }, ['--pins-only'], {
+test('a bun.lock consumer is installed with bun, and ax pin does not commit a pnpm lockfile', async () => {
+  const r = await runDeploy({ realGit: true, onPin: (cwd) => writeFileSync(join(cwd, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n") }, ['--pins-only'], {
     seed: roots => ({ repo: consumerRepo(roots, 'app', { lock: 'bun' }) }),
-    inspect: ({ repo }) => ({ subjects: subjects(repo.origin) }),
+    inspect: ({ repo }) => {
+      const shown = realGit(['show', 'main:pnpm-lock.yaml'], repo.origin);
+      return { subjects: subjects(repo.origin), pnpmLock: shown.status === 0 ? shown.stdout : 'absent' };
+    },
   });
 
   assert.equal(r.code, 0, r.out);
   assert.equal(r.calls.some(c => c.bin === 'pnpm'), false, r.out);
   assert.deepEqual(r.calls.find(c => c.bin === 'bun')?.args, ['install', '--frozen-lockfile']);
   assert.deepEqual(r.seen.subjects, [BUMP, 'init']);
+  assert.equal(r.seen.pnpmLock, 'absent', r.out);
 });

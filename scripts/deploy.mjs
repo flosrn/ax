@@ -363,6 +363,11 @@ export async function deploy(
       fix(`${rerun}   # once ${main} installs frozen again`);
       return 'install-failed';
     }
+    // Captured before `ax pin`: that verb always runs pnpm install, which
+    // writes pnpm-lock.yaml even into a bun repo (harnessos, 0.29.3). A
+    // lockfile the tree did not have is not part of the bump.
+    const owned = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(at, f)));
+    const hadWorkspace = existsSync(join(at, 'pnpm-workspace.yaml'));
     const pin = exec('ax', ['pin', version], { cwd: at, timeout: 600_000 });
     process.stdout.write(pin.stdout ?? '');
     if (!succeeded(pin)) {
@@ -375,8 +380,8 @@ export async function deploy(
     // (chatnow_bot), and leaving that behind broke the next `pull --rebase`
     // (#274, #283). The pin that ran is the consumer's CURRENT version, which
     // may predate #274 and print a commit line without it.
-    const lock = ['pnpm-lock.yaml', 'package-lock.json', 'bun.lock', 'bun.lockb', 'yarn.lock'].filter((f) => existsSync(join(at, f)));
-    const workspace = existsSync(join(at, 'pnpm-workspace.yaml')) && !succeeded(git(at, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
+    const lock = owned.filter((f) => existsSync(join(at, f)));
+    const workspace = hadWorkspace && existsSync(join(at, 'pnpm-workspace.yaml')) && !succeeded(git(at, ['diff', '--quiet', '--', 'pnpm-workspace.yaml'])) ? ['pnpm-workspace.yaml'] : [];
     const add = git(at, ['add', '--', 'package.json', ...lock, ...workspace]);
     if (!succeeded(add)) {
       bad(`${dir}: git add failed — ${firstLine(add)}`);
