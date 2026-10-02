@@ -8,6 +8,15 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.29.4](https://github.com/flosrn/ax/compare/v0.29.3...v0.29.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deploy:** do not commit a lockfile the consumer did not have ([4d7c659](https://github.com/flosrn/ax/commit/4d7c65915bd1844a5efc8e5239268b5bcb356800))
+* **deploy:** install a consumer with the lockfile it has ([f75e7d4](https://github.com/flosrn/ax/commit/f75e7d4a22b4ab5f72cce87ca44b4f6165b1eca8))
+* **deploy:** install a consumer with the lockfile it has ([11bcd67](https://github.com/flosrn/ax/commit/11bcd6720bd17a5587c80fefc848c8e148839876))
+
 ## [0.29.3](https://github.com/flosrn/ax/compare/v0.29.2...v0.29.3) (2026-10-02)
 
 
