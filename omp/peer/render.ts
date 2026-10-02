@@ -11,9 +11,9 @@
  * `content` is never read to decide anything here except to show it verbatim
  * under "what the agent reads".
  */
-import { freshLedger, needsYou, observe, rebuild, speakerOf } from './ledger.ts';
+import { DISMISS, freshLedger, type Ledger, needsYou, observe, rebuild, speakerOf } from './ledger.ts';
 import { hostKit } from './tui.ts';
-import { bubble, type Card, colorOf, type Kit, MAX_WIDTH, notice, type Paint, status, widget } from './view.ts';
+import { bubble, type Card, colorOf, type Kit, MAX_WIDTH, notice, type Paint, partition, status, widget } from './view.ts';
 
 const KEY = 'ax-peers';
 
@@ -57,22 +57,18 @@ export function createPeerView(deps: PeerViewDeps) {
   function refresh(): void {
     if (!ui || !kit) return;
     try {
-      const counts = { owed: ledger.owed.size, awaiting: ledger.awaiting.size, alerts: ledger.alerts.length };
-      ui.setStatus(KEY, status(counts, paintOf(ui.theme)));
+      const rows = () => ({ owed: [...ledger.owed.values()], awaiting: [...ledger.awaiting.values()], alerts: ledger.alerts });
+      const now = partition(rows(), Date.now());
+      ui.setStatus(KEY, status(now, paintOf(ui.theme)));
       ui.setWidget(
         KEY,
-        counts.owed + counts.awaiting + counts.alerts === 0
+        now.counts.owed + now.counts.awaiting + now.counts.alerts + now.old === 0
           ? undefined
           : (_tui, theme) =>
-              component((w) =>
-                widget(
-                  { owed: [...ledger.owed.values()], awaiting: [...ledger.awaiting.values()], alerts: ledger.alerts },
-                  w,
-                  Date.now(),
-                  kit,
-                  paintOf(theme),
-                ),
-              ),
+              component((w) => {
+                const at = Date.now();
+                return widget(partition(rows(), at), w, at, kit, paintOf(theme));
+              }),
       );
     } catch {}
   }
@@ -232,6 +228,14 @@ export function createPeerView(deps: PeerViewDeps) {
     },
     toolResult(event): void {
       if (observe(ledger, { type: 'message', message: { role: 'toolResult', ...event } })) refresh();
+    },
+    /** The ledger as it stands, for `/peers`. Read-only by contract. */
+    ledger(): Ledger {
+      return ledger;
+    },
+    /** Apply an operator dismissal the caller has already recorded as a session entry. */
+    dismiss(data: { ids: string[]; alerts: boolean }): void {
+      if (observe(ledger, { type: 'custom', customType: DISMISS, data })) refresh();
     },
     /** `{renderCall, renderResult}` for one peer tool, or nothing when the host has no kit. */
     tool(name: keyof typeof toolViews) {

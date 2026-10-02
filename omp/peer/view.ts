@@ -114,11 +114,14 @@ export function colorOf(peer: string): string {
 
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
 
+/** How long ago, or nothing when the time is unknown: an epoch of 0 once read as 497463h. */
 export function ago(at: number, now: number): string {
+  if (at <= 0) return '';
   const s = Math.max(0, Math.round((now - at) / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.round(s / 60)}m`;
-  return `${Math.round(s / 3600)}h`;
+  if (s < 48 * 3600) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
 }
 
 function fitter(width: number, kit: Kit) {
@@ -178,44 +181,90 @@ export function notice(glyph: string, color: string, text: string, width: number
 
 interface WidgetRow {
   peer: string;
+  /** The worker the row is about; rows sharing it are one line. */
+  subject: string;
   line: string;
   at: number;
 }
 
+interface Group {
+  peer: string;
+  line: string;
+  at: number;
+  count: number;
+}
+
+/** The ledger as the operator reads it: recent rows grouped by worker, older ones counted. */
+export interface PeerView {
+  owed: Group[];
+  awaiting: Group[];
+  alerts: WidgetRow[];
+  /** Recent rows, the numbers the footer shows. */
+  counts: { owed: number; awaiting: number; alerts: number };
+  /** Rows older than `STALE_MS`, folded into one dim line. */
+  old: number;
+}
+
+/**
+ * A day. Older rows stay on the ledger, reachable from `/peers`, but leave the
+ * footer: a question nobody answered for a day is a backlog, not a ping.
+ */
+export const STALE_MS = 24 * 3600 * 1000;
+
+/** One line per worker, in first-seen order, carrying its latest words and time. */
+function grouped(rows: WidgetRow[]): Group[] {
+  const groups = new Map<string, Group>();
+  for (const r of rows) {
+    const g = groups.get(r.subject);
+    if (!g) groups.set(r.subject, { peer: r.peer, line: r.line, at: r.at, count: 1 });
+    else if (r.at >= g.at) Object.assign(g, { peer: r.peer, line: r.line, at: r.at, count: g.count + 1 });
+    else g.count++;
+  }
+  return [...groups.values()];
+}
+
+export function partition(rows: { owed: WidgetRow[]; awaiting: WidgetRow[]; alerts: WidgetRow[] }, now: number): PeerView {
+  // An unknown time is shown, not hidden: nothing says it is old.
+  const recent = (r: WidgetRow) => r.at <= 0 || now - r.at <= STALE_MS;
+  const owed = rows.owed.filter(recent);
+  const awaiting = rows.awaiting.filter(recent);
+  return {
+    owed: grouped(owed),
+    awaiting: grouped(awaiting),
+    alerts: rows.alerts,
+    counts: { owed: owed.length, awaiting: awaiting.length, alerts: rows.alerts.length },
+    old: rows.owed.length - owed.length + rows.awaiting.length - awaiting.length,
+  };
+}
+
 /** Above the editor: who is waiting on the operator, and on whom the operator waits. */
-export function widget(
-  rows: { owed: WidgetRow[]; awaiting: WidgetRow[]; alerts: WidgetRow[] },
-  width: number,
-  now: number,
-  kit: Kit,
-  paint: Paint,
-): string[] {
-  const { owed, awaiting, alerts } = rows;
-  if (owed.length + awaiting.length + alerts.length === 0) return [];
+export function widget(view: PeerView, width: number, now: number, kit: Kit, paint: Paint): string[] {
+  const { owed, awaiting, alerts, old } = view;
+  if (owed.length + awaiting.length + alerts.length + old === 0) return [];
   const w = Math.min(width, MAX_WIDTH);
   const fit = fitter(w, kit);
-  const line = (glyph: string, color: string, r: WidgetRow) => {
-    const age = paint.fg('dim', ago(r.at, now));
-    const text = kit.truncate(r.line, Math.max(10, w - 26));
-    return spread(` ${paint.fg(color, glyph)} ${paint.bold(r.peer.padEnd(12))} ${text}`, age, w, kit);
+  const line = (glyph: string, color: string, g: Group) => {
+    const age = paint.fg('dim', ago(g.at, now));
+    const who = `${g.peer}${g.count > 1 ? ` ×${g.count}` : ''}`;
+    const text = kit.truncate(g.line, Math.max(10, w - 26));
+    return spread(` ${paint.fg(color, glyph)} ${paint.bold(who.padEnd(12))} ${text}`, age, w, kit);
   };
-  const listed = [
-    ...owed.map((r) => line('?', 'warning', r)),
-    ...awaiting.map((r) => line('…', 'muted', r)),
-  ];
+  const listed = [...owed.map((g) => line('?', 'warning', g)), ...awaiting.map((g) => line('…', 'muted', g))];
   const shown = listed.slice(0, 4);
   const out = [paint.fg('borderMuted', `─ peers ${'─'.repeat(Math.max(0, w - 8))}`), ...shown];
   if (listed.length > shown.length) out.push(paint.fg('dim', `   +${listed.length - shown.length} more`));
+  if (old) out.push(paint.fg('dim', `   ${old} older than a day · /peers`));
   if (alerts.length)
     out.push(
       ` ${paint.fg('error', '!')} ${paint.fg('error', `${alerts.length} alert${alerts.length > 1 ? 's' : ''}`)}` +
-        paint.fg('dim', ` — ${alerts.map((a) => `${a.peer}: ${a.line}`).join('; ')} · peer_diagnostics`),
+        paint.fg('dim', ` — ${alerts.map((a) => `${a.peer}: ${a.line}`).join('; ')} · /peers clear alerts`),
     );
   return out.map(fit);
 }
 
-/** The footer summary, or nothing at all when there is nothing to say. */
-export function status(counts: { owed: number; awaiting: number; alerts: number }, paint: Paint): string | undefined {
+/** The footer summary of recent rows, or nothing at all when there is nothing recent to say. */
+export function status(view: PeerView, paint: Paint): string | undefined {
+  const { counts } = view;
   const parts = [
     counts.owed ? paint.fg('warning', `${counts.owed} needs you`) : '',
     counts.awaiting ? paint.fg('muted', `${counts.awaiting} waiting`) : '',
