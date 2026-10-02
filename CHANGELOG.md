@@ -8,6 +8,15 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.29.3](https://github.com/flosrn/ax/compare/v0.29.2...v0.29.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deploy:** pin each consumer repository on origin's default branch, from a temporary worktree of it ([0d0e571](https://github.com/flosrn/ax/commit/0d0e5712244965f8e0bc5cc45318d5c10070e62a)), closes [#286](https://github.com/flosrn/ax/issues/286)
+* **peer:** close stale questions and let the operator empty the widget ([9e97b1c](https://github.com/flosrn/ax/commit/9e97b1c012f3e6127866efecaa115210d48c86ed))
+* **peer:** close stale questions and let the operator empty the widget ([819a0dd](https://github.com/flosrn/ax/commit/819a0dd8dade06610a9436b19405ee2c6232f36e))
+
 ## [0.29.2](https://github.com/flosrn/ax/compare/v0.29.1...v0.29.2) (2026-09-30)
 
 
