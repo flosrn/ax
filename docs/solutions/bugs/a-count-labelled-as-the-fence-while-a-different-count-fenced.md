@@ -24,6 +24,13 @@ tags:
 ---
 # A count labelled as the fence, while a different count fenced
 
+**Superseded by [ADR 0005](../../adr/0005-slots-are-the-only-admission.md).** The repository cap
+(`dispatch.cap`) and the machine cap (`dispatch.machineCap`) this learning describes are retired,
+and `src/worker/capacity.mjs` with them: a dispatch is admitted by per-host Slots alone, and a
+configuration that still declares either key is refused by name. `ax worker ls` keeps its scoped
+liveness lines, none of them a ceiling. The record below is kept as history; its lesson — label a
+count with the question it answers — still holds.
+
 ## Problem
 
 The dispatch store is host-global by design (`src/worker/record.mjs`), so every number taken from it
