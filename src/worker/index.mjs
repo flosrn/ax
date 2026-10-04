@@ -25,8 +25,9 @@ import { dispatch } from './dispatch.mjs';
 import { hosts } from './host-placement.mjs';
 import { sweep } from './sweep.mjs';
 import { stall } from './stall.mjs';
+import { retireHost, unretireHost } from './retired-hosts.mjs';
 
-export const SUBCOMMANDS = { start, repair, dispatch, ls, hosts, tail, gate, transcript, release, settle, close, sweep, stall };
+export const SUBCOMMANDS = { start, repair, dispatch, ls, hosts, tail, gate, transcript, release, settle, close, 'retire-host': retireHost, 'unretire-host': unretireHost, sweep, stall };
 
 /**
  * `ax worker <verb> [args]`.

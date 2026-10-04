@@ -60,6 +60,12 @@
 // and why it offers no Slot (R9). It stops before the costly grounds, so it
 // never spends an Orca repository lookup or an ssh proof.
 //
+// A RETIRED HOST OFFERS NO SLOT (KTD8). The operator's retirement rides on the
+// host's live count (`retired`, ./slots.mjs `liveCount`), and it is judged
+// before the report: an eligible entry for a written-off host is still a named
+// skip, and `ax worker hosts <retired>` is a known name showing 0 Slots, the
+// retirement, and its memory as unavailable when the report did not measure it.
+//
 // THE MAC IS NEVER A FALLBACK (R2). Automatic placement runs only on the
 // operator Mac — detected as HarnessOS's own `localHost` detects it
 // (`scripts/infra.ts`): the darwin machine is the operator — and when no host
@@ -83,6 +89,8 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { declarationOf } from './hosts.mjs';
 import { terminalInventory } from './pane.mjs';
 import { liveCount } from './slots.mjs';
+import { readRetired, retiredLine } from './retired-hosts.mjs';
+import { defaultStore } from './record.mjs';
 
 /** The declaration fields a capacity entry carries for `proveHost` (./hosts.mjs). */
 const DECLARED = ['ssh', 'cgroup', 'diskPath', 'diskFloorGb', 'memFreeFloorMb'];
@@ -272,8 +280,13 @@ function countSkip(count) {
   return reasons.join('; ');
 }
 
+/** Why a retired host offers no Slot, or ''. */
+const retiredSkip = count => (count?.retired ? `${retiredLine(count.retired)} — ax worker unretire-host ${count.retired.host} if it may take workers again` : '');
+
 /** One host's verdict from its entry and a live count: `{ reason }` or `{ slots, text }`. */
 function verdictOf(entry, count) {
+  const retired = retiredSkip(count);
+  if (retired !== '') return { reason: retired };
   const skip = countSkip(count);
   if (skip !== '') return { reason: skip };
   const live = Number.isInteger(count.live) ? count.live : 0;
@@ -328,7 +341,7 @@ export function hostSlots({ capacity, liveOn, only = '' }) {
       return;
     }
     const count = liveOn(host) ?? NONE;
-    const reason = reportSkip(entry);
+    const reason = retiredSkip(count) || reportSkip(entry);
     if (reason !== '') {
       skip(host, reason, entry, count);
       return;
@@ -343,7 +356,10 @@ export function hostSlots({ capacity, liveOn, only = '' }) {
     rows.push({ host, line, entry, count });
     candidates.push({ host, slots: verdict.slots, entry });
   });
-  if (only !== '' && !judged.has(only)) skip(only, 'not in the capacity report, so its Slots cannot be measured (F-028)');
+  if (only !== '' && !judged.has(only)) {
+    const count = liveOn(only) ?? NONE;
+    skip(only, retiredSkip(count) || 'not in the capacity report, so its Slots cannot be measured (F-028)', null, count);
+  }
   candidates.sort((a, b) => b.slots - a.slots);
   return { lines, rows, skipped, candidates };
 }
@@ -427,8 +443,12 @@ const mb = value => (finite(value) ? `${value} MB` : value === undefined ? 'unre
  */
 function hostDetails({ entry, count, reason }) {
   const details = [];
+  if (count?.retired) {
+    details.push(`0 Slots: ${retiredLine(count.retired)}`);
+    if (entry === null || typeof entry !== 'object') details.push('memory and OOM unavailable — the capacity report did not measure this host');
+  }
   if (entry !== null && typeof entry === 'object') {
-    if (reason !== undefined && reportSkip(entry) !== '' && invalidField(entry) === '' && countSkip(count ?? NONE) === '') {
+    if (!count?.retired && reason !== undefined && reportSkip(entry) !== '' && invalidField(entry) === '' && countSkip(count ?? NONE) === '') {
       const terms = slotsOf(entry, Number.isInteger(count?.live) ? count.live : 0);
       details.push(`Slots 0 offered; by its terms it would hold ${terms.slots} (${terms.text})`);
     }
@@ -488,12 +508,16 @@ export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.
   const fleet = capacity({ source: source.path });
   if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
 
+  // The retirement policy, read before any name is judged: a retired host is a
+  // known name, and a malformed policy is an inability, never no retirement.
+  const policy = readRetired(defaultStore(env));
+  if (!policy.ok) return cannot(policy.reason, policy.repair);
   if (only !== '') {
     const reported = fleet.capacity.hosts.map(entry => entry?.host).filter(name => typeof name === 'string' && name !== '');
     const overrides = config.dispatch?.hosts;
-    const known = [...new Set([...reported, ...(overrides !== null && typeof overrides === 'object' ? Object.keys(overrides) : [])])];
+    const known = [...new Set([...reported, ...(overrides !== null && typeof overrides === 'object' ? Object.keys(overrides) : []), ...policy.hosts.keys()])];
     if (!known.includes(only)) {
-      bad(`host '${only}' is neither in the capacity report nor in this checkout's dispatch.hosts; known hosts: ${known.join(', ') || 'none'}`);
+      bad(`host '${only}' is neither in the capacity report nor in this checkout's dispatch.hosts, and is not retired; known hosts: ${known.join(', ') || 'none'}`);
       fix(`ax worker hosts${known.length > 0 ? ` ${known[0]}` : ''}`);
       return 2;
     }

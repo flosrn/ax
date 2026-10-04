@@ -92,6 +92,14 @@
 //      proven corpse whose slice its PARENT still owes a pull request (#3):
 //      the pane ended, the work did not
 //
+// A RETIRED HOST IS AN ATTESTATION, NOT A CORPSE (KTD8). A dispatch whose pane
+// sits INCONNU on a host the operator retired (`ax worker retire-host`), or
+// whose last mutation was a worker-start that never concluded there, is not
+// counted as a rival: the gate authorises on that attestation and SAYS so —
+// never "proven corpse". A pane that host later shows VIVANT is a live agent
+// like any other, and the refusal names unretire-host, then close. A
+// malformed retirement policy is exit 3 (F-028).
+//
 // `--help` NEVER REACHES THIS VERB, and that reverses what this header said
 // until #89. The rule was that the original had no `--help`, that a `--help`
 // therefore landed in the positional slot and was answered as a task id would
@@ -111,7 +119,8 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
-import { defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
+import { argvValue, defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
+import { readRetired, retiredLine } from './retired-hosts.mjs';
 
 // Orca 867d38397893, db/tasks/task-status-transition.ts excludes exactly
 // these states from the active supervised worker check.
@@ -226,7 +235,7 @@ function uncertainMutations(store, task) {
   const rows = [];
   const setAside = [];
   const runs = new Map();
-  for (const { file, stem } of scan.records) {
+  for (const { file, stem, rec } of scan.records) {
     const path = join(store, file);
     let named;
     try {
@@ -268,7 +277,19 @@ function uncertainMutations(store, task) {
       rows.push({ request: stem, evidence: `the last phase of ${stem} could not be judged: ${String(error.message ?? error).slice(0, 200)}` });
       continue;
     }
-    if (verdict.verdict === 'unknown') rows.push({ request: stem, evidence: String(verdict.evidence).slice(0, 300) });
+    if (verdict.verdict === 'unknown') {
+      // Where that mutation would have placed a pane: a worker-start's `--on`.
+      const attempts = Array.isArray(rec?.attempts) ? rec.attempts : [];
+      const phases = Array.isArray(attempts[attempts.length - 1]?.phases) ? attempts[attempts.length - 1].phases : [];
+      const last = phases[phases.length - 1];
+      let host = '';
+      try {
+        if (last?.name === 'worker-start' && Array.isArray(last.argv)) host = argvValue(last.argv, '--on') ?? '';
+      } catch {
+        // an argv this walk cannot read places nothing, and stays a doubt
+      }
+      rows.push({ request: stem, evidence: String(verdict.evidence).slice(0, 300), host });
+    }
   }
   return { ok: true, rows, setAside, runs };
 }
@@ -337,6 +358,16 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   // operator reading a verdict reached over a record they never knew was
   // consulted.
   for (const aside of uncertain.setAside) note(`set aside ${aside.file}: it created no task (${aside.ground}), so it is unrelated to ${task}.`);
+
+  // THE OPERATOR'S RETIREMENTS (KTD8): an attestation each row below may stand
+  // on, read once. Malformed is an inability, never "nothing retired".
+  const retirement = readRetired(store);
+  if (!retirement.ok) {
+    bad(`CANNOT ESTABLISH — ${retirement.reason}`);
+    fix(retirement.repair);
+    return 3;
+  }
+  const retiredAt = host => (typeof host === 'string' && host !== '' ? retirement.hosts.get(host) : undefined);
 
   // WHICH RUN IS ASKED (#2107). `worker-list` and `task-list` are BOTH
   // Run-scoped: unscoped, each answers the Run bound to the calling terminal
@@ -425,6 +456,8 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   const live = [];
   const dead = [];
   const unproven = [];
+  // INCONNU on a host the operator retired: set aside on that attestation.
+  const attested = [];
   if (rows.length > 0) note(`Dispatches for ${task}: ${rows.length}`);
   for (const w of rows) {
     let handle = typeof w.agentTerminalHandle === 'string' ? w.agentTerminalHandle : null;
@@ -443,16 +476,28 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
       }
     }
     const verdict = hosts.verdictFor(handle, why, host).verdict;
-    if (verdict.pane === 'VIVANT') live.push({ w, handle, host });
+    const retired = retiredAt(host);
+    if (verdict.pane === 'VIVANT') live.push({ w, handle, host, retired });
     else if (verdict.pane === 'MORT') dead.push({ w, prov });
+    else if (retired !== undefined) attested.push({ w, prov, host, retired });
     else unproven.push({ w, prov, detail: verdict.detail, read });
-    const label = verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'MORT   ' : 'INCONNU';
+    const label = verdict.pane === 'VIVANT' ? 'LIVE   ' : verdict.pane === 'MORT' ? 'MORT   ' : retired !== undefined ? 'RETIRED' : 'INCONNU';
     note(
       `${label} ${w.dispatchId}  worker=${w.workerState}  terminal=${w.terminalState}  handle=${String(handle ?? '—').slice(0, 24)}` +
         `${handle !== null && handle !== w.agentTerminalHandle ? ' (from worker-show)' : ''}` +
-        `${verdict.pane === 'VIVANT' ? '' : ` · ${verdict.detail}`}`,
+        `${verdict.pane === 'VIVANT' ? '' : ` · ${verdict.detail}`}` +
+        `${retired === undefined ? '' : ` · '${host}' ${retiredLine(retired)}`}`,
     );
   }
+  // A RETIRED HOST THAT SHOWS A PANE VIVANT has withdrawn its own attestation:
+  // the refusal below stands, and the way back is unretire, then an operator Close.
+  const revived = () => {
+    for (const { handle, host, retired } of live) {
+      if (retired === undefined) continue;
+      note(`'${host}' is retired (${retiredLine(retired)}), yet its list shows ${handle} VIVANT: no authorisation stands on that retirement any more.`);
+      fix(`ax worker unretire-host ${host}   # then: ax worker close ${handle}`);
+    }
+  };
 
   // A LIVE AGENT IS THE MOST CONCRETE REFUSAL, so it answers first: the operator
   // has a pane to go and read, which no other branch here can offer. A pane on
@@ -466,6 +511,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     fix(at(host) === ''
       ? `ax worker tail ${handle}   # read it instead of re-dispatching`
       : `orca terminal read --terminal ${handle}${at(host)} --json   # read it on '${host}' instead of re-dispatching`);
+    revived();
     return 1;
   }
   if (live.length > 1) {
@@ -473,6 +519,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     for (const { handle } of live) fix(`ax worker close ${handle}`);
     note('Keep the current Dispatch\'s. Then warn the survivor: its tree mixes two sets of writes, so it must re-read everything with `git diff`.');
     note('Check reflog / upstream / dangling too.');
+    revived();
     return 2;
   }
 
@@ -481,11 +528,17 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   // the Dispatch it may have created carries an id this host never learned, so
   // no row joins it, and "no Dispatch for this task" then reads as a first
   // launch over a child that is coming up.
-  if (uncertain.rows.length > 0) {
-    bad(`CANNOT ESTABLISH — ${uncertain.rows.length} recorded mutation(s) of ${task} never concluded, so a pane of this task may still be appearing.`);
-    for (const row of uncertain.rows) note(`${row.request}: ${row.evidence}`);
+  // A mutation that never concluded on a RETIRED host is set aside on the same
+  // attestation as its panes, and said so; every other one still refuses.
+  const doubts = uncertain.rows.filter(row => retiredAt(row.host) === undefined);
+  for (const row of uncertain.rows) {
+    if (!doubts.includes(row)) note(`set aside ${row.request}: its worker-start never concluded, on '${row.host}', ${retiredLine(retiredAt(row.host))} — the operator's attestation, not a proof.`);
+  }
+  if (doubts.length > 0) {
+    bad(`CANNOT ESTABLISH — ${doubts.length} recorded mutation(s) of ${task} never concluded, so a pane of this task may still be appearing.`);
+    for (const row of doubts) note(`${row.request}: ${row.evidence}`);
     note('That is not a failure to report: the call may have COMMITTED (F-001), which is exactly what the recorded replay exists for.');
-    for (const row of uncertain.rows) fix(`ax worker start --resume --request ${row.request}   # replay the recorded call; never a second request`);
+    for (const row of doubts) fix(`ax worker start --resume --request ${row.request}   # replay the recorded call; never a second request`);
     return 3;
   }
 
@@ -577,7 +630,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   // as "start another one" over work that is already open.
   const branches = new Map();
   const continuations = [];
-  for (const { w, prov } of dead) {
+  for (const { w, prov } of [...dead, ...attested]) {
     if (prov === undefined) continue;
     let delivery;
     try {
@@ -630,7 +683,12 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     return 3;
   }
 
-  ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch.');
+  // AN ATTESTED ROW IS NAMED AS ONE (KTD8): the authorisation stands on the
+  // operator's retirement of that host, and the sentence never calls it a corpse.
+  const retiredHosts = [...new Map(attested.map(({ host, retired }) => [host, `'${host}', ${retiredLine(retired)}`])).values()];
+  if (attested.length === 0) ok('no live agent: every dispatch of this task is a PROVEN corpse. Safe to re-dispatch.');
+  else if (dead.length === 0) ok(`no live agent observed: ${attested.length} dispatch(es) of this task sit on retired host(s) (${retiredHosts.join('; ')}). Safe to re-dispatch on the operator's attestation — a retirement, not a proof of death.`);
+  else ok(`no live agent: ${dead.length} dispatch(es) of this task are PROVEN corpses, and ${attested.length} sit on retired host(s) (${retiredHosts.join('; ')}). Safe to re-dispatch on that proof and the operator's attestation.`);
   for (const { prov, continuation } of continuations) {
     if (continuation.failed !== '') note(`the continuation of ${prov.request} is undecided: ${continuation.failed}`);
     if (continuation.fix !== '') fix(continuation.fix);
@@ -648,6 +706,11 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     for (const { w } of dead) {
       if (!SETTLED_WORKER.includes(w.workerState)) {
         fix(`orca orchestration worker-stop --dispatch ${w.dispatchId} --json   # its pane is proven dead, and Orca still reads its worker '${w.workerState}' — a Dispatch it holds active refuses the task-update below`);
+      }
+    }
+    for (const { w, host } of attested) {
+      if (!SETTLED_WORKER.includes(w.workerState)) {
+        fix(`orca orchestration worker-stop --dispatch ${w.dispatchId} --json   # '${host}' is retired, and Orca still reads its worker '${w.workerState}' — a Dispatch it holds active refuses the task-update below`);
       }
     }
     fix(`orca orchestration task-update --id ${task}${runId === '' ? '' : ` --run ${runId}`} --status ready --json   # returns the task to ready for a re-dispatch`);

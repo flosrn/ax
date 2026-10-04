@@ -536,6 +536,16 @@ test('a verb whose contract is a judgement prints it, and only from the registry
   assert.match(hostsHelp, /any other name is refused with the known ones/);
   assert.match(hostsHelp, /peak unavailable gates nothing/);
   assert.match(hostsHelp, /oom_kill\s+against its baseline and acknowledgement/);
+  assert.match(hostsHelp, /or it is retired \(0 Slots/);
+  // R12: retirement is an attestation, read where it is typed.
+  const retireHelp = plain(run(['worker', 'retire-host', '--help'], HAS_ORCA).out);
+  assert.match(retireHelp, /ax worker retire-host <host>/);
+  assert.match(retireHelp, /An attestation, never a proof/);
+  assert.match(retireHelp, /A host that answers is refused: end its panes with ax worker close/);
+  assert.match(retireHelp, /--store/);
+  const unretireHelp = plain(run(['worker', 'unretire-host', '--help'], HAS_ORCA).out);
+  assert.match(unretireHelp, /the host is not asked/);
+  assert.match(unretireHelp, /ax worker gate reports the duplicate/);
 
   const ask = plain(run(['triage', 'ask', '--help'], HAS_ORCA).out);
   for (const line of [/0 {2}answered/, /1 {2}refused/, /3 {2}cannot establish/, /4 {2}PENDING/]) {

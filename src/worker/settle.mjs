@@ -53,6 +53,12 @@
 // verdict shares (./pane.mjs `hostReader`), and an unbound row is read through
 // `createdPane` — the gate's readers, not copies of them.
 //
+// A PANE ON A RETIRED HOST IS NEVER SETTLED ON THAT RETIREMENT (KTD8). The
+// retirement is the operator's attestation that the host will not answer; it
+// already sets the record aside for the frontier and the gate, and this verb
+// refuses naming it, `ax worker unretire-host` and `ax worker close` — never
+// "make the host answer", the one repair a retired host cannot take.
+//
 // SCOPE IS THE CHECKOUT WHOSE FRONTIER THE FLIP CHANGES. Settling moves a
 // request from `already-dispatched` to `attempt-ended-unmerged` in
 // `../frontier.mjs`, so the record must name THIS repository: the comparison is
@@ -123,6 +129,7 @@ import { namedList } from './gate.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
 import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordDelivery, recordRepoNaming, recordedRun, requestIdOk, taskIdScan } from './record.mjs';
+import { readRetired, retiredLine } from './retired-hosts.mjs';
 
 const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
@@ -282,6 +289,10 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
   const resolved = resolveSubject(store, subject);
   if (!resolved.ok) return cannot(resolved.reason, resolved.repair);
   const { request, task, path } = resolved;
+  // The operator's retirements (KTD8), read before anything is judged: a
+  // malformed policy is an inability, never "nothing retired" (F-028).
+  const retirement = readRetired(store);
+  if (!retirement.ok) return cannot(retirement.reason, retirement.repair);
 
   // STATED BEFORE ANYTHING ELSE, exactly as the gate states its own substitution
   // (./gate.mjs): an operator who typed one of the two ids must be able to see
@@ -549,6 +560,16 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
       // undeclared here, or its list did not come back. A local pane is judged
       // above, and a declared host that answered decides its own panes.
       const [first] = unknown;
+      // A RETIRED HOST IS NOT ASKED TO ANSWER (KTD8): the operator wrote it off,
+      // so "make the host answer" is the one repair that cannot happen, and the
+      // retirement itself is an attestation — never a death this verb may write.
+      const retired = host === '' ? undefined : retirement.hosts.get(host);
+      if (retired !== undefined) {
+        return refuse(
+          `${unknown.length} pane(s) of ${task} sit on '${host}', ${retiredLine(retired)} — a retirement attests that host will not answer, and it never settles an attempt: the frontier and the gate already set this record aside`,
+          `ax worker unretire-host ${host}   # only once '${host}' answers again; then ax worker close <handle> ends its pane, or ax worker settle ${request} proves it gone`,
+        );
+      }
       const unaskable = new Map(hosts.unaskable());
       return cannot(
         `${unknown.length} pane(s) of ${task} cannot be established from here — ${first.verdict.detail}${unaskable.has(host) ? ` (${unaskable.get(host).reason})` : ''}`,

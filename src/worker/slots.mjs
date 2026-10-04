@@ -45,9 +45,15 @@
 // `--replace` leaves the old request naming the pane the new one runs in, so two
 // records can name ONE terminal: counting rows there reports two live workers
 // for one and denies a Slot the host had.
+//
+// A RETIRED HOST'S COUNT CARRIES ITS RETIREMENT (KTD8). `liveCount` reads the
+// operator's policy (./retired-hosts.mjs) and marks each retired host's count,
+// so every Slot reader skips that host by name; a malformed policy is the same
+// inability as an unreadable record.
 
 import { hostScopes, liveInventory, worktreeOccupancy } from './pane.mjs';
 import { agentTerminal, argvValue, defaultStore, scanStore } from './record.mjs';
+import { readRetired } from './retired-hosts.mjs';
 
 /**
  * Every recorded agent pane of a store, keyed by handle, and every remote
@@ -392,6 +398,11 @@ export function livePanes({ store, local, scopes, repo = '' }) {
  * count of zero (F-028); an ENOENT store is the one real zero (`missing`).
  * Otherwise `{ slots, scopes }`: this count, and the host reader it asked, for
  * a caller that also names the hosts that could not be asked.
+ *
+ * A RETIRED HOST (KTD8) carries its retirement on its count — `retired: {host,
+ * at, by?}`, a host with no recorded pane included — so every Slot reader
+ * skips it by name whatever its report entry says. A malformed retirement
+ * policy is the same `{ cannot, repair }` as an unreadable record (F-028).
  */
 export function liveCount({ run, env, config, local, repo = '' }) {
   const store = defaultStore(env);
@@ -409,6 +420,12 @@ export function liveCount({ run, env, config, local, repo = '' }) {
       cannot: `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live panes cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
       repair: `ax worker ls --store ${store}   # see every record, then repair or remove the unreadable one`,
     };
+  }
+  const policy = readRetired(store);
+  if (!policy.ok) return { cannot: policy.reason, repair: policy.repair };
+  for (const [host, entry] of policy.hosts) {
+    const count = slots.hosts.get(host) ?? { live: 0, starting: 0, unmeasured: 0, occupancy: [] };
+    slots.hosts.set(host, { ...count, retired: entry });
   }
   return { slots, scopes };
 }

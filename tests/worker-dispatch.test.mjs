@@ -3256,3 +3256,27 @@ test('retired dispatch declarations refuse by presence before creating anything 
     assert.equal(readFileSync(join(root, 'ax.config.json'), 'utf8'), before);
   }
 });
+
+test('#292: with netcup-dev retired over its seven records, an --on here dispatch reads none of them and starts', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  mkdirSync(join(store, 'hosts'), { recursive: true });
+  const seven = ['hos-prep-fresh-netcup', 'hos-prep-proof-netcup', 'hos-u3-pins', 'hos-u5-build-gate', 'hos-u6-linux-builder', 'hos-u17-patches-page', 'hos-u1-series'];
+  for (const [index, request] of seven.entries()) {
+    writeFileSync(join(store, `${request}.json`), JSON.stringify({
+      request, host: 'mac', orca: 'stub-orca', repo: 'acme/widgets', createdAt: '2026-10-03T10:00:00.000Z',
+      attempts: [{ n: 1, settled: request === 'hos-u1-series', phases: [{
+        name: 'worker-start', identity: `id-${request}`, argv: ['stub-orca', 'orchestration', 'worker-start', '--on', 'netcup-dev', '--json'], exit: 0,
+        receipt: { ok: true, result: { dispatchId: `ctx_${index}`, state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: `term_netcup_${index}` }] } },
+      }] }],
+    }));
+  }
+  writeFileSync(join(store, 'hosts', 'retired.json'), JSON.stringify({ hosts: [{ host: 'netcup-dev', at: '2026-10-04T12:00:00.000Z', by: 'flo' }] }));
+
+  const root = repo();
+  provisioned(root, `${ISSUE}-${SLUG}`);
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], { root, home });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.started.length, 1, 'the dispatch reached its write-ahead start');
+  assert.ok(r.calls.every(argv => !argv.includes('netcup-dev')), `no call asked the retired host: ${r.calls.join(' | ')}`);
+});

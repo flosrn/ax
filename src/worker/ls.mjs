@@ -98,6 +98,14 @@
 // MEASURED, the machine total still stands, and the verbs that authorise a
 // mutation refuse for themselves.
 //
+// A RETIRED HOST'S PANE STAYS INCONNU (KTD8). `ax worker retire-host` is the
+// operator's attestation, never a proof, so a row whose worker-start was placed
+// on a retired host keeps its measured disposition and carries the retirement
+// beside it; that host is disclosed as retired instead of "could not be asked",
+// and no row there is offered a replay or a settle the host cannot answer. A
+// pane that host later shows VIVANT names the unretire-and-close route. A
+// malformed retirement policy refuses the listing (F-028).
+//
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
 //   0  the list was rendered, including the honest "0 record"
 //   2  usage error
@@ -115,6 +123,7 @@ import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore, recordedRun } from './record.mjs';
+import { readRetired, retiredLine } from './retired-hosts.mjs';
 import { livePanes, liveLines } from './slots.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
@@ -395,6 +404,18 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     liveSummary(NONE);
     return 0;
   }
+  const retirement = readRetired(dir);
+  if (!retirement.ok) {
+    bad(`CANNOT ESTABLISH — ${retirement.reason}`);
+    fix(retirement.repair);
+    return 3;
+  }
+  /** The retirement of the host a row's own worker-start named, or undefined. */
+  const retiredOf = row => {
+    const host = row.host ?? row.unsettled?.host ?? row.pending;
+    return typeof host === 'string' && host !== '' ? retirement.hosts.get(host) : undefined;
+  };
+
 
   const terminals = terminalInventory(run);
   if (!terminals.ok) {
@@ -629,7 +650,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
         ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers, run })
         : NO_CONTINUATION;
 
-    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine };
+    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine, retired: retiredOf(row) };
   });
 
   // THE DEFAULT VIEW (#70, ruled 2026-09-02). Measured on this machine: 189
@@ -691,14 +712,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
 
   section(`${hidden > 0 ? `${shown.length} of ${views.length}` : String(views.length)} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
 
-  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine } of shown) {
+  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine, retired } of shown) {
     const suffix = leaked === null
       ? ''
       : leakedLive
         ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now`
         : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
-    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}${row.ending?.cause === 'operator-close' ? ` · operator ending at ${row.ending.at} (${row.ending.handle} on ${row.ending.host || 'here'}), not a landing` : ''}`;
-
+    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}${row.ending?.cause === 'operator-close' ? ` · operator ending at ${row.ending.at} (${row.ending.handle} on ${row.ending.host || 'here'}), not a landing` : ''}${retired ? ` · ${retiredLine(retired)}` : ''}`;
     if (disagrees) {
       bad(line);
       fix(
@@ -759,9 +779,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
         }
         // `start` refuses a record another repository wrote (a request-id
         // collision), so a foreign record's replay is typed from its checkout.
-        fix(`${mine ? '' : `cd <your ${row.repo} checkout> && `}ax worker start --resume --request ${row.request}   # replays the recorded call, never a second request: its receipt names the pane`);
+        if (retired) note(`'${stranded.host}' is retired (${retiredLine(retired)}), so no replay can reach it: ax worker unretire-host ${stranded.host} once it answers again`);
+        else fix(`${mine ? '' : `cd <your ${row.repo} checkout> && `}ax worker start --resume --request ${row.request}   # replays the recorded call, never a second request: its receipt names the pane`);
       }
     }
+    // A retired host that still shows this pane: the attestation no longer
+    // holds, and the route back is unretire, then an operator Close.
+    if (retired && (pane === 'VIVANT' || leakedLive)) fix(`ax worker unretire-host ${retired.host}   # '${retired.host}' answers again; then ax worker close ${pane === 'VIVANT' ? row.handle : leaked.handle}`);
   }
 
   // THE COUNTS, from the one reader remote admission spends Slots against
@@ -816,7 +840,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // never per row: the reason is a fact about the host, and repeating it per
   // record is the receipt this verb was shortened out of (#70).
   for (const [host, scope] of hosts.unaskable()) {
-    note(`host '${host}' could not be asked, so its panes stay INCONNU, never MORT: ${scope.reason}`);
+    const retired = retirement.hosts.get(host);
+    if (retired) note(`host '${host}' is retired — ${retiredLine(retired)}: its panes stay INCONNU, never MORT, and nothing settles them; ax worker unretire-host ${host} once it answers, then ax worker close <handle>`);
+    else note(`host '${host}' could not be asked, so its panes stay INCONNU, never MORT: ${scope.reason}`);
   }
   // And the residue no declaration can reach: a record whose own phase never
   // named a placement, absent from a list that omits hosts. Nothing says which
