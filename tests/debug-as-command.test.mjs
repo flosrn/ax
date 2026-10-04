@@ -38,9 +38,14 @@ test('retired declaration refuses before debug adoption or browser work', async 
   assert.match(lines.join('\n'), /dispatch\.cap.*delete dispatch\.cap/);
 });
 
+// The gated verbs exist only where an Orca resolves (src/cli.mjs), so the test
+// names one, as tests/commands.test.mjs does: on a CI runner with none,
+// `worker` would be an unknown command and help would never be asked.
+const HAS_ORCA = { ORCA_BIN: '/bin/sh', ORCA_CLI_COMMAND: '', ORCA_DEV_REPO_ROOT: '' };
+
 test('AE14 help answers without reading any project configuration', () => {
   for (const argv of [['worker', 'dispatch'], ['triage', 'dispatch'], ['worker', 'hosts'], ['frontier'], ['pr', 'gate'], ['doctor']]) {
-    const result = spawnSync(process.execPath, [bin, ...argv, '--help'], { cwd: '/tmp', encoding: 'utf8' });
+    const result = spawnSync(process.execPath, [bin, ...argv, '--help'], { cwd: '/tmp', encoding: 'utf8', env: { ...process.env, ...HAS_ORCA } });
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /dispatch\.cap retired|ax\.config\.json.*invalid/);
   }
