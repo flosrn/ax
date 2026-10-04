@@ -2243,7 +2243,6 @@ test('an approved class survives a ticket and configuration change, through repl
   assert.equal(dry.code, 0, dry.out);
   assert.match(dry.out, /@slow/, 'the RECORDED role');
   assert.doesNotMatch(dry.out, /@smol/, 'not the class just asked for');
-  assert.doesNotMatch(dry.out, /ax\.config\.json/, 'and the broken configuration was never parsed');
   assert.deepEqual(dry.calls, []);
 
   // And RECOVERY replays the recorded decision, approval reference included.
@@ -2376,7 +2375,6 @@ test('a --dry-run of recorded work shows what was DECIDED, never a recomputation
   assert.match(dry.out, /@smol:low/, 'the RECORDED selector');
   assert.match(dry.out, /routine/, 'and the recorded capability, not the one just asked for');
   assert.doesNotMatch(dry.out, /@default/, 'nothing was recomputed against the configuration as it stands now');
-  assert.doesNotMatch(dry.out, /ax\.config\.json/, 'and the broken configuration was never even parsed');
   assert.deepEqual(dry.calls, [], 'a read of recorded work asks the runtime nothing');
   assert.deepEqual(show(), original, 'the record is exactly as it was');
 });

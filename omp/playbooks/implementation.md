@@ -108,6 +108,59 @@ see a criterion quietly skipped. A criterion the ticket never named is
 never a line to invent: its absence was the decision gate's failure, and it
 goes to the orchestrator as a question.
 
+**When the repository gates merges on the Report.** Read `ax.config.json` at
+the root of your worktree. When its `prGate` declares `"report": true`, the
+merge gate parses `## CRITERIA` as machine evidence, and this contract replaces
+the paragraph above; otherwise that paragraph is the whole rule.
+`## CRITERIA` stays the first section and holds exactly one fenced block whose
+info string is `ax-report-v1`, containing one JSON object:
+
+~~~markdown
+```ax-report-v1
+{
+  "repo": "owner/repo",
+  "issue": 12,
+  "criteria": [
+    {
+      "criterion": "<the criterion's source text, exactly>",
+      "status": "MET",
+      "evidence": { "command": "<the command you ran>", "observed": "<the value you read back>" }
+    }
+  ]
+}
+```
+~~~
+
+- `repo` is the `owner/repo` the pull request targets; `issue` is your ticket's
+  number, as a JSON number.
+- `criteria` lists every acceptance criterion of the ticket's current
+  assignment, in its order, each once — none omitted, added, merged or
+  reordered. The current assignment is the latest Agent Brief comment published
+  on the ticket by an authorized author when one exists, and the ticket body
+  otherwise. Its criteria are the items of its one `Acceptance criteria`
+  section: a heading (any ATX level, any letter case) or a bold label of that
+  name, ending at the next peer heading or bold label.
+- `criterion` is one item's text exactly: drop its list marker and any `[ ]` or
+  `[x]` checkbox, keep everything else — wording, punctuation, backticks,
+  typos — and keep its continuation or nested lines, joined by `\n` once their
+  common indentation is removed. Never paraphrase, correct or summarise it: a
+  criterion that differs by one character is a different criterion.
+- `status` is `MET` or `NOT MET`. `NOT MET` blocks the merge; write it whenever
+  what you observed does not prove the criterion.
+- `evidence` names `command` (what you ran) or `artifact` (the file, capture or
+  page you inspected), and `observed`: the actual value you read back, never
+  "passed" or "works". A `NOT MET` row still records what you observed
+  instead. A criterion about running behaviour needs an observation of that
+  behaviour; a passing test is evidence about the test.
+- The Report carries no commit id: the gate binds the revision when it reads
+  the file.
+
+The gate checks this structure against the tracker's current text, not the
+truth of your observations; the orchestrator judges those before it merges. A
+ruling or a `--task` changes the criteria only once it is published to that
+assignment: when what you were told differs from what the ticket carries, ask
+the orchestrator rather than reconciling the two in the Report.
+
 The Report's last section is `## LEARNINGS`, present even when empty. Each
 bullet is prose prefixed by the scope it belongs to:
 

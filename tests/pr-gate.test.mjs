@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -26,6 +26,8 @@ import { subcommandNames } from '../src/commands.mjs';
 import { gate, readDeclaration } from '../src/pr-gate.mjs';
 import { SUBCOMMANDS, pr as prNoun } from '../src/pr/index.mjs';
 import { defaultExec } from '../src/exec.mjs';
+import { reportGround } from '../src/pr/report.mjs';
+import { redactSecrets } from '../src/redact.mjs';
 import { claimRecord, initRecord, phaseBegin, phaseEnd } from '../src/worker/record.mjs';
 
 const SLUG = 'gapilabs/gapila';
@@ -2766,4 +2768,182 @@ test('retired dispatch declarations refuse before merge grounds (AE14)', () => {
       assert.equal(readFileSync(path, 'utf8'), before);
     }
   } finally { writeFileSync(path, original); }
+});
+
+// ── Report acceptance: the usage contract and the merge journal ─────────────
+
+test('Report acceptance flags: malformed, unpaired or valueless input is a usage error that reads and mutates nothing', () => {
+  const digest = 'a'.repeat(64);
+  for (const extra of [
+    ['--accept-report', 'abc123', '--reason', 'judged'],
+    ['--accept-report', 'A'.repeat(64), '--reason', 'judged'],
+    ['--accept-report', digest],
+    ['--reason', 'judged'],
+    ['--accept-report'],
+    ['--accept-report', '--reason', 'judged'],
+    ['--accept-report', digest, '--reason'],
+    ['--accept-report', digest, '--reason', '   '],
+  ]) {
+    const { code, calls } = run(['--pr', '1845', '--merge', ...extra], CLEAN);
+    assert.equal(code, 2, extra.join(' '));
+    assert.deepEqual(calls, [], `${extra.join(' ')} reached gh`);
+  }
+});
+
+test('a prGate.report that is not a boolean is refused before any ground and merges nothing', () => {
+  assert.equal(readDeclaration({ aggregate: AGGREGATE, report: 'true' }).ok, false);
+  assert.equal(readDeclaration({ aggregate: AGGREGATE, report: true }).ok, true);
+  const { code, calls, store } = run(['--pr', '1845', '--merge'], { ...CLEAN, prGate: { aggregate: AGGREGATE, report: 'true' } });
+  assert.equal(code, 3);
+  assert.ok(!calls.some(call => call.startsWith('pr merge')), calls.join(' | '));
+  assert.equal(existsSync(join(store, 'merge')), false);
+});
+
+test('an unadopted merge journals no acceptance judgment', () => {
+  const { code, store } = run(['--pr', '1845', '--merge'], CLEAN);
+  assert.equal(code, 0);
+  const phase = JSON.parse(readFileSync(join(store, 'merge', `merge-${SLUG.replace('/', '-')}-1845.json`), 'utf8')).attempts[0].phases[0];
+  assert.equal('acceptedJudgments' in phase, false);
+});
+
+const REPORT_SLUG = 'owner/project';
+const REPORT_CRITERIA = ['The command returns the observed value.', 'The preview leaves the host unchanged.'];
+
+/**
+ * An adopted checkout whose worker Report the test can repair between runs on
+ * one unchanged head. Merge outcomes are queued; `lockedRead` observes the
+ * replay's under-lock read, the last read before the journal write.
+ */
+function adoptedReport(t) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-gate-report-')));
+  const store = join(root, 'store');
+  const recordPath = join(store, 'merge', `merge-${REPORT_SLUG.replace('/', '-')}-19.json`);
+  t.after(() => {
+    if (existsSync(dirname(recordPath))) chmodSync(dirname(recordPath), 0o700);
+    rmSync(root, { recursive: true, force: true });
+  });
+  git(root, 'init', '-q', '-b', 'main');
+  writeFileSync(join(root, 'ax.config.json'), JSON.stringify({ project: { name: 'fixture' }, prGate: { checks: ['tests'], report: true } }));
+  git(root, 'add', 'ax.config.json');
+  git(root, 'commit', '-qm', 'base');
+  const base = shaOf(root, 'HEAD');
+  git(root, 'checkout', '-qb', 'feat/12-work');
+  git(root, 'commit', '--allow-empty', '-qm', 'implementation');
+  const sha = shaOf(root, 'HEAD');
+  mkdirSync(store);
+  mkdirSync(join(root, '.scratch', 'report'), { recursive: true });
+  const writeReport = observed => {
+    const rows = REPORT_CRITERIA.map(criterion => ({ criterion, status: 'MET', evidence: { command: 'node bin/ax.mjs preview', observed } }));
+    writeFileSync(
+      join(root, '.scratch', 'report', '12-work.md'),
+      `## CRITERIA\n\n\`\`\`ax-report-v1\n${JSON.stringify({ repo: REPORT_SLUG, issue: 12, criteria: rows }, null, 2)}\n\`\`\`\n\n## LEARNINGS\nNone.\n`,
+    );
+  };
+  writeReport('value=42; host receipt unchanged');
+  writeFileSync(
+    join(store, '12-work.json'),
+    JSON.stringify({ request: '12-work', host: hostname(), repo: REPORT_SLUG, kind: 'implementation', attempts: [{ n: 1, phases: [{ name: 'worker-start', argv: ['orchestration', 'worker-start', '--worktree', `path:${root}`], receipt: { result: { effects: [{ kind: 'worktree', path: root, id: `repo::${root}` }] } } }] }] }),
+  );
+  const assignment = `## Acceptance criteria\n${REPORT_CRITERIA.map(text => `- [ ] ${text}`).join('\n')}\n\n## Non-goals\nNo apply.\n`;
+  const calls = [];
+  const mergeResults = [];
+  let lockedRead = () => {};
+  const gh = args => {
+    calls.push(args);
+    if (args[0] === 'repo') return answered(args.includes('defaultBranchRef') ? JSON.stringify({ defaultBranchRef: { name: 'main' } }) : `${REPORT_SLUG}\n`);
+    if (args[0] === 'pr' && args[1] === 'view') {
+      if (args.includes('state,headRefOid,body,title')) lockedRead();
+      const state = args.includes('state,mergeCommit,body,title') ? 'MERGED' : 'OPEN';
+      return answered(JSON.stringify({ number: 19, state, mergeCommit: { oid: sha }, headRefOid: sha, headRefName: 'feat/12-work', baseRefName: 'main', body: 'Closes #12', title: 'fix: preview', createdAt: '2026-10-01T00:00:00Z', mergeStateStatus: 'CLEAN', author: { login: 'worker' }, labels: [] }));
+    }
+    if (args[0] === 'pr' && args[1] === 'merge') return mergeResults.shift() ?? answered('merged\n');
+    if (args[0] === 'api' && args[1].includes('/check-runs')) return answered(JSON.stringify({ total_count: 1, check_runs: [{ id: 1, name: 'tests', status: 'completed', conclusion: 'success' }] }));
+    if (args[0] === 'api' && args[1] === 'graphql') return answered(JSON.stringify(threadPage([])));
+    if (args[0] === 'api' && args[1].includes('/pulls/')) return answered('[]');
+    if (args[0] === 'api' && args[1] === `repos/${REPORT_SLUG}`) return answered(JSON.stringify(BODY_POLICY));
+    if (args[0] === 'issue' && args.includes('state')) return answered('{"state":"CLOSED"}');
+    if (args[0] === 'issue' && args[1] === 'view') return answered(JSON.stringify({ number: 12, body: assignment, url: `https://github.com/${REPORT_SLUG}/issues/12` }));
+    if (args[0] === 'api' && args[1].includes('/issues/12/comments')) return answered('[]');
+    if (args[0] === 'api' && args[1].includes('/collaborators/')) return answered(JSON.stringify({ permission: 'write' }));
+    return refusedByGh(`unstubbed gh call: ${args.join(' ')}`);
+  };
+  const input = { run: gh, git: args => realGit(args, root), root, store, slug: REPORT_SLUG, pr: '19', sha, baseCommit: base, binding: { ok: true, issue: 12, source: '--issue' }, branch: 'feat/12-work', adopted: true, accepted: '', reason: '', release: { ok: false } };
+  const deps = { gh, git: realGit, cwd: root, env: { HOME: root, ORCA_DISPATCH_STORE: store }, sleep: () => {} };
+  return {
+    recordPath,
+    writeReport,
+    digest: () => reportGround(input).digest,
+    failNextMerge: () => mergeResults.push(refusedByGh('GraphQL: Base branch was modified')),
+    onLockedRead: fn => { lockedRead = fn; },
+    merges: () => calls.filter(args => args[0] === 'pr' && args[1] === 'merge'),
+    record: () => JSON.parse(readFileSync(recordPath, 'utf8')),
+    // A gate that throws is reported as such, so a red run names its failure
+    // instead of aborting the assertions that say which invariant broke.
+    gate: (digest, reason) => {
+      try {
+        return capture(() => gate(['--pr', '19', '--issue', '12', '--merge', '--accept-report', digest, '--reason', reason], deps));
+      } catch (error) {
+        return { code: null, out: String(error?.stack ?? error) };
+      }
+    },
+  };
+}
+
+const judgments = phase => phase.acceptedJudgments.map(({ digest, reason }) => ({ digest, reason }));
+
+test('a same-head replay journals the fresh accepted judgment before reissuing, and keeps the earlier one', t => {
+  const f = adoptedReport(t);
+  const first = f.digest();
+  const firstReason = 'Inspected observed preview value and unchanged host receipt.';
+  f.failNextMerge();
+  const failedRun = f.gate(first, firstReason);
+  assert.equal(failedRun.code, 1, failedRun.out);
+  const failed = f.record().attempts[0].phases[0];
+  assert.deepEqual(judgments(failed), [{ digest: first, reason: firstReason }]);
+
+  // The Report is repaired on the unchanged head, and judged afresh.
+  f.writeReport('value=43 after the repair; host receipt unchanged');
+  const fresh = f.digest();
+  assert.notEqual(fresh, first);
+  const secret = 'dcap_0123456789abcdef';
+  const freshReason = `Re-inspected the repaired evidence; the worker quoted ${secret}.`;
+  const merged = f.gate(fresh, freshReason);
+  assert.equal(merged.code, 0, merged.out);
+
+  // The reissue is the recorded mutation, byte for byte, under one identity.
+  const merges = f.merges();
+  assert.equal(merges.length, 2);
+  assert.deepEqual(merges[1], merges[0]);
+  const rec = f.record();
+  assert.equal(rec.attempts.length, 1);
+  assert.equal(rec.attempts[0].phases.length, 1);
+  const phase = rec.attempts[0].phases[0];
+  assert.equal(phase.identity, failed.identity);
+  assert.deepEqual(phase.argv, failed.argv);
+  assert.deepEqual(phase.argv, merges[0]);
+  assert.deepEqual(phase.grounds, failed.grounds);
+
+  // The judgment that authorised THIS issuance is journalled; the earlier one stays.
+  assert.deepEqual(judgments(phase), [{ digest: first, reason: firstReason }, { digest: fresh, reason: redactSecrets(freshReason) }]);
+  assert.equal(phase.acceptedJudgments[0].at, failed.acceptedJudgments[0].at);
+  for (const entry of phase.acceptedJudgments) assert.equal(Number.isNaN(Date.parse(entry.at)), false, entry.at);
+  assert.equal(readFileSync(f.recordPath, 'utf8').includes(secret), false);
+});
+
+test('a fresh judgment the journal cannot record issues no merge', t => {
+  const f = adoptedReport(t);
+  f.failNextMerge();
+  assert.equal(f.gate(f.digest(), 'Inspected observed preview value and unchanged host receipt.').code, 1);
+  const journalled = readFileSync(f.recordPath, 'utf8');
+
+  f.writeReport('value=43 after the repair; host receipt unchanged');
+  // Under the merge lock, after the last read and before any journal write,
+  // the record's directory stops accepting writes.
+  f.onLockedRead(() => chmodSync(dirname(f.recordPath), 0o500));
+  const blocked = f.gate(f.digest(), 'Re-inspected the repaired evidence.');
+  chmodSync(dirname(f.recordPath), 0o700);
+
+  assert.equal(f.merges().length, 1, 'a merge was issued over an unrecorded judgment');
+  assert.equal(blocked.code, 3, blocked.out);
+  assert.equal(readFileSync(f.recordPath, 'utf8'), journalled);
 });

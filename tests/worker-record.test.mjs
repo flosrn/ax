@@ -18,6 +18,7 @@ import {
   heldNoMutation,
   initRecord,
   newIdentity,
+  phaseAccept,
   phaseArgv,
   phaseBegin,
   phaseCount,
@@ -838,4 +839,50 @@ test('operator ending writer binds the old attempt and never settles its success
   assert.equal(attempts[1].settled, false);
   assert.equal(attempts[1].ending, undefined);
   assert.throws(() => attemptEnd(path, { ...tuple, handle: 'term_other' }, ending), /exact close tuple/);
+});
+
+test('each accepted judgment is appended to its phase with the injected clock, history kept', () => {
+  const path = begun(['gh', 'pr', 'merge', '19', '--repo', 'owner/project', '--squash', '--match-head-commit', 'c'.repeat(40)]);
+  const before = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases[0];
+  const first = 'a'.repeat(64);
+  const fresh = 'b'.repeat(64);
+  phaseAccept(path, 'last', { digest: first, reason: 'first judgment', now: () => '2026-10-04T00:00:00.000Z' });
+  phaseAccept(path, 'last', { digest: fresh, reason: 'fresh judgment', now: () => '2026-10-04T00:01:00.000Z' });
+  const phase = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases[0];
+  assert.deepEqual(phase.acceptedJudgments, [
+    { digest: first, reason: 'first judgment', at: '2026-10-04T00:00:00.000Z' },
+    { digest: fresh, reason: 'fresh judgment', at: '2026-10-04T00:01:00.000Z' },
+  ]);
+  assert.deepEqual({ ...phase, acceptedJudgments: undefined }, { ...before, acceptedJudgments: undefined });
+  phaseAccept(path, 'last', { digest: first, reason: 'default clock' });
+  const defaulted = JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases[0].acceptedJudgments[2];
+  assert.equal(Number.isNaN(Date.parse(defaulted.at)), false, defaulted.at);
+});
+
+test('a malformed judgment or judgment history raises and leaves the record bytes unchanged', () => {
+  const path = begun();
+  const pristine = readFileSync(path, 'utf8');
+  const digest = 'a'.repeat(64);
+  for (const malformed of [
+    { digest: 'abc', reason: 'judged' },
+    { digest: 'A'.repeat(64), reason: 'judged' },
+    { digest, reason: '' },
+    { digest, reason: '   ' },
+    { digest },
+    { reason: 'judged' },
+  ]) {
+    assert.throws(() => phaseAccept(path, 'last', malformed), Error, JSON.stringify(malformed));
+  }
+  assert.equal(readFileSync(path, 'utf8'), pristine);
+  // The same record takes a well-formed judgment: the refusals above were the
+  // judgment's, not the record's.
+  phaseAccept(path, 'last', { digest, reason: 'judged', now: () => '2026-10-04T00:00:00.000Z' });
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).attempts[0].phases[0].acceptedJudgments, [{ digest, reason: 'judged', at: '2026-10-04T00:00:00.000Z' }]);
+
+  const rec = JSON.parse(pristine);
+  rec.attempts[0].phases[0].acceptedJudgments = 'not a history';
+  writeFileSync(path, JSON.stringify(rec));
+  const mangled = readFileSync(path, 'utf8');
+  assert.throws(() => phaseAccept(path, 'last', { digest, reason: 'judged' }));
+  assert.equal(readFileSync(path, 'utf8'), mangled);
 });

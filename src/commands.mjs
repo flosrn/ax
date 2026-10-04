@@ -504,6 +504,8 @@ the session file:
         ['--update-branch', 'MUTATES — with --merge, authorize one base update and recheck'],
         ['--method <squash|merge>', 'the method the verdict stands on (default squash)'],
         ['--ack-body', "answer THIS run's post-open commit list; never persisted or widened"],
+        ['--accept-report <digest>', 'accept THIS read of the Report and criteria, bound to head/base'],
+        ['--reason <judgment>', 'explicit acceptance judgment; required with --accept-report'],
         ['--stale-retried', "the staleness self-repair's marker on its one re-run — never typed"],
       ],
     },
@@ -521,6 +523,12 @@ the head this PR announces supplies no evidence for it, and this checkout must h
 To authorize one automatic base update and a full recheck, add --update-branch.
 That request may complete asynchronously: exit 3 means the update's completion is not yet
 established, not that the branch stayed untouched. Inspect the head before retrying.
+
+With prGate.report: true, the detector reads the derived raw Report and authoritative ticket
+criteria, then prints an acceptance digest. Inspect every criterion and its observed evidence.
+Pass --accept-report <digest> --reason <judgment> for THIS invocation. A changed Report,
+assignment, head or base invalidates the digest. No command in the Report is executed;
+completeness and freshness are checked, not the truth of the evidence.
 
 What a pass is NOT:
 

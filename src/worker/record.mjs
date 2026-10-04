@@ -406,6 +406,26 @@ export function phaseEnd(path, index, { exit, receiptText, stderr = '', error = 
 }
 
 /**
+ * Journal the accepted judgment an issuance of this phase stands on, BEFORE that
+ * issuance. A same-head replay reissues the recorded argv under the recorded
+ * identity, so the judgment that authorised it lands here rather than in
+ * `grounds`, which describe the run that began the phase. Appended, never
+ * replaced: every earlier judgment keeps its own attribution. A malformed
+ * judgment or an unreadable history raises before any write.
+ */
+export function phaseAccept(path, index, { digest, reason, now = () => new Date().toISOString() }) {
+  if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('accepted judgment digest is not 64 lowercase hex');
+  if (typeof reason !== 'string' || reason.trim() === '') throw new Error('accepted judgment has no reason');
+  const rec = load(path);
+  const ph = phaseAt(rec, index);
+  // Absent is the additive default (no judgment yet); any other non-list raises.
+  const history = 'acceptedJudgments' in ph ? ph.acceptedJudgments : [];
+  if (!Array.isArray(history)) throw new Error('phase "acceptedJudgments" is not a list');
+  ph.acceptedJudgments = [...history, { digest, reason, at: now() }];
+  saveJson(rec, path);
+}
+
+/**
  * The recorded argv, reconstructed — never recomposed. Orca's fingerprint
  * refuses on any difference, so a recomposed line is a refusal at best and a
  * second identity at worst.

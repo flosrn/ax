@@ -1,7 +1,7 @@
 /**
  * THE HOST BOUNDARY, RUN FOR REAL — and the reason this file exists at all.
  *
- * `./remote.ts` composes program text for another machine's shell. A test that
+ * `src/worker/remote-report.mjs` composes program text for another machine's shell. A test that
  * asserted the STRING would pin the composition and prove nothing about the
  * behaviour: whether `cd -P` resolves what it is supposed to, whether the
  * symlink loop terminates, whether `head -c` bounds the payload, whether the
@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { run } from '../../src/exec.mjs';
-import { MARK, fetchRemoteReport, parseRemoteAnswer, remoteReadCommand } from './remote.ts';
+import { MARK, fetchRemoteReport, parseRemoteAnswer, remoteReadCommand } from '../../src/worker/remote-report.mjs';
 
 const CAP = 512;
 

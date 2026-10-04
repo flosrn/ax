@@ -54,6 +54,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `src/triage/index.mjs`, `src/triage/release.mjs` | `status` — what each pass recorded, waits on and drafted, and whose pane still owns its draft; issue → pass → dispatch, then delegate |
 | `src/triage/draft.mjs`, `src/triage/rulings.mjs` | pass identity, draft sha and `Q<n>:` lines; the ask/answer bodies and their header |
 | `src/pr-gate.mjs`, `src/pr-grounds.mjs` | every merge ground, executed against the exact head SHA and the base commit this run observed — one function per ground, the verdict in gate() |
+| `src/pr/report.mjs` | the adopted acceptance ground: authoritative ticket criteria, the derived raw Report and invocation-local judgment bound to head and base |
 | `src/frontier.mjs` | the takeable ticket set, classified from tracker truth and the dispatch store — read-only, one named reason per exclusion; `--spec` adds the Completion receipt without choosing a Ticket |
 | `src/mandate.mjs` | the Deployment mandate vocabulary — target, operations and named observations, read from the Spec's own prose |
 | `src/completion.mjs` | Completion, derived: `specMembership` is the one membership reader (repository-qualified, pagination proved); `completionOf` judges; `completionReceipt` prints |
@@ -69,7 +70,7 @@ header, then patch. `tests/docs.test.mjs` keeps the map complete in both directi
 | `omp/roles/`, `omp/playbooks/` | orchestrator, worker, triage-worker and maintainer contracts |
 | `omp/peer/` | independent-session addressing, messaging, attribution and receive loop |
 | `omp/peer/completion.ts` | the Report a worker's completion carries: the receiver's twin of the path rule, the containment proof, the cap — and the dispositions it is named under |
-| `omp/peer/remote.ts` | retrieving that Report from the host the record names: the ssh boundary, the answer's shape, and what a host may refuse to send |
+| `src/worker/remote-report.mjs` | retrieving the Report from the host the record names: shared CLI/OMP ssh boundary, answer shape, and what a host may refuse to send |
 | `omp/peer/diagnostics.ts` | persisted send/receive diagnostic reasons a restarted session can read, and the coverage they do not claim |
 | `omp/peer/view.ts`, `omp/peer/ledger.ts`, `omp/peer/render.ts`, `omp/peer/tui.ts`, `omp/peer/command.ts` | what the operator reads of peer traffic — drawn from `details`, never from the model's `content` — the ledger of who is waiting on whom, replayed from the session branch, and `/peers`, the operator's own way to read and empty it |
 | `omp/report/`, `omp/checkpoint/` | completion/questions and board updates |

@@ -92,6 +92,14 @@ triage verdict. It must contain:
 The brief should remain useful after files move. Describe behavior and stable
 interfaces; the implementation worker explores the current tree when it starts.
 
+Write the acceptance criteria as one section named `Acceptance criteria` — a
+heading or a bold label — holding one top-level list item per criterion and no
+prose before the list, each criterion stated once. A repository whose `prGate`
+declares `"report": true` reads exactly these items, once the brief is
+published, as the criteria a worker's Report must reproduce verbatim; a second
+such section, an empty list or a repeated criterion leaves the ticket with no
+criteria the merge gate can accept.
+
 ## Reporting
 
 Report once the exact draft exists, or report the concrete blocker: what you were

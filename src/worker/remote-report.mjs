@@ -1,10 +1,9 @@
-// @ts-nocheck — runs under OMP's Bun runtime, not the repo TypeScript project.
 /**
  * THE REPORT IS ON THE HOST THE RECORD NAMES, and this is the boundary that
  * goes and gets it.
  *
  * A dispatch placed with `--on <env>` runs its worker in a worktree on that
- * host, and the Report it writes is a file over there. `./completion.ts` used to
+ * host, and the Report it writes is a file over there. `../../omp/peer/completion.ts` used to
  * stop at that fact and name it: "Report inaccessible from this host". Honest,
  * and avoidable — the project's own declaration already carries how ax reaches
  * that host (`dispatch.hosts.<env>.ssh`), which is the same argument #76 made
@@ -14,8 +13,8 @@
  * identically, so the derived path usually EXISTS on this machine and holds
  * another slice's file. So the host is not a formatting detail on the way to a
  * local read; it is part of the address. The record decides both — the recorded
- * argv's `--on` (`./route.ts`), the recorded worktree effect and the recorded
- * request (`./completion.ts`) — and `payload.reportPath` decides neither.
+ * argv's `--on` (`../../omp/peer/route.ts`), the recorded worktree effect and the recorded
+ * request (`../../omp/peer/completion.ts`) — and `payload.reportPath` decides neither.
  *
  * THE TRANSPORT IS THE ONE `proveHost` ALREADY USES (`src/worker/hosts.mjs`):
  * closed ssh target grammar, `--` to end option parsing, `BatchMode=yes`, and
@@ -48,7 +47,7 @@
  *
  * REALPATH IS THE OWNING HOST'S TO ANSWER. Only that host can resolve its own
  * symlinks, so it reports the two real paths and the receiver decides
- * containment (`./completion.ts` owns that rule, for local and remote alike).
+ * containment (`../../omp/peer/completion.ts` owns that rule, for local and remote alike).
  * `cd -P` plus a bounded `readlink` loop rather than `realpath` or
  * `readlink -f`: neither is on every host, and a probe-and-fall-back would be a
  * second code path answering the same question. The loop is bounded because a
@@ -78,9 +77,9 @@
  * a local file.
  */
 
-import { loadCheckoutConfig, repoPaths } from '../../src/config.mjs';
-import { run } from '../../src/exec.mjs';
-import { hostFor, quote, remote } from '../../src/worker/hosts.mjs';
+import { loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { run } from '../exec.mjs';
+import { hostFor, quote, remote } from './hosts.mjs';
 
 /** The protocol's own prefix, on every line the host authors and on no other. */
 export const MARK = 'AX-REPORT/1';
