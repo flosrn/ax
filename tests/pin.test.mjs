@@ -53,7 +53,7 @@ const capture = fn => {
   }
 };
 
-/** Real git answers for real; pnpm is scripted per-verb. */
+/** Real git answers for real; the package manager's install is scripted per-verb. */
 function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, initRun = { status: 0 }, onInstall = null, frozen = false } = {}) {
   const calls = [];
   return {
@@ -67,7 +67,7 @@ function fakeExec({ install = { status: 0 }, doctor = { status: 0 }, initRun = {
           return { status: error.status ?? 1, stdout: '', stderr: String(error.stderr ?? error) };
         }
       }
-      if (bin === 'pnpm' && args[0] === 'install') {
+      if (['pnpm', 'bun', 'npm'].includes(bin) && args[0] === 'install') {
         // A workspace whose install is frozen by default: exactly what ofmchat
         // answered, and the only thing that distinguishes it is the flag.
         if (frozen && !args.includes('--no-frozen-lockfile')) {
@@ -148,6 +148,29 @@ test('#274: a pnpm-workspace.yaml the install rewrote is part of the printed com
   assert.equal(refused.code, 1);
   assert.match(refused.out, /pnpm-workspace\.yaml/);
   assert.ok(!refused.calls.some(line => line.startsWith('pnpm install')), 'nothing was installed over a dirty workspace file');
+});
+
+test('a bun consumer is installed with bun, and its bun.lock is the lockfile the commit stages', () => {
+  // Measured 2026-10-04 rolling 0.30.0 out: HarnessOS carries bun.lock and no
+  // pnpm-lock.yaml. `ax pin` ran `pnpm install`, so bun.lock stayed on 0.29.3
+  // beside a package.json on 0.30.0, and every frozen `bun install` on that
+  // main refused until bun.lock was committed by hand.
+  const root = repo();
+  writeFileSync(join(root, 'bun.lock'), '{ "@flosrn/ax": "0.5.2" }\n');
+  execFileSync('git', ['add', 'bun.lock'], { cwd: root });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'bun'], { cwd: root });
+  const exec = fakeExec({
+    onInstall: at => {
+      installAs(at, '0.6.6');
+      writeFileSync(join(at, 'bun.lock'), '{ "@flosrn/ax": "0.6.6" }\n');
+    },
+  });
+  const r = run(['0.6.6'], { root, exec });
+
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.calls.includes('bun install'), r.calls.join(' | '));
+  assert.ok(!r.calls.some(line => line.startsWith('pnpm')), 'pnpm is never asked to install a bun project');
+  assert.match(r.out, /git add package\.json bun\.lock && git commit -m "chore\(deps\): bump @flosrn\/ax to 0\.6\.6"/);
 });
 
 test('a frozen lockfile does not defeat the bump: the install is told the lockfile is changing', () => {

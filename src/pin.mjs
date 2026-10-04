@@ -53,8 +53,24 @@ const RELEASE = /^v?([0-9]+\.[0-9]+\.[0-9]+)$/;
 const INSTALL_TIMEOUT_MS = 600_000;
 export const pinExec = (bin, args, at) => execRun(bin, args, { cwd: at, timeout: INSTALL_TIMEOUT_MS });
 
-/** Every file a bump may change: the pin, its lockfile, and the workspace file pnpm rewrites (#274). */
-const BUMP_FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
+/**
+ * The package manager that owns this consumer's lockfile, and every file a bump
+ * with it may change: the pin, its lockfile, and the workspace file pnpm
+ * rewrites (#274). The lockfile decides, never a default: measured 2026-10-04
+ * rolling 0.30.0 out, HarnessOS carries bun.lock, `pnpm install` left it on the
+ * old version beside the new package.json, and every frozen `bun install` on
+ * that main refused. A repository with no lockfile keeps pnpm, as before.
+ */
+function managerOf(root) {
+  if (existsSync(join(root, 'bun.lock')) || existsSync(join(root, 'bun.lockb'))) {
+    const lock = existsSync(join(root, 'bun.lock')) ? 'bun.lock' : 'bun.lockb';
+    return { name: 'bun', install: ['install'], lock, files: ['package.json', lock], run: 'bunx' };
+  }
+  if (existsSync(join(root, 'package-lock.json')) && !existsSync(join(root, 'pnpm-lock.yaml'))) {
+    return { name: 'npm', install: ['install'], lock: 'package-lock.json', files: ['package.json', 'package-lock.json'], run: 'npx' };
+  }
+  return { name: 'pnpm', install: ['install', '--no-frozen-lockfile'], lock: 'pnpm-lock.yaml', files: ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'], run: 'pnpm exec' };
+}
 
 /**
  * THE pnpm PATCHES KEYED ON A VERSION OF ax OTHER THAN THE ONE BEING PINNED.
@@ -183,6 +199,8 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     );
   }
   const changing = current !== target;
+  const pm = managerOf(root);
+  const BUMP_FILES = pm.files;
   if (changing) {
     // Ownership of the DIFF this verb creates, not of the repo: if the files
     // it is about to change already carry someone's edits, moving the pin
@@ -222,15 +240,15 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     setJsonPath(manifest, `devDependencies.${PACKAGE_NAME}`, target);
     writeFileSync(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    // `--no-frozen-lockfile`, because moving the pin IS a lockfile change.
-    // Measured 2026-08-24 on ofmchat (pnpm 11, MakerKit workspace): a bare
-    // `pnpm install` there is frozen by default, so it refused with
+    // `--no-frozen-lockfile` for pnpm, because moving the pin IS a lockfile
+    // change. Measured 2026-08-24 on ofmchat (pnpm 11, MakerKit workspace): a
+    // bare `pnpm install` there is frozen by default, so it refused with
     // ERR_PNPM_OUTDATED_LOCKFILE — the manifest already rewritten above, the old
     // package still on disk, which is precisely the half-state the proof below
-    // then refuses. This verb could never succeed on that repo. The flag is not
-    // a loosening: rewriting `pnpm-lock.yaml` is the job, which is why the commit
-    // gesture printed at the end stages it.
-    const installed = exec('pnpm', ['install', '--no-frozen-lockfile'], root);
+    // then refuses. The flag is not a loosening: rewriting the lockfile is the
+    // job, which is why the commit gesture printed at the end stages it. bun
+    // and npm rewrite theirs on a plain install.
+    const installed = exec(pm.name, pm.install, root);
     if (installed.error || installed.status !== 0) {
       // AN INSTALL THAT REFUSED LEAVES NOTHING BEHIND. Both files were proven
       // clean above, so restoring them from git undoes exactly this verb's
@@ -246,11 +264,11 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
       const restored = exec('git', ['checkout', '--', ...restoring], root);
       if (restored.error || restored.status !== 0) {
         return refuse(
-          `pnpm install refused the new pin: ${reason} — and package.json could not be restored: ${String(restored.error ?? restored.stderr ?? '').trim() || `exit ${restored.status}`}`,
-          `git checkout -- ${restoring.join(' ')} && pnpm install   # back to ${current}`,
+          `${pm.name} install refused the new pin: ${reason} — and package.json could not be restored: ${String(restored.error ?? restored.stderr ?? '').trim() || `exit ${restored.status}`}`,
+          `git checkout -- ${restoring.join(' ')} && ${pm.name} install   # back to ${current}`,
         );
       }
-      return refuse(`pnpm install refused the new pin: ${reason} — ${restoring.join(' and ')} ${restoring.length === 1 ? 'is' : 'are'} back on ${current}`, `pnpm install   # only if the refused install touched node_modules; then re-run: ax pin ${asked}`);
+      return refuse(`${pm.name} install refused the new pin: ${reason} — ${restoring.join(' and ')} ${restoring.length === 1 ? 'is' : 'are'} back on ${current}`, `${pm.name} install   # only if the refused install touched node_modules; then re-run: ax pin ${asked}`);
     }
   } else {
     note(`already pinned to ${target} — re-proving the installed package and doctor`);
@@ -266,7 +284,7 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     return refuse(`installed, but ${installedManifest} is unreadable — nothing proves which ax is on disk`);
   }
   if (onDisk !== target) {
-    return refuse(`the pin says ${target} but the installed package is ${onDisk} — the install served something else`, 'pnpm install --force   # then re-run this verb to re-prove');
+    return refuse(`the pin says ${target} but the installed package is ${onDisk} — the install served something else`, `${pm.name} install --force   # then re-run this verb to re-prove`);
   }
   ok(`installed ${PACKAGE_NAME} ${target}, proven from node_modules`);
 
@@ -293,7 +311,7 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     if (written.error || written.status !== 0) {
       const reason = String(written.error?.message ?? written.stderr ?? '').trim();
       bad(`ax init could not run under ${target}, so the managed state this pin needs was never written${reason ? `: ${reason}` : ''}`);
-      fix(`pnpm exec ax init   # by hand, then re-run: pnpm exec ax pin ${asked}`);
+      fix(`${pm.run} ax init   # by hand, then re-run: ${pm.run} ax pin ${asked}`);
       return 1;
     }
     ok('managed state regenerated under the new pin (--init)');
@@ -329,7 +347,7 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     const reason = String(doctor.error.message ?? doctor.error).trim();
     bad(`ax doctor could not run under ${target}, so nothing graded this checkout: ${reason}`);
     note(`${join(root, 'bin', 'ax')} is the bootstrap this verb calls — missing, or present and not executable`);
-    fix(`pnpm exec ax init   # rewrite bin/ax from the installed ${PACKAGE_NAME} ${target}`);
+    fix(`${pm.run} ax init   # rewrite bin/ax from the installed ${PACKAGE_NAME} ${target}`);
     fix(`chmod +x ${join(root, 'bin', 'ax')}   # if it exists already and only the mode is wrong`);
     return 1;
   }
@@ -351,9 +369,9 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
     // the installed package, not a global. A finding that named no repair is
     // said out loud rather than given an invented one.
     const named = [...new Set(findings.filter(line => line.trim().startsWith('→')).map(line => line.replace(/^\s*→\s*/, '')))];
-    for (const repair of named) fix(repair.startsWith('ax ') ? `pnpm exec ${repair}` : repair);
+    for (const repair of named) fix(repair.startsWith('ax ') ? `${pm.run} ${repair}` : repair);
     if (named.length === 0) note('the findings above named no repair — read them by hand, then re-run this verb');
-    else fix(`pnpm exec ax pin ${asked}   # re-prove the pin once those are done`);
+    else fix(`${pm.run} ax pin ${asked}   # re-prove the pin once those are done`);
     return 1;
   }
   ok('doctor coherent under the new pin');
@@ -367,7 +385,7 @@ export function pin(argv = [], { exec = pinExec, cwd = process.cwd() } = {}) {
       .split('\n')
       .map(line => line.slice(3).trim())
       .filter(Boolean);
-    const files = ['package.json', 'pnpm-lock.yaml', ...BUMP_FILES.filter(file => !['package.json', 'pnpm-lock.yaml'].includes(file) && touched.includes(file))];
+    const files = ['package.json', pm.lock, ...BUMP_FILES.filter(file => !['package.json', pm.lock].includes(file) && touched.includes(file))];
     fix(`git add ${files.join(' ')} && git commit -m "chore(deps): bump ${PACKAGE_NAME} to ${target}" && git push`);
   }
   return 0;
