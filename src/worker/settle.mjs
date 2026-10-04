@@ -129,7 +129,7 @@ import { namedList } from './gate.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
 import { acquireLock, attemptSettle, defaultStore, dispatchHost, lastAttemptState, recordDelivery, recordRepoNaming, recordedRun, requestIdOk, taskIdScan } from './record.mjs';
-import { readRetired, retiredLine } from './retired-hosts.mjs';
+import { readRetired, retiredEntry, retiredLine } from './retired-hosts.mjs';
 
 const USAGE = 'ax worker settle <task|request> [--repo <owner/name>]';
 
@@ -563,7 +563,7 @@ export function settle(argv = [], { resolve = resolveOrca, runner, exec = defaul
       // A RETIRED HOST IS NOT ASKED TO ANSWER (KTD8): the operator wrote it off,
       // so "make the host answer" is the one repair that cannot happen, and the
       // retirement itself is an attestation — never a death this verb may write.
-      const retired = host === '' ? undefined : retirement.hosts.get(host);
+      const retired = retiredEntry(retirement, host);
       if (retired !== undefined) {
         return refuse(
           `${unknown.length} pane(s) of ${task} sit on '${host}', ${retiredLine(retired)} — a retirement attests that host will not answer, and it never settles an attempt: the frontier and the gate already set this record aside`,

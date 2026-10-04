@@ -122,8 +122,8 @@ import { bad, fix, note, ok, section } from '../log.mjs';
 import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
-import { argvValue, defaultStore, recordedRun } from './record.mjs';
-import { readRetired, retiredLine } from './retired-hosts.mjs';
+import { argvValue, defaultStore, OPERATOR_CLOSE, recordedRun } from './record.mjs';
+import { readRetired, retiredEntry, retiredLine } from './retired-hosts.mjs';
 import { livePanes, liveLines } from './slots.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
@@ -411,10 +411,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     return 3;
   }
   /** The retirement of the host a row's own worker-start named, or undefined. */
-  const retiredOf = row => {
-    const host = row.host ?? row.unsettled?.host ?? row.pending;
-    return typeof host === 'string' && host !== '' ? retirement.hosts.get(host) : undefined;
-  };
+  const retiredOf = row => retiredEntry(retirement, row.host ?? row.unsettled?.host ?? row.pending);
 
 
   const terminals = terminalInventory(run);
@@ -718,7 +715,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       : leakedLive
         ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now`
         : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
-    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}${row.ending?.cause === 'operator-close' ? ` · operator ending at ${row.ending.at} (${row.ending.handle} on ${row.ending.host || 'here'}), not a landing` : ''}${retired ? ` · ${retiredLine(retired)}` : ''}`;
+    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}${row.ending?.cause === OPERATOR_CLOSE ? ` · operator ending at ${row.ending.at} (${row.ending.handle} on ${row.ending.host || 'here'}), not a landing` : ''}${retired ? ` · ${retiredLine(retired)}` : ''}`;
     if (disagrees) {
       bad(line);
       fix(
@@ -840,7 +837,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // never per row: the reason is a fact about the host, and repeating it per
   // record is the receipt this verb was shortened out of (#70).
   for (const [host, scope] of hosts.unaskable()) {
-    const retired = retirement.hosts.get(host);
+    const retired = retiredEntry(retirement, host);
     if (retired) note(`host '${host}' is retired — ${retiredLine(retired)}: its panes stay INCONNU, never MORT, and nothing settles them; ax worker unretire-host ${host} once it answers, then ax worker close <handle>`);
     else note(`host '${host}' could not be asked, so its panes stay INCONNU, never MORT: ${scope.reason}`);
   }

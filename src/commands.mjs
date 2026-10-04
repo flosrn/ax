@@ -83,6 +83,9 @@ import { orcaAvailable } from './orca-bin.mjs';
  */
 export const SECTIONS = ['PROJECT', 'WORKTREE', 'ORCHESTRATION'];
 
+/** The `--store` flag every dispatch-store verb declares. */
+const STORE_OPTION = ['--store <dir>', 'dispatch store (default ORCA_DISPATCH_STORE or ~/.omp/run/dispatch)'];
+
 export const COMMANDS = [
   {
     name: 'doctor',
@@ -247,9 +250,9 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // role brief instead (reported 2026-09-08). A flag a caller cannot discover
     // from the terminal is a flag they will guess wrong.
     verbOptions: {
-      close: [['--store <dir>', 'dispatch store (default ORCA_DISPATCH_STORE or ~/.omp/run/dispatch)']],
-      'retire-host': [['--store <dir>', 'dispatch store (default ORCA_DISPATCH_STORE or ~/.omp/run/dispatch)']],
-      'unretire-host': [['--store <dir>', 'dispatch store (default ORCA_DISPATCH_STORE or ~/.omp/run/dispatch)']],
+      close: [STORE_OPTION],
+      'retire-host': [STORE_OPTION],
+      'unretire-host': [STORE_OPTION],
       dispatch: [
         ['--issue <ref>', 'the ticket: a Linear ref (ABC-123) or a GitHub number'],
         ['--name <name>', 'untracked work; the name is the request id and branch'],

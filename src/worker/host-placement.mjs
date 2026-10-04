@@ -103,7 +103,7 @@ const DECLARED = ['ssh', 'cgroup', 'diskPath', 'diskFloorGb', 'memFreeFloorMb'];
 const CAPACITY_TIMEOUT_MS = 180000;
 
 /** The live count of a host nothing is recorded on. */
-const NONE = { live: 0, unmeasured: 0 };
+export const NONE = { live: 0, unmeasured: 0 };
 
 /** Whether this machine is the operator Mac — the only place automatic placement runs. */
 export const operatorMac = platform => platform === 'darwin';

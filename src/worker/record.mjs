@@ -40,7 +40,8 @@ export const requestIdOk = request => typeof request === 'string' && REQUEST_ID.
 export const defaultStore = (env = process.env) => env.ORCA_DISPATCH_STORE || join(env.HOME ?? '', '.omp', 'run', 'dispatch');
 
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
-function save(rec, path) {
+/** Durable JSON write: temp + fsync + rename + parent-dir fsync, so a reader sees the old document or the new one, never half. */
+export function saveJson(rec, path) {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd;
   try {
@@ -314,7 +315,7 @@ export function initRecord(path, { request, orca, because = '', repo = '', kind 
   if (String(kind).trim() !== '') rec.kind = String(kind).trim();
   if (String(delivery).trim() === 'parent') rec.delivery = 'parent';
   if (modelPolicy !== undefined) rec.modelPolicy = modelPolicy;
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -337,7 +338,7 @@ export function phaseBegin(path, { name, identity, argv, receiptPath = null, gro
   const phase = { name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() };
   if (grounds !== null) phase.grounds = grounds;
   must(lastAttempt(rec), 'phases', 'last attempt').push(phase);
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -368,7 +369,7 @@ export function phaseEnd(path, index, { exit, receiptText, stderr = '', error = 
   // execution", so a concluded call must erase the corpse of the one before.
   if (error) ph.transport = String(error.message ?? error).slice(0, 1000);
   else delete ph.transport;
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -543,7 +544,7 @@ export function askBegin(path, { request, sha, argv, now = () => new Date().toIS
     return { ok: false, state: prior.state, messageId: prior.messageId ?? null, at: prior.at ?? null };
   }
   rec.ask = { state: 'asking', request, sha, argv, at: now() };
-  save(rec, path);
+  saveJson(rec, path);
   return { ok: true, state: 'asking', messageId: null, at: null };
 }
 
@@ -606,7 +607,7 @@ export function replyBegin(path, { messageId, now = () => new Date().toISOString
     repliedAt: now(),
     settledAt: null,
   };
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -618,7 +619,7 @@ export function askSettle(path, { state, messageId = null, code = null, now = ()
   const rec = load(path);
   const prior = must(rec, 'ask', `${path} has no ask to settle`);
   rec.ask = { ...prior, state, messageId, code, settledAt: now() };
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -636,7 +637,7 @@ export function askSettle(path, { state, messageId = null, code = null, now = ()
 export function markHeldRepair(path, { now = () => new Date().toISOString() } = {}) {
   const rec = load(path);
   rec.heldRepairAt = now();
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -1380,15 +1381,22 @@ export function attemptSettle(path, { repo = '' } = {}) {
     rec.repo = backfill;
   }
   attempts[attempts.length - 1].settled = true;
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /** Close operations are isolated from the root dispatch scans and saved durably. */
 export const CLOSE_NS = 'close';
 export function saveCloseOperation(path, operation) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  save(operation, path);
+  saveJson(operation, path);
 }
+
+/** The one ending cause an operator close writes. */
+export const OPERATOR_CLOSE = 'operator-close';
+
+/** Whether `ending` has the operator-close shape: its cause and string handle, host, at and operation. */
+export const operatorEndingOk = ending => ending?.cause === OPERATOR_CLOSE && typeof ending.handle === 'string' &&
+  typeof ending.host === 'string' && typeof ending.at === 'string' && typeof ending.operation === 'string';
 
 /** Write an operator ending on the bound attempt, never whichever is newest. */
 export function attemptEnd(path, tuple, ending) {
@@ -1403,14 +1411,13 @@ export function attemptEnd(path, tuple, ending) {
       (argvValue(phase.argv, '--on') ?? '') !== tuple.host) {
     throw new Error('the worker-start no longer binds the exact close tuple');
   }
-  if (ending.cause !== 'operator-close' || ending.handle !== tuple.handle || ending.host !== tuple.host ||
-      typeof ending.at !== 'string' || typeof ending.operation !== 'string') throw new Error('invalid operator ending');
+  if (!operatorEndingOk(ending) || ending.handle !== tuple.handle || ending.host !== tuple.host) throw new Error('invalid operator ending');
   if (attempt.ending !== undefined) {
     if (JSON.stringify(attempt.ending) !== JSON.stringify(ending)) throw new Error('the attempt already carries another ending');
     return;
   }
   attempt.ending = ending;
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /** A replacement is a NEW logical attempt: settle the current one, open the next. */
@@ -1419,7 +1426,7 @@ export function attemptNew(path) {
   const attempts = must(rec, 'attempts', 'record root');
   attempts[attempts.length - 1].settled = true;
   attempts.push({ n: attempts.length + 1, settled: false, phases: [] });
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /** A fresh mutation identity — lowercase UUID, the shape Orca fingerprints. */

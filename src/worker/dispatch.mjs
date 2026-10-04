@@ -87,7 +87,7 @@ import { verify } from './verify.mjs';
 import { lockWaitMs, start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
-import { capacityOf, countedConfig, harnessosSource, hostDeclarations, operatorMac, placeHost } from './host-placement.mjs';
+import { capacityOf, countedConfig, harnessosSource, hostDeclarations, NONE, operatorMac, placeHost } from './host-placement.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // The landed facts this dispatch's notes carry, and the SHARED reader that
@@ -790,7 +790,7 @@ function dispatchOnce(
     }
     if (!lock.held) return lock;
     const again = measureLive({ run, env, config: counted, only: onHost });
-    return { held: true, release: lock.release, count: again.cannot ? { cannot: again.cannot } : (again.hosts.get(host) ?? { live: 0, unmeasured: 0 }) };
+    return { held: true, release: lock.release, count: again.cannot ? { cannot: again.cannot } : (again.hosts.get(host) ?? NONE) };
   };
 
   if (flags.needsRef !== '') {
@@ -894,7 +894,7 @@ function dispatchOnce(
       capacity: fleet.capacity,
       declarations: onHost === '' ? declarations : { [onHost]: counted.dispatch.hosts[onHost] },
       only: onHost,
-      liveOn: host => measured.hosts.get(host) ?? { live: 0, unmeasured: 0 },
+      liveOn: host => measured.hosts.get(host) ?? NONE,
       // A named host's repository is resolved below, exactly as before: an
       // explicit `--repo-id` is taken as given.
       repoFor: host => (onHost === '' ? repoIdFor(repoName, { run, env: host }) : { ok: true, id: flags.repoId }),

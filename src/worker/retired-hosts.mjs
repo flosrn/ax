@@ -34,14 +34,13 @@
 //   retire-host    0 recorded or already recorded · 1 the host answered ·
 //                  2 usage · 3 cannot establish (config, runtime, policy, lock, write)
 //   unretire-host  0 removed or was not retired · 2 usage · 3 cannot establish
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok } from '../log.mjs';
 import { declarationOf } from './hosts.mjs';
-import { acquireLock, argvValue, defaultStore, HOSTS_NS, requestIdOk } from './record.mjs';
+import { acquireLock, argvValue, defaultStore, HOSTS_NS, requestIdOk, saveJson } from './record.mjs';
 
 const RETIRED_FILE = 'retired.json';
 const ENTRY_KEYS = ['host', 'at', 'by'];
@@ -99,6 +98,9 @@ export function readRetired(store) {
 /** The sentence every reader prints for a retired host. */
 export const retiredLine = entry => `host retired by operator at ${entry.at}${entry.by ? ` by ${entry.by}` : ''}`;
 
+/** The retirement entry `policy` holds for `host`, or undefined for a non-string or empty host. */
+export const retiredEntry = (policy, host) => (typeof host === 'string' && host !== '' ? policy.hosts.get(host) : undefined);
+
 /**
  * The host a record's last attempt placed its worker-start on (`--on`, `''`
  * local), or undefined when no worker-start phase recorded an argv. Throws on
@@ -111,22 +113,6 @@ export function startHost(rec) {
     if (phases[i]?.name === 'worker-start' && Array.isArray(phases[i].argv)) return argvValue(phases[i].argv, '--on') ?? '';
   }
   return undefined;
-}
-
-/** temp + fsync + rename: a reader sees the old policy or the new one, never half. */
-function save(path, doc) {
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  const fd = openSync(temporary, 'wx', 0o600);
-  try {
-    writeSync(fd, `${JSON.stringify(doc, null, 2)}\n`);
-    fsyncSync(fd);
-  } catch (error) {
-    closeSync(fd);
-    try { unlinkSync(temporary); } catch { /* nothing left to clean */ }
-    throw error;
-  }
-  closeSync(fd);
-  renameSync(temporary, path);
 }
 
 /**
@@ -151,7 +137,7 @@ function mutate(store, change) {
     const policy = readRetired(store);
     if (!policy.ok) return policy;
     const result = change(policy.hosts);
-    if (result.changed) save(path, { hosts: [...policy.hosts.values()] });
+    if (result.changed) saveJson({ hosts: [...policy.hosts.values()] }, path);
     return { ok: true, ...result };
   } catch (error) {
     return { ok: false, reason: `the policy ${path} could not be written: ${String(error?.message ?? error)}`, repair: `ls -l ${path}` };

@@ -103,8 +103,8 @@ import { bad, fix, note, ok, section } from './log.mjs';
 import { clean, must, payload, succeeded } from './pr-grounds.mjs';
 import { PROVENANCE_KEYS, carriedClasses, sameLabel } from './triage/provenance.mjs';
 import { READY_LABEL } from './triage/spec.mjs';
-import { defaultStore } from './worker/record.mjs';
-import { readRetired, retiredLine, startHost } from './worker/retired-hosts.mjs';
+import { defaultStore, operatorEndingOk } from './worker/record.mjs';
+import { readRetired, retiredEntry, retiredLine, startHost } from './worker/retired-hosts.mjs';
 
 const USAGE = 'ax frontier [--spec <ref>] [--dry-run]';
 
@@ -200,7 +200,7 @@ function frontierQuery(owner, name, numbers) {
  * one still reads attempt-ended-unmerged. The set-aside claims ride on the
  * answer (`retired`) so a takeable ticket names the attestation it stands on.
  */
-function dispatchStateOf(names, store, number, slug, retired) {
+function dispatchStateOf(names, store, number, slug, retirement) {
   const prefix = `${number}-`;
   let settledSeen = false;
   const setAside = [];
@@ -217,15 +217,12 @@ function dispatchStateOf(names, store, number, slug, retired) {
       const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
       if (typeof settled !== 'boolean') throw new Error("last attempt: 'settled' is not a boolean");
       const ending = attempts[attempts.length - 1].ending;
-      if (ending !== undefined && (ending?.cause !== 'operator-close' || typeof ending.handle !== 'string' ||
-          typeof ending.host !== 'string' || typeof ending.at !== 'string' || typeof ending.operation !== 'string')) {
-        throw new Error('last attempt: operator ending is malformed');
-      }
+      if (ending !== undefined && !operatorEndingOk(ending)) throw new Error('last attempt: operator ending is malformed');
       if (settled !== true && ending === undefined) {
         // Asked only when something is retired: a record nobody retired is
         // read exactly as it always was.
-        const host = retired.size > 0 ? startHost(record) : undefined;
-        const entry = typeof host === 'string' && host !== '' ? retired.get(host) : undefined;
+        const host = retirement.hosts.size > 0 ? startHost(record) : undefined;
+        const entry = retiredEntry(retirement, host);
         if (entry === undefined) return { state: 'unsettled' };
         setAside.push(`${stem} on '${host}', ${retiredLine(entry)}`);
         continue;
@@ -649,7 +646,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // Dispatch state, read-only from the store. Unsettled → a live attempt
       // owns this ticket; settled with the ticket still open → the attempt
       // ended without a merge, and the loop must SEE that.
-      const dispatched = dispatchStateOf(storeNames, store, candidate.number, slug, retirement.hosts);
+      const dispatched = dispatchStateOf(storeNames, store, candidate.number, slug, retirement);
       if (dispatched.state === 'unreadable') {
         unestablished.push({ ...candidate, read: `the dispatch record at ${dispatched.path} is unreadable (${dispatched.reason})`, repair: `cat ${dispatched.path}` });
         continue;

@@ -55,6 +55,9 @@ import { hostScopes, liveInventory, worktreeOccupancy } from './pane.mjs';
 import { agentTerminal, argvValue, defaultStore, scanStore } from './record.mjs';
 import { readRetired } from './retired-hosts.mjs';
 
+/** A fresh per-host count, before anything is counted on that host. */
+const emptyCount = () => ({ live: 0, starting: 0, unmeasured: 0, occupancy: [] });
+
 /**
  * Every recorded agent pane of a store, keyed by handle, and every remote
  * `worker-start` still opening: `{ byHandle, starting, unreadable, missing,
@@ -234,7 +237,7 @@ function countPanes({ panes, inventory, repo }) {
   const hostOf = host => {
     let count = hosts.get(host);
     if (count === undefined) {
-      count = { live: 0, starting: 0, unmeasured: 0, occupancy: [] };
+      count = emptyCount();
       hosts.set(host, count);
     }
     return count;
@@ -424,7 +427,7 @@ export function liveCount({ run, env, config, local, repo = '' }) {
   const policy = readRetired(store);
   if (!policy.ok) return { cannot: policy.reason, repair: policy.repair };
   for (const [host, entry] of policy.hosts) {
-    const count = slots.hosts.get(host) ?? { live: 0, starting: 0, unmeasured: 0, occupancy: [] };
+    const count = slots.hosts.get(host) ?? emptyCount();
     slots.hosts.set(host, { ...count, retired: entry });
   }
   return { slots, scopes };

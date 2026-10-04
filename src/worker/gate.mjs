@@ -120,7 +120,7 @@ import { continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory, worktreeOccupancy } from './pane.mjs';
 import { argvValue, defaultStore, dispatchIndex, heldNoMutation, phaseVerdict, recordDelivery, recordedRun, scanStore, taskIdScan } from './record.mjs';
-import { readRetired, retiredLine } from './retired-hosts.mjs';
+import { readRetired, retiredEntry, retiredLine } from './retired-hosts.mjs';
 
 // Orca 867d38397893, db/tasks/task-status-transition.ts excludes exactly
 // these states from the active supervised worker check.
@@ -367,7 +367,6 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
     fix(retirement.repair);
     return 3;
   }
-  const retiredAt = host => (typeof host === 'string' && host !== '' ? retirement.hosts.get(host) : undefined);
 
   // WHICH RUN IS ASKED (#2107). `worker-list` and `task-list` are BOTH
   // Run-scoped: unscoped, each answers the Run bound to the calling terminal
@@ -476,7 +475,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
       }
     }
     const verdict = hosts.verdictFor(handle, why, host).verdict;
-    const retired = retiredAt(host);
+    const retired = retiredEntry(retirement, host);
     if (verdict.pane === 'VIVANT') live.push({ w, handle, host, retired });
     else if (verdict.pane === 'MORT') dead.push({ w, prov });
     else if (retired !== undefined) attested.push({ w, prov, host, retired });
@@ -530,9 +529,9 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   // launch over a child that is coming up.
   // A mutation that never concluded on a RETIRED host is set aside on the same
   // attestation as its panes, and said so; every other one still refuses.
-  const doubts = uncertain.rows.filter(row => retiredAt(row.host) === undefined);
+  const doubts = uncertain.rows.filter(row => retiredEntry(retirement, row.host) === undefined);
   for (const row of uncertain.rows) {
-    if (!doubts.includes(row)) note(`set aside ${row.request}: its worker-start never concluded, on '${row.host}', ${retiredLine(retiredAt(row.host))} — the operator's attestation, not a proof.`);
+    if (!doubts.includes(row)) note(`set aside ${row.request}: its worker-start never concluded, on '${row.host}', ${retiredLine(retiredEntry(retirement, row.host))} — the operator's attestation, not a proof.`);
   }
   if (doubts.length > 0) {
     bad(`CANNOT ESTABLISH — ${doubts.length} recorded mutation(s) of ${task} never concluded, so a pane of this task may still be appearing.`);
