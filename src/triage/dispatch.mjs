@@ -1,4 +1,7 @@
 // `ax triage dispatch` — one Orca session per issue, and nothing else.
+// No count gates it (ADR 0005): admission is by a host's Slots, and only a
+// live prior pass refuses. Raw retired keys and knobs refuse before vocabulary
+// validation or mutation; config.mjs owns that refusal and its Slots repair.
 //
 // It does not read the issue, judge it, or write a word about it. The session
 // does that, from the preloaded triage playbook plus the project's own label
@@ -24,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
-import { loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { loadCheckoutConfig, repoPaths, retiredCapKnob } from '../config.mjs';
 import { bad, dim, fix, note, ok, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
@@ -37,7 +40,6 @@ import { start as startVerb } from '../worker/start.mjs';
 import { dispatchProof, slugOf } from '../worker/transcript.mjs';
 import { repoSlug } from '../gh.mjs';
 import { draftDirFor, draftPath, passesIn, passesOf, readDraft, requestFor } from './draft.mjs';
-import { capLines, capVerdict, machineCapOf, repoCapOf } from '../worker/capacity.mjs';
 import { passPlan } from './capacity.mjs';
 import { carriedClasses } from './provenance.mjs';
 import { necessityOf } from './necessity.mjs';
@@ -574,6 +576,9 @@ export function dispatch(
   // pointing at nothing sends a child to improvise, and improvising here means
   // recommending in prose and stopping.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+  if (loaded.retired) return refuse(loaded.retired.problem, loaded.retired.fix);
+  const retiredCap = retiredCapKnob(env);
+  if (retiredCap) return refuse(retiredCap.problem, retiredCap.fix);
   if (!loaded.exists) return refuse(`no ax.config.json for ${paths.root}`, 'ax init # a triage session reads this project\'s contract, so the project has to have one');
   if (loaded.errors.length > 0) return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
   const config = loaded.config ?? {};
@@ -585,63 +590,37 @@ export function dispatch(
     );
   }
 
-  // ── 4. the caps, counted by live pane — this repository's, then the machine's
-  // `terminal list` answers for every pane the runtime owns: this session's, an
-  // editor's, an unrelated worker's. Counting those as capacity would let a busy
-  // sidebar fence the work. So the count is the record↔pane association `ls`
-  // reads liveness from — a dispatch record whose recorded handle is still
-  // alive — which is what F-048 actually fixed: `worker-list` answered zero
-  // while those same children were working.
-  //
-  // And it is counted TWICE (#88), because one number cannot answer both
-  // questions: the store is host-global, so the machine total includes the panes
-  // of every other checkout on this Mac. `dispatch.cap` gates this
-  // repository's own; `dispatch.machineCap` gates the total, and only once an
-  // operator has armed it (../worker/capacity.mjs).
-  //
-  // Fail-closed, like `ls` and for its reason: the caller is about to decide
-  // whether it has room for another child. But `ls`'s own exit-3 list names an
-  // unreadable terminal list and an unreadable store — NOT omitted hosts, which
-  // it renders UNKNOWN and still answers. That distinction is measured: on this
-  // Mac `hostScope.omittedHostIds` is non-empty, so refusing on it would refuse
-  // every ordinary dispatch (the same fail-closed hole `gate` had, where 155 of
-  // 218 panes were absent because of a stale runtime).
-  const local = terminalInventory(run);
-  if (!local.ok) return cannot(local.reason, 'orca open # the cap is counted, never assumed — it does not fail open');
-  const store = defaultStore(env);
-  const machineCap = machineCapOf(config, env);
-  if (!machineCap.ok) {
-    return refuse(
-      `${machineCap.from} is set — the cap is declared in ax.config.json now, and this repository's own cap is what binds`,
-      `unset ${machineCap.from} and declare ${machineCap.to} in ax.config.json if this machine needs a ceiling`,
-    );
-  }
-  // The same liveness `ax worker ls` prints and `ax worker dispatch` refuses on,
-  // from the one reader all three read (../worker/slots.mjs): every recorded
+  // ── 4. which panes are live, for the anti-rival gates only ─────────────────
+  // NO COUNT GATES THIS VERB (ADR 0005): admission is by a host's Slots, and a
+  // triage pass is a local session with none to spend. What it still needs is
+  // liveness — whether a previous pass's pane is UP — and it reads that from
+  // the one reader `ax worker ls` prints (../worker/slots.mjs): every recorded
   // agent pane this runtime's list or a named host reports as up, keyed on the
-  // pane and never on the dispatch that owns it. A fence counting only the local
-  // list, beside a listing that counts a remote pane as capacity, promises a
-  // number it does not enforce — which is #88 in a new place; a fence counting
-  // the dispatch index misses the pane a repair phase recorded, which is #161.
-  // The pass gates below read the same inventory, so a live remote rival is not
-  // read as free either.
+  // pane and never on the dispatch that owns it, so a live remote rival is not
+  // read as gone.
+  //
+  // Fail-closed for that gate's reason: an unreadable terminal list, store or
+  // record leaves a rival pass unprovable, and an absence of information is not
+  // an absence of a child (F-028). Omitted hosts are NOT refused here — they
+  // render UNKNOWN, exactly as in `ls`, and the gates below decide on them.
+  const local = terminalInventory(run);
+  if (!local.ok) return cannot(local.reason, 'orca open # a live prior pass is read, never assumed');
+  const store = defaultStore(env);
   const scopes = hostScopes(run, () => ({ ok: true, config }));
   const slots = livePanes({ store, local, scopes, repo: slug });
-  // An ENOENT store is a machine that has never dispatched: zero is the true
-  // count, and refusing would block the first dispatch ever. A store that
-  // exists and cannot be read is the opposite — zero would be a lie.
+  // An ENOENT store is a machine that has never dispatched: no prior pass
+  // exists. A store that exists and cannot be read is the opposite.
   if (slots.reason !== '' && !slots.missing) {
-    return cannot(`the dispatch store ${store} cannot be read, so live children cannot be counted: ${slots.reason.slice(0, 160)}`, `ls -ld ${store}`);
+    return cannot(`the dispatch store ${store} cannot be read, so a live prior pass cannot be ruled out: ${slots.reason.slice(0, 160)}`, `ls -ld ${store}`);
   }
   if (slots.unreadable.length > 0) {
     const first = slots.unreadable[0];
     return cannot(
-      `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so the number of live children cannot be established — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
+      `${slots.unreadable.length} dispatch record(s) in ${store} cannot be read, so a live prior pass cannot be ruled out — an absence of information is not an absence of a child (F-028). First: ${first.file} — ${String(first.error).slice(0, 160)}`,
       `ax worker ls --store ${store} # see every record, then repair or remove the unreadable one`,
     );
   }
   const inventory = slots.inventory;
-  const live = slots.live;
 
   // ── 4b. which PASS each issue is about to run ─────────────────────────────
   // The plan and its two anti-rival gates (F-001, F-028) live in
@@ -649,13 +628,12 @@ export function dispatch(
   //
   // THE DISPATCH INDEX IS READ HERE AND NOWHERE ELSE IN THIS VERB (#161): the
   // rival gate asks which handles a PREVIOUS PASS's dispatch recorded, which is
-  // a provenance question and stays a `worker-start` fact. The cap above asks
-  // whether a pane is consuming a slot, and reads its own reader.
+  // a provenance question and stays a `worker-start` fact. Liveness above reads
+  // its own reader.
   const planned = passPlan({ store, root: paths.root, index: dispatchIndex(store), inventory, issues, job, slug, freshPass });
   if (!planned.ok) return planned.kind === 'refuse' ? refuse(planned.message, planned.repair) : cannot(planned.message, planned.repair);
   const plan = planned.plan;
 
-  const newSessions = plan.filter(entry => !existsSync(join(store, `${requestFor({ job, repo: slug, issue: entry.issue, pass: entry.pass })}.json`)));
   // ONE read, and it decides the window every pass of this invocation gets:
   // the flag layers over the env here, so `verifyPassRole` consumes a number
   // and never re-derives it (a second reader is a second precedence order).
@@ -668,19 +646,10 @@ export function dispatch(
       `unset ${wait.from} and export ${wait.to} instead`,
     );
   }
-  const repoCap = repoCapOf(config);
-  const room = capVerdict({ live, adding: newSessions.length, repo: slug, repoCap, machineCap: machineCap.cap });
-  for (const line of capLines({ live, repo: slug, repoCap, machineCap: machineCap.cap })) note(line);
-  for (const line of room.notes) note(line);
   for (const [host, scope] of scopes.unaskable()) {
-    note(`host '${host}' could not be asked, so its panes are in neither count: ${scope.reason}`);
+    note(`host '${host}' could not be asked, so a pass pane there is UNKNOWN: ${scope.reason}`);
   }
-  if (inventory.omitted) note('hosts are omitted from this terminal list: a child on one of them is UNKNOWN here, not counted');
-  // An inability is exit 3, a full cap is exit 1 — this verb's own alphabet says
-  // 1 means "the input was wrong and NOTHING was dispatched, fix it and re-run"
-  // and 3 means "could not be established". A count that could not be read is
-  // the second (../worker/capacity.mjs, ADR 0003).
-  if (!room.ok) return room.kind === 'cannot' ? cannot(room.message, room.repair) : refuse(room.message, room.repair);
+  if (inventory.omitted) note('hosts are omitted from this terminal list: a child on one of them is UNKNOWN here');
 
   // ── 5. every issue prechecked before any is dispatched ────────────────────
   section(`precheck — ${slug} (job: ${job})`);

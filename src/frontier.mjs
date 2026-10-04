@@ -1,4 +1,6 @@
 // `ax frontier` — the takeable ticket set, derived from tracker truth in one receipt.
+// The scoped triage read refuses raw retired dispatch keys first, with the
+// deletion repair before vocabulary validation or any tracker read.
 //
 // WHY THIS VERB EXISTS. Before it, the orchestrator derived the frontier by
 // hand every wake: raw `gh issue list`, one `gh issue view` per ticket for its
@@ -20,9 +22,9 @@
 //                     list above. Tracker data this verb cannot obtain is an
 //                     inability to establish, not an empty frontier (F-028).
 //
-// `already-dispatched` keys on an UNSETTLED record only. A settled record whose
-// ticket is still open classifies `attempt-ended-unmerged` — a dead or
-// abandoned attempt stays VISIBLE instead of vanishing from the loop.
+// `already-dispatched` keys on an UNSETTLED, unended record only. A settled
+// record or an additive operator-close ending on an open ticket classifies
+// `attempt-ended-unmerged` — visible, never evidence that the work landed.
 //
 // An empty takeable list does not establish Completion. Two observed tickets
 // blocking each other classify `blocked-by-cycle:` in excluded — an established
@@ -68,6 +70,11 @@
 // stem) and carry a BOOLEAN `settled` — a record that fails either says
 // nothing about this ticket, which is cannot-establish, never a classification.
 //
+// A claim on a host the operator RETIRED (`ax worker retire-host`, KTD8) is
+// set aside, never deleted: a ticket whose only claims sit there is takeable
+// with the retirement named, and any other claim still excludes it. A
+// malformed retirement policy is cannot-establish, never "nothing retired".
+//
 // `gh api graphql` prints data AND errors on a partial failure. A non-zero exit
 // whose stdout still carries `data.repository` continues with that payload —
 // the unresolved aliases fall into the per-candidate cannot-establish branch,
@@ -89,14 +96,15 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { completionReceipt } from './completion.mjs';
-import { repoPaths } from './config.mjs';
+import { repoPaths, retiredConfigFinding } from './config.mjs';
 import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
 import { clean, must, payload, succeeded } from './pr-grounds.mjs';
 import { PROVENANCE_KEYS, carriedClasses, sameLabel } from './triage/provenance.mjs';
 import { READY_LABEL } from './triage/spec.mjs';
-import { defaultStore } from './worker/record.mjs';
+import { defaultStore, operatorEndingOk } from './worker/record.mjs';
+import { readRetired, retiredEntry, retiredLine, startHost } from './worker/retired-hosts.mjs';
 
 const USAGE = 'ax frontier [--spec <ref>] [--dry-run]';
 
@@ -132,6 +140,8 @@ function triageDeclaration({ root, main }) {
     if (!existsSync(path)) continue;
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      const retired = retiredConfigFinding(parsed);
+      if (retired) return { ok: false, path, retired };
       return { ok: true, triage: parsed?.triage, path };
     } catch (error) {
       return { ok: false, path, reason: `not readable JSON (${String(error.message ?? error).slice(0, 120)})` };
@@ -182,10 +192,18 @@ function frontierQuery(owner, name, numbers) {
  * and names a DIFFERENT one is another checkout's dispatch and is skipped. A
  * record with no repo key is unknown, not foreign — it keeps the conservative
  * exclusion, because false-exclude is the safe direction for a dispatcher.
+ *
+ * A CLAIM ON A RETIRED HOST IS SET ASIDE, AND SAID SO (KTD8). An unsettled
+ * record whose last worker-start was placed `--on` a host the operator retired
+ * claims nothing while that retirement stands — but only once every record has
+ * been read: any other unsettled claim still excludes the ticket, and a settled
+ * one still reads attempt-ended-unmerged. The set-aside claims ride on the
+ * answer (`retired`) so a takeable ticket names the attestation it stands on.
  */
-function dispatchStateOf(names, store, number, slug) {
+function dispatchStateOf(names, store, number, slug, retirement) {
   const prefix = `${number}-`;
   let settledSeen = false;
+  const setAside = [];
   for (const name of names.filter(entry => entry.startsWith(prefix) && entry.endsWith('.json')).sort()) {
     const path = join(store, name);
     const stem = name.slice(0, -'.json'.length);
@@ -198,13 +216,23 @@ function dispatchStateOf(names, store, number, slug) {
       if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('dispatch record: attempts is not a non-empty list');
       const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
       if (typeof settled !== 'boolean') throw new Error("last attempt: 'settled' is not a boolean");
-      if (settled !== true) return { state: 'unsettled' };
+      const ending = attempts[attempts.length - 1].ending;
+      if (ending !== undefined && !operatorEndingOk(ending)) throw new Error('last attempt: operator ending is malformed');
+      if (settled !== true && ending === undefined) {
+        // Asked only when something is retired: a record nobody retired is
+        // read exactly as it always was.
+        const host = retirement.hosts.size > 0 ? startHost(record) : undefined;
+        const entry = retiredEntry(retirement, host);
+        if (entry === undefined) return { state: 'unsettled' };
+        setAside.push(`${stem} on '${host}', ${retiredLine(entry)}`);
+        continue;
+      }
       settledSeen = true;
     } catch (error) {
       return { state: 'unreadable', reason: String(error.message ?? error).slice(0, 160), path };
     }
   }
-  return settledSeen ? { state: 'settled' } : { state: 'none' };
+  return { state: settledSeen ? 'settled' : 'none', retired: setAside };
 }
 
 /**
@@ -338,6 +366,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   }
 
   const declared = triageDeclaration(paths);
+  if (declared.retired) { bad(declared.retired.problem); fix(declared.retired.fix); return 1; }
   if (!declared.ok) {
     return cannot(
       `${declared.path} is ${declared.reason} — the declared label vocabulary cannot be read, and guessing it would classify with the wrong project's words`,
@@ -483,6 +512,10 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         return cannot(`the dispatch store at ${store} is unreadable (${String(error.message ?? error).slice(0, 160)})`, `ls ${store}`);
       }
     }
+    // The host retirement policy, read ONCE beside the listing. Malformed is an
+    // inability for the whole receipt, never "nothing retired" (F-028).
+    const retirement = readRetired(store);
+    if (!retirement.ok) return cannot(retirement.reason, retirement.repair);
 
     for (const candidate of candidates) {
       const issue = answered.value?.data?.repository?.[`i${candidate.number}`];
@@ -613,7 +646,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
       // Dispatch state, read-only from the store. Unsettled → a live attempt
       // owns this ticket; settled with the ticket still open → the attempt
       // ended without a merge, and the loop must SEE that.
-      const dispatched = dispatchStateOf(storeNames, store, candidate.number, slug);
+      const dispatched = dispatchStateOf(storeNames, store, candidate.number, slug, retirement);
       if (dispatched.state === 'unreadable') {
         unestablished.push({ ...candidate, read: `the dispatch record at ${dispatched.path} is unreadable (${dispatched.reason})`, repair: `cat ${dispatched.path}` });
         continue;
@@ -659,7 +692,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         unestablished.push({ ...candidate, read: `the blocker read answered no nodes for #${candidate.number}`, repair: `gh issue view ${candidate.number} --repo ${slug} --json blockedBy` });
         continue;
       }
-      pending.push({ candidate, blockers });
+      pending.push({ candidate: { ...candidate, retired: dispatched.retired ?? [] }, blockers });
     }
 
     const corpus = new Set(pending.map(entry => candidateKey(slug, entry.candidate.number)));
@@ -695,9 +728,11 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
         continue;
       }
       const closedRefs = entry.blockers.map(blocker => blockerDisplay(blocker, slug));
+      const { retired, ...candidate } = entry.candidate;
+      const proof = closedRefs.length === 0 ? 'no blockers declared' : `blockers ${closedRefs.join(',')} all closed`;
       takeable.push({
-        ...entry.candidate,
-        proof: closedRefs.length === 0 ? 'no blockers declared' : `blockers ${closedRefs.join(',')} all closed`,
+        ...candidate,
+        proof: retired.length === 0 ? proof : `${proof}; claim(s) set aside on the operator's attestation: ${retired.join('; ')}`,
       });
     }
 

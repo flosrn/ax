@@ -17,6 +17,9 @@
 // Reading discipline (F-028): named keys, and a raise on absence — never an
 // `||` fallback on a container. An `or` on a container is how an empty worker
 // list was once read as a count of 2.
+// Close is the exception to replay: terminal close has no retry identity. Its
+// durable operation lives in close/, and its exact-attempt ending is additive;
+// neither recovery nor an ending is permission to reissue that mutation.
 
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -37,7 +40,8 @@ export const requestIdOk = request => typeof request === 'string' && REQUEST_ID.
 export const defaultStore = (env = process.env) => env.ORCA_DISPATCH_STORE || join(env.HOME ?? '', '.omp', 'run', 'dispatch');
 
 const load = path => JSON.parse(readFileSync(path, 'utf8'));
-function save(rec, path) {
+/** Durable JSON write: temp + fsync + rename + parent-dir fsync, so a reader sees the old document or the new one, never half. */
+export function saveJson(rec, path) {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd;
   try {
@@ -266,6 +270,55 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
 }
 
 /**
+ * The per-host ADMISSION lock (KTD3): held by a remote dispatch from the Slot
+ * read on `host` under it through the write-ahead of its `worker-start`, so two
+ * dispatches cannot both read one last Slot as free; `retire-host` holds it
+ * through its reachability read and policy write. It lives under the store's
+ * `hosts/` namespace, beside nothing the root `*.json` scans read, and it is
+ * the same `acquireLock` every other writer here takes — never a second lock
+ * discipline. `--on here` takes none: the Mac has no Slots to spend.
+ */
+export const HOSTS_NS = 'hosts';
+const hostLockBase = (store, host) => {
+  if (!requestIdOk(host)) throw new Error(`host name "${host}" violates ${REQUEST_ID}`);
+  return join(store, HOSTS_NS, host);
+};
+export function acquireHostLock(store, host, options = {}) {
+  const base = hostLockBase(store, host);
+  mkdirSync(dirname(base), { recursive: true, mode: 0o700 });
+  return acquireLock(base, { ...options, suffix: '.admission.lock' });
+}
+
+/**
+ * Who holds `host`'s admission lock, read without taking it: `null` when no
+ * lock file exists, else `{ path, text, repair }`. A holder on this machine
+ * whose pid is dead left it behind (a killed dispatch: `finally` never runs on
+ * a signal), and since `acquireLock` never takes a lock over, its removal is
+ * the named repair — a dead holder is mid-admission no longer, and the start
+ * it may have written ahead is in its record, not in the lock.
+ */
+export function readHostLock(store, host, { local = hostname() } = {}) {
+  const path = `${hostLockBase(store, host)}.admission.lock`;
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    return { path, text: `admission lock ${path} is unreadable: ${String(error?.message ?? error)}`, repair: `ls -l ${path}` };
+  }
+  let holder;
+  try {
+    holder = JSON.parse(raw);
+  } catch {
+    return { path, text: `admission lock ${path} is not JSON (a holder caught between create and write, or a damaged file)`, repair: `cat ${path}   # remove it only once no dispatch to '${host}' is running` };
+  }
+  if (holder?.host === local && !pidAlive(Number(holder.pid))) {
+    return { path, text: `admission lock held by pid ${holder.pid} on this machine, which is dead — a dispatch that was killed mid-admission`, repair: `rm ${path}   # its holder pid ${holder.pid} is dead; no dispatch is mid-admission` };
+  }
+  return { path, text: `admission lock held by ${holder?.host} pid ${holder?.pid} since ${holder?.at}`, repair: `ax worker hosts ${host}   # re-run once that dispatch has written its start` };
+}
+
+/**
  * The first write of a claimed record: who asked, on what host, through which
  * binary — and, when the caller overrode the ticket's own assignment, why
  * (`--because`, R4/KTD3), and WHICH repository this dispatch belongs to
@@ -295,7 +348,7 @@ export function initRecord(path, { request, orca, because = '', repo = '', kind 
   if (String(kind).trim() !== '') rec.kind = String(kind).trim();
   if (String(delivery).trim() === 'parent') rec.delivery = 'parent';
   if (modelPolicy !== undefined) rec.modelPolicy = modelPolicy;
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -318,7 +371,7 @@ export function phaseBegin(path, { name, identity, argv, receiptPath = null, gro
   const phase = { name, identity, argv, receiptPath, receipt: null, exit: null, beganAt: now() };
   if (grounds !== null) phase.grounds = grounds;
   must(lastAttempt(rec), 'phases', 'last attempt').push(phase);
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -349,7 +402,7 @@ export function phaseEnd(path, index, { exit, receiptText, stderr = '', error = 
   // execution", so a concluded call must erase the corpse of the one before.
   if (error) ph.transport = String(error.message ?? error).slice(0, 1000);
   else delete ph.transport;
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -524,7 +577,7 @@ export function askBegin(path, { request, sha, argv, now = () => new Date().toIS
     return { ok: false, state: prior.state, messageId: prior.messageId ?? null, at: prior.at ?? null };
   }
   rec.ask = { state: 'asking', request, sha, argv, at: now() };
-  save(rec, path);
+  saveJson(rec, path);
   return { ok: true, state: 'asking', messageId: null, at: null };
 }
 
@@ -587,7 +640,7 @@ export function replyBegin(path, { messageId, now = () => new Date().toISOString
     repliedAt: now(),
     settledAt: null,
   };
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -599,7 +652,7 @@ export function askSettle(path, { state, messageId = null, code = null, now = ()
   const rec = load(path);
   const prior = must(rec, 'ask', `${path} has no ask to settle`);
   rec.ask = { ...prior, state, messageId, code, settledAt: now() };
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -617,7 +670,7 @@ export function askSettle(path, { state, messageId = null, code = null, now = ()
 export function markHeldRepair(path, { now = () => new Date().toISOString() } = {}) {
   const rec = load(path);
   rec.heldRepairAt = now();
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /**
@@ -1361,7 +1414,43 @@ export function attemptSettle(path, { repo = '' } = {}) {
     rec.repo = backfill;
   }
   attempts[attempts.length - 1].settled = true;
-  save(rec, path);
+  saveJson(rec, path);
+}
+
+/** Close operations are isolated from the root dispatch scans and saved durably. */
+export const CLOSE_NS = 'close';
+export function saveCloseOperation(path, operation) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  saveJson(operation, path);
+}
+
+/** The one ending cause an operator close writes. */
+export const OPERATOR_CLOSE = 'operator-close';
+
+/** Whether `ending` has the operator-close shape: its cause and string handle, host, at and operation. */
+export const operatorEndingOk = ending => ending?.cause === OPERATOR_CLOSE && typeof ending.handle === 'string' &&
+  typeof ending.host === 'string' && typeof ending.at === 'string' && typeof ending.operation === 'string';
+
+/** Write an operator ending on the bound attempt, never whichever is newest. */
+export function attemptEnd(path, tuple, ending) {
+  const rec = load(path);
+  const matches = must(rec, 'attempts', 'record root').filter(attempt => attempt.n === tuple.attempt);
+  if (matches.length !== 1) throw new Error('the bound attempt is absent or ambiguous');
+  const attempt = matches[0];
+  const phase = must(attempt, 'phases', 'bound attempt')[tuple.phase];
+  const result = phase?.receipt?.result;
+  if (phase?.name !== 'worker-start' || phase.identity !== tuple.identity ||
+      result?.dispatchId !== tuple.dispatchId || agentTerminal(result) !== tuple.handle ||
+      (argvValue(phase.argv, '--on') ?? '') !== tuple.host) {
+    throw new Error('the worker-start no longer binds the exact close tuple');
+  }
+  if (!operatorEndingOk(ending) || ending.handle !== tuple.handle || ending.host !== tuple.host) throw new Error('invalid operator ending');
+  if (attempt.ending !== undefined) {
+    if (JSON.stringify(attempt.ending) !== JSON.stringify(ending)) throw new Error('the attempt already carries another ending');
+    return;
+  }
+  attempt.ending = ending;
+  saveJson(rec, path);
 }
 
 /** A replacement is a NEW logical attempt: settle the current one, open the next. */
@@ -1370,7 +1459,7 @@ export function attemptNew(path) {
   const attempts = must(rec, 'attempts', 'record root');
   attempts[attempts.length - 1].settled = true;
   attempts.push({ n: attempts.length + 1, settled: false, phases: [] });
-  save(rec, path);
+  saveJson(rec, path);
 }
 
 /** A fresh mutation identity — lowercase UUID, the shape Orca fingerprints. */

@@ -3,9 +3,9 @@
 // record, GATE 2 live pane) keep their coverage in triage-dispatch.test.mjs
 // through the whole verb.
 //
-// The CAPS and the two live-pane counts are not here: they gate `ax worker
-// dispatch` too, so they live in `src/worker/capacity.mjs` and are pinned in
-// worker-capacity.test.mjs.
+// No pane count gates a triage pass: admission is by Slots (ADR 0005), and
+// triage passes run on the operator Mac with no ceiling. What stays here is
+// duplicate prevention, never a count.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';

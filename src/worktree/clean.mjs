@@ -85,7 +85,8 @@ export function clean(argv = [], { command = commandLine, reap = reapByCwd, scan
   }
   const root = located.path;
 
-  const { config, exists, errors } = load({ root, main });
+  const { config, exists, errors, retired } = load({ root, main });
+  if (retired) { bad(retired.problem); fix(retired.fix); return 1; }
   section(`reclaiming ${root}`);
 
   // An invalid config is not "no config". It names the database stack, the cache

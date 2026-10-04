@@ -83,6 +83,9 @@ import { orcaAvailable } from './orca-bin.mjs';
  */
 export const SECTIONS = ['PROJECT', 'WORKTREE', 'ORCHESTRATION'];
 
+/** The `--store` flag every dispatch-store verb declares. */
+const STORE_OPTION = ['--store <dir>', 'dispatch store (default ORCA_DISPATCH_STORE or ~/.omp/run/dispatch)'];
+
 export const COMMANDS = [
   {
     name: 'doctor',
@@ -205,13 +208,16 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
-      ['ls [--all]', 'capacity and overlap; --all: MORT rows and dead attempts'],
-      ['hosts', 'free slots per compute host, as placement counts them'],
+      ['ls [--all]', 'live panes and overlap; --all: MORT rows and dead attempts'],
+      ['hosts [<host>]', 'Slots, memory and OOM per compute host'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 're-dispatch? 0 dead · 1 live · 2 duplicate · 3 unknown'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['settle <task|request>', 'write a proven-dead attempt as settled — never a live one'],
+      ['close <handle|request>', 'end one pane on the operator’s word — never a landing'],
+      ['retire-host <host>', 'write off a host that never answers — its panes stay INCONNU'],
+      ['unretire-host <host>', 'withdraw a retirement; its records claim again'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
       ['stall --request <id>', 're-arm the detached watcher of one recorded dispatch'],
     ],
@@ -244,6 +250,9 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // role brief instead (reported 2026-09-08). A flag a caller cannot discover
     // from the terminal is a flag they will guess wrong.
     verbOptions: {
+      close: [STORE_OPTION],
+      'retire-host': [STORE_OPTION],
+      'unretire-host': [STORE_OPTION],
       dispatch: [
         ['--issue <ref>', 'the ticket: a Linear ref (ABC-123) or a GitHub number'],
         ['--name <name>', 'untracked work; the name is the request id and branch'],
@@ -273,6 +282,47 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // reads what counts as landing FROM THE TERMINAL, not from this module's
     // header — a header is for whoever patches the verb (./worker/release.mjs).
     helpBody: {
+      close: `Use: ax worker close <handle|request> [--store <dir>]
+Ends exactly one named pane on its recorded host, even while its agent is working.
+It records an operator ending, never a landing; no branch, worktree or PR is touched.
+A request naming several panes refuses and names the handles: choose one handle.
+
+The host must answer and still list the pane. Already absent takes ax worker settle.
+An ending needs a recorded ptyKilled:true receipt and absence from that host's list.
+Recovery never reissues terminal close. A lost receipt or unverified stop takes a
+process check, never an ending inferred from the missing pane.
+
+Exit: 0 operator ending recorded or already recorded - 1 refused or stop-unverified
+      2 usage - 3 cannot establish (store, lock, host, inventory or durable write)`,
+      hosts: `Use: ax worker hosts [<host>]
+Read-only: each compute host's Slots as a remote dispatch counts them, or one host's.
+A host is known when the HarnessOS capacity report carries it, this checkout's
+dispatch.hosts declares it, or it is retired (0 Slots, and when it was retired);
+any other name is refused with the known ones.
+
+Per host: its Slots with the terms they are the minimum of; slice max, held, free
+and peak memory (peak unavailable gates nothing); host available memory; oom_kill
+against its baseline and acknowledgement; then why it offers no Slot, if it does not.
+
+Exit: 0 every host answered for, a host with no Slot included - 2 usage or unknown host
+      3 cannot establish (capacity report, Orca runtime or live count unreadable)`,
+      'retire-host': `Use: ax worker retire-host <host> [--store <dir>]
+Records that the operator wrote this host off: only while its own terminal list does
+not answer. A host that answers is refused: end its panes with ax worker close.
+
+An attestation, never a proof. Nothing is written MORT, settled or closed: its panes
+stay INCONNU in ls, its claims leave the frontier while no other claim holds the
+ticket, the gate authorises on the attestation, and Slots skip the host. A pane later
+seen VIVANT there makes the gate refuse until unretire-host and close.
+
+Exit: 0 retired or already retired - 1 the host answered - 2 usage
+      3 cannot establish (config, runtime, policy file, lock or write)`,
+      'unretire-host': `Use: ax worker unretire-host <host> [--store <dir>]
+Withdraws a retirement; the host is not asked. Its records claim their tickets and
+count in its Slots again. A successor dispatched meanwhile keeps its record too, and
+ax worker gate reports the duplicate.
+
+Exit: 0 unretired or was not retired - 2 usage - 3 cannot establish (policy, lock, write)`,
       gate: `A missing observation is not a death, and this verb never authorises a
 re-dispatch from one (#192).
 
@@ -388,7 +438,7 @@ Exit: 0 settled or already settled - 1 refused (live agent, foreign or unasserte
     // wrote, so a machine that cannot dispatch has nothing to publish either.
     gated: 'orca',
     subcommands: [
-      ['dispatch --issue N …', 'one session per issue, capped — no tree, no branch'],
+      ['dispatch --issue N …', 'one session per issue — no rival, no tree, no branch'],
       ['ask --issue N', "send the draft's own Q<n> lines, and wait for rulings"],
       ['status [--issue N …]', 'what each dispatch recorded, and its recovery'],
       ['answer --issue N --id <msg>', 'pair rulings from --file to the questions, then reply'],

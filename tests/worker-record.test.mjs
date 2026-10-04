@@ -822,3 +822,20 @@ test('#3: who a record says delivers its slice — parent, the default child, an
   writeFileSync(torn, '{');
   assert.throws(() => recordDelivery(torn));
 });
+
+test('operator ending writer binds the old attempt and never settles its successor', async () => {
+  const { attemptEnd } = await import('../src/worker/record.mjs');
+  const path = begun();
+  phaseBegin(path, { name: 'worker-start', identity: 'start-old', argv: ['orca', 'orchestration', 'worker-start', '--on', 'gapicore'] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_old', effects: [{ kind: 'terminal', role: 'agent', id: 'term_old' }] } }) });
+  const tuple = { attempt: 1, phase: 1, identity: 'start-old', dispatchId: 'ctx_old', host: 'gapicore', handle: 'term_old' };
+  attemptNew(path);
+  const ending = { cause: 'operator-close', handle: 'term_old', host: 'gapicore', at: '2026-10-04T12:00:00Z', operation: '/store/close/old.json' };
+  attemptEnd(path, tuple, ending);
+  attemptEnd(path, tuple, ending);
+  const attempts = JSON.parse(readFileSync(path)).attempts;
+  assert.deepEqual(attempts[0].ending, ending);
+  assert.equal(attempts[1].settled, false);
+  assert.equal(attempts[1].ending, undefined);
+  assert.throws(() => attemptEnd(path, { ...tuple, handle: 'term_other' }, ending), /exact close tuple/);
+});

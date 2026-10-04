@@ -26,6 +26,9 @@ function capture(argv) {
 test('every declared worker verb has a runner, and every runner is declared', () => {
   assert.deepEqual(subcommandNames('worker').sort(), Object.keys(SUBCOMMANDS).sort());
   for (const [verb, run] of Object.entries(SUBCOMMANDS)) assert.equal(typeof run, 'function', `${verb} is not callable`);
+  assert.equal(typeof SUBCOMMANDS.close, 'function', 'the operator Close has a runner');
+  assert.equal(typeof SUBCOMMANDS['retire-host'], 'function', 'host retirement has a runner');
+  assert.equal(typeof SUBCOMMANDS['unretire-host'], 'function', 'and its reversal has one');
 });
 
 test('an unknown or missing verb is a usage error, never a default action', () => {

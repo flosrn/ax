@@ -237,6 +237,10 @@ function declarationFor(cwd) {
       reason: `no ${loaded.path} governs this checkout, so nothing here declares how to reach that host`,
       repair: `Repair: declare dispatch.hosts.<env>.ssh in ${loaded.path} — that declaration is the only thing that says how this machine reaches a host it dispatched onto.`,
     };
+  // Refused first, like every other reader of this file (KTD9): the loader
+  // strips the retired keys and still hands back a usable config.
+  if (loaded.retired)
+    return { ok: false, reason: `${loaded.path}: ${loaded.retired.problem}`, repair: `Repair: ${loaded.retired.fix}` };
   if (loaded.errors.length > 0)
     return {
       ok: false,

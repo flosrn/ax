@@ -303,6 +303,19 @@ test('an UNSETTLED record is already-dispatched, a settled one on an open ticket
   assert.match(out, /#53 T53 — no blockers declared/);
 });
 
+test('an operator Close ending is ended-unmerged even while settled stays false', () => {
+  const request = requestIdFor('56', 'closed');
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({ request, repo: SLUG,
+    attempts: [{ n: 1, settled: false, phases: [], ending: {
+      cause: 'operator-close', handle: 'term_closed', host: 'gapicore', at: '2026-10-04T12:00:00Z', operation: '/store/close/op.json',
+    } }],
+  }));
+  const { code, out } = runFrontier({ issues: [issueRow(56)], graph: { i56: issueNode() } });
+  assert.equal(code, 0);
+  assert.match(out, /#56 T56 — attempt-ended-unmerged/);
+  assert.doesNotMatch(out, /#56 T56 — already-dispatched/);
+});
+
 test('a record from ANOTHER repository never excludes this repository\'s ticket', () => {
   // The dispatch store is host-global: a `61-api.json` written by a different
   // checkout must not read as this repository's dispatch. A record that NAMES
@@ -746,4 +759,19 @@ test('an earlier exclusion still wins over a would-be cycle', () => {
   assert.match(out, /#251 T251 — blocked-by:#250/);
   assert.doesNotMatch(out, /blocked-by-cycle/);
   assert.match(out, /takeable — 0/);
+});
+
+test('retired dispatch declarations outrank the scoped vocabulary read (AE14)', () => {
+  const path = join(root, 'ax.config.json');
+  for (const [key, value] of [['cap', 3], ['cap', 0], ['cap', false], ['machineCap', null]]) {
+    const before = JSON.stringify({ dispatch: { [key]: value }, triage: { provenance: false } });
+    writeFileSync(path, before);
+    try {
+      const r = capture(() => frontier([], { cwd: root, env: { ORCA_DISPATCH_STORE: store }, gh: () => assert.fail('retired config asked tracker') }));
+      assert.notEqual(r.code, 0);
+      assert.match(r.out, new RegExp(`dispatch\\.${key}`));
+      assert.match(r.out, /delete .* from ax\.config\.json/);
+      assert.equal(readFileSync(path, 'utf8'), before);
+    } finally { rmSync(path, { force: true }); }
+  }
 });

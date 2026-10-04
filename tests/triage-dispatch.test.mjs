@@ -9,7 +9,7 @@
 //   * the label contract left the child's spec entirely — the child mutates
 //     nothing now, so that proposition moved to the publisher
 //   * `brief` accepts an unpublished draft as a pass
-//   * the cap counts live CHILD panes, not `worker-list` rows (F-048)
+//   * a pass is admitted by no count at all: its anti-rival gates read live CHILD panes (F-048)
 //   * the dry run asserts the same "no session created", read from the new source
 //   * `custom` is not publishable, which the Bash had no way to express
 //
@@ -190,8 +190,7 @@ const run = (argv, options = {}) => {
 
 /**
  * A settled dispatch record, as `worker start --tracker-repo` would have written
- * it. `repo` is what places the pane in a repository: the per-repository cap
- * counts only the panes whose record NAMES this checkout, and an absent key is
+ * it. `repo` is what places the pane in a repository, and an absent key is
  * UNKNOWN rather than ours (F-028).
  */
 function record(store, request, { handle = 'term_child', dispatchId = 'd-1', repo = REPO } = {}) {
@@ -332,186 +331,55 @@ test('a custom job needs no label contract — its draft is a report, not a labe
   assert.match(r.out, /Measure the query and report the number/);
 });
 
-// ── the caps: per repository by default, machine ceiling opt-in (#88) ────────
+// ── no ceiling: a triage pass is not admitted by any count (R4) ──────────────
 
-test('the cap counts live CHILD panes, never every pane the runtime owns (F-048)', () => {
-  // THE change from Bash. `worker-list` answered zero while children worked, so
-  // the count moved to panes — but `terminal list` also carries this session's
-  // pane, an editor's, an unrelated worker's. Counting those would let a busy
-  // sidebar fence the work, so only a pane a dispatch RECORD names is counted.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
-  record(store, 'triage-acme-widgets-1', { handle: 'term_child_a', dispatchId: 'd-a' });
-  const r = run(['--issue', '7', '--dry-run'], {
-    home,
-    store,
-    orca: { panes: ['term_child_a', 'term_me', 'term_editor', 'term_stranger'] },
-    root: repo({ dispatch: { cap: 2 } }),
-  });
-  assert.equal(r.code, 0, 'three unrelated panes do not consume triage capacity');
+test('AE4: 13 distinct issues with no prior pass all pass the precheck in one dispatch', () => {
+  const issues = Object.fromEntries(Array.from({ length: 13 }, (_, i) => [i + 1, `OPEN|0|issue ${i + 1}`]));
+  const argv = Object.keys(issues).flatMap(issue => ['--issue', issue]);
+  const r = run([...argv, '--dry-run'], { issues });
+
+  assert.equal(r.code, 0, r.out);
+  for (const issue of Object.keys(issues)) assert.match(r.out, new RegExp(`#${issue} DRY`));
+  assert.doesNotMatch(r.out, /\bcap\b|dispatch\.cap|machineCap|live pane\(s\)/, 'no count is printed and none gates');
 });
 
-test('one over the per-repository cap is refused, and the refusal shows the arithmetic', () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
-  record(store, 'triage-acme-widgets-1', { handle: 'term_a', dispatchId: 'd-a' });
-  record(store, 'triage-acme-widgets-2', { handle: 'term_b', dispatchId: 'd-b' });
-  const r = run(['--issue', '7'], { home, store, orca: { panes: ['term_a', 'term_b'] }, root: repo({ dispatch: { cap: 2 } }) });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /2 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 2/);
-  assert.match(r.out, /raise dispatch\.cap/, 'the repair names the declared value, never an env knob');
+test('AE4: if one of 13 issues fails its precheck, none starts', () => {
+  const issues = Object.fromEntries(Array.from({ length: 13 }, (_, i) => [i + 1, `OPEN|0|issue ${i + 1}`]));
+  issues[13] = 'CLOSED|0|done';
+  const argv = Object.keys(issues).flatMap(issue => ['--issue', issue]);
+  const r = run(argv, { issues });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /nothing was dispatched/);
   assert.deepEqual(r.started, []);
 });
 
-test('#161: a pane recorded by a legacy repair phase fills this verb’s cap too', () => {
-  // The THIRD verb through the one reader (ruled shape 2, 2026-09-04). The
-  // dispatch index carries a handle only for a `worker-start` phase, so a pane
-  // the bash-era `--inject` repair opened occupied no slot here while
-  // `ax worker ls` printed it VIVANT — the count that gates and the count that
-  // is read disagreeing about one machine.
+test('live panes of this or another repository admit or refuse nothing', () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const store = join(home, 'store');
-  mkdirSync(store, { recursive: true });
-  writeFileSync(
-    join(store, 'triage-acme-widgets-1.json'),
-    JSON.stringify({
-      request: 'triage-acme-widgets-1',
-      createdAt: '2026-08-20T10:00:00.000Z',
-      repo: REPO,
-      attempts: [
-        {
-          n: 1,
-          phases: [
-            // The failed start carries no effects at all: nothing about this
-            // pane is a worker-start fact.
-            {
-              name: 'worker-start',
-              argv: ['orca', 'orchestration', 'worker-start'],
-              beganAt: '2026-08-20T10:00:00.000Z',
-              exit: 1,
-              receipt: { ok: false, error: { code: 'agent_readiness', message: 'timeout' } },
-            },
-            {
-              name: 'worker-start-inject',
-              argv: ['orca', 'orchestration', 'worker-start-inject'],
-              beganAt: '2026-08-20T10:05:00.000Z',
-              exit: 0,
-              receipt: { ok: true, result: { dispatchId: 'd-inject', state: 'ready', effects: [{ kind: 'terminal', role: 'agent', id: 'term_live' }] } },
-            },
-          ],
-        },
-      ],
-    }),
-  );
-
-  const r = run(['--issue', '7'], { home, store, orca: { panes: ['term_live'] }, root: repo({ dispatch: { cap: 1 } }) });
-  assert.equal(r.code, 1, 'the pane is up, so the one slot this repository declared is taken');
-  assert.match(r.out, /1 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 1/);
-  assert.deepEqual(r.started, []);
-});
-
-test('#88: panes belonging to ANOTHER repository never park this one', () => {
-  // The reported measurement, on the verb that did refuse: live panes that all
-  // belong to another checkout, and a 13-issue wave here running at one slot.
-  // With no ceiling armed, this repository has its whole cap.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
+  for (let i = 1; i <= 5; i += 1) record(store, `triage-acme-widgets-${100 + i}`, { handle: `term_mine_${i}`, dispatchId: `d-m${i}` });
   record(store, 'other-1', { handle: 'term_far_a', dispatchId: 'd-fa', repo: 'goodluckagency/ofmchat' });
-  record(store, 'other-2', { handle: 'term_far_b', dispatchId: 'd-fb', repo: 'goodluckagency/ofmchat' });
-  // A pane whose record names no repository at all: it may be anyone's, so it
-  // counts toward the machine total only (F-028).
-  record(store, 'nameless-1', { handle: 'term_far_c', dispatchId: 'd-fc', repo: '' });
-  const r = run(['--issue', '7', '--dry-run'], {
+  const r = run(['--issue', '7', '--issue', '8', '--dry-run'], {
     home,
     store,
-    orca: { panes: ['term_far_a', 'term_far_b', 'term_far_c'] },
-    root: repo({ dispatch: { cap: 3 } }),
+    issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' },
+    orca: { panes: ['term_mine_1', 'term_mine_2', 'term_mine_3', 'term_mine_4', 'term_mine_5', 'term_far_a'] },
+    root: repo(),
   });
-  assert.equal(r.code, 0, "another project's wave is not this repository's cap");
-  assert.match(r.out, /3 live pane\(s\) on this machine/, 'the machine total is still disclosed');
-  assert.match(r.out, /no dispatch\.machineCap/, 'and it says nothing gates on it here');
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /live pane\(s\)|dispatch\.cap|machineCap/);
 });
 
-test('#88: an ARMED machine ceiling refuses, and names the ceiling rather than the cap', () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
-  record(store, 'other-1', { handle: 'term_far_a', dispatchId: 'd-fa', repo: 'goodluckagency/ofmchat' });
-  record(store, 'other-2', { handle: 'term_far_b', dispatchId: 'd-fb', repo: 'goodluckagency/ofmchat' });
-  const r = run(['--issue', '7'], {
-    home,
-    store,
-    orca: { panes: ['term_far_a', 'term_far_b'] },
-    root: repo({ dispatch: { cap: 3, machineCap: 2 } }),
-  });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /2 live pane\(s\) on this machine \+ 1 new > dispatch\.machineCap 2/);
-  assert.match(r.out, /0 of them in acme\/widgets/, 'both numbers, so the reader knows which fence it hit');
-  assert.match(r.out, /raise dispatch\.machineCap/);
-  assert.deepEqual(r.started, []);
-});
-
-test('exactly at the cap the run is allowed — the boundary is greater-than', () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
-  record(store, 'triage-acme-widgets-1', { handle: 'term_a', dispatchId: 'd-a' });
-  const r = run(['--issue', '7', '--dry-run'], { home, store, orca: { panes: ['term_a'] }, root: repo({ dispatch: { cap: 2 } }) });
-  assert.equal(r.code, 0);
-});
-
-test('a cap of zero is legal, and stops every new session', () => {
-  const r = run(['--issue', '7'], { root: repo({ dispatch: { cap: 0 } }) });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /0 live pane\(s\) in acme\/widgets \+ 1 new > dispatch\.cap 0/);
-});
-
-test('the cap counts every new issue in the batch, not the invocation', () => {
-  const r = run(['--issue', '7', '--issue', '8', '--issue', '9'], {
-    issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b', 9: 'OPEN|0|c' },
-    root: repo({ dispatch: { cap: 2 } }),
-  });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /0 live pane\(s\) in acme\/widgets \+ 3 new > dispatch\.cap 2/);
-});
-
-test('an undeclared dispatch.cap is 3 — the fairness cap binds even where nobody declared it', () => {
-  const r = run(['--issue', '7', '--issue', '8', '--issue', '9', '--issue', '10'], {
-    issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b', 9: 'OPEN|0|c', 10: 'OPEN|0|d' },
-  });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /\+ 4 new > dispatch\.cap 3/);
-});
-
-test('an issue that already has a dispatch record is not new, so it does not consume cap', () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
-  record(store, 'triage-acme-widgets-7', { handle: 'term_gone', dispatchId: 'd-7' });
-  const r = run(['--issue', '7'], { home, store, orca: { panes: [] }, root: repo({ dispatch: { cap: 0 } }) });
-  assert.equal(r.code, 0, 'a replay is not a new session');
-  assert.match(r.out, /replaying it rather than creating a second task/);
-});
-
-test('a dead pane frees its capacity — an orphaned terminal is not a live child', () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
-  const store = join(home, 'store');
-  record(store, 'triage-acme-widgets-1', { handle: 'term_a', dispatchId: 'd-a' });
-  const r = run(['--issue', '7', '--dry-run'], {
-    home,
-    store,
-    orca: { panes: [{ handle: 'term_a', orphaned: true }] },
-    root: repo({ dispatch: { cap: 1 } }),
-  });
-  assert.equal(r.code, 0);
-});
-
-test('both retired cap knobs are refused, and the repair names dispatch.machineCap', () => {
-  // An env var whose name says `triage` while it gated every verb, defaulting
-  // to 3 whether or not anyone armed it, is #88's bug in a knob. It is refused
-  // BY NAME rather than read past, exactly as its own predecessor was.
+test('both retired cap knobs are refused with the unset and Slots repair', () => {
+  // An env var whose name says `triage` while it gated every verb is #88's bug
+  // in a knob, and admission is by Slots now. It is refused BY NAME rather than
+  // read past, exactly as its own predecessor was.
   for (const from of ['ORCA_TRIAGE_SESSION_CAP', 'ORCA_READY_SESSION_CAP']) {
     const r = run(['--issue', '7'], { env: { [from]: '5' } });
     assert.equal(r.code, 1, `${from} is not read past`);
     assert.match(r.out, new RegExp(`${from} is set`));
-    assert.match(r.out, /dispatch\.machineCap/);
+    assert.match(r.out, new RegExp(`unset ${from}`));
+    assert.match(r.out, /admission is by Slots.*ax worker hosts/);
     assert.deepEqual(r.started, []);
   }
 });
@@ -521,14 +389,14 @@ test('an empty retired knob does not refuse', () => {
   assert.equal(r.code, 0);
 });
 
-test('a terminal list that does not answer cannot establish the cap, and dispatches nothing', () => {
+test('a terminal list that does not answer cannot establish the rival gates, and dispatches nothing', () => {
   const r = run(['--issue', '7'], { orca: { terminals: { status: 1, stdout: '', stderr: 'runtime gone' } } });
   assert.equal(r.code, 3);
   assert.match(r.out, /CANNOT ESTABLISH/);
   assert.deepEqual(r.started, []);
 });
 
-test('a TRUNCATED terminal list cannot establish the cap either', () => {
+test('a TRUNCATED terminal list cannot establish the rival gates either', () => {
   const r = run(['--issue', '7'], { orca: { truncated: true } });
   assert.equal(r.code, 3);
   assert.match(r.out, /TRUNCATED/);
@@ -543,7 +411,7 @@ test('omitted hosts are disclosed, never a wall', () => {
   assert.match(r.out, /hosts are omitted/);
 });
 
-test('an unreadable dispatch record cannot establish the count, and refuses', () => {
+test('an unreadable dispatch record cannot establish the rival gates, and refuses', () => {
   // An absence of information is not an absence of a child (F-028).
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
   const store = join(home, 'store');
@@ -829,7 +697,7 @@ test('a dry run renders the spec and creates no session', () => {
 // ── the dispatch itself ──────────────────────────────────────────────────────
 
 test('a real run creates one verified triage-worker session per issue', () => {
-  const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, root: repo({ dispatch: { cap: 5 } }) });
+  const r = run(['--issue', '7', '--issue', '8'], { issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' }, root: repo() });
   assert.equal(r.code, 0);
   assert.equal(r.started.length, 2, 'one session per issue, never one session for two');
   assert.match(r.out, /#7 VERIFIED/);
@@ -1142,7 +1010,7 @@ test('a dispatch that cannot establish is reported as such, and does not become 
 test('an unproven live child dominates a duplicate in the summary code', () => {
   const mixed = run(['--issue', '7', '--issue', '8'], {
     issues: { 7: 'OPEN|0|a', 8: 'OPEN|0|b' },
-    root: repo({ dispatch: { cap: 5 } }),
+    root: repo(),
     env: { AX_TRIAGE_ROLE_WAIT: '0' },
     startCodes: [2, 0],
     proofFn: () => null,
@@ -1228,6 +1096,7 @@ test('--fresh is refused while the previous pass still holds a live pane', () =>
   assert.equal(r.code, 1);
   assert.match(r.out, /still holds a live pane \(term_child\)/);
   assert.deepEqual(r.started, []);
+  assert.doesNotMatch(r.out, /live pane\(s\)|dispatch\.cap|machineCap/, 'the rival gate refuses; no count is printed beside it');
 });
 
 test('--fresh cannot establish anything when the previous pane is absent from a partial list', () => {
@@ -2029,4 +1898,17 @@ test('roleWaitOf refuses AX_READY_ROLE_WAIT rather than reading it', () => {
   assert.equal(out.from, 'AX_READY_ROLE_WAIT');
   assert.equal(out.to, 'AX_TRIAGE_ROLE_WAIT');
   assert.equal(roleWaitOf({ AX_READY_ROLE_WAIT: '' }).ok, true);
+});
+
+test('retired dispatch declarations refuse by presence and leave config untouched (AE14)', () => {
+  for (const [key, value] of [['cap', 3], ['cap', 0], ['cap', false], ['machineCap', null]]) {
+    const root = repo({ dispatch: { [key]: value } });
+    const before = readFileSync(join(root, 'ax.config.json'), 'utf8');
+    const r = run(['--issue', '7', '--dry-run'], { root });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, new RegExp(`dispatch\\.${key}`));
+    assert.match(r.out, /delete .* from ax\.config\.json/);
+    assert.deepEqual(r.started, []);
+    assert.equal(readFileSync(join(root, 'ax.config.json'), 'utf8'), before);
+  }
 });

@@ -1908,3 +1908,16 @@ test('open questions block a brief publish exactly as they block a triage one', 
   assert.equal(mutations(r.calls).length, 0);
   assert.match(r.out, /open question/);
 });
+
+test('publish refuses retired declarations before any tracker mutation', () => {
+  for (const [key, value] of [['cap', 0], ['cap', false], ['machineCap', null]]) {
+    const before = JSON.stringify({ project: { name: 'widgets' }, apps: { web: '.' }, dispatch: { [key]: value } });
+    const root = repo({ config: before });
+    const r = run(['--issue', '7'], { root });
+    assert.equal(r.code, 1);
+    assert.match(r.out, new RegExp(`dispatch\\.${key}`));
+    assert.match(r.out, /delete .* from ax\.config\.json/);
+    assert.deepEqual(mutations(r.calls), []);
+    assert.equal(readFileSync(join(root, 'ax.config.json'), 'utf8'), before);
+  }
+});

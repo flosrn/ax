@@ -1,3 +1,5 @@
+// Init reports retired dispatch keys without refusing or removing user bytes;
+// raw findings precede validation and every runtime config reader refuses them.
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -225,15 +227,11 @@ const report = (label, state) => (state === 'unchanged' ? note(`${label} — unc
  * the key the advice named — the only failure mode worse than an unexplained
  * "unknown key".
  *
- * ROOT LEVEL ONLY, matched as the validator's own whole line rather than as a
- * substring. Two looser readings were both wrong. A substring of the WORD sends
- * a config whose real defect merely QUOTES a value like `needs-triage` — a
- * mistyped `dispatch.databaseLabels`, say — to rename a key it does not have.
- * And a substring of `unknown key "ready"` matches ANY nesting level, because
- * ./schema.mjs prints the location (`${where}: unknown key "${key}"`): a nested
- * `dispatch.ready` reports `dispatch: unknown key "ready"` and would earn
- * advice to rename a root key the config never carried, sending the operator to
- * edit a line that is already correct while the real nested defect stays.
+ * ROOT ONLY, matched as the validator's own whole line. A nested key with the
+ * same name, a quoted value, or a similarly named key elsewhere buys no repair.
+ * The retired dispatch caps never reach this table: `loadConfig` reports them
+ * from the raw file before validation (`retired`), so init can note them
+ * without refusing while every runtime reader refuses them first.
  */
 const RETIRED_CONFIG_KEYS = [
   {
@@ -247,9 +245,8 @@ const RETIRED_CONFIG_KEYS = [
 ];
 
 /**
- * The repairs for the retired root keys a config still carries, in table order.
- * Empty when the errors name none — a config with three typos and no retired key
- * gets the validator's own lines and nothing invented on top of them.
+ * Repairs for exact retired ROOT keys, in table order. Unrelated typos never
+ * earn an invented retirement repair.
  */
 export const retiredConfigKeyFixes = errors =>
   RETIRED_CONFIG_KEYS.filter(({ key }) => errors.some(error => error === `root: unknown key "${key}"`)).map(({ fix }) => fix);
@@ -286,6 +283,10 @@ export function init(root, { dryRun = false, vendor } = {}) {
   if (refused([CONFIG_FILE, 'package.json'])) return 1;
 
   const existing = loadConfig(root);
+  if (existing.retired) {
+    note(existing.retired.problem);
+    fix(existing.retired.fix);
+  }
   // The retired `debugAs` shape, named on the same footing `doctor` names it,
   // so neither verb can report a repair the other does not (the rule below,
   // one level up). It is not a refusal here either: the section is dropped

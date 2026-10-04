@@ -1,4 +1,13 @@
 // `ax worker dispatch --issue <ref>` — a ticket becomes a working session, in one gesture.
+// Raw retired config keys and the retired env knobs refuse before validation
+// or mutation; config.mjs owns that refusal, with Slots as its repair.
+//
+// ADMISSION IS BY SLOTS ONLY (ADR 0005). No repository cap and no machine cap:
+// a remote host — named by `--on <host>` or chosen when no `--on` is given —
+// is admitted by its own Slots under its host lock (./host-placement.mjs), and
+// `--on here` or a local `--worktree` reads no capacity at all and has no
+// ceiling. A named host that cannot take the worker is refused; it never falls
+// back to another host or to this Mac.
 //
 // WHY THIS EXISTS (measured 2026-08-14)
 // Both halves already existed and the SEAM did not: something turns an issue into
@@ -65,21 +74,20 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { PACKAGE_NAME, loadCheckoutConfig, repoPaths, retiredCapKnob } from '../config.mjs';
 import { checkoutSkew, installCommand } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
-import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
 import { terminalInventory } from './pane.mjs';
 import { peerRun, peerSessionId } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, remoteTreeOf, untilSeen } from './placement.mjs';
-import { defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
+import { acquireHostLock, defaultStore, readHostLock, recordRepoNaming, staleClaim } from './record.mjs';
 import { liveCount } from './slots.mjs';
 import { reportPathFor, reportPathWithin } from './report.mjs';
 import { verify } from './verify.mjs';
-import { start as startVerb } from './start.mjs';
+import { lockWaitMs, start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
-import { capacityOf, countedConfig, harnessosSource, hostDeclarations, operatorMac, placeHost } from './host-placement.mjs';
+import { capacityOf, countedConfig, harnessosSource, hostDeclarations, NONE, operatorMac, placeHost, verdictOf } from './host-placement.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // The landed facts this dispatch's notes carry, and the SHARED reader that
@@ -178,8 +186,19 @@ export const RETIRED_FLAGS = {
 /** The live flag a retired one became, or '' when that verb never retired the name. */
 export const retiredFlagRepair = (verb, flag) => RETIRED_FLAGS[verb]?.[flag] ?? '';
 
-export function dispatch(
-  argv = [],
+export function dispatch(argv = [], deps = {}) {
+  // The admission lock a remote placement holds through the write-ahead of its
+  // start (KTD3). Every return path releases it, whichever one is taken.
+  const admission = { release: () => {} };
+  try {
+    return dispatchOnce(argv, deps, admission);
+  } finally {
+    admission.release();
+  }
+}
+
+function dispatchOnce(
+  argv,
   {
     resolve = resolveOrca,
     runner,
@@ -199,9 +218,10 @@ export function dispatch(
     // dispatch that names no target (./host-placement.mjs).
     platform = process.platform,
     // HarnessOS's capacity report, read for real; the suite injects a fixture
-    // of its contract.
+    // of its contract. Read only for a remote host (KTD10).
     capacity = capacityOf,
-  } = {},
+  },
+  admission,
 ) {
   const usageError = (message, repair) => {
     process.stderr.write(`ax worker dispatch: ${message}\n${repair ? `\n  ${repair}\n\n` : ''}${USAGE}\n`);
@@ -349,13 +369,16 @@ export function dispatch(
     return usageError('--model expects one non-empty OMP selector without whitespace or brackets');
   }
   const wait = Number(flags.wait);
-  // `here` is a synonym for local placement, the way Orca's own CLI reads it.
-  // NO TARGET is neither: `--on` absent and no local `--worktree` means the
-  // compute host with the most free slots, chosen from HarnessOS capacity on the
-  // operator Mac and refused anywhere else (./host-placement.mjs, R10/R16). The
-  // Mac takes a worker only when the operator names it.
+  // `here` is a synonym for local placement, the way Orca's own CLI reads it,
+  // and it reads no capacity. NO TARGET is neither: `--on` absent and no local
+  // `--worktree` means the compute host with the most Slots, chosen from
+  // HarnessOS capacity on the operator Mac and refused anywhere else
+  // (./host-placement.mjs, R2). A NAMED remote host is admitted by its own
+  // Slots alone (`onHost`, KTD10). The Mac takes a worker only when the
+  // operator names it.
   let on = flags.on === 'here' ? '' : flags.on;
   const placing = flags.on === '' && flags.worktree === '';
+  const onHost = on;
 
   const named = flags.name !== '';
   const kind = named ? null : ticketKind(flags.issue);
@@ -496,6 +519,9 @@ export function dispatch(
   }
 
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+  if (loaded.retired) return refuse(loaded.retired.problem, loaded.retired.fix);
+  const retiredCap = retiredCapKnob(env);
+  if (retiredCap) return refuse(retiredCap.problem, retiredCap.fix);
   if (!loaded.exists || loaded.errors.length > 0) {
     // The same refusal `ax worktree setup` prints, and the same #84 correction:
     // a checkout publishing another ax than the one running earns the repair
@@ -713,51 +739,76 @@ export function dispatch(
   // ── 3. everything else knowable BEFORE anything is created ─────────────────
   // A dispatch that can never be issued must not leave a worktree, a mandate, a
   // pinned identity or a lineage behind: exit 1 says nothing was created, and it
-  // has to be true. So the caps, the ref, the contract, the Run and the
-  // operator's notes — all knowable now — are settled before placement.
+  // has to be true. So the remote Slot measurement, the ref, the contract, the
+  // Run and the operator's notes — all knowable now — are settled before
+  // placement.
   //
-  // THE CAPS COME FIRST, and until #88 this verb had none at all: measured
-  // 2026-09-02, it admitted a 4th and a 5th pane without a word while `ax triage
-  // dispatch` refused at the same moment, over the same store, on the same
-  // machine. Two verbs, one machine, two cap semantics — and the count `ax
-  // worker ls` labelled "the cap count" gated neither. Both now answer through
-  // ./capacity.mjs, which is also what `ls` prints, so a reader who counts with
-  // `ls` before dispatching reads the number that will actually refuse.
-  //
-  // The repository is read HERE rather than at the `worker start` argv, because
-  // it is what scopes this repository's own count — and it is the same read that
-  // later records the pane (`--tracker-repo`, §7), so it happens once.
+  // The repository is read HERE, once, because it is what the record names
+  // (`--tracker-repo`, §7). It admits and refuses nothing: no repository count
+  // gates a dispatch (R1).
   const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
 
-  // PLACEMENT'S REPORT IS READ BEFORE THE COUNT, because the count needs it: a
-  // pane placed earlier on a compute host this repository never declared is
-  // asked of that host through the declaration capacity carries, and without it
-  // that pane would be unaskable rather than counted. The cap still decides
-  // BEFORE any host is chosen or proven, so a full repository is refused by
-  // name — the cap — and never reads as a host shortage.
+  // A REMOTE HOST IS MEASURED FIRST (KTD10): its report, then the live workers
+  // on it, through the one reader `ax worker ls` prints (./slots.mjs). The
+  // report comes before the count because the count needs it: a pane placed
+  // earlier on a compute host this repository never declared is asked of that
+  // host through the declaration capacity carries. A named host's count asks
+  // that host alone, so an unreachable sibling is never even asked (R5).
+  // `--on here` and a local `--worktree` measure nothing (R4).
   let fleet = null;
   let declarations = {};
   let counted = config;
-  if (placing) {
+  let measured = null;
+  if (placing || onHost !== '') {
     const source = harnessosSource({ env, config });
     if (!source.ok) return cannot(source.reason, source.repair);
     fleet = capacity({ source: source.path });
     if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
     declarations = hostDeclarations(fleet.capacity, dispatchConfig.hosts);
-    counted = countedConfig(config, declarations);
+    const own = declarations[onHost] ?? dispatchConfig.hosts?.[onHost];
+    counted = onHost === '' ? countedConfig(config, declarations) : { ...config, dispatch: { ...dispatchConfig, hosts: own === undefined ? {} : { [onHost]: own } } };
+    if (onHost !== '') {
+      const declared = hostFor(counted, onHost);
+      if (!declared.ok) return refuse(declared.reason, `ax.config.json: dispatch.hosts.${onHost}.ssh "<target>"`);
+    }
+    measured = measureLive({ run, env, config: counted, only: onHost });
+    // An unreadable store or record is exit 3, never a count of zero (F-028):
+    // the host's live workers are what its Slots are spent from.
+    if (measured.cannot) return cannot(measured.cannot, measured.repair);
+    for (const line of measured.lines) note(line);
   }
-  const room = capRoom({ run, env, config: counted, repo: trackerRepo });
-  if (room.cannot) return cannot(room.cannot, room.repair);
-  for (const line of room.lines) note(line);
-  // An inability is exit 3 and a full cap is exit 1, because they are different
-  // answers: one says the machine could not be read, the other says this
-  // repository is busy. A caller told "refused" re-reads the ticket; a caller
-  // told "cannot establish" reads the machine (ADR 0003, ../worker/capacity.mjs).
-  if (!room.verdict.ok) {
-    return room.verdict.kind === 'cannot'
-      ? cannot(room.verdict.message, room.verdict.repair)
-      : refuse(room.verdict.message, room.verdict.repair);
-  }
+  // THE HOST LOCK (KTD3): taken on the admitted host only once it is proven
+  // (§7), its count read again under it — a start another dispatch wrote ahead
+  // meanwhile now spends its Slot — and held until this dispatch's own start is
+  // written ahead. A live holder on this machine is waited out; anything else
+  // that keeps it is an inability, named with the holder's own repair.
+  const admit = host => {
+    const store = defaultStore(env);
+    let lock;
+    try {
+      lock = acquireHostLock(store, host, { waitMs: Number(env.AX_LOCK_WAIT_MS ?? lockWaitMs), sleep, clock: now });
+    } catch (error) {
+      return { cannot: `the admission lock of '${host}' could not be taken: ${String(error?.message ?? error)}`, repair: `ls -ld ${join(store, 'hosts')}` };
+    }
+    if (!lock.held) {
+      let holder = null;
+      try {
+        holder = readHostLock(store, host);
+      } catch {
+        // The refusal below still names the lock; the holder is a courtesy.
+      }
+      return {
+        cannot: `the admission lock of '${host}' could not be taken: ${lock.reason}${holder === null ? '' : ` — ${holder.text}`}`,
+        repair: holder?.repair ?? `ax worker hosts ${host}   # then re-run this dispatch`,
+      };
+    }
+    const again = measureLive({ run, env, config: counted, only: host });
+    if (again.cannot) {
+      lock.release();
+      return { cannot: again.cannot, repair: again.repair };
+    }
+    return { lock, count: again.hosts.get(host) ?? NONE };
+  };
 
   if (flags.needsRef !== '') {
     const proven = needsRef(flags.needsRef, { exec, cwd });
@@ -846,27 +897,38 @@ export function dispatch(
   // the operator runs THERE: nothing on this side can write into a tree there.
   let remotePin = '';
 
-  // No target: the compute host with the most free slots, or a refusal naming
-  // why each host could not take the worker. Never this Mac (R10). The live
-  // count per host is the SAME measurement the cap was just decided on.
+  // A remote host — the one with the most Slots when no `--on` names it, or
+  // the named host alone — passes one contract (KTD10): its Slots from the
+  // measurement §3 took, then its repository and its grounds, then, outside a
+  // dry run, its host lock and its Slots read AGAIN under it (KTD3, §7). The
+  // proof is ssh-bound and spends nothing, so no lock is held across it. Never
+  // this Mac (R2), and a named host never falls back to another (R3).
   const repoName = basename(paths.root || cwd);
   const proveOn = declaration => proveHost(declaration, { ssh: args => exec('ssh', args, cwd), kind, ref: flags.issue, sweep: !dry });
   let target = null;
-  if (placing) {
+  if (placing || onHost !== '') {
     const chosen = placeHost({
       capacity: fleet.capacity,
-      declarations,
-      liveOn: host => room.hosts.get(host) ?? { live: 0, unmeasured: 0 },
-      repoFor: host => repoIdFor(repoName, { run, env: host }),
+      declarations: onHost === '' ? declarations : { [onHost]: counted.dispatch.hosts[onHost] },
+      only: onHost,
+      liveOn: host => measured.hosts.get(host) ?? NONE,
+      // A named host's repository is resolved below, exactly as before: an
+      // explicit `--repo-id` is taken as given.
+      repoFor: host => (onHost === '' ? repoIdFor(repoName, { run, env: host }) : { ok: true, id: flags.repoId }),
       prove: (host, declaration) => proveOn(declaration),
     });
     for (const line of chosen.lines) note(line);
     if (!chosen.ok) {
       const why = chosen.skipped.length === 0 ? 'the capacity report lists no compute host' : chosen.skipped.map(row => `${row.host}: ${row.reason}`).join(' | ');
-      return refuse(
-        `no compute host can take this worker, and this Mac is never the fallback — ${why}`,
-        'ax worker dispatch … --on <host>   # a host you choose, or --on here to run it on this Mac',
-      );
+      return onHost === ''
+        ? refuse(
+            `no compute host can take this worker, and this Mac is never the fallback — ${why}`,
+            'ax worker dispatch … --on <host>   # a host you choose, or --on here to run it on this Mac',
+          )
+        : refuse(
+            `'${onHost}' cannot take this worker, and a named host never falls back to another host or to this Mac — ${why}`,
+            `ax worker hosts   # each host's Slots and why; then --on <a host with a Slot>, or --on here for this Mac`,
+          );
     }
     target = chosen;
     on = chosen.host;
@@ -881,10 +943,9 @@ export function dispatch(
     selector = worktree;
     place.push('--worktree', `path:${worktree}`, '--agent', flags.agent);
   } else if (on !== '') {
-    const declared = target === null ? hostFor(config, on) : { ok: true, host: target.declaration };
-    if (!declared.ok) return refuse(declared.reason, `ax.config.json: dispatch.hosts.${on}.ssh "<target>"`);
+    const declared = { ok: true, host: target.declaration };
 
-    let repoId = target === null ? flags.repoId : target.repoId;
+    let repoId = target.repoId;
     if (repoId === '') {
       const resolved = repoIdFor(repoName, { run, env: on });
       if (!resolved.ok) return cannot(resolved.reason, `orca repo list --environment ${on} --json`);
@@ -893,10 +954,9 @@ export function dispatch(
 
     // `sweep: !dry` — the browser sweep is the one MUTATION among the grounds,
     // and a preview that reclaims processes on another machine is not a preview.
-    // A placed host was already proven by the placement that chose it.
-    const grounds = target === null ? proveOn(declared.host) : target.grounds;
+    // The admitted host was proven by the placement that admitted it.
+    const grounds = target.grounds;
     for (const line of grounds.notes ?? []) note(line);
-    if (!grounds.ok) return refuse(grounds.reason);
     if ((grounds.unproven ?? 0) > 0) {
       note(`${grounds.unproven} ground(s) on '${on}' are UNPROVEN rather than passed — a transport that cannot answer never blocks remote work, but it never proves it either`);
     }
@@ -1087,10 +1147,8 @@ export function dispatch(
   // for a checkout whose forge `gh` cannot name; with neither, the record stays
   // unknown, and nothing here guesses one (F-028).
   //
-  // `trackerRepo` was read in §3, where the per-repository cap needed it: the
-  // pane this argv records and the count that authorised it are placed in the
-  // same repository BY THE SAME READ, so a cap counted against one name cannot
-  // record a pane under another.
+  // `trackerRepo` was read once in §3: the record names the repository by that
+  // read, and nothing here admits or refuses on it.
   const owned = [
     '--request', request,
     '--run', runId,
@@ -1127,8 +1185,30 @@ export function dispatch(
   }
 
   // ── 7. dispatch ────────────────────────────────────────────────────────────
+  // The host lock (KTD3), taken last: a Slot another dispatch wrote ahead while
+  // this one proved the host is refused here, never spent twice, and a named
+  // host still never falls back (R3). Released by start the moment its
+  // worker-start is on disk — written ahead, answered or STRANDED, that start
+  // spends the host's Slot from the record — so the remote call behind it, up
+  // to 120s, never holds a sibling waiting.
+  if (target !== null) {
+    const admitted = admit(on);
+    if (admitted.cannot) return cannot(admitted.cannot, admitted.repair);
+    admission.release = admitted.lock.release;
+    const again = verdictOf(target.entry, admitted.count);
+    if (again.reason !== undefined) {
+      return refuse(
+        `'${on}' has no Slot left for this worker — host '${on}' skipped: ${again.reason}, read again under the host lock`,
+        onHost === '' ? 'ax worker hosts   # then re-run this dispatch: placement chooses again' : `ax worker hosts ${on}   # then --on <a host with a Slot>, or --on here for this Mac`,
+      );
+    }
+  }
+  const released = () => {
+    admission.release();
+    admission.release = () => {};
+  };
   const startArgs = [...owned, '--spec-file', spec, '--orca', bin, '--', ...place];
-  let code = startFn(startArgs, { env, runner, modelPolicy: policy });
+  let code = startFn(startArgs, { env, runner, modelPolicy: policy, onWriteAhead: released });
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a
     // failure to report, it is exactly what --resume exists for, and BOTH remote
@@ -1139,6 +1219,8 @@ export function dispatch(
     note('STRANDED — the recorded mutation may still be running; replaying the recorded call (F-001: never a second request)');
     code = startFn(['--resume', '--request', request, '--orca', bin], { env, runner });
   }
+  // A start that never reached its worker-start gives the lock back here.
+  released();
   if (code !== 0) return code;
 
   // ── 8. verify ──────────────────────────────────────────────────────────────
@@ -1210,66 +1292,32 @@ function setLineage({ run, worktree, on, dry, env }) {
 }
 
 /**
- * Whether this machine and this repository have room for ONE more pane — the
- * two counts, the two caps, and the verdict, counted through the one reader
- * `ax worker ls` prints and `ax triage dispatch` refuses on (./slots.mjs) and
- * gated by the same contract (./capacity.mjs).
+ * The live workers per host that a remote admission spends Slots from,
+ * counted through the one reader `ax worker ls` prints (./slots.mjs) —
+ * `{ hosts, lines }` or `{ cannot, repair }`.
  *
- * FAIL-CLOSED, for `ls`'s reason: the caller is about to decide whether it has
- * room for another child, so an unreadable terminal list or an unreadable record
- * is cannot-establish rather than a count of zero — an absence of information is
- * not an absence of a child (F-028). An ENOENT store is the exception and the
- * only one: a machine that has never dispatched, where zero is the true count
- * and refusing would block the first dispatch ever.
- *
- * A cap it cannot COUNT is different from a count it cannot READ, and the
- * difference is deliberate: a checkout `gh` cannot name still dispatches, with
- * the absence announced. That is the boundary this verb already holds for a
- * record's `repo` key, and moving it would refuse every dispatch from a
- * checkout whose forge `gh` has no token for.
+ * FAIL-CLOSED: the caller is about to admit a worker onto a host, so an
+ * unreadable terminal list or an unreadable record is cannot-establish rather
+ * than a count of zero — an absence of information is not an absence of a
+ * child (F-028). An ENOENT store is the one real zero: a machine that has
+ * never dispatched. `lines` name each host that could not be asked, because
+ * that host then offers no Slot (R5) and the reader deserves to know why — for
+ * a named host (`only`), that host alone: no other host is this dispatch's. A
+ * retired host is left out: its retirement skip already names it (KTD8), and
+ * asking it is no repair for a host the operator wrote off.
  */
-function capRoom({ run, env, config, repo }) {
+function measureLive({ run, env, config, only = '' }) {
   const local = terminalInventory(run);
-  if (!local.ok) {
-    return { cannot: local.reason, repair: 'orca open   # the cap is counted, never assumed — it does not fail open', lines: [] };
+  if (!local.ok) return { cannot: local.reason, repair: 'orca open   # live workers are counted, never assumed — admission does not fail open' };
+  const counted = liveCount({ run, env, config, local });
+  if (counted.cannot) return { cannot: counted.cannot, repair: counted.repair };
+  const lines = [];
+  for (const [host, scope] of counted.scopes.unaskable()) {
+    if (only !== '' && host !== only) continue;
+    if (counted.slots.hosts.get(host)?.retired) continue;
+    lines.push(`host '${host}' could not be asked, so its live workers cannot be counted and it offers no Slot: ${scope.reason}`);
   }
-
-  // The retired knob is refused BEFORE any host is asked: a shell artefact
-  // reading as the cap in force is not a reason to spend an ssh round trip.
-  const ceiling = machineCapOf(config, env);
-  if (!ceiling.ok) {
-    return {
-      verdict: {
-        ok: false,
-        kind: 'refuse',
-        message: `${ceiling.from} is set — the cap is declared in ax.config.json now, and this repository's own cap is what binds`,
-        repair: `unset ${ceiling.from} and declare ${ceiling.to} in ax.config.json if this machine needs a ceiling`,
-      },
-      lines: [],
-    };
-  }
-
-  // The same liveness `ax worker ls` prints, from the same reader: every
-  // recorded agent pane this runtime's list or a named host reports as up
-  // (./slots.mjs). Counting the local list alone would fence a repository whose
-  // remote children are working, for exactly as long as the local scope omits
-  // their host; counting the dispatch index would miss a pane a repair phase
-  // recorded, which is the number `ls` was already printing (#161).
-  const counted = liveCount({ run, env, config, local, repo });
-  if (counted.cannot) return { cannot: counted.cannot, repair: counted.repair, lines: [] };
-  const { slots, scopes } = counted;
-
-  const live = slots.live;
-  const repoCap = repoCapOf(config);
-  const verdict = capVerdict({ live, adding: 1, repo, repoCap, machineCap: ceiling.cap });
-  const lines = [...capLines({ live, repo, repoCap, machineCap: ceiling.cap }), ...verdict.notes];
-  for (const [host, scope] of scopes.unaskable()) {
-    lines.push(`host '${host}' could not be asked, so its panes are NOT in either count: ${scope.reason}`);
-  }
-  if (slots.inventory.omitted) lines.push('hosts are omitted from this terminal list: a pane on one of them is UNKNOWN here, not counted');
-  // `hosts` rides along for placement, which spends each host's worker ceiling
-  // from this same measurement rather than taking a second one.
-  return { verdict, lines, hosts: slots.hosts };
+  return { hosts: counted.slots.hosts, lines };
 }
 
 /**

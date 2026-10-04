@@ -1,4 +1,5 @@
 // `ax worktree setup` — make this checkout actually runnable.
+// Retired dispatch declarations refuse before validation, probes or writes.
 //
 // `git worktree add` hands you a directory with no node_modules, no local env,
 // a dev server that will fight the primary checkout for its port, and a
@@ -80,7 +81,8 @@ export function setup(argv = [], { cwd, install = setupInstall } = {}) {
     return 1;
   }
 
-  const { config, exists, errors } = loadCheckoutConfig({ root, main });
+  const { config, exists, errors, retired } = loadCheckoutConfig({ root, main });
+  if (retired) { bad(retired.problem); fix(retired.fix); return 1; }
   if (!exists || errors.length > 0) {
     bad(exists ? `${errors.length} problem(s) in ax.config.json` : 'no ax.config.json — run `ax init` in the primary checkout first');
     for (const error of errors) note(error);

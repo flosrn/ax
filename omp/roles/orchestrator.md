@@ -101,15 +101,18 @@ that a concept search before filing would have caught.
 - Arbitrate undeclared overlap before each dispatch, against EVERY live pane —
   not only the tickets of one wave. `ax worker ls` counts the panes a dispatch
   RECORDED, so it cannot see a session nobody dispatched: an operator working in
-  one of this repository's worktrees owns a slice and holds no slot. `peer_list`
+  one of this repository's worktrees owns a slice and has no record. `peer_list`
   names live panes by worktree, and reading both is what makes "this slice is
   free" a measurement — on 2026-09-15 `0 live pane(s) in goodluckagency/ofmchat`
   was printed while a pane worked in that ticket's own worktree. The declared
   blocking edges are the hard constraint; the Briefs' probable-surfaces
   estimates are a signal to arbitrate with, never a proof.
-- Before adding a worker, read `ax worker ls`; its recorded live panes are the
-  capacity signal and the number both caps gate. Follow the operator's
-  concurrency limit, never a count from memory or task rows.
+- Before adding a worker, read `ax worker hosts`: Slots on each compute host are
+  the only admission, and a host with none names why. `ax worker ls` stays the
+  liveness and overlap read, never a ceiling. A host that cannot be measured
+  offers no Slot and blocks no other host; `--on here` has no ceiling, so the
+  operator's concurrency limit there is yours to keep, never a count from
+  memory or task rows.
 - Decide the worker's CLASS, never its model. `routine` is a decided solution with
   bounded surfaces and known verification, `standard` is ordinary implementation,
   `deep` is unresolved design, difficult diagnosis or consequential changes. Which
@@ -168,7 +171,7 @@ membership derives from this record.
 
 ## Run the implementation loop
 
-Dispatch one worker per takeable ticket, under the cap:
+Dispatch one worker per takeable ticket, onto a host with a Slot:
 
 ```bash
 ax worker dispatch --issue <ref> [--slug <slug>] [--on <host>] [--notes <file>] [--capability <class>] [--because <reason>] [--model-mode <auto|manual|ask>] [--model-confirmation <session.jsonl#toolCallId>]
@@ -329,6 +332,15 @@ reach for `ax worktree rm` to force past one, and never pass `--force`: the
 refusal is the protection. Exit 1 is that KEEP, exit 3 is a machine that could
 not be asked.
 
+A pane whose work did not land and that the operator wants ended — a stuck or
+abandoned worker — is the operator's `ax worker close <handle|request>`: it ends
+one named pane its host still lists and records an operator ending, never a
+landing. Its host must answer. A host that will never answer again is the
+operator's `ax worker retire-host <host>`: an attestation its panes stay INCONNU
+under, never a MORT; `ax worker unretire-host <host>` withdraws it. Neither is
+yours to reach for on your own reading — name the pane or host and the verb to
+the operator.
+
 ## Get bearings
 
 A fresh session resumes a wave from authority, never from memory or a file it
@@ -338,7 +350,7 @@ happens to find. In order:
    ticket needs no pane check.
 2. The dispatch records: request ids and recorded ticket argv name what was
    already dispatched, and `ax worker ls` counts what is live. Read the
-   dispositions, not the count alone: VIVANT is capacity, INCONNU is an
+   dispositions, not the count alone: VIVANT is a live worker, INCONNU is an
    unproven pane (a host that could not be asked, or a mutation that never
    concluded), MORT is a proven corpse whose continuation the listing already
    names.
@@ -517,7 +529,7 @@ Confirming a recommendation you already believe is a refused waste. Do not ask
 the operator to rubber-stamp. When you do escalate, quote the exact question and
 why it meets that bar — not a bundle of mixed tags. Record that missing product
 decision as a blocker for the work that needs the answer. Independent takeable
-Tickets continue under the existing capacity and overlap rules. Do not
+Tickets continue under the existing Slot and overlap rules. Do not
 widen an Assignment to avoid asking.
 
 Answer through the verb, naming the lane, so the child is released:

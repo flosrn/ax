@@ -160,39 +160,98 @@ The safety properties live in executable commands rather than operator prose:
 - every dispatch and release is written to a record **before** the mutation;
 - recovery replays the recorded call instead of composing a second identity;
 - peer messages carry a verified route and never put free text on a shell line;
-- live capacity is counted from panes the runtime still owns, not an accounting table that may
-  omit repaired workers;
+- a dispatch is admitted by Slots on the host it lands on, counted from panes the runtime still
+  owns rather than an accounting table that may omit repaired workers;
 - a worker is released only after its pull request or other governing artifact has landed;
 - the merge gate runs every declared ground against the exact head SHA and performs the merge it
   validated.
 
 ### Where a worker runs
 
-`ax worker dispatch` places the child where the operator names it, or where capacity chooses:
+`ax worker dispatch` places the child where the operator names it, or where Slots choose:
 
 ```bash
-ax worker dispatch --issue 412 --slug fix-guard                # the compute host with the most free slots
+ax worker dispatch --issue 412 --slug fix-guard                # the compute host with the most Slots
 ax worker dispatch --issue 412 --slug fix-guard --on gapicore  # a host declared in dispatch.hosts
 ax worker dispatch --issue 412 --slug fix-guard --on here      # this machine
 ```
 
-With no `--on`, the dispatch runs `bun scripts/capacity.ts --json` in the HarnessOS checkout
-named by `HARNESSOS_SOURCE`, or by `dispatch.harnessos` in `ax.config.json` when that variable is
-unset. Each reported host's ssh target, slice cgroup and floors come from that report;
-`dispatch.hosts.<host>` overrides them field by field for this repository. A host is passed over,
-with its reason printed, when it is cordoned, ineligible, has no healthy gateway probe, carries no
-slice maximum, has live panes nobody can count, has no free slot, has no Orca repository of this
-name, or fails the host grounds `--on` proves. Slots are the smallest of free memory over the
-worker footprint, the slice maximum over the footprint minus the live panes already placed there
-(a live worker reserves its footprint even in a quiet phase), free CPU over the worker's CPU share,
-and `maxWorkers` minus those live panes; the most slots wins, ties go to the report's order. The
-repository cap (`dispatch.cap`) refuses before any host is chosen. `ax worker hosts` prints the
-same per-host slot lines without dispatching.
+Slots are the only admission. A remote dispatch, placed or named with `--on <host>`, runs
+`bun scripts/capacity.ts --json` in the HarnessOS checkout named by `HARNESSOS_SOURCE`, or by
+`dispatch.harnessos` in `ax.config.json` when that variable is unset. Each reported host's ssh
+target, slice cgroup and floors come from that report; `dispatch.hosts.<host>` overrides them
+field by field for this repository. With `live` the panes recorded on that host plus the starts
+still open there, and `fp` the worker footprint, a host's Slots are:
+
+```text
+max(0, min(floor(min(freeMb, hostAvailableMb) / fp),
+           floor(maxMb / fp) - live,
+           floor((workMb + hostAvailableMb) / fp) - live,
+           floor(cpu.freePercent / cpuFp),
+           maxWorkers - live))
+```
+
+Each live worker reserves its footprint even in a quiet phase, against both the slice maximum and
+the memory the host can still give the slice (what the slice holds plus what the host has
+available). Free memory is point-in-time headroom; the reservation terms are what leave room for
+a quiet worker's later peak. Once the host is proven, admission takes a per-host lock, reads the
+host's Slots again under it, and releases it when the start is recorded, so two dispatches cannot
+spend one last Slot. A lock left by a killed dispatch is shown by `ax worker hosts <host>` with
+its removal command.
+
+A host offers no Slot, with its reason printed, when it is cordoned, ineligible, retired, has no
+healthy gateway probe, sends a report entry that fails validation, has live panes nobody can
+count, has no Orca repository of this name, or fails the host grounds `--on` proves. A rise in the
+slice's `oom_kill` counter since the last acknowledgement makes the host ineligible until the
+operator runs `hos host ack-oom <host> --apply` in HarnessOS. A host that cannot be measured offers
+no Slot and blocks no other host: placement skips it by name and the worker lands on the eligible
+host with the most Slots, ties going to the report's order. `--on <host>` passes through the same
+contract: a host with no Slot refuses the dispatch, creates nothing and never falls back to
+another host or to the Mac.
 
 Placement runs only on the operator Mac, and it never places on it: when no host can take the
 worker, the dispatch is refused with each host's reason. A dispatch with no target run anywhere
-else is refused. `--on <host>` skips placement and still proves the host; `--on here` and a local
-`--worktree` stay on this machine.
+else is refused. `--on here`, a local `--worktree` and triage passes stay on this machine with no
+capacity read and no ceiling: the operator chooses the wave size there.
+
+```bash
+ax worker hosts            # every compute host: Slots and their terms, memory, oom_kill
+ax worker hosts gapicore   # one host, or why it offers no Slot
+```
+
+`ax worker hosts` prints each host's Slots with the terms they are the minimum of, the slice's
+maximum, held, free and peak memory, the host's available memory, `oom_kill` against its
+acknowledged value, and the reason when the host offers no Slot. It dispatches nothing.
+
+### End a pane, write off a host
+
+```bash
+ax worker close <handle|request>   # end one named pane on the operator's word
+ax worker retire-host netcup-dev   # write off a host that will never answer
+ax worker unretire-host netcup-dev # withdraw that retirement
+```
+
+`ax worker close` ends exactly one pane its recorded host still lists, whether or not its agent is
+working, and records an operator ending on the attempt that owns it — never a landing; no branch,
+worktree or pull request is touched. The host must answer: a pane it no longer lists is refused
+with `ax worker settle` as the repair. `ax worker release` remains the ending for a pane whose
+pull request landed.
+
+`ax worker retire-host` records that the operator wrote a host off, and only while that host's
+terminal list does not answer; a host that answers is refused, and its panes take
+`ax worker close`. Only a failed connection or a timeout is silence: any other Orca error, such as
+an unpaired environment name, writes nothing. Retirement holds the host's admission lock, so no
+dispatch is admitted onto it meanwhile. The retirement is an attestation, never a proof: the
+host's panes stay INCONNU, its records leave the frontier while no other claim holds their ticket,
+and Slots skip it.
+`ax worker unretire-host` withdraws it without asking the host.
+
+**Migration:** `dispatch.cap` and `dispatch.machineCap` are retired. A configuration that still
+declares either, whatever its value, is refused by name by every verb that reads it; delete the
+key from `ax.config.json`. `ax init` reports it without refusing. `ORCA_TRIAGE_SESSION_CAP` and
+`ORCA_READY_SESSION_CAP` stay refused: unset them and read `ax worker hosts`. `--on <host>` now
+reads HarnessOS capacity, so it needs `HARNESSOS_SOURCE` or `dispatch.harnessos` and a HarnessOS
+build that emits `oom`.
 
 ### Choose a worker's class, not its model
 

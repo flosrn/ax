@@ -3,19 +3,16 @@
 // duplicate-prevention state machine answers through its own interface; dispatch
 // maps the outcomes back to its own exit codes and printing.
 //
-// THE CAPS ARE NOT HERE, and that is #88's other half. `capOf` and the live
-// count lived in this file while `ax worker dispatch` enforced nothing, so the
-// only verb with a fence was the one whose module owned it — and the fence it
-// had was machine-wide. The two caps and the refusal are now
-// `../worker/capacity.mjs` and the count is `../worker/slots.mjs`: one contract
-// and one reader, read by both dispatch verbs and by `ax worker ls`, none of
-// them reaching into another's module. What stays here is what is genuinely
-// about a triage PASS.
+// NO COUNT IS HERE, and none gates a dispatch (ADR 0005): admission is by a
+// host's Slots (../worker/host-placement.mjs), and the only reader of which
+// recorded panes are live is ../worker/slots.mjs, read by both dispatch verbs
+// and by `ax worker ls`. What stays here is what is genuinely about a triage
+// PASS.
 //
 // `index` here is the DISPATCH index, and deliberately: gate 2 asks which
 // handles a previous pass's dispatch recorded, which is a provenance question
-// (#161). The cap's own question — is this pane consuming a slot — is answered
-// by the reader above, and this module never counts.
+// (#161). Whether a pane is live is answered by the reader above, and this
+// module never counts.
 
 import { join } from 'node:path';
 

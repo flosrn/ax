@@ -22,7 +22,7 @@ const ghSlug = (slug = 'acme/widgets') => (bin, args) =>
 
 /**
  * The verb, with the machine's two answers injected: `gh` (which repository is
- * this checkout) and the checkout whose `ax.config.json` declares the caps. A
+ * this checkout) and the checkout whose `ax.config.json` declares the hosts. A
  * suite reaching a real `gh` would be neither offline nor deterministic, and a
  * suite reading THIS repository's own config would grade itself.
  */
@@ -34,11 +34,11 @@ const ls = (argv, options = {}) => lsVerb(argv, { exec: ghSlug(), cwd: repo(), .
  * remote pane can be asked about at all. `repo()` with nothing declared is the
  * machine every pre-#76 test ran on.
  */
-function repo(hosts = {}, caps = {}) {
+function repo(hosts = {}, extra = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-worker-ls-repo-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   const declaredHosts = Object.keys(hosts).length === 0 ? {} : { entry: '/entry', hosts };
-  const block = { ...declaredHosts, ...caps };
+  const block = { ...declaredHosts, ...extra };
   const dispatch = Object.keys(block).length === 0 ? {} : { dispatch: block };
   writeFileSync(join(dir, 'ax.config.json'), JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, ...dispatch }));
   return dir;
@@ -912,9 +912,10 @@ test('--store reads the named store, and worker-list entries with no record are 
 // pane(s) — this is the cap count`, and all three panes belonged to flosrn/ax.
 // An orchestrator that honours "count with ls, never from memory" read that as
 // being blocked by another project's workers, and spent a turn deciding whether
-// it was allowed to dispatch at all.
+// it was allowed to dispatch at all. Admission is by Slots now (ADR 0005), so
+// both lines are liveness facts and neither names a ceiling.
 
-test('#88: the per-repository count and the machine total are two labelled lines, never one', () => {
+test('#88: the per-repository count and the machine total are two labelled liveness lines, and neither names a cap', () => {
   const dir = store();
   writeRecord(dir, 'mine-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_m', handle: 'term_m' }) }]);
   writeRecord(dir, 'theirs-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_t1', handle: 'term_t1' }) }], {
@@ -931,24 +932,23 @@ test('#88: the per-repository count and the machine total are two labelled lines
   const { code, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir } }));
 
   assert.equal(code, 0);
-  assert.match(out, /1 live pane\(s\) in acme\/widgets/, "this repository's count, and it is the one that gates");
-  assert.match(out, /dispatch\.cap 3/, 'named with the cap it is measured against');
+  assert.match(out, /1 live pane\(s\) in acme\/widgets/, "this repository's count");
   assert.match(out, /4 live pane\(s\) on this machine/, 'the machine total, on its own line');
-  assert.match(out, /no dispatch\.machineCap/, 'saying that nothing here gates on it');
   assert.match(out, /1 .*name no repository/, 'and the nameless pane the machine total alone carries');
-  assert.doesNotMatch(out, /this is the cap count/, 'the label that cost the reported turn is gone');
+  assert.doesNotMatch(out, /\bcap\b|dispatch\.cap|machineCap|gates/, 'no line names a ceiling: admission is by Slots');
 });
 
-test('#88: an armed machine ceiling is printed as the ceiling it is', () => {
+test('a config still declaring dispatch.cap is refused by name with its deletion repair, before any record is read', () => {
   const dir = store();
   writeRecord(dir, 'mine-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_m', handle: 'term_m' }) }]);
-  const run = fakeRunner({ terminals: [pane('term_m')] });
-  const { out } = capture(() =>
-    ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo({}, { cap: 5, machineCap: 9 }) }),
-  );
-  assert.match(out, /1 live pane\(s\) in acme\/widgets/);
-  assert.match(out, /dispatch\.cap 5/, 'the declared cap, not the default');
-  assert.match(out, /dispatch\.machineCap 9/);
+  for (const value of [3, 0, null]) {
+    const run = fakeRunner({ terminals: [pane('term_m')] });
+    const { code, out } = capture(() => ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo({}, { cap: value }) }));
+    assert.equal(code, 1, out);
+    assert.match(out, /dispatch\.cap retired/);
+    assert.match(out, /delete dispatch\.cap from ax\.config\.json/);
+    assert.doesNotMatch(out, /mine-1/, 'nothing is listed past the refusal');
+  }
 });
 
 test('#88: a checkout gh cannot name gets NOT MEASURED, never a zero it would read as room', () => {
@@ -966,12 +966,12 @@ test('#88: a checkout gh cannot name gets NOT MEASURED, never a zero it would re
   assert.match(out, /1 live pane\(s\) on this machine/, 'the count it CAN establish is still answered');
 });
 
-// ── ONE definition of "unmeasured", shared with the fence ────────────────────
-// The count this verb prints under "could not be asked" must be the count both
-// dispatch verbs turn into cannot-establish (../src/worker/capacity.mjs, driven
-// by `liveInventory.unresolved`): a record NAMING a host that could not be
-// asked. A broader count here would print a cause that did not happen, which is
-// #88's own species — a number whose label the reader cannot verify.
+// ── ONE definition of "unmeasured", shared with admission ────────────────────
+// The count this verb prints under "could not be asked" is the count remote
+// admission turns into a host with no Slot (../src/worker/host-placement.mjs,
+// driven by `liveInventory.unresolved`): a record NAMING a host that could not
+// be asked. A broader count here would print a cause that did not happen, which
+// is #88's own species — a number whose label the reader cannot verify.
 
 test('#88: a NAMED host that could not be asked is the unmeasured count, and it says which', () => {
   const dir = store();

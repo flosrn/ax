@@ -1,12 +1,14 @@
 // `ax worker ls` — how many children are actually working, counted by LIVE PANE.
 //
-// F-048 (gapilabs/omp#23): the cap counter answered ZERO while children were
+// F-048 (gapilabs/omp#23): Orca's worker counter answered ZERO while children were
 // working. The mechanism: a `worker-start` left failed/retained and repaired
 // with `--inject` produces a Dispatch WITHOUT touching worker terminal
 // accounting — so `orca orchestration worker-list` invents free capacity and,
 // worse, hides those children at release time. Anything that counts workers
 // from that list inherits both bugs. The truth that no repair path can forge is
 // the PANE: a terminal handle the runtime still owns and has not orphaned.
+// An additive operator-close ending is shown as its own cause, not as landing
+// proof and not as a settlement debt. Liveness still comes from the host list.
 //
 // So this verb joins FOUR sources and shows their disagreement rather than
 // picking a winner silently:
@@ -77,17 +79,17 @@
 // names, prints them with their worktree, and names the replay
 // (`ax worker start --resume`) that answers for the record itself.
 //
-// TWO COUNTS, AND THE LABEL SAYS WHICH GATES (#88). This verb used to end with
+// TWO COUNTS, AND NEITHER GATES (#88, ADR 0005). This verb used to end with
 // `N live pane(s) — this is the cap count`, where N was every live pane on the
 // machine: the store is host-global (./record.mjs), so read from one checkout it
 // counted another's children under a label claiming to be a fence. Measured
 // 2026-09-02 from the ofmchat checkout: three panes, all of them flosrn/ax's,
 // and an orchestrator that honours "count with `ls`, never from memory" spent a
-// turn deciding whether it was allowed to dispatch at all. So the count is now
-// two counts — this repository's, which `dispatch.cap` gates, and the machine
-// total, which `dispatch.machineCap` gates only once an operator declares it —
-// and both come from ./capacity.mjs, the same contract both dispatch verbs
-// refuse with. A record naming NO repository is UNKNOWN: it counts toward the
+// turn deciding whether it was allowed to dispatch at all. So the count is two
+// liveness facts — this repository's live panes and the machine total — from
+// the reader remote admission spends Slots against (./slots.mjs), and neither
+// admits nor refuses anything: admission is by each host's Slots (`ax worker
+// hosts`). A record naming NO repository is UNKNOWN: it counts toward the
 // machine total alone, and the line says how many (F-028).
 //
 // WHICH REPOSITORY THIS IS comes from `gh repo view`, the read every other
@@ -95,6 +97,14 @@
 // cannot name does not lose the listing: the per-repository line reads NOT
 // MEASURED, the machine total still stands, and the verbs that authorise a
 // mutation refuse for themselves.
+//
+// A RETIRED HOST'S PANE STAYS INCONNU (KTD8). `ax worker retire-host` is the
+// operator's attestation, never a proof, so a row whose worker-start was placed
+// on a retired host keeps its measured disposition and carries the retirement
+// beside it; that host is disclosed as retired instead of "could not be asked",
+// and no row there is offered a replay or a settle the host cannot answer. A
+// pane that host later shows VIVANT names the unretire-and-close route. A
+// malformed retirement policy refuses the listing (F-028).
 //
 // Exit codes (ADR 0003 — per verb, never a shared alphabet):
 //   0  the list was rendered, including the honest "0 record"
@@ -109,12 +119,12 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
 import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
-import { argvValue, defaultStore, recordedRun } from './record.mjs';
-import { livePanes } from './slots.mjs';
+import { argvValue, defaultStore, OPERATOR_CLOSE, recordedRun } from './record.mjs';
+import { readRetired, retiredEntry, retiredLine } from './retired-hosts.mjs';
+import { livePanes, liveLines } from './slots.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
 
@@ -252,7 +262,7 @@ function describeRecord(dir, file) {
   }
 
   if (latest === null) {
-    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, pending: unsettled === null ? pending : undefined, claims, why: 'no usable receipt yet' };
+    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, pending: unsettled === null ? pending : undefined, claims, ending: last?.ending, why: 'no usable receipt yet' };
   }
 
   const tid = (latest.task ?? {}).id ?? latest.taskId;
@@ -267,6 +277,7 @@ function describeRecord(dir, file) {
     unsettled: handle === null ? unsettled : null,
     pending: undefined,
     claims,
+    ending: last?.ending,
     why: handle === null ? 'no agent pane in the last usable receipt' : '',
   };
 }
@@ -348,25 +359,23 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     return 3;
   }
 
-  // WHICH REPOSITORY, AND WHICH CAPS — read once, and printed by every path that
-  // answers at all. An empty store is a real answer to "have I room": it is the
-  // first dispatch on this machine, and the reader deciding it needs the same two
-  // scoped counts as the reader of 250 records (#88). Both are zero there, and
-  // saying so beats making the caller infer it from "0 record".
+  // WHICH REPOSITORY, AND HOW MANY LIVE — read once, and printed by every path
+  // that answers at all. An empty store is a real answer to "what is running":
+  // both counts are zero there, and saying so beats making the caller infer it
+  // from "0 record".
+  //
+  // A config still declaring a retired cap is refused here, before any record
+  // is read: a count printed beside it would read as the ceiling in force.
   const declarations = declarationOf(cwd);
+  const retired = declarations().retired;
+  if (retired) {
+    bad(retired.problem);
+    fix(retired.fix);
+    return 1;
+  }
   const slug = repoSlug(args => exec('gh', args, cwd));
-  const capSummary = live => {
-    const declared = declarations();
-    const config = declared.ok ? declared.config : {};
-    const ceiling = machineCapOf(config, env);
-    for (const line of capLines({ live, repo: slug, repoCap: repoCapOf(config), machineCap: ceiling.ok ? ceiling.cap : null })) note(line);
-    if (!ceiling.ok) {
-      // The ceiling is DECLARED now, and a retired knob left in a shell would
-      // read as the one in force. This verb counts rather than dispatches, so it
-      // discloses instead of refusing — the two dispatch verbs refuse on it.
-      note(`${ceiling.from} is set and is no longer read: declare ${ceiling.to} in ax.config.json to arm a ceiling`);
-    }
-    if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
+  const liveSummary = live => {
+    for (const line of liveLines({ live, repo: slug })) note(line);
   };
   const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0, occupied: { machine: 0, mine: 0 }, occupancy: [] } };
 
@@ -381,7 +390,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     if (error.code === 'ENOENT') {
       section('0 record');
       note(`no dispatch store at ${dir} — nothing was ever claimed on this host`);
-      capSummary(NONE);
+      liveSummary(NONE);
       return 0;
     }
     bad(`dispatch store unreadable at ${dir}: ${error.message}`);
@@ -392,9 +401,18 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   if (files.length === 0) {
     section('0 record');
     note(`the dispatch store ${dir} is empty — no request was ever claimed on this host`);
-    capSummary(NONE);
+    liveSummary(NONE);
     return 0;
   }
+  const retirement = readRetired(dir);
+  if (!retirement.ok) {
+    bad(`CANNOT ESTABLISH — ${retirement.reason}`);
+    fix(retirement.repair);
+    return 3;
+  }
+  /** The retirement of the host a row's own worker-start named, or undefined. */
+  const retiredOf = row => retiredEntry(retirement, row.host ?? row.unsettled?.host ?? row.pending);
+
 
   const terminals = terminalInventory(run);
   if (!terminals.ok) {
@@ -415,17 +433,17 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // keeps everything else (#88).
   //
   // THE COUNT IS NOT TALLIED HERE (#161, ruled shape 2 on 2026-09-04). It comes
-  // from `livePanes` (./slots.mjs), the one reader both dispatch verbs count
-  // through, so the number this verb PRINTS as "the count that gates" is the
-  // number the fence read. Two tallies for one question is what this verb and
-  // the fence had: capacity is a live terminal, not a proven association
+  // from `livePanes` (./slots.mjs), the one reader remote admission spends a
+  // host's Slots against, so the number this verb PRINTS is the number
+  // admission read. Two tallies for one question is what this verb and the old
+  // fence had: a live worker is a live terminal, not a proven association
   // (#152), and each of them widened to that on its own — this verb from its
   // rows, the fence from a dispatch index that carries a handle only for a
   // `worker-start` phase. A pane recorded by a legacy repair phase was VIVANT
   // here and absent from the fence's count (#161).
   //
   // What stays this verb's own is the DISPOSITION of each row: a leaked pane
-  // counted as capacity is still INCONNU, still routed to `worker-show`, and
+  // counted as live is still INCONNU, still routed to `worker-show`, and
   // never offered a release — the association is unproven, and a release on a
   // guess is a mutation on a guess.
   //
@@ -591,8 +609,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
 
     // THE F-048 line: a pane the runtime still owns, while Orca's accounting
     // either does not know it (a `--inject` repair) or calls its terminal
-    // `retained`. Both mean the same thing — that child is invisible to the cap
-    // and to the release sweep, and only a release BY DISPATCH clears it.
+    // `retained`. Both mean the same thing — that child is invisible to Orca's
+    // worker accounting and to the release sweep, and only a release BY
+    // DISPATCH clears it.
     const disagrees = workers.ok && pane === 'VIVANT' && (entry === undefined || entry.terminalState === 'retained');
     if (disagrees) drift.push(row);
 
@@ -628,7 +647,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
         ? continuationFor(join(dir, file), { request: row.request, dispatchId: row.dispatchId, exec, memo: branchAnswers, run })
         : NO_CONTINUATION;
 
-    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine };
+    return { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine, retired: retiredOf(row) };
   });
 
   // THE DEFAULT VIEW (#70, ruled 2026-09-02). Measured on this machine: 189
@@ -690,14 +709,13 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
 
   section(`${hidden > 0 ? `${shown.length} of ${views.length}` : String(views.length)} record(s) — counted by LIVE PANE, never by worker-list (F-048)`);
 
-  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine } of shown) {
+  for (const { row, pane, detail, state, leaked, leakedVerdict, leakedLive, disagrees, deadAttempt, continuation, stranded, mine, retired } of shown) {
     const suffix = leaked === null
       ? ''
       : leakedLive
         ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now`
         : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
-    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}`;
-
+    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}${row.ending?.cause === OPERATOR_CLOSE ? ` · operator ending at ${row.ending.at} (${row.ending.handle} on ${row.ending.host || 'here'}), not a landing` : ''}${retired ? ` · ${retiredLine(retired)}` : ''}`;
     if (disagrees) {
       bad(line);
       fix(
@@ -733,7 +751,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // the handoff offers the operator the exact line #3 exists to withdraw.
       // `settle` is fail-closed and refuses that row too, which is what makes
       // naming it on every other row honest rather than a guess.
-      if (deadAttempt && continuation.route !== 'deliver') {
+      if (deadAttempt && row.ending === undefined && continuation.route !== 'deliver') {
         fix(`ax worker settle ${row.request}   # write the ending, once the gate's evidence proves it`);
       }
       // AND THE CONTINUATION OF A GONE PANE (#165), decided by
@@ -758,21 +776,24 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
         }
         // `start` refuses a record another repository wrote (a request-id
         // collision), so a foreign record's replay is typed from its checkout.
-        fix(`${mine ? '' : `cd <your ${row.repo} checkout> && `}ax worker start --resume --request ${row.request}   # replays the recorded call, never a second request: its receipt names the pane`);
+        if (retired) note(`'${stranded.host}' is retired (${retiredLine(retired)}), so no replay can reach it: ax worker unretire-host ${stranded.host} once it answers again`);
+        else fix(`${mine ? '' : `cd <your ${row.repo} checkout> && `}ax worker start --resume --request ${row.request}   # replays the recorded call, never a second request: its receipt names the pane`);
       }
     }
+    // A retired host that still shows this pane: the attestation no longer
+    // holds, and the route back is unretire, then an operator Close.
+    if (retired && (pane === 'VIVANT' || leakedLive)) fix(`ax worker unretire-host ${retired.host}   # '${retired.host}' answers again; then ax worker close ${pane === 'VIVANT' ? row.handle : leaked.handle}`);
   }
 
-  // THE COUNTS, from the reader both dispatch verbs count through (./slots.mjs),
-  // printed through the contract both of them print (`capLines`,
-  // ./capacity.mjs). The sentence a reader counts by and the fence a dispatch
-  // meets are now one measurement rather than two tallies that agreed by
-  // maintenance (#161).
-  capSummary(slots.live);
+  // THE COUNTS, from the one reader remote admission spends Slots against
+  // (./slots.mjs), printed as liveness facts (`liveLines`): the sentence a
+  // reader counts by and the live workers a host's Slots are spent from are
+  // one measurement rather than two tallies that agreed by maintenance (#161).
+  liveSummary(slots.live);
   // A PANE ESTABLISHED FROM ORCA'S DISPATCH, NOT FROM A RECEIPT, IS IN NEITHER
   // COUNT: both counts read the panes this store's receipts recorded
   // (./slots.mjs, #161), and a start that bound no pane recorded none. Said
-  // rather than silently left out of a number printed as the one that gates.
+  // rather than silently left out of a number printed as the live total.
   const liveFromShow = views.filter(view => view.row.origin !== undefined && view.pane === 'VIVANT').length;
   if (liveFromShow > 0) {
     note(`${liveFromShow} live pane(s) above were read from Orca's dispatch (a start that bound no pane) and are in NEITHER count — the counts read recorded panes only, so they understate by that many`);
@@ -816,7 +837,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // never per row: the reason is a fact about the host, and repeating it per
   // record is the receipt this verb was shortened out of (#70).
   for (const [host, scope] of hosts.unaskable()) {
-    note(`host '${host}' could not be asked, so its panes stay INCONNU, never MORT: ${scope.reason}`);
+    const retired = retiredEntry(retirement, host);
+    if (retired) note(`host '${host}' is retired — ${retiredLine(retired)}: its panes stay INCONNU, never MORT, and nothing settles them; ax worker unretire-host ${host} once it answers, then ax worker close <handle>`);
+    else note(`host '${host}' could not be asked, so its panes stay INCONNU, never MORT: ${scope.reason}`);
   }
   // And the residue no declaration can reach: a record whose own phase never
   // named a placement, absent from a list that omits hosts. Nothing says which

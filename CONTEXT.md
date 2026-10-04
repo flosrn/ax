@@ -166,6 +166,11 @@ What a refusal blocks belongs to the verb.
 **Release**:
 Freeing a finished child's pane, proven by its landed artifact, never by its word.
 
+**Close**:
+Ending one named pane on the operator's word, with no landing proof. It records an operator
+ending, never a landed one, and needs the pane's host to answer.
+_Avoid_: kill, release (that one needs the landed artifact).
+
 ## Liveness
 
 **Pane**:
@@ -189,6 +194,12 @@ when the receipt provably covered its host.
 **Disposition**:
 What a verb decides on top of a shared measurement — fail-open or fail-closed, per verb,
 never inherited from the measurement itself.
+
+**Slot**:
+Room on one compute host for one more worker, computed from that host's measured headroom
+minus the footprint its live panes reserve. The only admission a dispatch has; a host that
+cannot be measured offers none and blocks no other host.
+_Avoid_: cap, quota.
 
 ## Database isolation
 

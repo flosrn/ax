@@ -1,4 +1,6 @@
 // `ax pr gate` — decides whether a pull request may merge, and merges it.
+// The scoped prGate read refuses raw retired dispatch keys first: a coherent
+// merge declaration cannot authorize against a retired configuration.
 //
 // WHY THIS VERB EXISTS (measured 2026-08-09). The gate an orchestrator carried
 // in prose read `gh pr checks` and `gh pr view --json`. On `gapila` #1845 that
@@ -185,7 +187,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CONFIG_FILE, repoPaths } from './config.mjs';
+import { CONFIG_FILE, repoPaths, retiredConfigFinding } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
 import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
@@ -261,6 +263,8 @@ function declarationOf({ root, main }) {
     if (!existsSync(path)) continue;
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      const retired = retiredConfigFinding(parsed);
+      if (retired) return { prGate: undefined, path, notes, retired };
       if (parsed?.prGate !== undefined) return { prGate: parsed.prGate, path, notes };
       notes.push(`${path} declares no prGate`);
     } catch (error) {
@@ -586,6 +590,7 @@ export function gate(
   // `ax doctor` is where the whole config is judged, and a verdict about a web
   // app has no place in a verdict about a merge.
   const loaded = declarationOf(paths);
+  if (loaded.retired) { bad(loaded.retired.problem); fix(loaded.retired.fix); return 1; }
   for (const line of loaded.notes) note(line);
 
   // ── Ground 0. The declaration ──────────────────────────────────────────────

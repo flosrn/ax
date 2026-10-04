@@ -411,6 +411,8 @@ test('F-001: two live terminals on one task is the duplicate itself', () => {
   // It must name the handles, because the operator's next act is closing one of them.
   assert.match(r.out, /term_a/);
   assert.match(r.out, /term_b/);
+  assert.match(r.out, /ax worker close term_a/);
+  assert.match(r.out, /ax worker close term_b/);
 });
 
 test('a host without worker-list cannot conclude, and says which command is missing', () => {
