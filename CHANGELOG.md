@@ -8,6 +8,19 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.31.0](https://github.com/flosrn/ax/compare/v0.30.0...v0.31.0) (2026-10-04)
+
+
+### Features
+
+* **pr:** require current evidence and judgment for adopted merges ([#297](https://github.com/flosrn/ax/issues/297)) ([719c66b](https://github.com/flosrn/ax/commit/719c66bbd3678e43eeabeff5d6e237048955e867))
+
+
+### Bug Fixes
+
+* **pin:** install with the package manager whose lockfile the consumer has ([05c0fb8](https://github.com/flosrn/ax/commit/05c0fb8e29fc4ff55f243de366f02fe0f73eed52))
+* **pin:** install with the package manager whose lockfile the consumer has ([e385e48](https://github.com/flosrn/ax/commit/e385e486ec7b0f720aaa64c394896b763aca3c41))
+
 ## [0.30.0](https://github.com/flosrn/ax/compare/v0.29.3...v0.30.0) (2026-10-04)
 
 
