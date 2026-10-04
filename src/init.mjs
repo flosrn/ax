@@ -227,11 +227,11 @@ const report = (label, state) => (state === 'unchanged' ? note(`${label} — unc
  * the key the advice named — the only failure mode worse than an unexplained
  * "unknown key".
  *
- * EXACT LOCATIONS ONLY, matched as the validator's own whole line. Root
- * renames match root errors; retired dispatch caps match their exact nested
- * paths. A quoted value or a similarly named key elsewhere buys no repair.
- * Raw cap presence travels separately from validation so init can report it
- * without refusing while doctor refuses it first.
+ * ROOT ONLY, matched as the validator's own whole line. A nested key with the
+ * same name, a quoted value, or a similarly named key elsewhere buys no repair.
+ * The retired dispatch caps never reach this table: `loadConfig` reports them
+ * from the raw file before validation (`retired`), so init can note them
+ * without refusing while every runtime reader refuses them first.
  */
 const RETIRED_CONFIG_KEYS = [
   {
@@ -242,25 +242,14 @@ const RETIRED_CONFIG_KEYS = [
     key: 'launch',
     fix: `rename the "launch" key to "dispatch" in ${CONFIG_FILE} — the verb is \`ax worker dispatch\` now, and every key inside the block (entry, contract, hosts, databaseLabels, worktreeTool) keeps its own name`,
   },
-  {
-    key: 'dispatch.cap',
-    fix: `delete dispatch.cap from ${CONFIG_FILE}; admission is by Slots — read \`ax worker hosts\``,
-  },
-  {
-    key: 'dispatch.machineCap',
-    fix: `delete dispatch.machineCap from ${CONFIG_FILE}; admission is by Slots — read \`ax worker hosts\``,
-  },
 ];
 
 /**
- * Repairs for exact retired root or nested keys, in table order. Unrelated
- * typos never earn an invented retirement repair.
+ * Repairs for exact retired ROOT keys, in table order. Unrelated typos never
+ * earn an invented retirement repair.
  */
 export const retiredConfigKeyFixes = errors =>
-  RETIRED_CONFIG_KEYS.filter(({ key }) => {
-    const [where, nested] = key.includes('.') ? key.split('.') : ['root', key];
-    return errors.some(error => error === `${where}: unknown key "${nested}"`);
-  }).map(({ fix }) => fix);
+  RETIRED_CONFIG_KEYS.filter(({ key }) => errors.some(error => error === `root: unknown key "${key}"`)).map(({ fix }) => fix);
 
 /**
  * Make a project ax-ready: the config, the committed bootstrap, and the managed

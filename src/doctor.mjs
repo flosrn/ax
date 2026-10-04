@@ -52,8 +52,7 @@ export function doctor(cwd = process.cwd(), { project = false } = {}) {
 
   const { config, errors, exists, declared, migration, retired } = loadConfig(root);
   if (retired) {
-    fail(retired.problem);
-    for (const repair of retiredConfigKeyFixes(retired.keys.map(key => `dispatch: unknown key "${key.split('.')[1]}"`))) fix(repair);
+    fail(retired.problem, retired.fix);
     return failures;
   }
   if (!exists) {
