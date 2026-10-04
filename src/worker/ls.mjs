@@ -1,6 +1,6 @@
 // `ax worker ls` — how many children are actually working, counted by LIVE PANE.
 //
-// F-048 (gapilabs/omp#23): the cap counter answered ZERO while children were
+// F-048 (gapilabs/omp#23): Orca's worker counter answered ZERO while children were
 // working. The mechanism: a `worker-start` left failed/retained and repaired
 // with `--inject` produces a Dispatch WITHOUT touching worker terminal
 // accounting — so `orca orchestration worker-list` invents free capacity and,
@@ -79,17 +79,17 @@
 // names, prints them with their worktree, and names the replay
 // (`ax worker start --resume`) that answers for the record itself.
 //
-// TWO COUNTS, AND THE LABEL SAYS WHICH GATES (#88). This verb used to end with
+// TWO COUNTS, AND NEITHER GATES (#88, ADR 0005). This verb used to end with
 // `N live pane(s) — this is the cap count`, where N was every live pane on the
 // machine: the store is host-global (./record.mjs), so read from one checkout it
 // counted another's children under a label claiming to be a fence. Measured
 // 2026-09-02 from the ofmchat checkout: three panes, all of them flosrn/ax's,
 // and an orchestrator that honours "count with `ls`, never from memory" spent a
-// turn deciding whether it was allowed to dispatch at all. So the count is now
-// two counts — this repository's, which `dispatch.cap` gates, and the machine
-// total, which `dispatch.machineCap` gates only once an operator declares it —
-// and both come from ./capacity.mjs, the same contract both dispatch verbs
-// refuse with. A record naming NO repository is UNKNOWN: it counts toward the
+// turn deciding whether it was allowed to dispatch at all. So the count is two
+// liveness facts — this repository's live panes and the machine total — from
+// the reader remote admission spends Slots against (./slots.mjs), and neither
+// admits nor refuses anything: admission is by each host's Slots (`ax worker
+// hosts`). A record naming NO repository is UNKNOWN: it counts toward the
 // machine total alone, and the line says how many (F-028).
 //
 // WHICH REPOSITORY THIS IS comes from `gh repo view`, the read every other
@@ -111,12 +111,11 @@ import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { defaultExec } from '../exec.mjs';
 import { repoSlug } from '../gh.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
-import { capLines, machineCapOf, repoCapOf } from './capacity.mjs';
 import { NO_CONTINUATION, continuationFor } from './continuation.mjs';
 import { declarationOf } from './hosts.mjs';
 import { createdPane, hostReader, hostScopes, terminalInventory } from './pane.mjs';
 import { argvValue, defaultStore, recordedRun } from './record.mjs';
-import { livePanes } from './slots.mjs';
+import { livePanes, liveLines } from './slots.mjs';
 
 const OPEN = 'orca open   # start the Orca runtime, then re-run: ax worker ls';
 
@@ -351,25 +350,23 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     return 3;
   }
 
-  // WHICH REPOSITORY, AND WHICH CAPS — read once, and printed by every path that
-  // answers at all. An empty store is a real answer to "have I room": it is the
-  // first dispatch on this machine, and the reader deciding it needs the same two
-  // scoped counts as the reader of 250 records (#88). Both are zero there, and
-  // saying so beats making the caller infer it from "0 record".
+  // WHICH REPOSITORY, AND HOW MANY LIVE — read once, and printed by every path
+  // that answers at all. An empty store is a real answer to "what is running":
+  // both counts are zero there, and saying so beats making the caller infer it
+  // from "0 record".
+  //
+  // A config still declaring a retired cap is refused here, before any record
+  // is read: a count printed beside it would read as the ceiling in force.
   const declarations = declarationOf(cwd);
+  const retired = declarations().retired;
+  if (retired) {
+    bad(retired.problem);
+    fix(retired.fix);
+    return 1;
+  }
   const slug = repoSlug(args => exec('gh', args, cwd));
-  const capSummary = live => {
-    const declared = declarations();
-    const config = declared.ok ? declared.config : {};
-    const ceiling = machineCapOf(config, env);
-    for (const line of capLines({ live, repo: slug, repoCap: repoCapOf(config), machineCap: ceiling.ok ? ceiling.cap : null })) note(line);
-    if (!ceiling.ok) {
-      // The ceiling is DECLARED now, and a retired knob left in a shell would
-      // read as the one in force. This verb counts rather than dispatches, so it
-      // discloses instead of refusing — the two dispatch verbs refuse on it.
-      note(`${ceiling.from} is set and is no longer read: declare ${ceiling.to} in ax.config.json to arm a ceiling`);
-    }
-    if (!declared.ok) note(`no cap declaration was read here, so the default applies: ${declared.reason}`);
+  const liveSummary = live => {
+    for (const line of liveLines({ live, repo: slug })) note(line);
   };
   const NONE = { machine: 0, mine: 0, unknown: 0, unmeasured: { machine: 0, mine: 0, occupied: { machine: 0, mine: 0 }, occupancy: [] } };
 
@@ -384,7 +381,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     if (error.code === 'ENOENT') {
       section('0 record');
       note(`no dispatch store at ${dir} — nothing was ever claimed on this host`);
-      capSummary(NONE);
+      liveSummary(NONE);
       return 0;
     }
     bad(`dispatch store unreadable at ${dir}: ${error.message}`);
@@ -395,7 +392,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   if (files.length === 0) {
     section('0 record');
     note(`the dispatch store ${dir} is empty — no request was ever claimed on this host`);
-    capSummary(NONE);
+    liveSummary(NONE);
     return 0;
   }
 
@@ -418,17 +415,17 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
   // keeps everything else (#88).
   //
   // THE COUNT IS NOT TALLIED HERE (#161, ruled shape 2 on 2026-09-04). It comes
-  // from `livePanes` (./slots.mjs), the one reader both dispatch verbs count
-  // through, so the number this verb PRINTS as "the count that gates" is the
-  // number the fence read. Two tallies for one question is what this verb and
-  // the fence had: capacity is a live terminal, not a proven association
+  // from `livePanes` (./slots.mjs), the one reader remote admission spends a
+  // host's Slots against, so the number this verb PRINTS is the number
+  // admission read. Two tallies for one question is what this verb and the old
+  // fence had: a live worker is a live terminal, not a proven association
   // (#152), and each of them widened to that on its own — this verb from its
   // rows, the fence from a dispatch index that carries a handle only for a
   // `worker-start` phase. A pane recorded by a legacy repair phase was VIVANT
   // here and absent from the fence's count (#161).
   //
   // What stays this verb's own is the DISPOSITION of each row: a leaked pane
-  // counted as capacity is still INCONNU, still routed to `worker-show`, and
+  // counted as live is still INCONNU, still routed to `worker-show`, and
   // never offered a release — the association is unproven, and a release on a
   // guess is a mutation on a guess.
   //
@@ -594,8 +591,9 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
 
     // THE F-048 line: a pane the runtime still owns, while Orca's accounting
     // either does not know it (a `--inject` repair) or calls its terminal
-    // `retained`. Both mean the same thing — that child is invisible to the cap
-    // and to the release sweep, and only a release BY DISPATCH clears it.
+    // `retained`. Both mean the same thing — that child is invisible to Orca's
+    // worker accounting and to the release sweep, and only a release BY
+    // DISPATCH clears it.
     const disagrees = workers.ok && pane === 'VIVANT' && (entry === undefined || entry.terminalState === 'retained');
     if (disagrees) drift.push(row);
 
@@ -766,16 +764,15 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
     }
   }
 
-  // THE COUNTS, from the reader both dispatch verbs count through (./slots.mjs),
-  // printed through the contract both of them print (`capLines`,
-  // ./capacity.mjs). The sentence a reader counts by and the fence a dispatch
-  // meets are now one measurement rather than two tallies that agreed by
-  // maintenance (#161).
-  capSummary(slots.live);
+  // THE COUNTS, from the one reader remote admission spends Slots against
+  // (./slots.mjs), printed as liveness facts (`liveLines`): the sentence a
+  // reader counts by and the live workers a host's Slots are spent from are
+  // one measurement rather than two tallies that agreed by maintenance (#161).
+  liveSummary(slots.live);
   // A PANE ESTABLISHED FROM ORCA'S DISPATCH, NOT FROM A RECEIPT, IS IN NEITHER
   // COUNT: both counts read the panes this store's receipts recorded
   // (./slots.mjs, #161), and a start that bound no pane recorded none. Said
-  // rather than silently left out of a number printed as the one that gates.
+  // rather than silently left out of a number printed as the live total.
   const liveFromShow = views.filter(view => view.row.origin !== undefined && view.pane === 'VIVANT').length;
   if (liveFromShow > 0) {
     note(`${liveFromShow} live pane(s) above were read from Orca's dispatch (a start that bound no pane) and are in NEITHER count — the counts read recorded panes only, so they understate by that many`);

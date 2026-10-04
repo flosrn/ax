@@ -1,25 +1,25 @@
-// `livePanes` — the ONE count a cap gates, read from a real store.
+// `livePanes` — the ONE count of live recorded panes, read from a real store:
+// the liveness facts `ax worker ls` prints, and per host the live workers a
+// Slot computation spends (../src/worker/host-placement.mjs).
 //
-// #161 (ruled shape 2 by the maintainer, 2026-09-04): the fence counted rows of
-// the DISPATCH INDEX, which by its authority rule carries a handle only for a
-// `worker-start` phase, while `ax worker ls` counted the pane whichever phase
+// #161 (ruled shape 2 by the maintainer, 2026-09-04): one reader counted rows
+// of the DISPATCH INDEX, which by its authority rule carries a handle only for
+// a `worker-start` phase, while `ax worker ls` counted the pane whichever phase
 // recorded it. A pane recorded by the bash-era `--inject` repair therefore read
-// VIVANT in the listing and occupied no slot in the fence — two numbers for one
-// question (#88's class), and the exposure is a dispatch admitted past a full
-// cap.
+// VIVANT in the listing and spent no Slot — two numbers for one question
+// (#88's class).
 //
-// The scoping propositions here were `liveCount`'s in worker-capacity.test.mjs
-// and moved with the count: they are graded against a real store now, because
-// the store is where the shapes that broke the number live (a repair phase, a
-// reused terminal, a record naming no repository). Offline: real temp
-// directories, injected inventory, injected host reader.
+// The scoping propositions are graded against a real store, because the store
+// is where the shapes that broke the number live (a repair phase, a reused
+// terminal, a record naming no repository, a start not yet answered). Offline:
+// real temp directories, injected inventory, injected host reader.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { livePanes } from '../src/worker/slots.mjs';
+import { liveLines, livePanes } from '../src/worker/slots.mjs';
 
 const store = () => mkdtempSync(join(tmpdir(), 'ax-slots-'));
 
@@ -55,7 +55,7 @@ function scopesOf(hosts = {}) {
 }
 
 /** One record, written by hand because these are the shapes a writer no longer produces. */
-function record(dir, request, phases, { repo = 'acme/widgets' } = {}) {
+function record(dir, request, phases, { repo = 'acme/widgets', settled = false } = {}) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, `${request}.json`),
@@ -64,10 +64,21 @@ function record(dir, request, phases, { repo = 'acme/widgets' } = {}) {
       orca: 'orca',
       createdAt: '2026-09-04T10:00:00.000Z',
       ...(repo === '' ? {} : { repo }),
-      attempts: [{ n: 1, settled: false, phases }],
+      attempts: [{ n: 1, settled, phases }],
     }),
   );
 }
+
+/** A `worker-start` written ahead and not yet answered: argv on disk, no exit, no receipt. */
+const opening = ({ on = '', argv = true } = {}) => ({
+  name: 'worker-start',
+  identity: `id-open-${on}`,
+  ...(argv ? { argv: ['orca', 'orchestration', 'worker-start', ...(on === '' ? [] : ['--on', on]), '--json'] } : {}),
+  receiptPath: null,
+  receipt: null,
+  exit: null,
+  beganAt: '2026-10-04T10:00:00.000Z',
+});
 
 /** A phase that recorded an agent pane. `on` is the placement its argv named. */
 const recorded = ({ name = 'worker-start', handle, on = '', argv = true, exit = 0, state = 'ready' } = {}) => ({
@@ -95,7 +106,7 @@ const count = (dir, { local = [], hosts = {}, repo = 'acme/widgets' } = {}) =>
  * The unmeasured pair with its CAUSE split (#221 review): `occupied` is the
  * subset whose liveness could not be established because a recorded worktree is
  * still occupied by a pane no record owns, and the remainder is a record on a
- * host that could not be asked. A cap's arithmetic reads the TOTALS; only the
+ * host that could not be asked. Either one denies its host a Slot; only the
  * sentence a caller prints reads the cause, so the two must not be one number.
  */
 const unmeasured = ({ machine = 0, mine = 0, occupiedMachine = 0, occupiedMine = 0, occupancy = [] } = {}) => ({
@@ -103,6 +114,51 @@ const unmeasured = ({ machine = 0, mine = 0, occupiedMachine = 0, occupiedMine =
   mine,
   occupied: { machine: occupiedMachine, mine: occupiedMine },
   occupancy,
+});
+
+// ── KTD3: a starting worker spends a Slot ────────────────────────────────────
+
+test('an open worker-start with no handle yet counts as live on its host, and on no machine count', () => {
+  const dir = store();
+  record(dir, 'starting', [opening({ on: 'gapicore' })]);
+  const slots = count(dir, { hosts: { gapicore: [] } });
+
+  assert.deepEqual(slots.hosts.get('gapicore'), { live: 1, starting: 1, unmeasured: 0, occupancy: [] });
+  assert.equal(slots.live.machine, 0, 'a start nobody has answered is not a pane');
+  assert.deepEqual(slots.unreadable, []);
+});
+
+test('a concluded, local or settled worker-start spends no host Slot', () => {
+  const dir = store();
+  record(dir, 'failed', [{ ...failedStart(), argv: ['orca', 'orchestration', 'worker-start', '--on', 'gapicore', '--json'] }]);
+  record(dir, 'local', [opening()]);
+  record(dir, 'replaced', [opening({ on: 'gapicore' })], { settled: true });
+  const slots = count(dir, { hosts: { gapicore: [] } });
+
+  assert.equal(slots.hosts.get('gapicore'), undefined, `nothing is live on gapicore: ${JSON.stringify([...slots.hosts])}`);
+});
+
+test('an open worker-start that names no argv makes its record unreadable: its host cannot be read', () => {
+  const dir = store();
+  record(dir, 'blind', [opening({ argv: false })]);
+  const slots = count(dir);
+
+  assert.equal(slots.unreadable.length, 1);
+  assert.match(slots.unreadable[0].error, /worker-start.*argv/);
+});
+
+test('liveLines are liveness facts, and name no cap', () => {
+  const dir = store();
+  record(dir, 'mine', [recorded({ handle: 'term_mine' })]);
+  record(dir, 'nameless', [recorded({ handle: 'term_x' })], { repo: '' });
+  const slots = count(dir, { local: [['term_mine', up], ['term_x', up]] });
+  const lines = liveLines({ live: slots.live, repo: 'acme/widgets' }).join('\n');
+
+  assert.match(lines, /1 live pane\(s\) in acme\/widgets/);
+  assert.match(lines, /2 live pane\(s\) on this machine/);
+  assert.match(lines, /1 of them name no repository/);
+  assert.doesNotMatch(lines, /cap|gates/i);
+  assert.match(liveLines({ live: slots.live, repo: '' }).join('\n'), /NOT MEASURED/);
 });
 
 test('#161: a pane ANY phase recorded is a slot, and the dispatch index is not consulted', () => {
@@ -133,7 +189,7 @@ test('#161: two records naming ONE pane are one slot, and agree on the repositor
 
   // And when the two records place that one pane in two DIFFERENT repositories,
   // it is UNKNOWN: one pane cannot be two projects' slot, and attributing it to
-  // either would let a foreign record park this repository's cap (F-028).
+  // either would place a foreign record in this repository's count (F-028).
   const contested = store();
   record(contested, 'a-work', [recorded({ handle: 'term_shared' })]);
   record(contested, 'b-work', [recorded({ handle: 'term_shared' })], { repo: 'goodluckagency/ofmchat' });
@@ -194,16 +250,16 @@ test('#88: the per-repository count is scoped by the repository each record NAME
   // is the same repository, which is the comparison `ax worker start` already
   // makes when it refuses a foreign record.
   assert.deepEqual(count(dir, { local, repo: 'goodluckagency/ofmchat' }).live, { machine: 4, mine: 2, unknown: 1, unmeasured: none });
-  // A caller that cannot name itself owns NOTHING it can count, and says so
-  // through capVerdict rather than reading zero as room.
+  // A caller that cannot name itself owns NOTHING it can count, and `liveLines`
+  // says NOT MEASURED rather than reading zero.
   assert.deepEqual(count(dir, { local, repo: '' }).live, { machine: 4, mine: 0, unknown: 1, unmeasured: none });
 });
 
 test('#88: a pane whose host could not be asked is UNMEASURED, scoped by the repository it names', () => {
   const dir = store();
   // Not "not capacity": a container that could not be read (F-028). The scope
-  // matters, because only this repository's own unknowns can make the count
-  // `dispatch.cap` gates unmeasurable.
+  // matters, because each row also denies a Slot on the host it names, and only
+  // this repository's own unknowns belong in its own count.
   record(dir, 'mine', [recorded({ handle: 'term_mine' })], { repo: 'flosrn/ax' });
   record(dir, 'mine-far', [recorded({ handle: 'term_mine_far', on: 'gapicore' })], { repo: 'flosrn/ax' });
   record(dir, 'far', [recorded({ handle: 'term_far', on: 'gapicore' })], { repo: 'goodluckagency/ofmchat' });
@@ -215,8 +271,8 @@ test('#88: a pane whose host could not be asked is UNMEASURED, scoped by the rep
     unknown: 0,
     unmeasured: unmeasured({ machine: 2, mine: 1 }),
   });
-  // Read from the other checkout, the same store: its own unknown is the one
-  // that could make ITS cap unmeasurable, and mine is only a machine-total fact.
+  // Read from the other checkout, the same store: its own unknown is the one in
+  // ITS count, and mine is only a machine-total fact.
   assert.deepEqual(count(dir, { local: [['term_mine', up]], hosts: unreachable, repo: 'goodluckagency/ofmchat' }).live, {
     machine: 1,
     mine: 0,
@@ -234,8 +290,8 @@ test('a phase that recorded a pane and NO argv makes its record unreadable, neve
   // `--on` is what says where that pane lives. Reading its absence as "local"
   // turns a placement nobody recorded into an ordinary local pane: absent from
   // the local list it would read MORT and leave every count, the under-count
-  // F-028 forbids. So the record is NAMED and contributes nothing — the fences
-  // refuse on an unreadable record rather than counting past it.
+  // F-028 forbids. So the record is NAMED and contributes nothing — remote
+  // admission refuses on an unreadable record rather than counting past it.
   record(dir, 'unnamed', [recorded({ handle: 'term_ghost', argv: false })]);
   record(dir, 'ordinary', [recorded({ handle: 'term_ok' })]);
 
@@ -248,7 +304,7 @@ test('a phase that recorded a pane and NO argv makes its record unreadable, neve
 test('a record whose phases cannot be walked is NAMED, never a crash inside the count', () => {
   const dir = store();
   // An argv carrying a non-string — hand-edited, foreign-written, half-repaired
-  // — makes `argvValue` throw from inside this reader, and BOTH fences call it
+  // — makes `argvValue` throw from inside this reader, and remote admission calls it
   // for the number that authorises a mutation. A stack trace there replaces a
   // refusal carrying its repair with an exit nobody can act on, and that record
   // decides nothing either way: it joins the ones the count could not read.
@@ -278,7 +334,7 @@ test('a record whose phases cannot be walked is NAMED, never a crash inside the 
   const slots = count(dir, { local: [['term_ok', up], ['term_x', up]] });
   assert.deepEqual(slots.unreadable.map(entry => entry.file), ['malformed.json']);
   assert.match(slots.unreadable[0].error, /phases cannot be read/);
-  assert.equal(slots.live.machine, 1, 'the record that reads still counts, and the other is the fences’ refusal');
+  assert.equal(slots.live.machine, 1, 'the record that reads still counts, and the other is remote admission’s refusal');
 });
 
 test('a record that does not name itself is unreadable, and a broken one does not hide the rest', () => {
@@ -320,7 +376,7 @@ test('the inventory the count was taken against is returned, never rebuilt by th
   assert.deepEqual(slots.inventory.unresolved, []);
 });
 
-test('#221: a live pane at a recorded worktree is not a spendable empty cap', () => {
+test('#221: a live pane at a recorded worktree is not a proven-empty Slot', () => {
   const tree = '/tmp/221-slots-tree';
   const dir = store();
   record(dir, 'old', [{
@@ -335,12 +391,12 @@ test('#221: a live pane at a recorded worktree is not a spendable empty cap', ()
   const occupied = count(dir, { local: [['term_restored', { orphaned: false, worktreePath: tree }]] });
   assert.ok(
     occupied.live === null || (occupied.live.unmeasured && occupied.live.unmeasured.machine > 0),
-    `recorded worktree occupancy must not read as a proven-empty cap: ${JSON.stringify(occupied.live)}`,
+    `recorded worktree occupancy must not read as a proven-empty Slot: ${JSON.stringify(occupied.live)}`,
   );
   assert.equal(occupied.live?.mine ?? 0, 0, 'the extra pane is not attributed to this repository by path');
-  // The consequence a dispatch consumes: an unmeasured pane of THIS repository
-  // is what `capVerdict` refuses on as an inability (F-028), so the freed slot
-  // an unproven death would have handed out is never spent.
+  // The consequence admission consumes: an unmeasured pane denies its host a
+  // Slot (F-028), so the freed Slot an unproven death would have handed out is
+  // never spent.
   assert.equal(occupied.live?.unmeasured.mine, 1, 'the recorded pane of this repository has no established liveness');
   // AND THE CAUSE RIDES WITH IT, never flattened into "a host could not be
   // asked" (review of #221): no host was omitted here — the local list answered

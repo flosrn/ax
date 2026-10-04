@@ -413,38 +413,38 @@ export function recordedHost(index, handle) {
 }
 
 /**
- * The inventory a CAP is counted against: this runtime's list, plus every pane a
- * host named by a record says it still owns.
+ * The inventory live workers are counted against: this runtime's list, plus
+ * every pane a host named by a record says it still owns.
  *
  * WHY THE UNION IS THE COUNT (#88 review). `ax worker ls` has judged a remote
- * pane by asking its host since #76 — "a live pane on an asked host is capacity
- * in use" — while both dispatch gates counted the local list alone. On this Mac
- * `hostScope.omittedHostIds` is non-empty, so a repository with three working
- * remote children read as three UNKNOWNs and its cap did not bind. Printing one
- * number as "the count that gates" while the fence counted a smaller one is the
- * defect #88 is about, in a new place — so the listing and the fence read the
- * same liveness, through the same asking mechanism above.
+ * pane by asking its host since #76 — "a live pane on an asked host is a live
+ * worker" — while the dispatch verbs once counted the local list alone. On
+ * this Mac `hostScope.omittedHostIds` is non-empty, so three working remote
+ * children read as three UNKNOWNs. Printing one number while admission spent
+ * a smaller one is the defect #88 is about — so the listing and remote
+ * admission (a host's Slots, ./host-placement.mjs) read the same liveness,
+ * through the same asking mechanism above.
  *
  * `panes` is the RECORDED PANES of the store, keyed by handle
- * (`livePanes`, ./slots.mjs) — never the dispatch index. A pane consuming a slot
- * is a pane whichever phase recorded it, and reading the index here left the
- * bash-era repair shape unasked as well as uncounted (#161).
+ * (`livePanes`, ./slots.mjs) — never the dispatch index. A live pane is a pane
+ * whichever phase recorded it, and reading the index here left the bash-era
+ * repair shape unasked as well as uncounted (#161).
  *
  * LIVENESS IS A UNION, and only liveness: a handle the local list carries is
  * proven alive by it (#91, and no later ask can take that back), a handle a host
  * reports is alive too, and everything else stays absent — which the count reads
- * as "not capacity" and `paneVerdict` reads as MORT or INCONNU depending on
+ * as "not live" and `paneVerdict` reads as MORT or INCONNU depending on
  * whether the answer covered it. Nothing here upgrades an absence.
  *
  * AN ABSENCE NO HOST ANSWERED FOR IS NOT AN ABSENCE (F-028), and that is what
  * `unresolved` carries: a record whose handle the local list does not hold,
  * whose host was named, and whose host could not be asked — undeclared, or its
  * list did not come back. Dropping those rows silently is what the review of
- * PR #129 caught: their panes may be alive and consuming capacity, so leaving
- * them out makes the count UNDERSTATED, and a fence built on it can admit a pane
- * past a cap that is already full. `capVerdict` turns this list into an
- * inability, scoped by the repository each row names, so one project's
- * unreachable host cannot park another (#88).
+ * PR #129 caught: their panes may be alive and holding a host's memory, so
+ * leaving them out makes the count UNDERSTATED, and an admission built on it
+ * would spend a Slot that is not there. Host placement turns such a row into
+ * a host that offers no Slot, on that host alone, so one unreachable host
+ * cannot park another (#88, R5).
  *
  * EVERY HOST THAT COULD DECIDE IT IS ASKED, and the first that carries the
  * handle ends the enquiry: two records placing one pane on two hosts is a

@@ -269,6 +269,22 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
 }
 
 /**
+ * The per-host ADMISSION lock (KTD3): held by a remote dispatch from the Slot
+ * read on `host` through the write-ahead of its `worker-start`, so two
+ * dispatches cannot both read one last Slot as free. It lives under the store's
+ * `hosts/` namespace, beside nothing the root `*.json` scans read, and it is
+ * the same `acquireLock` every other writer here takes — never a second lock
+ * discipline. `--on here` takes none: the Mac has no Slots to spend.
+ */
+export const HOSTS_NS = 'hosts';
+export function acquireHostLock(store, host, options = {}) {
+  if (!requestIdOk(host)) throw new Error(`host name "${host}" violates ${REQUEST_ID}`);
+  const dir = join(store, HOSTS_NS);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return acquireLock(join(dir, host), { ...options, suffix: '.admission.lock' });
+}
+
+/**
  * The first write of a claimed record: who asked, on what host, through which
  * binary — and, when the caller overrode the ticket's own assignment, why
  * (`--because`, R4/KTD3), and WHICH repository this dispatch belongs to

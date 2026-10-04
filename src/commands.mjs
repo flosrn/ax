@@ -205,8 +205,8 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       ['start --request <id> …', 'write-ahead dispatch; replay with --resume, never duplicate'],
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
-      ['ls [--all]', 'capacity and overlap; --all: MORT rows and dead attempts'],
-      ['hosts', 'free slots per compute host, as placement counts them'],
+      ['ls [--all]', 'live panes and overlap; --all: MORT rows and dead attempts'],
+      ['hosts', 'Slots per compute host, as remote admission counts them'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 're-dispatch? 0 dead · 1 live · 2 duplicate · 3 unknown'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
@@ -402,7 +402,7 @@ Exit: 0 settled or already settled - 1 refused (live agent, foreign or unasserte
     // wrote, so a machine that cannot dispatch has nothing to publish either.
     gated: 'orca',
     subcommands: [
-      ['dispatch --issue N …', 'one session per issue, capped — no tree, no branch'],
+      ['dispatch --issue N …', 'one session per issue — no rival, no tree, no branch'],
       ['ask --issue N', "send the draft's own Q<n> lines, and wait for rulings"],
       ['status [--issue N …]', 'what each dispatch recorded, and its recovery'],
       ['answer --issue N --id <msg>', 'pair rulings from --file to the questions, then reply'],
