@@ -184,12 +184,18 @@
 // nobody can review, which is Ground 8's hazard arriving through the filesystem
 // instead of through a diff. Detector runs are unaffected — they mutate nothing.
 
+// Adopted Report evidence adds a mechanical completeness/freshness ground, not
+// a truth judge: the explicit digest/reason belong to this invocation and are
+// journalled with the merge, never reused as an approval for later evidence.
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CONFIG_FILE, repoPaths, retiredConfigFinding } from './config.mjs';
 import { bad, fix, note, section } from './log.mjs';
 import { defaultExec } from './exec.mjs';
+import { reportGround } from './pr/report.mjs';
+import { redactSecrets } from './redact.mjs';
+import { quote } from './worker/hosts.mjs';
 import { repoSlug } from './gh.mjs';
 import {
   DEFAULT_RELEASE,
@@ -214,9 +220,9 @@ import {
   ticketGround,
 } from './pr-grounds.mjs';
 import { physical } from './worktree/locate.mjs';
-import { acquireLock, argvValue, attemptNew, attemptSettle, claimRecord, defaultStore, initRecord, lastAttemptState, newIdentity, phaseArgv, phaseBegin, phaseCount, phaseEnd, phaseExit } from './worker/record.mjs';
+import { acquireLock, argvValue, attemptNew, attemptSettle, claimRecord, defaultStore, initRecord, lastAttemptState, newIdentity, phaseAccept, phaseArgv, phaseBegin, phaseCount, phaseEnd, phaseExit } from './worker/record.mjs';
 
-const USAGE = 'ax pr gate --pr <n> [--issue <n>] [--repo <owner/repo>] [--merge [--update-branch]] [--ack-body] [--method squash|merge]';
+const USAGE = 'ax pr gate --pr <n> [--issue <n>] [--repo <owner/repo>] [--merge [--update-branch]] [--accept-report <digest> --reason <judgment>] [--ack-body] [--method squash|merge]';
 
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
 const defaultSleep = ms => Atomics.wait(waitCell, 0, 0, ms);
@@ -288,6 +294,7 @@ function declarationOf({ root, main }) {
 export function readDeclaration(prGate) {
   if (prGate === undefined || prGate === null) return { ok: false, reason: 'no prGate key' };
   if (typeof prGate !== 'object' || Array.isArray(prGate)) return { ok: false, reason: 'prGate is not an object' };
+  if (prGate.report !== undefined && typeof prGate.report !== 'boolean') return { ok: false, reason: 'prGate.report is not a boolean' };
 
   const hasAggregate = 'aggregate' in prGate;
   const hasChecks = 'checks' in prGate;
@@ -512,6 +519,8 @@ export function gate(
   let method = 'squash';
   let methodGiven = false;
   let staleRetried = false;
+  let acceptedReport = '';
+  let acceptanceReason = '';
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -526,6 +535,9 @@ export function gate(
     } else if (arg === '--merge') doMerge = true;
     else if (arg === '--update-branch') updateBranch = true;
     else if (arg === '--stale-retried') staleRetried = true;
+    else if (arg === '--accept-report') acceptedReport = value();
+    // Only the explicit judgment is free text; it is never passed to gh argv.
+    else if (arg === '--reason') acceptanceReason = value();
     else if (ACK_FLAGS.includes(arg)) acks.add(arg);
     else if (arg === '--method') {
       methodGiven = true;
@@ -558,6 +570,8 @@ export function gate(
       ...(repoArg === '' ? [] : ['--repo', repoArg]),
       ...acks,
       ...(methodGiven ? ['--method', method] : []),
+      ...(acceptedReport === '' ? [] : ['--accept-report', acceptedReport]),
+      ...(acceptanceReason === '' ? [] : ['--reason', quote(redactSecrets(acceptanceReason))]),
       ...extra,
     ].join(' ');
 
@@ -565,6 +579,10 @@ export function gate(
   if (repoArg !== '' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repoArg)) return usageError(`--repo expects owner/repo, got "${repoArg}"`);
   if (issueGiven && !/^[1-9][0-9]{0,9}$/.test(issueArg)) return usageError(`--issue expects an issue number, got "${issueArg}"`);
   if (updateBranch && !doMerge) return usageError('--update-branch requires --merge; a detector run never updates a branch');
+  if (acceptedReport !== '' && !/^[0-9a-f]{64}$/.test(acceptedReport)) return usageError('--accept-report expects the 64-hex digest this gate printed');
+  if (argv.includes('--accept-report') && acceptedReport === '') return usageError('--accept-report needs a digest');
+  if (argv.includes('--reason') && acceptanceReason.trim() === '') return usageError('--reason needs the explicit acceptance judgment');
+  if ((acceptedReport === '') !== (acceptanceReason === '')) return usageError('--accept-report and --reason are supplied together');
   // `rebase` is deliberately absent: no policy anywhere asks for it. `merge` (a
   // real merge commit) exists for the one class that must keep upstream SHAs as
   // ancestors of main — upgrade PRs, where a squash silently severs kit ancestry
@@ -1008,6 +1026,8 @@ export function gate(
   // answer about whatever the ref holds at ITS read rather than about the
   // commit this verdict was computed against.
   const baseCommit = gitOut.baseCommit ?? '';
+  const readAcceptance = () => reportGround({ run, root: paths.root, store: dispatchStore, slug, pr, sha, baseCommit, binding, branch: headBranch, adopted: loaded.prGate?.report, accepted: acceptedReport, reason: acceptanceReason, release });
+  const acceptance = readAcceptance();
   const grounds = [
     ci,
     threadsGround({ run, owner, name, pr, sha, ciDecided: ci.ciDecided, invocation }),
@@ -1028,6 +1048,7 @@ export function gate(
     channel,
     keywordGround({ channels, tracker: loaded.prGate?.tracker, pr, slug, baseBranch, defaultBranch, release, sha, method }),
     ticketGround({ binding, closes: closedIssuesOf(channels), channels, pr, slug, release, sha, method }),
+    acceptance,
   ];
   const notes = grounds.flatMap(ground => ground.notes);
   const unknowns = grounds.flatMap(ground => ground.unknowns);
@@ -1057,6 +1078,7 @@ export function gate(
     "detects   the commits landed since the PR opened: a body's staleness is not mechanically decidable, so that ground lists and refuses, it does not verify — except a clean merge from the base, which is movement no body written before it could describe (#90)",
   );
   note('reports   landed-by-content, which answers the post-merge cleanup question, not this one');
+  note('limits    Report acceptance proves complete, current recorded evidence and an explicit judgment, not its truth or a permission barrier outside AX');
   note(
     'limits    one head and one base for the git evidence is NOT an atomic snapshot of this pull request: the head SHA, the base commit, the body, the title and the review threads are read at different moments, and an edit between two of those reads is outside this binding — the head-match on the merge closes the push race, not the read race. And the closure read after a merge DETECTS a ticket that did not close; it cannot prevent one (#177)',
   );
@@ -1184,9 +1206,33 @@ export function gate(
   }
 
   try {
+    // The acceptance read above happened before every later ground and the
+    // lock wait; a Report rewrite or assignment edit in between must not ride
+    // on the earlier digest. Re-read both under the lock, before anything is
+    // journalled or issued, and require the identical accepted digest. A
+    // refusal shows the re-read's criteria, rows and new digest for repair.
+    if (acceptance.judgment) {
+      const current = readAcceptance();
+      const refused = current.refusals.map(row => row.message);
+      const unread = current.unknowns.map(row => row.message);
+      const reread = `ax pr gate --pr ${pr} --issue ${binding?.issue ?? '<n>'}   # inspect the current Report and criteria, then judge the digest it prints`;
+      const stale = refused.length > 0 || unread.length === 0 && current.judgment?.digest !== acceptance.judgment.digest;
+      if (stale || unread.length > 0) {
+        section('acceptance re-read under the merge lock');
+        for (const entry of current.notes) note(entry.message);
+      }
+      if (!stale && unread.length > 0) {
+        return cannot(`the acceptance evidence could not be re-read under the merge lock: ${unread.join('; ')}; no merge was issued`, reread);
+      }
+      if (stale) {
+        bad(`acceptance changed while this run held its verdict — the re-read under the merge lock no longer matches digest ${acceptance.judgment.digest}${refused.length > 0 ? `: ${refused.join('; ')}` : ''}; no merge was issued`);
+        fix(reread);
+        return 1;
+      }
+    }
     note(`merging with the SHA this run validated (method: ${method})`);
     const mergeArgv = ['pr', 'merge', pr, '--repo', slug, `--${method}`, '--match-head-commit', sha];
-    const groundLines = notes.map(entry => entry.message).slice(0, 40);
+    const groundLines = [...notes.map(entry => entry.message).slice(0, 40), ...(acceptance.judgment ? [`acceptance judgment ${acceptance.judgment.digest}: ${acceptance.judgment.reason}`] : [])];
     const claim = claimRecord(store, requestId);
     let issueArgv = mergeArgv;
     if (claim.claimed) {
@@ -1243,6 +1289,20 @@ export function gate(
           attemptNew(claim.path);
           phaseBegin(claim.path, { name: 'pr-merge', identity: newIdentity(), argv: mergeArgv, grounds: groundLines });
         }
+      }
+    }
+    // The judgment that authorises THIS issuance is journalled before it, on
+    // every issuance: a same-head replay reuses the recorded argv, identity and
+    // grounds, so without this the journal attributes the merge to an earlier
+    // judgment. A judgment that cannot be journalled issues nothing.
+    if (acceptance.judgment) {
+      try {
+        phaseAccept(claim.path, 'last', acceptance.judgment);
+      } catch (error) {
+        return cannot(
+          `the acceptance judgment could not be journalled before the merge: ${clean(String(error.message ?? error))}; no merge was issued`,
+          `ls -la ${store}   # fix the merge record path, then: ${invocation('--merge')}`,
+        );
       }
     }
     const merged = run(issueArgv);

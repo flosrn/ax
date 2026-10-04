@@ -166,6 +166,28 @@ The safety properties live in executable commands rather than operator prose:
 - the merge gate runs every declared ground against the exact head SHA and performs the merge it
   validated.
 
+A repository that declares `"report": true` in `prGate` also gates each ticket merge on the
+worker's Report. Its `## CRITERIA` section holds one fenced `ax-report-v1` JSON block reproducing
+the ticket's current acceptance criteria verbatim, each `MET` with the command or artifact
+inspected and the value observed (`omp/playbooks/implementation.md` defines it). A detector run
+prints an acceptance digest binding repository, PR, ticket, head, base, assignment and Report
+bytes; the merge needs the orchestrator's explicit judgment of that read:
+
+```bash
+ax pr gate --pr 19 --issue 12                      # detector: grounds plus the acceptance digest
+ax pr gate --pr 19 --issue 12 --merge --accept-report <digest> --reason "<what was inspected>"
+ax worker release && ax worktree reclaim <worktree>
+```
+
+Judge the current canonical criteria and evidence the detector prints on each fresh read, a
+remote repair included; that printout is redacted for display, not the raw bytes the digest
+binds. When an observation that matters is redacted, inspect the raw file on the owning host the
+detector names, at the Report path it names, never an arbitrary worker path.
+
+Any change to the Report, the assignment, the head or the base refuses an old digest. CI still
+decides on its own, AX checks the evidence's shape rather than its truth, and the judgment grants
+no GitHub permission: a direct merge outside AX is not blocked.
+
 ### Where a worker runs
 
 `ax worker dispatch` places the child where the operator names it, or where Slots choose:

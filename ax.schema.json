@@ -367,6 +367,10 @@
           "minItems": 1,
           "description": "The check-run names that must each be green, for a repository with no aggregate job. Every name must have a COMPLETED run whose conclusion is success on the exact head SHA; a name with no run at all is a refusal, not an absence. The gate looks for them over EVERY page of that SHA's check-run list, reconciled against the total the endpoint announces, so a name is never missed for sitting past the first hundred rows and a later re-run concluding failure is not hidden by an earlier green row of the same name (#176). A complete read is not an atomic snapshot: runs created while it paginates belong to the next run of the gate."
         },
+        "report": {
+          "type": "boolean",
+          "description": "Opt into acceptance evidence on ticket merges: read the current authoritative criteria and raw Report derived from the dispatch record, require every criterion MET with observed evidence, and an invocation-local --accept-report digest plus --reason judgment. The digest binds repo, PR, ticket, head, observed base, assignment and Report bytes. Changed evidence invalidates it. AX checks structure and freshness, never truth; recognised release PRs have no ticket Report. Absent means this ground is not adopted."
+        },
         "residualFindings": {
           "type": "string",
           "description": "Repository-relative directory holding residual review findings, if this project keeps one. Declared rather than assumed: the Bash hardcoded `docs/residual-review-findings`, which is one project's layout living in a tool. Absent means that ground is not run, and the gate says so instead of passing it."

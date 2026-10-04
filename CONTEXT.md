@@ -58,6 +58,10 @@ reference in the worker's completion, at a location its dispatch decides — nev
 worker names.
 _Avoid_: summary, last message, report for the completion's body.
 
+**Acceptance approval**:
+The orchestrator's explicit judgment that a Report proves its ticket's criteria for one
+revision. It is not the worker's success claim or a CI verdict.
+
 **Summary**:
 The three sentences a worker's completion carries in its body — what it did, what it found,
 what is left. It points at the Report; it never stands in for it.

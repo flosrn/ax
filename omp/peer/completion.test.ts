@@ -430,6 +430,55 @@ test('a CRITERIA section that runs past the input bound is refused by name, neve
   expect(block).not.toContain('- a criterion line');
 });
 
+test('an ax-report-v1 Report whose CRITERIA holds a fenced heading-like line keeps the whole section', () => {
+  // The adopted format puts machine evidence in fences inside `## CRITERIA`. A
+  // line that only LOOKS like a heading inside a fence is content, so the section
+  // the gate decides on runs to the real `## EVIDENCE`, not to the fenced line.
+  const criteria = [
+    '## CRITERIA',
+    '```ax-report-v1',
+    '{"repo":"acme/widgets","issue":12,"criteria":[{"criterion":"Fenced: the section survives.","status":"MET","evidence":{"command":"bun test omp","observed":"pass"}}]}',
+    '```',
+    '~~~text',
+    '## LEARNINGS (an example, not a section)',
+    '~~~',
+    '- Fenced: MET, the line after the fence is still CRITERIA.',
+    '',
+  ].join('\n');
+  const filler = `## EVIDENCE\n${'evidence line, repeated to overflow the cap\n'.repeat(1200)}`;
+  const wt = withReport(`${criteria}\n${filler}\n## LEARNINGS\n- durable: TAIL-MARKER-6e12\n`);
+
+  const block = completionReport(completion(), deps(wt.rec));
+
+  expect(block).toContain(criteria);
+  expect(block).toContain('`## CRITERIA` is whole above; read the rest at');
+  expect(block).not.toContain('TAIL-MARKER-6e12');
+});
+
+test('a heading-like line inside a fence never ends CRITERIA early, whatever the fence', () => {
+  // Every fence below still holds `## fake` when that line is read: a closing
+  // fence uses the opening character and at least its length. The criteria run
+  // past the bound after it, so the only complete answer is the refusal — ending
+  // the section at `## fake` would inject a partial list as whole.
+  const fences = [
+    '```text\n## fake\n```',
+    '~~~\n## fake\n~~~',
+    '````md\n```\n## fake\n````',
+    '~~~~\n~~~\n## fake\n~~~~',
+    '```\n~~~\n## fake\n```',
+  ];
+  for (const fence of fences) {
+    const wt = withReport(
+      `## CRITERIA\n${fence}\n${'- a criterion line, repeated past the cap\n'.repeat(40)}\n## LEARNINGS\n- durable: x\n`,
+    );
+
+    const block = completionReport(completion(), capped(wt.rec, 400));
+
+    expect(block).toContain("FINDING: the Report's `## CRITERIA` section runs past the");
+    expect(block).not.toContain('- a criterion line');
+  }
+});
+
 // ─── the INPUT bound, which is not the injection cap (#180) ─────────────────
 //
 // Two different bounds, and until #180 there was only one. `REPORT_CAP_BYTES`

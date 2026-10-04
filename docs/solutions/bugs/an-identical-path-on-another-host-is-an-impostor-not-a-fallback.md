@@ -39,7 +39,7 @@ of it.
 
 ## Fix
 
-`omp/peer/remote.ts` retrieves it from the recorded host: recorded `--on <env>` → the project's
+`src/worker/remote-report.mjs` retrieves it from the recorded host: recorded `--on <env>` → the project's
 own `dispatch.hosts.<env>.ssh` declaration → one ssh round trip carrying a POSIX-quoted command.
 The host answers its own two realpaths and at most `cap + 1` bytes, base64-encoded; the receiver
 proves containment on those realpaths and spends the SAME window rule (`boundWindow`) it spends on

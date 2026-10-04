@@ -43,8 +43,9 @@
  *
  * A WORKTREE ON ANOTHER HOST IS AN ADDRESS, NOT A DEAD END (#193). A dispatch
  * placed with `--on <env>` writes its Report over there, and this module used to
- * stop at that fact. It now retrieves it through `./remote.ts` — the recorded
- * environment, the recorded worktree and the recorded request, over the ssh
+ * stop at that fact. It now retrieves it through
+ * `../../src/worker/remote-report.mjs` — the recorded environment, the
+ * recorded worktree and the recorded request, over the ssh
  * boundary the project's own `dispatch.hosts` declaration describes. Two rules
  * hold whatever that retrieval answers: the owning host resolves its own
  * realpaths and containment is proved on them before a byte is accepted, and
@@ -85,7 +86,7 @@ import { redactSecrets } from '../../src/redact.mjs';
 import { parseRequest } from '../../src/triage/draft.mjs';
 import { requestIdOk } from '../../src/worker/record.mjs';
 import { dispatchRecord, paneWitnessed } from './attribution.ts';
-import { fetchRemoteReport } from './remote.ts';
+import { fetchRemoteReport } from '../../src/worker/remote-report.mjs';
 import { environmentOfDispatch, paneOfDispatch } from './route.ts';
 
 /** Where every implementation Report lives, relative to the child's worktree. */
@@ -430,13 +431,39 @@ function bounded(text, cap, path, truncated, where) {
  * never read. Three named answers and no zero, because "no criteria heading" and
  * "a criteria section of zero bytes" are the same number and different facts
  * (F-028).
+ *
+ * A heading-like line inside a fenced code block is content, not a section:
+ * the adopted Report puts machine evidence in fences inside `## CRITERIA`, and
+ * ending the section at a fenced `## ` would inject a partial list as whole. A
+ * fence opens with three or more backticks or tildes (up to three spaces of
+ * indent; a backtick info string holds no backtick) and closes only on the same
+ * character, at least as long, followed by nothing but whitespace. An unclosed
+ * fence runs to the end of what was read, as CommonMark has it.
  */
 function criteriaSpan(text, truncated) {
-  const heading = /^## CRITERIA\b.*$/m.exec(text);
-  if (heading === null) return { absent: true };
-  const from = heading.index + heading[0].length;
-  const next = /^## /m.exec(text.slice(from));
-  if (next !== null) return { bytes: Buffer.byteLength(text.slice(0, from + next.index), 'utf8') };
+  let fence = null;
+  let from = -1;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    const at = offset;
+    offset += line.length + 1;
+    if (fence !== null) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?$/.exec(line);
+      if (close !== null && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (open !== null && !(open[1][0] === '`' && open[2].includes('`'))) {
+      fence = open[1];
+      continue;
+    }
+    if (from === -1) {
+      if (/^## CRITERIA\b/.test(line)) from = at;
+    } else if (line.startsWith('## ')) {
+      return { bytes: Buffer.byteLength(text.slice(0, at), 'utf8') };
+    }
+  }
+  if (from === -1) return { absent: true };
   // Nothing follows it. In a COMPLETE input that is the end of the file and the
   // section is whole; in a truncated one its end is past the bound, and "the
   // section ends where the bytes stopped" is exactly the false completeness claim
@@ -685,10 +712,10 @@ export function completionReport(msg, deps = {}) {
     // path exists on this machine often enough — every worktree tree is laid out
     // identically — and reading it would answer with another slice's file.
     // `--on <env>` on the recorded argv is this runtime's evidence for "that
-    // worktree is elsewhere" (`route.ts`), and `./remote.ts` is what goes and
-    // gets it from there. No local fallback exists on this path: a retrieval that
-    // cannot be established is the named inability it always was, never a read of
-    // the impostor next door.
+    // worktree is elsewhere" (`route.ts`), and `../../src/worker/remote-report.mjs`
+    // is what goes and gets it from there. No local fallback exists on this path:
+    // a retrieval that cannot be established is the named inability it always
+    // was, never a read of the impostor next door.
     const environment = String(environmentOf(rec.json, id) ?? '');
     if (environment !== '') {
       const where = `on '${environment}'`;
@@ -729,9 +756,9 @@ export function completionReport(msg, deps = {}) {
         return block(derived.path, lines);
       }
       // A retrieval that honours the bound sends at most cap + 1. More than that
-      // is the same protocol break `./remote.ts` refuses on the wire: accepting
-      // a prefix would let an incomplete `## CRITERIA` look complete. The clip
-      // in `boundWindow` is defense in depth, not authorization.
+      // is the same protocol break `../../src/worker/remote-report.mjs` refuses on
+      // the wire: accepting a prefix would let an incomplete `## CRITERIA` look
+      // complete. The clip in `boundWindow` is defense in depth, not authorization.
       if (got.buf.length > cap + 1) {
         lines.push(
           `FINDING: Report inaccessible from this host — this dispatch ran on '${environment}', so the recorded worktree and its Report are on that host, and the retrieval returned ${got.buf.length} bytes, past the ${cap}-byte bound this receiver reads.`,

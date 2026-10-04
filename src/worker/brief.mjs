@@ -261,9 +261,11 @@ function reportContract(report) {
     '  `## CRITERIA` is its FIRST section: one line per acceptance criterion your ticket names,',
     '  quoted closely enough to be found again, each followed by the evidence you observed for it —',
     '  the command you ran and the value you read back, or the artifact and what it says. A criterion',
-    '  you could not prove reads `NOT MET: <what you observed instead>`. `## LEARNINGS` is its LAST',
-    '  section. Write it on `--outcome failed` too: a slice that stopped short is the one whose',
-    '  criteria are read hardest.',
+    '  you could not prove reads `NOT MET: <what you observed instead>`. When your worktree\u2019s',
+    '  `ax.config.json` declares `prGate.report: true`, the merge gate parses that section instead:',
+    '  it holds exactly the `ax-report-v1` block your implementation playbook defines, in place of the',
+    '  line format above. `## LEARNINGS` is its LAST section. Write it on',
+    '  `--outcome failed` too: a slice that stopped short is the one whose criteria are read hardest.',
   ];
   const head =
     within !== ''

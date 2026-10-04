@@ -219,7 +219,8 @@ report stalls its ticket for a full cycle. Read the child's evidence, not merely
 its completion label — and read the Report it arrives with first: the block the
 receiver appends, derived from the dispatch record (`docs/adr/0002`), whose
 `## CRITERIA` section carries every acceptance criterion the ticket named with
-the evidence observed for it. `--report-path` is a reference for Orca and for a
+the evidence observed for it (in a Report-gated repository, as the
+`ax-report-v1` block below). `--report-path` is a reference for Orca and for a
 human; nothing here opens that path — a worker-chosen file is not the criteria,
 and a remote worker's Report is retrieved from the host the record names, never
 from a same-named local file. A FINDING on that block (missing file, failed
@@ -276,10 +277,59 @@ deciding the merge, which is every merge in this loop.
 
 Without `--merge` the command is a detector. A manual merge after it discards the
 head-SHA binding that closes the race between validation and mutation. When every
-declared ground passes, the merge happens with no human in the path; the tracker
+declared ground passes, the merge happens with no further human in the path — in
+a Report-gated repository, only with your explicit acceptance below; the tracker
 then closes the ticket through the PR's closing keyword — you never close an
 issue by hand. After a merge, read `ax frontier` again: the tickets it just
 unblocked are takeable immediately, while their siblings still run.
+
+A repository whose committed `prGate` declares `"report": true` is Report-gated:
+every ticket merge gains an acceptance ground. The gate reads the ticket's
+current assignment from the tracker (the latest Agent Brief published by an
+authorized author, otherwise the body), derives the Report path from the PR's
+dispatch record and reads the raw file on the host that owns it — never
+`--report-path`, never the injected block, which may be redacted or cut. It
+refuses until `## CRITERIA` holds the `ax-report-v1` block the implementation
+playbook defines: every criterion verbatim and in order, each `MET` with an
+observation. A complete Report is still not an accepted one. The detector prints
+its acceptance digest, 64 hex characters binding repository, PR, ticket, head,
+observed base, assignment and Report bytes, and the order is then fixed:
+
+1. Run the detector and read the Report it bound: on each fresh read — a
+   remote repair included — inspect the current canonical criteria and the
+   evidence and source notes the detector prints for them, never a copy kept
+   from an earlier read. That printout is a redacted display, not the raw bytes
+   the digest binds. When an observation that matters to your judgment is
+   redacted, inspect the raw file on the owning host the detector names, at the
+   Report path it names — never an arbitrary worker path or a same-named local
+   file. Judge each observation
+   against its criterion: a runtime criterion needs an observation of that
+   runtime, and a passing test is evidence about the test. The gate checks the
+   shape and the binding, never whether an observation is true — that judgment
+   is yours.
+2. Merge with that digest and your judgment, in one invocation:
+
+   ```bash
+   ax pr gate --pr <N> --issue <ticket> --merge --accept-report <digest> --reason "<what you inspected, and why it proves each criterion>"
+   ```
+
+   The acceptance lives in that invocation only, and the merge record keeps the
+   reason; nothing persists for a later run. Any change to the Report, the
+   assignment, the head or the observed base — a repair push, `--update-branch`,
+   an edited Brief — refuses that digest: run the detector again and judge the
+   fresh read.
+3. `ax worker release`, then `ax worktree reclaim`, as below.
+
+Acceptance never replaces a ground: missing or failed CI still refuses an
+accepted Report, and local tests never stand in for CI. A recognized release-bot
+PR has no ticket and owes no Report; its CI still decides. Your judgment grants
+no GitHub permission and locks nothing outside AX: a direct merge with the same
+credentials bypasses this gate, and that bypass is not yours to take.
+
+In a Report-gated repository, a ruling or a `--task` that changes what counts as
+accepted governs only once it is published where the gate reads criteria: amend
+the ticket body, or publish a corrected Agent Brief through `ax triage publish`.
+Until then the Report is measured against the published criteria.
 
 A gate REFUSAL is the owning worker's work: send the refusal reasons to its pane
 as a peer message and end your turn — owning the PR through decided CI extends
