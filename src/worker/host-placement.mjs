@@ -53,10 +53,12 @@
 // store (`acquireHostLock`, ./record.mjs), re-reads its Slots under it, and
 // keeps it through the write-ahead of the start; the caller releases it.
 //
-// `ax worker hosts` prints the same per-host lines without choosing a host:
-// `hostSlots` is the one computation, and dispatch and that read both call it,
-// over the same live count (`liveCount`, ./slots.mjs). It stops before the
-// costly grounds, so it never spends an Orca repository lookup or an ssh proof.
+// `ax worker hosts [<host>]` prints the same per-host lines without choosing a
+// host: `hostSlots` is the one computation, and dispatch and that read both
+// call it, over the same live count (`liveCount`, ./slots.mjs). Under each line
+// the read adds the host's memory, its OOM counter against its acknowledgement
+// and why it offers no Slot (R9). It stops before the costly grounds, so it
+// never spends an Orca repository lookup or an ssh proof.
 //
 // THE MAC IS NEVER A FALLBACK (R2). Automatic placement runs only on the
 // operator Mac — detected as HarnessOS's own `localHost` detects it
@@ -286,16 +288,21 @@ function verdictOf(entry, count) {
  * it spends a lock, a repository lookup or a host proof.
  *
  * `liveOn(host)` answers `{ live, unmeasured, occupancy? }` from `livePanes`.
- * Answers `{ lines, skipped, candidates }`, `candidates` being
+ * Answers `{ lines, rows, skipped, candidates }`, `candidates` being
  * `[{ host, slots, entry }]` in Slot order (stable: equal Slots keep the
- * report's order).
+ * report's order), and `rows` one `{ host, line, entry, count, reason? }` per
+ * line in line order — `entry` null when the report has no one answer for it —
+ * for `ax worker hosts` to print each host's memory under its line.
  */
 export function hostSlots({ capacity, liveOn, only = '' }) {
   const lines = [];
+  const rows = [];
   const skipped = [];
-  const skip = (host, reason) => {
+  const skip = (host, reason, entry = null, count = null) => {
     skipped.push({ host, reason });
-    lines.push(`host '${host}' skipped: ${reason}`);
+    const line = `host '${host}' skipped: ${reason}`;
+    lines.push(line);
+    rows.push({ host, line, entry, count, reason });
   };
 
   // Duplicates are judged over the WHOLE report, named or not: two entries for
@@ -310,7 +317,7 @@ export function hostSlots({ capacity, liveOn, only = '' }) {
   capacity.hosts.forEach((entry, index) => {
     const host = typeof entry?.host === 'string' && entry.host !== '' ? entry.host : '';
     if (host === '') {
-      if (only === '') skip(`#${index + 1}`, `unverified — host is ${shown(entry?.host)}, not a host name`);
+      if (only === '') skip(`#${index + 1}`, `unverified — host is ${shown(entry?.host)}, not a host name`, entry);
       return;
     }
     if (only !== '' && host !== only) return;
@@ -320,22 +327,25 @@ export function hostSlots({ capacity, liveOn, only = '' }) {
       skip(host, `unverified — the capacity report lists host '${host}' ${times.get(host)} times, and two answers for one host are neither its answer`);
       return;
     }
+    const count = liveOn(host) ?? NONE;
     const reason = reportSkip(entry);
     if (reason !== '') {
-      skip(host, reason);
+      skip(host, reason, entry, count);
       return;
     }
-    const verdict = verdictOf(entry, liveOn(host) ?? NONE);
+    const verdict = verdictOf(entry, count);
     if (verdict.reason !== undefined) {
-      skip(host, verdict.reason);
+      skip(host, verdict.reason, entry, count);
       return;
     }
-    lines.push(`host '${host}': ${verdict.slots} free slot(s) (${verdict.text})`);
+    const line = `host '${host}': ${verdict.slots} free slot(s) (${verdict.text})`;
+    lines.push(line);
+    rows.push({ host, line, entry, count });
     candidates.push({ host, slots: verdict.slots, entry });
   });
   if (only !== '' && !judged.has(only)) skip(only, 'not in the capacity report, so its Slots cannot be measured (F-028)');
   candidates.sort((a, b) => b.slots - a.slots);
-  return { lines, skipped, candidates };
+  return { lines, rows, skipped, candidates };
 }
 
 /**
@@ -403,19 +413,67 @@ export function placeHost({ capacity, declarations, liveOn, repoFor, prove, only
   return { ok: false, lines, skipped };
 }
 
+const mb = value => (finite(value) ? `${value} MB` : value === undefined ? 'unreported' : `${shown(value)} (malformed)`);
+
 /**
- * `ax worker hosts` — each compute host's free Slots, as a remote dispatch
- * counts them, without dispatching. Read-only: it reads the capacity report and
- * the live panes, and asks no host for a proof.
+ * What `ax worker hosts` prints under one host's line, in R9's order: the Slot
+ * terms a host passed over by the report would otherwise give (its line already
+ * carries them when it offers Slots, or when its live workers took them), the
+ * slice's memory and the host's available memory, `oom_kill` against its
+ * baseline and acknowledgement, then why it offers no Slot. Whatever the
+ * report carries is shown even for an unverified host; what it lacks is said
+ * unreported, never zero. Peak is display-only: absent or malformed, it is
+ * "unavailable" and gates nothing (KTD4).
+ */
+function hostDetails({ entry, count, reason }) {
+  const details = [];
+  if (entry !== null && typeof entry === 'object') {
+    if (reason !== undefined && reportSkip(entry) !== '' && invalidField(entry) === '' && countSkip(count ?? NONE) === '') {
+      const terms = slotsOf(entry, Number.isInteger(count?.live) ? count.live : 0);
+      details.push(`Slots 0 offered; by its terms it would hold ${terms.slots} (${terms.text})`);
+    }
+    const memory = entry.memory;
+    if (memory !== null && typeof memory === 'object') {
+      const peak = finite(memory.peakMb) && memory.peakMb >= 0 ? `peak ${memory.peakMb} MB` : 'peak unavailable';
+      details.push(`slice max ${mb(memory.maxMb)}, held ${mb(memory.workMb)}, free ${mb(memory.freeMb)}, ${peak}`);
+      details.push(`host available ${mb(memory.hostAvailableMb)}`);
+    } else {
+      details.push(`slice and host memory unreported (memory is ${shown(memory)})`);
+    }
+    const oom = entry.oom;
+    if (oom !== null && typeof oom === 'object' && !Array.isArray(oom)) {
+      const ack = oom.acknowledged === null || oom.acknowledged === undefined ? 'no acknowledgement' : `acknowledged ${shown(oom.acknowledged)} at ${oom.acknowledgedAt ?? 'an unreported time'}`;
+      details.push(`oom_kill ${shown(oom.killCount)} against baseline ${shown(oom.baseline)}, ${ack}`);
+    } else {
+      details.push('oom_kill unreported — a missing counter is never zero kills (R8)');
+    }
+  }
+  if (reason !== undefined) details.push(`no Slot: ${reason}`);
+  return details;
+}
+
+/**
+ * `ax worker hosts [<host>]` — each compute host's free Slots, as a remote
+ * dispatch counts them, with its memory and OOM state, without dispatching; or
+ * one named host's. Read-only: it reads the capacity report and the live panes,
+ * and asks no host for a proof. Each host's first line is the very line a
+ * dispatch prints for it (`hostSlots`); what follows is `hostDetails`.
+ *
+ * A host is known when the report carries it or this checkout's
+ * `dispatch.hosts` declares it; a known host the report does not carry says why
+ * it offers no Slot, and any other name is refused with the known ones.
  *
  * Exit 0 once every host is answered for (a host with no Slot is an answer),
- * 2 on an argument, 3 when the report or the live count cannot be read.
+ * 2 on an argument or an unknown host, 3 when the report or the live count
+ * cannot be read.
  */
 export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.env, cwd = process.cwd(), capacity = capacityOf } = {}) {
-  if (argv.length > 0) {
-    process.stderr.write(`ax worker hosts: unexpected argument "${argv[0]}" (it takes none)\n`);
+  const flag = argv.find(arg => arg.startsWith('-'));
+  if (flag !== undefined || argv.length > 1) {
+    process.stderr.write(`ax worker hosts: unexpected argument "${flag ?? argv[1]}" (it takes at most one host name)\n`);
     return 2;
   }
+  const only = argv[0] ?? '';
   const cannot = (message, repair) => {
     bad(`CANNOT ESTABLISH — ${message}`);
     fix(repair);
@@ -430,6 +488,17 @@ export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.
   const fleet = capacity({ source: source.path });
   if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
 
+  if (only !== '') {
+    const reported = fleet.capacity.hosts.map(entry => entry?.host).filter(name => typeof name === 'string' && name !== '');
+    const overrides = config.dispatch?.hosts;
+    const known = [...new Set([...reported, ...(overrides !== null && typeof overrides === 'object' ? Object.keys(overrides) : [])])];
+    if (!known.includes(only)) {
+      bad(`host '${only}' is neither in the capacity report nor in this checkout's dispatch.hosts; known hosts: ${known.join(', ') || 'none'}`);
+      fix(`ax worker hosts${known.length > 0 ? ` ${known[0]}` : ''}`);
+      return 2;
+    }
+  }
+
   const bin = runner ? 'injected' : resolve();
   if (!bin) return cannot('no Orca CLI on this machine, so the live workers on each host cannot be counted', 'orca open   # then re-run: ax worker hosts');
   const run = runner ?? createRunner({ bin });
@@ -442,9 +511,13 @@ export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.
   const live = liveCount({ run, env, config: counted, local });
   if (live.cannot) return cannot(live.cannot, live.repair);
 
-  section(`${fleet.capacity.hosts.length} compute host(s)${fleet.capacity.observedAt ? `, capacity observed ${fleet.capacity.observedAt}` : ''}`);
-  const { lines } = hostSlots({ capacity: fleet.capacity, liveOn: host => live.slots.hosts.get(host) ?? NONE });
-  for (const line of lines) note(line);
+  const observed = fleet.capacity.observedAt ? `, capacity observed ${fleet.capacity.observedAt}` : '';
+  section(only === '' ? `${fleet.capacity.hosts.length} compute host(s)${observed}` : `compute host '${only}' of ${fleet.capacity.hosts.length} reported${observed}`);
+  const { rows } = hostSlots({ capacity: fleet.capacity, liveOn: host => live.slots.hosts.get(host) ?? NONE, only });
+  for (const row of rows) {
+    note(row.line);
+    for (const detail of hostDetails(row)) note(`  ${detail}`);
+  }
   if (!declared.ok) note(`read without this checkout's dispatch.hosts overrides: ${declared.reason}`);
   return 0;
 }

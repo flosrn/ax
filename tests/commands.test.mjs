@@ -529,6 +529,13 @@ test('a verb whose contract is a judgement prints it, and only from the registry
   assert.match(close, /operator ending, never a landing/);
   assert.match(close, /never reissues/);
   assert.match(close, /--store/);
+  // R9: the optional host is declared where it is typed, and
+  // tests/worker-host-placement.test.mjs runs `hosts gapicore` and `hosts typo`.
+  const hostsHelp = plain(run(['worker', 'hosts', '--help'], HAS_ORCA).out);
+  assert.match(hostsHelp, /ax worker hosts \[<host>\]/);
+  assert.match(hostsHelp, /any other name is refused with the known ones/);
+  assert.match(hostsHelp, /peak unavailable gates nothing/);
+  assert.match(hostsHelp, /oom_kill\s+against its baseline and acknowledgement/);
 
   const ask = plain(run(['triage', 'ask', '--help'], HAS_ORCA).out);
   for (const line of [/0 {2}answered/, /1 {2}refused/, /3 {2}cannot establish/, /4 {2}PENDING/]) {

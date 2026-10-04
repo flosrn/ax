@@ -6,9 +6,13 @@
 // the repository lookup, the host lock and the live-pane count injected — no
 // host, no ssh.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { capacityOf, harnessosSource, hostDeclarations, hostSlots, placeHost, slotsOf } from '../src/worker/host-placement.mjs';
+import { capacityOf, harnessosSource, hostDeclarations, hostSlots, hosts, placeHost, slotsOf } from '../src/worker/host-placement.mjs';
 
 /** One capacity entry, eligible and roomy unless a test says otherwise. */
 function host(name, { freeMb = 8000, maxMb = 12288, freePercent = 600, maxWorkers = 8, footprint = { memoryMb: 1000, cpuPercent: 100 }, ...rest } = {}) {
@@ -340,6 +344,124 @@ test('hostSlots computes one line per reported host, and a named host alone when
   const report = capacity(host('gapicore'), host('netcup-vie'));
   assert.equal(hostSlots({ capacity: report, liveOn: () => ({ live: 0, unmeasured: 0 }) }).lines.length, 2);
   assert.equal(hostSlots({ capacity: report, liveOn: () => ({ live: 0, unmeasured: 0 }), only: 'netcup-vie' }).lines.length, 1);
+});
+
+// ── `ax worker hosts [<host>]` (U5, R9) ─────────────────────────────────────
+
+/** A checkout whose ax.config.json declares `old-box`, a host the report does not carry. */
+function checkout() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'ax-hosts-')));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  writeFileSync(
+    join(dir, 'ax.config.json'),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: 'apps/web' }, vendor: { repo: 'owner/kit' }, dispatch: { entry: '/entry', hosts: { 'old-box': { ssh: 'old-box' } } } }),
+  );
+  return dir;
+}
+
+/** What the verb printed on either stream, its exit code, and every Orca call it made. */
+function read(argv, report) {
+  const calls = [];
+  const runner = args => {
+    calls.push(args.join(' '));
+    if (args[0] === 'status') return { status: 0, receipt: { ok: true, result: { runtime: { reachable: true } } }, stderr: '' };
+    if (args[0] === 'terminal' && args[1] === 'list') return { status: 0, receipt: { ok: true, result: { terminals: [], hostScope: { hostIds: ['local'], omittedHostIds: [] } } }, stderr: '' };
+    return { status: 1, receipt: { ok: false }, stderr: `unexpected ${args.join(' ')}` };
+  };
+  const store = realpathSync(mkdtempSync(join(tmpdir(), 'ax-hosts-store-')));
+  const written = [];
+  const real = { out: process.stdout.write, err: process.stderr.write };
+  process.stdout.write = process.stderr.write = chunk => (written.push(String(chunk)), true);
+  let code;
+  try {
+    code = hosts(argv, { runner, env: { HOME: store, ORCA_DISPATCH_STORE: store, HARNESSOS_SOURCE: '/src/harnessos' }, cwd: checkout(), capacity: () => ({ ok: true, capacity: report }) });
+  } finally {
+    process.stdout.write = real.out;
+    process.stderr.write = real.err;
+  }
+  return { code, out: written.join(''), calls };
+}
+
+/** The lines printed from one host's line up to the next host's. */
+function blockOf(out, name) {
+  const lines = out.split('\n');
+  const start = lines.findIndex(line => line.includes(`host '${name}'`));
+  if (start === -1) return '';
+  const end = lines.findIndex((line, index) => index > start && /host '/.test(line));
+  return lines.slice(start, end === -1 ? undefined : end).join('\n');
+}
+
+const acknowledged = { killCount: 2, acknowledged: 2, acknowledgedAt: '2026-10-04T09:00:00Z', baseline: 2 };
+
+test('hosts lists every host, a cordoned one with its Slots terms, memory, OOM and reason', () => {
+  const cordoned = host('gapicore', { cordoned: true, eligible: false, reasons: ['cordoned'], oom: acknowledged });
+  cordoned.memory.peakMb = 16384;
+  const r = read([], capacity(cordoned, host('netcup-vie', { freeMb: 3000 })));
+
+  assert.equal(r.code, 0, r.out);
+  const gapicore = blockOf(r.out, 'gapicore');
+  assert.match(gapicore, /Slots 0 offered; by its terms it would hold 6 \(memory 8 /);
+  assert.match(gapicore, /slice max 12288 MB, held 4288 MB, free 8000 MB, peak 16384 MB/);
+  assert.match(gapicore, /host available 20000 MB/);
+  assert.match(gapicore, /oom_kill 2 against baseline 2, acknowledged 2 at 2026-10-04T09:00:00Z/);
+  assert.match(gapicore, /no Slot: cordoned — bun scripts\/capacity\.ts uncordon gapicore/);
+  const netcup = blockOf(r.out, 'netcup-vie');
+  assert.match(netcup, /host 'netcup-vie': 3 free slot\(s\) \(memory 3 /);
+  assert.match(netcup, /slice max 12288 MB, held 9288 MB, free 3000 MB, peak unavailable/);
+  assert.match(netcup, /oom_kill 0 against baseline 0, no acknowledgement/);
+  assert.doesNotMatch(netcup, /no Slot:/);
+});
+
+test('hosts gapicore shows only gapicore', () => {
+  const r = read(['gapicore'], capacity(host('gapicore'), host('netcup-vie')));
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /host 'gapicore': 6 free slot\(s\)/);
+  assert.doesNotMatch(r.out, /netcup-vie/);
+});
+
+test('hosts typo is refused with the known names, before any Orca read', () => {
+  const r = read(['typo'], capacity(host('gapicore'), host('netcup-vie')));
+
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /'typo' is neither in the capacity report nor in this checkout's dispatch\.hosts/);
+  assert.match(r.out, /known hosts: gapicore, netcup-vie, old-box/);
+  assert.deepEqual(r.calls, []);
+});
+
+test('a declared host the report does not carry says why it offers no Slot', () => {
+  const r = read(['old-box'], capacity(host('gapicore')));
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /host 'old-box' skipped: not in the capacity report/);
+  assert.match(r.out, /no Slot: not in the capacity report/);
+  assert.doesNotMatch(r.out, /gapicore/);
+});
+
+test('peak unavailable is shown as such, and the host still offers Slots', () => {
+  const malformed = host('gapicore');
+  malformed.memory.peakMb = 'lots';
+  const r = read(['gapicore'], capacity(malformed));
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /host 'gapicore': 6 free slot\(s\)/);
+  assert.match(r.out, /peak unavailable/);
+});
+
+test('an unverified host shows the metrics the report has, and its missing OOM counter as unreported', () => {
+  const unverified = host('gapicore');
+  delete unverified.oom;
+  const r = read([], capacity(unverified));
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /slice max 12288 MB, held 4288 MB, free 8000 MB, peak unavailable/);
+  assert.match(r.out, /oom_kill unreported/);
+  assert.match(r.out, /no Slot: unverified — oom is missing/);
+});
+
+test('hosts takes at most one host and no flag', () => {
+  assert.equal(read(['gapicore', 'netcup-vie'], capacity(host('gapicore'))).code, 2);
+  assert.equal(read(['--on'], capacity(host('gapicore'))).code, 2);
 });
 
 // ── scenario 2: grounds past capacity ────────────────────────────────────────

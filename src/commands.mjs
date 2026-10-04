@@ -206,7 +206,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       ['repair --request <id>', 'deliver the RECORDED brief into a live, idle pane'],
       ['dispatch --issue <ref>', 'a ticket, or a bare --name, becomes a verified session'],
       ['ls [--all]', 'live panes and overlap; --all: MORT rows and dead attempts'],
-      ['hosts', 'Slots per compute host, as remote admission counts them'],
+      ['hosts [<host>]', 'Slots, memory and OOM per compute host'],
       ['tail <handle|request>', 'alive / silent / cannot-establish / exited (4)'],
       ['gate <task|request>', 're-dispatch? 0 dead · 1 live · 2 duplicate · 3 unknown'],
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
@@ -287,6 +287,17 @@ process check, never an ending inferred from the missing pane.
 
 Exit: 0 operator ending recorded or already recorded - 1 refused or stop-unverified
       2 usage - 3 cannot establish (store, lock, host, inventory or durable write)`,
+      hosts: `Use: ax worker hosts [<host>]
+Read-only: each compute host's Slots as a remote dispatch counts them, or one host's.
+A host is known when the HarnessOS capacity report carries it or this checkout's
+dispatch.hosts declares it; any other name is refused with the known ones.
+
+Per host: its Slots with the terms they are the minimum of; slice max, held, free
+and peak memory (peak unavailable gates nothing); host available memory; oom_kill
+against its baseline and acknowledgement; then why it offers no Slot, if it does not.
+
+Exit: 0 every host answered for, a host with no Slot included - 2 usage or unknown host
+      3 cannot establish (capacity report, Orca runtime or live count unreadable)`,
       gate: `A missing observation is not a death, and this verb never authorises a
 re-dispatch from one (#192).
 
