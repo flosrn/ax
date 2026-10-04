@@ -960,6 +960,24 @@ test('AE2: a host that cannot be asked is a named skip, and the worker lands on 
   assert.match(r.started[0], /--on netcup-vie /);
 });
 
+test('a retired host that cannot be asked is named once, by its retirement, never as a host to ask', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  livePane(store, 'gc-1', { handle: 'term_gc', on: 'gapicore' });
+  mkdirSync(join(store, 'hosts'), { recursive: true });
+  writeFileSync(join(store, 'hosts', 'retired.json'), JSON.stringify({ hosts: [{ host: 'gapicore', at: '2026-10-04T12:00:00.000Z', by: 'flo' }] }));
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    home,
+    hosts: [computeHost('gapicore', { freeMb: 9000 }), computeHost('netcup-vie', { maxWorkers: 1 })],
+    orca: { hostTerminals: { 'netcup-vie': [] } },
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /host 'gapicore' skipped:[^\n]*retired/);
+  assert.doesNotMatch(r.out, /gapicore' could not be asked/, 'the retirement skip already names the host; asking it is no repair');
+  assert.match(r.started[0], /--on netcup-vie /);
+});
+
 // ── KTD3: a starting worker spends a Slot, under the host lock ───────────────
 
 /** A `worker start` that writes its worker-start phase ahead and has no answer yet. */

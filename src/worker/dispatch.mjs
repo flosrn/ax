@@ -1267,7 +1267,9 @@ function setLineage({ run, worktree, on, dry, env }) {
  * child (F-028). An ENOENT store is the one real zero: a machine that has
  * never dispatched. `lines` name each host that could not be asked, because
  * that host then offers no Slot (R5) and the reader deserves to know why — for
- * a named host (`only`), that host alone: no other host is this dispatch's.
+ * a named host (`only`), that host alone: no other host is this dispatch's. A
+ * retired host is left out: its retirement skip already names it (KTD8), and
+ * asking it is no repair for a host the operator wrote off.
  */
 function measureLive({ run, env, config, only = '' }) {
   const local = terminalInventory(run);
@@ -1277,6 +1279,7 @@ function measureLive({ run, env, config, only = '' }) {
   const lines = [];
   for (const [host, scope] of counted.scopes.unaskable()) {
     if (only !== '' && host !== only) continue;
+    if (counted.slots.hosts.get(host)?.retired) continue;
     lines.push(`host '${host}' could not be asked, so its live workers cannot be counted and it offers no Slot: ${scope.reason}`);
   }
   return { hosts: counted.slots.hosts, lines };
