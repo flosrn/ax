@@ -208,3 +208,24 @@ test('no subject and zero candidate refuse without a runtime mutation', async ()
   assert.equal(capture(() => close(['no-such-pane'], deps)).code, 1);
   assert.equal(orca.calls.length, 0);
 });
+
+test('a local pane whose terminal list refuses is a named inability, never a crash, and closes nothing', async () => {
+  const { close } = await import('../src/worker/close.mjs');
+  const store = mkdtempSync(join(tmpdir(), 'ax-close-'));
+  const path = join(store, '51-local.json');
+  initRecord(path, { request: '51-local', orca: 'stub-orca', repo: 'flosrn/ax' });
+  phaseBegin(path, { name: 'worker-start', identity: 'start-local', argv: ['orca', 'orchestration', 'worker-start'] });
+  phaseEnd(path, 'last', { exit: 0, receiptText: JSON.stringify({ ok: true, result: { dispatchId: 'ctx_local', effects: [{ kind: 'terminal', role: 'agent', id: 'term_local' }] } }) });
+  const calls = [];
+  const runner = createRunner({ bin: 'stub-orca', exec: (_, args) => {
+    calls.push(args);
+    assert.deepEqual(args, ['terminal', 'list', '--json']);
+    return { status: 1, stdout: '', stderr: 'runtime down' };
+  } });
+  const result = capture(() => close(['term_local'], { runner, env: { ORCA_DISPATCH_STORE: store }, declarations }));
+  assert.equal(result.code, 3, result.out);
+  assert.match(result.out, /CANNOT ESTABLISH — here did not answer for its own panes: orca terminal list did not answer \(exit 1\)/);
+  assert.doesNotMatch(result.out, /Cannot read properties/);
+  assert.equal(calls.filter(args => args[1] === 'close').length, 0);
+  assert.equal(JSON.parse(readFileSync(path)).attempts[0].ending, undefined);
+});

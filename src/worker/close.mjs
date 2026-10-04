@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { createRunner, resolveOrca } from '../orca-bin.mjs';
 import { bad, fix, ok } from '../log.mjs';
 import { declarationOf, quote } from './hosts.mjs';
-import { hostReader, terminalInventory } from './pane.mjs';
+import { terminalInventory } from './pane.mjs';
 import { acquireLock, agentTerminal, argvValue, attemptEnd, CLOSE_NS, defaultStore, OPERATOR_CLOSE, saveCloseOperation, scanStore } from './record.mjs';
 
 const USAGE = 'ax worker close <handle|request> [--store <dir>]';
@@ -102,15 +102,12 @@ export function close(argv = [], { resolve = resolveOrca, runner, env = process.
       if (!bin) return refuse(3, 'CANNOT ESTABLISH — no Orca CLI', 'orca open   # then re-run close');
       run = createRunner({ bin });
     }
-    // Always put a remote binding to its OWN host, even if a local union lists it.
-    // Fresh hostReader/inventory for each read: its normal memoization must not
-    // preserve the pre-close pane in the post-close proof.
+    // Always ask a remote binding's OWN host, even if a local union lists it.
+    // A fresh inventory for each read: the pre-close pane must not survive into
+    // the post-close proof.
     const inventory = () => {
       const scope = terminalInventory(run, { environment: tuple.host });
-      const local = tuple.host ? { ok: true, byHandle: new Map(), hosts: ['local'], omitted: false } : scope;
-      const hosts = hostReader({ scopeFor: () => scope, unaskable: () => [] }, local);
-      const located = hosts.locate(tuple.handle, '', tuple.host);
-      return { scope, located, covered: scope.ok && Array.isArray(scope.hosts) && scope.hosts.includes('local') };
+      return { scope, covered: scope.ok && Array.isArray(scope.hosts) && scope.hosts.includes('local') };
     };
     if (operation?.state !== 'closed') {
       if (tuple.host) {
