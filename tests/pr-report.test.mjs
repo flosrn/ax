@@ -167,7 +167,8 @@ test('an adopted merge runs all grounds but never merges without acceptance or w
 });
 
 test('a Report rewrite or assignment edit after the acceptance read refuses the merge under the lock', t => {
-  for (const change of ['report', 'assignment']) {
+  const rewritten = [{ ...evidence()[0], evidence: { command: 'node bin/ax.mjs preview', observed: 'value=43 after rewrite' } }, evidence()[1]];
+  for (const change of ['unmet', 'rewrite', 'assignment']) {
     const f = fixture(t);
     const digest = reportGround(f.input).digest;
     let armed = true;
@@ -175,7 +176,8 @@ test('a Report rewrite or assignment edit after the acceptance read refuses the 
       onThreads: () => {
         if (!armed) return;
         armed = false;
-        if (change === 'report') writeFileSync(f.path, reportText([{ ...evidence()[0], status: 'NOT MET' }, evidence()[1]]));
+        if (change === 'unmet') writeFileSync(f.path, reportText([{ ...evidence()[0], status: 'NOT MET' }, evidence()[1]]));
+        else if (change === 'rewrite') writeFileSync(f.path, reportText(rewritten));
         else f.setBody(body(CRITERIA) + '\nAmended scope.\n');
       },
     });
@@ -184,6 +186,15 @@ test('a Report rewrite or assignment edit after the acceptance read refuses the 
     assert.equal(calls.some(args => args[0] === 'pr' && args[1] === 'merge'), false, change);
     assert.match(out, /acceptance changed[\s\S]*merge lock[\s\S]*no merge was issued/, change);
     assert.equal(existsSync(join(f.input.store, 'merge', 'merge-owner-project-19.json')), false, `${change}: nothing journalled`);
+    const reread = out.slice(out.indexOf('acceptance re-read under the merge lock'));
+    assert.match(reread, /criteria from ticket #12 body/, `${change}: current criteria shown`);
+    if (change === 'unmet') assert.match(reread, /criterion 1 is NOT MET/);
+    else {
+      const fresh = reportGround(f.input).digest;
+      assert.notEqual(fresh, digest);
+      assert.ok(reread.includes(`digest ${fresh}`), `${change}: new digest shown`);
+      if (change === 'rewrite') assert.match(reread, /value=43 after rewrite/);
+    }
   }
 });
 

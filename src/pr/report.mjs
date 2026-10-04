@@ -5,7 +5,10 @@
 // One invocation-local digest binds repository, PR, ticket, head, observed base,
 // assignment and raw Report. --accept-report plus --reason answers THIS read,
 // like --ack-body, not a persisted permission. Pushes, assignment edits, Report
-// repairs and base movement invalidate it. The merge journal records the judgment.
+// repairs and base movement invalidate it. A merging gate reads this ground
+// twice: once with the other grounds, then again under the merge lock just
+// before journalling and issuing, and issues only on the identical accepted
+// digest. The merge journal records the judgment.
 //
 // The detector shows what it judged: the authoritative criteria and the raw
 // Report's address before validation, then every validated row as redacted JSON.

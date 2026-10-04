@@ -1209,16 +1209,22 @@ export function gate(
     // The acceptance read above happened before every later ground and the
     // lock wait; a Report rewrite or assignment edit in between must not ride
     // on the earlier digest. Re-read both under the lock, before anything is
-    // journalled or issued, and require the identical accepted digest.
+    // journalled or issued, and require the identical accepted digest. A
+    // refusal shows the re-read's criteria, rows and new digest for repair.
     if (acceptance.judgment) {
       const current = readAcceptance();
       const refused = current.refusals.map(row => row.message);
       const unread = current.unknowns.map(row => row.message);
       const reread = `ax pr gate --pr ${pr} --issue ${binding?.issue ?? '<n>'}   # inspect the current Report and criteria, then judge the digest it prints`;
-      if (refused.length === 0 && unread.length > 0) {
+      const stale = refused.length > 0 || unread.length === 0 && current.judgment?.digest !== acceptance.judgment.digest;
+      if (stale || unread.length > 0) {
+        section('acceptance re-read under the merge lock');
+        for (const entry of current.notes) note(entry.message);
+      }
+      if (!stale && unread.length > 0) {
         return cannot(`the acceptance evidence could not be re-read under the merge lock: ${unread.join('; ')}; no merge was issued`, reread);
       }
-      if (refused.length > 0 || current.judgment?.digest !== acceptance.judgment.digest) {
+      if (stale) {
         bad(`acceptance changed while this run held its verdict — the re-read under the merge lock no longer matches digest ${acceptance.judgment.digest}${refused.length > 0 ? `: ${refused.join('; ')}` : ''}; no merge was issued`);
         fix(reread);
         return 1;
