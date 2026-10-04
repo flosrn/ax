@@ -125,37 +125,66 @@ test('unadopted and classified release PRs do not acquire a new Report requireme
   }
 });
 
-test('an adopted merge runs all grounds but never merges without acceptance or with failed CI', t => {
-  const f = fixture(t);
+function mergeHarness(f, { onThreads = () => {} } = {}) {
   const calls = [];
-  let failedCi = false;
+  const state = { failedCi: false };
   const run = args => {
     calls.push(args);
     if (args[0] === 'repo') return { status: 0, stdout: args.includes('defaultBranchRef') ? JSON.stringify({ defaultBranchRef: { name: 'main' } }) : `${SLUG}\n` };
     if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ number: 19, state: args.includes('state,mergeCommit,body,title') ? 'MERGED' : 'OPEN', mergeCommit: { oid: f.input.sha }, headRefOid: f.input.sha, headRefName: f.input.branch, baseRefName: 'main', body: 'Closes #12', title: 'fix: preview', createdAt: '2026-10-01T00:00:00Z', mergeStateStatus: 'CLEAN', author: { login: 'worker' }, labels: [] }) };
     if (args[0] === 'pr' && args[1] === 'merge') return { status: 0, stdout: 'merged' };
-    if (args[0] === 'api' && args[1].includes('/check-runs')) return { status: 0, stdout: JSON.stringify({ total_count: 1, check_runs: [{ id: 1, name: 'tests', status: 'completed', conclusion: failedCi ? 'failure' : 'success' }] }) };
-    if (args[0] === 'api' && args[1] === 'graphql') return { status: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } }) };
+    if (args[0] === 'api' && args[1].includes('/check-runs')) return { status: 0, stdout: JSON.stringify({ total_count: 1, check_runs: [{ id: 1, name: 'tests', status: 'completed', conclusion: state.failedCi ? 'failure' : 'success' }] }) };
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      onThreads();
+      return { status: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } }) };
+    }
     if (args[0] === 'api' && args[1].includes('/pulls/')) return { status: 0, stdout: '[]' };
     if (args[0] === 'api' && args[1] === `repos/${SLUG}`) return { status: 0, stdout: JSON.stringify({ squash_merge_commit_message: 'PR_BODY', squash_merge_commit_title: 'PR_TITLE', merge_commit_title: 'MERGE_MESSAGE', merge_commit_message: 'PR_BODY', allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false }) };
     if (args[0] === 'issue' && args.includes('state')) return { status: 0, stdout: '{"state":"CLOSED"}' };
     return f.input.run(args);
   };
   const deps = { gh: run, git: args => f.git(args), cwd: f.root, env: { HOME: f.root, ORCA_DISPATCH_STORE: f.input.store }, sleep: () => {} };
+  const capture = fn => { const original = process.stdout.write; const out = []; process.stdout.write = chunk => { out.push(String(chunk)); return true; }; try { return { code: fn(), out: out.join('') }; } finally { process.stdout.write = original; } };
+  return { calls, state, deps, gate: argv => capture(() => gate(argv, deps)) };
+}
+
+test('an adopted merge runs all grounds but never merges without acceptance or with failed CI', t => {
+  const f = fixture(t);
+  const { calls, state, gate: runGate } = mergeHarness(f);
   const argv = ['--pr', '19', '--issue', '12', '--merge'];
-  const capture = fn => { const original = process.stdout.write; process.stdout.write = () => true; try { return fn(); } finally { process.stdout.write = original; } };
-  assert.equal(capture(() => gate(argv, deps)), 1);
+  assert.equal(runGate(argv).code, 1);
   assert.equal(calls.some(args => args[0] === 'pr' && args[1] === 'merge'), false);
   assert.ok(calls.some(args => args[0] === 'api' && args[1] === 'graphql'), 'the acceptance refusal does not suppress reviews');
   const digest = reportGround(f.input).digest;
   const approved = [...argv, '--accept-report', digest, '--reason', 'Inspected observed preview value and unchanged host receipt.'];
-  failedCi = true;
-  assert.equal(capture(() => gate(approved, deps)), 1);
+  state.failedCi = true;
+  assert.equal(runGate(approved).code, 1);
   assert.equal(calls.some(args => args[0] === 'pr' && args[1] === 'merge'), false);
-  failedCi = false;
-  assert.equal(capture(() => gate(approved, deps)), 0);
+  state.failedCi = false;
+  assert.equal(runGate(approved).code, 0);
   const merge = calls.find(args => args[0] === 'pr' && args[1] === 'merge');
   assert.equal(merge[merge.indexOf('--match-head-commit') + 1], f.input.sha);
+});
+
+test('a Report rewrite or assignment edit after the acceptance read refuses the merge under the lock', t => {
+  for (const change of ['report', 'assignment']) {
+    const f = fixture(t);
+    const digest = reportGround(f.input).digest;
+    let armed = true;
+    const { calls, gate: runGate } = mergeHarness(f, {
+      onThreads: () => {
+        if (!armed) return;
+        armed = false;
+        if (change === 'report') writeFileSync(f.path, reportText([{ ...evidence()[0], status: 'NOT MET' }, evidence()[1]]));
+        else f.setBody(body(CRITERIA) + '\nAmended scope.\n');
+      },
+    });
+    const { code, out } = runGate(['--pr', '19', '--issue', '12', '--merge', '--accept-report', digest, '--reason', 'Inspected both criteria.']);
+    assert.equal(code, 1, `${change}: ${out}`);
+    assert.equal(calls.some(args => args[0] === 'pr' && args[1] === 'merge'), false, change);
+    assert.match(out, /acceptance changed[\s\S]*merge lock[\s\S]*no merge was issued/, change);
+    assert.equal(existsSync(join(f.input.store, 'merge', 'merge-owner-project-19.json')), false, `${change}: nothing journalled`);
+  }
 });
 
 test('an attributed authorized Brief supersedes body criteria and an unread permission fails closed', t => {

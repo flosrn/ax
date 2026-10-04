@@ -1026,7 +1026,8 @@ export function gate(
   // answer about whatever the ref holds at ITS read rather than about the
   // commit this verdict was computed against.
   const baseCommit = gitOut.baseCommit ?? '';
-  const acceptance = reportGround({ run, root: paths.root, store: dispatchStore, slug, pr, sha, baseCommit, binding, branch: headBranch, adopted: loaded.prGate?.report, accepted: acceptedReport, reason: acceptanceReason, release });
+  const readAcceptance = () => reportGround({ run, root: paths.root, store: dispatchStore, slug, pr, sha, baseCommit, binding, branch: headBranch, adopted: loaded.prGate?.report, accepted: acceptedReport, reason: acceptanceReason, release });
+  const acceptance = readAcceptance();
   const grounds = [
     ci,
     threadsGround({ run, owner, name, pr, sha, ciDecided: ci.ciDecided, invocation }),
@@ -1205,6 +1206,24 @@ export function gate(
   }
 
   try {
+    // The acceptance read above happened before every later ground and the
+    // lock wait; a Report rewrite or assignment edit in between must not ride
+    // on the earlier digest. Re-read both under the lock, before anything is
+    // journalled or issued, and require the identical accepted digest.
+    if (acceptance.judgment) {
+      const current = readAcceptance();
+      const refused = current.refusals.map(row => row.message);
+      const unread = current.unknowns.map(row => row.message);
+      const reread = `ax pr gate --pr ${pr} --issue ${binding?.issue ?? '<n>'}   # inspect the current Report and criteria, then judge the digest it prints`;
+      if (refused.length === 0 && unread.length > 0) {
+        return cannot(`the acceptance evidence could not be re-read under the merge lock: ${unread.join('; ')}; no merge was issued`, reread);
+      }
+      if (refused.length > 0 || current.judgment?.digest !== acceptance.judgment.digest) {
+        bad(`acceptance changed while this run held its verdict — the re-read under the merge lock no longer matches digest ${acceptance.judgment.digest}${refused.length > 0 ? `: ${refused.join('; ')}` : ''}; no merge was issued`);
+        fix(reread);
+        return 1;
+      }
+    }
     note(`merging with the SHA this run validated (method: ${method})`);
     const mergeArgv = ['pr', 'merge', pr, '--repo', slug, `--${method}`, '--match-head-commit', sha];
     const groundLines = [...notes.map(entry => entry.message).slice(0, 40), ...(acceptance.judgment ? [`acceptance judgment ${acceptance.judgment.digest}: ${acceptance.judgment.reason}`] : [])];
