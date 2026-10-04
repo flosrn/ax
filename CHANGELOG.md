@@ -8,6 +8,32 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.30.0](https://github.com/flosrn/ax/compare/v0.29.3...v0.30.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **worker:** worker and triage dispatch no longer count panes against dispatch.cap; an explicit --on <host> now reads HarnessOS capacity and is refused when that host has no Slot.
+* **config:** dispatch.cap and dispatch.machineCap are removed from the schema. Delete them from ax.config.json; admission is by per-host Slots (ADR 0005).
+
+### Features
+
+* **config:** refuse dispatch.cap and dispatch.machineCap by name ([18c9361](https://github.com/flosrn/ax/commit/18c9361651332fff1b723912920eef36dd2f01cf))
+* **worker:** admit dispatches by per-host Slots only ([6f98961](https://github.com/flosrn/ax/commit/6f98961b01b34978ca410bb1aa3d11e69ddc81be))
+* **worker:** ax worker close ends one named pane on the operator's word ([54d5abd](https://github.com/flosrn/ax/commit/54d5abd7b95c27f956ea567bcd8ef526703899cd))
+* **worker:** ax worker hosts [&lt;host&gt;] shows each host's memory and OOM state ([27c886c](https://github.com/flosrn/ax/commit/27c886c18b319328218d435c604e6744ad441a75))
+* **worker:** ax worker retire-host writes off a host that will never answer ([c55b881](https://github.com/flosrn/ax/commit/c55b88156fa1c7b9240b3bcb1b1a92d614020c4b))
+
+
+### Bug Fixes
+
+* **deploy:** do not commit a lockfile the consumer did not have ([4d7c659](https://github.com/flosrn/ax/commit/4d7c65915bd1844a5efc8e5239268b5bcb356800))
+* **deploy:** install a consumer with the lockfile it has ([f75e7d4](https://github.com/flosrn/ax/commit/f75e7d4a22b4ab5f72cce87ca44b4f6165b1eca8))
+* **deploy:** install a consumer with the lockfile it has ([11bcd67](https://github.com/flosrn/ax/commit/11bcd6720bd17a5587c80fefc848c8e148839876))
+* **worker:** admission lock after proof, close and retire-host recovery ([bf830f3](https://github.com/flosrn/ax/commit/bf830f330ce5b2cd3fd99216ebe3d58c151ecdbe))
+* **worker:** close names the refused local terminal list instead of crashing ([48e05e7](https://github.com/flosrn/ax/commit/48e05e7f1fa1606901c84169d84ca8740ca35a31))
+* **worker:** name a retired host once, by its retirement, during placement ([214c1c3](https://github.com/flosrn/ax/commit/214c1c3fb5e80e56a73005a986bb0fc094298e57))
+
 ## [0.29.3](https://github.com/flosrn/ax/compare/v0.29.2...v0.29.3) (2026-10-02)
 
 
