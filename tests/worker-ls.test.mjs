@@ -939,18 +939,6 @@ test('#88: the per-repository count and the machine total are two labelled lines
   assert.doesNotMatch(out, /this is the cap count/, 'the label that cost the reported turn is gone');
 });
 
-test('#88: an armed machine ceiling is printed as the ceiling it is', () => {
-  const dir = store();
-  writeRecord(dir, 'mine-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_m', handle: 'term_m' }) }]);
-  const run = fakeRunner({ terminals: [pane('term_m')] });
-  const { out } = capture(() =>
-    ls([], { runner: run, env: { ORCA_DISPATCH_STORE: dir }, cwd: repo({}, { cap: 5, machineCap: 9 }) }),
-  );
-  assert.match(out, /1 live pane\(s\) in acme\/widgets/);
-  assert.match(out, /dispatch\.cap 5/, 'the declared cap, not the default');
-  assert.match(out, /dispatch\.machineCap 9/);
-});
-
 test('#88: a checkout gh cannot name gets NOT MEASURED, never a zero it would read as room', () => {
   const dir = store();
   writeRecord(dir, 'theirs-1', [{ name: 'worker-start', receipt: started({ dispatchId: 'ctx_t', handle: 'term_t' }) }], {

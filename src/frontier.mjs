@@ -1,4 +1,6 @@
 // `ax frontier` — the takeable ticket set, derived from tracker truth in one receipt.
+// The scoped triage read refuses raw retired dispatch keys first, with the
+// deletion repair before vocabulary validation or any tracker read.
 //
 // WHY THIS VERB EXISTS. Before it, the orchestrator derived the frontier by
 // hand every wake: raw `gh issue list`, one `gh issue view` per ticket for its
@@ -89,7 +91,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { completionReceipt } from './completion.mjs';
-import { repoPaths } from './config.mjs';
+import { repoPaths, retiredConfigFinding } from './config.mjs';
 import { defaultExec } from './exec.mjs';
 import { repoSlug } from './gh.mjs';
 import { bad, fix, note, ok, section } from './log.mjs';
@@ -132,6 +134,8 @@ function triageDeclaration({ root, main }) {
     if (!existsSync(path)) continue;
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      const retired = retiredConfigFinding(parsed);
+      if (retired) return { ok: false, path, retired };
       return { ok: true, triage: parsed?.triage, path };
     } catch (error) {
       return { ok: false, path, reason: `not readable JSON (${String(error.message ?? error).slice(0, 120)})` };
@@ -338,6 +342,7 @@ export function frontier(argv = [], { gh = (args, at) => defaultExec('gh', args,
   }
 
   const declared = triageDeclaration(paths);
+  if (declared.retired) { bad(declared.retired.problem); fix(declared.retired.fix); return 1; }
   if (!declared.ok) {
     return cannot(
       `${declared.path} is ${declared.reason} — the declared label vocabulary cannot be read, and guessing it would classify with the wrong project's words`,

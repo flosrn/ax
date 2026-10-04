@@ -4,9 +4,9 @@
 // worktree, whose root and primary checkout differ).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { readBlock } from '../src/blocks.mjs';
@@ -14,6 +14,9 @@ import { loadConfig, version } from '../src/config.mjs';
 import { doctor } from '../src/doctor.mjs';
 import { BLOCK_BODIES, LEGACY_OMP_LOADER_SOURCE, init } from '../src/init.mjs';
 import { MANAGED_BLOCKS, planProject } from '../src/plan.mjs';
+import { setup } from '../src/worktree/setup.mjs';
+import { list } from '../src/worktree/list.mjs';
+import { supabase } from '../src/supabase-guard.mjs';
 
 let dir = '';
 const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
@@ -984,5 +987,81 @@ test('--project grades the project half alone; plain doctor still grades the wor
     assert.match(project.out, /worktree: not graded \(--project\)/);
   } finally {
     git('worktree', 'remove', '--force', tree);
+    rmSync(dirname(tree), { recursive: true, force: true });
   }
+});
+
+test('doctor refuses retired cap declarations; init reports without refusing (AE14)', () => {
+  if (!existsSync(join(dir, 'ax.config.json'))) init(dir);
+  const path = join(dir, 'ax.config.json');
+  const original = readFileSync(path, 'utf8');
+  const capture = fn => {
+    const chunks = [];
+    const out = process.stdout.write, err = process.stderr.write;
+    process.stdout.write = process.stderr.write = chunk => (chunks.push(String(chunk)), true);
+    try { return { code: fn(), out: chunks.join('') }; }
+    finally { process.stdout.write = out; process.stderr.write = err; }
+  };
+  try {
+    for (const [key, value] of [['cap', 3], ['cap', 0], ['cap', false], ['machineCap', null]]) {
+      const before = JSON.stringify({ ...JSON.parse(original), dispatch: { [key]: value } });
+      writeFileSync(path, before);
+      const r = capture(() => doctor(dir));
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`dispatch\\.${key}`));
+      assert.match(r.out, /delete .* from ax\.config\.json/);
+      assert.equal(readFileSync(path, 'utf8'), before);
+      const reported = capture(() => init(dir, { dryRun: true }));
+      assert.equal(reported.code, 0, reported.out);
+      assert.match(reported.out, new RegExp(`dispatch\\.${key}`));
+      assert.match(reported.out, /delete .* from ax\.config\.json/);
+      assert.equal(readFileSync(path, 'utf8'), before);
+    }
+  } finally { writeFileSync(path, original); }
+});
+
+test('retired finding survives all load results and other readers refuse without mutation', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ax-retired-readers-')));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root, stdio: 'ignore' });
+  const path = join(root, 'ax.config.json');
+  const cwd = process.cwd();
+  const out = process.stdout.write, err = process.stderr.write;
+  const exitCode = process.exitCode;
+  const lines = [];
+  process.stdout.write = process.stderr.write = chunk => (lines.push(String(chunk)), true);
+  try {
+    process.chdir(root);
+    for (const value of [0, null, false]) {
+      const before = JSON.stringify({ project: { name: 'invalid name' }, dispatch: { cap: value } });
+      writeFileSync(path, before);
+      const loaded = loadConfig(root);
+      assert.equal(loaded.config, null);
+      assert.deepEqual(loaded.retired.keys, ['dispatch.cap']);
+      for (const run of [
+        () => setup([], { cwd: root, install: () => assert.fail('retired config installed') }),
+        () => list(),
+        () => supabase(['db', 'reset'], { paths: { root, main: root }, env: {}, runCli: () => assert.fail('retired config ran supabase') }),
+      ]) {
+        lines.length = 0;
+        assert.equal(run(), 1);
+        assert.match(lines.join(''), /dispatch\.cap/);
+        assert.match(lines.join(''), /delete dispatch\.cap from ax\.config\.json/);
+        assert.equal(readFileSync(path, 'utf8'), before);
+      }
+    }
+  } finally {
+    process.chdir(cwd);
+    process.exitCode = exitCode;
+    process.stdout.write = out; process.stderr.write = err;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retired finding is null on missing or unreadable load results', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ax-retired-load-'));
+  try {
+    assert.equal(loadConfig(root).retired, null);
+    writeFileSync(join(root, 'ax.config.json'), '{ broken');
+    assert.equal(loadConfig(root).retired, null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

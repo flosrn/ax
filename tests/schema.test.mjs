@@ -150,3 +150,10 @@ test('this checkout’s ax.config.json validates, so ax worker dispatch can run 
   const raw = JSON.parse(readFileSync(join(root, 'ax.config.json'), 'utf8'));
   assert.deepEqual(validate(raw, schema), []);
 });
+
+test('dispatch cap declarations are no longer schema properties', () => {
+  for (const key of ['cap', 'machineCap']) {
+    assert.equal(Object.hasOwn(schema.properties.dispatch.properties, key), false);
+    assert.deepEqual(validate({ ...minimal(), dispatch: { [key]: 0 } }, schema), [`dispatch: unknown key "${key}"`]);
+  }
+});

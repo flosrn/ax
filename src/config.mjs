@@ -1,3 +1,6 @@
+// Configuration retirement is read from raw key presence before validation.
+// Every reader refuses it before interpreting its own contract; init alone
+// reports the deletion without refusing or rewriting the user's declaration.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -9,6 +12,28 @@ import { mainCheckout, repoRoot } from './git.mjs';
 
 export const CONFIG_FILE = 'ax.config.json';
 export const PACKAGE_NAME = '@flosrn/ax';
+
+export const RETIRED_DISPATCH_KEYS = ['cap', 'machineCap'];
+export const RETIRED_CAP_KNOBS = ['ORCA_TRIAGE_SESSION_CAP', 'ORCA_READY_SESSION_CAP'];
+
+/** Exact nested presence, not truthiness: 0, null and false are declarations. */
+export function retiredConfigFinding(raw) {
+  const dispatch = raw?.dispatch;
+  const keys = dispatch !== null && typeof dispatch === 'object' && !Array.isArray(dispatch)
+    ? RETIRED_DISPATCH_KEYS.filter(key => Object.hasOwn(dispatch, key)) : [];
+  if (keys.length === 0) return null;
+  return {
+    keys: keys.map(key => `dispatch.${key}`),
+    problem: `${keys.map(key => `dispatch.${key}`).join(' and ')} retired — admission is by Slots`,
+    fix: `delete ${keys.map(key => `dispatch.${key}`).join(' and ')} from ${CONFIG_FILE}; admission is by Slots — read \`ax worker hosts\``,
+  };
+}
+
+/** Empty is absence; neither retired spelling can restore a ceiling. */
+export function retiredCapKnob(env = {}) {
+  const name = RETIRED_CAP_KNOBS.find(name => (env[name] ?? '') !== '');
+  return name === undefined ? null : { problem: `${name} is set — admission is by Slots`, fix: `unset ${name}; admission is by Slots — read \`ax worker hosts\`` };
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -85,25 +110,29 @@ export function repoPaths(from = process.cwd()) {
  */
 export function loadConfig(repoRoot) {
   const path = join(repoRoot, CONFIG_FILE);
-  if (!existsSync(path)) return { path, exists: false, config: null, declared: [], errors: [], migration: null };
+  if (!existsSync(path)) return { path, exists: false, config: null, declared: [], errors: [], migration: null, retired: null };
 
   let raw;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
-    return { path, exists: true, config: null, declared: [], errors: [`${CONFIG_FILE}: not valid JSON (${error.message})`], migration: null };
+    return { path, exists: true, config: null, declared: [], errors: [`${CONFIG_FILE}: not valid JSON (${error.message})`], migration: null, retired: null };
   }
 
   const migration = historicalShape(raw);
-  const graded = migration === null ? raw : Object.fromEntries(Object.entries(raw).filter(([key]) => key !== DEBUG_DECLARATION));
+  const retired = retiredConfigFinding(raw);
+  const migrated = migration === null ? raw : Object.fromEntries(Object.entries(raw).filter(([key]) => key !== DEBUG_DECLARATION));
+  // Strip only for grading: the original file remains untouched, and the
+  // finding travels even when a separate validation error makes config null.
+  const graded = retired === null ? migrated : { ...migrated, dispatch: Object.fromEntries(Object.entries(migrated.dispatch).filter(([key]) => !RETIRED_DISPATCH_KEYS.includes(key))) };
 
   const errors = validate(graded, schema);
   const declared = graded !== null && typeof graded === 'object' && !Array.isArray(graded) ? Object.keys(graded) : [];
-  if (errors.length > 0) return { path, exists: true, config: null, declared, errors, migration };
+  if (errors.length > 0) return { path, exists: true, config: null, declared, errors, migration, retired };
 
   const config = applyDefaults(graded, schema);
   config.project.display ??= config.project.name;
-  return { path, exists: true, config, declared, errors: [], migration };
+  return { path, exists: true, config, declared, errors: [], migration, retired };
 }
 
 /**

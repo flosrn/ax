@@ -1,3 +1,5 @@
+// Retired dispatch keys are graded first from raw presence; deletion repairs
+// share init's exact-path table and doctor changes no configuration.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -48,7 +50,12 @@ export function doctor(cwd = process.cwd(), { project = false } = {}) {
 
   note(isWorktree ? `worktree of ${main}` : 'primary checkout');
 
-  const { config, errors, exists, declared, migration } = loadConfig(root);
+  const { config, errors, exists, declared, migration, retired } = loadConfig(root);
+  if (retired) {
+    fail(retired.problem);
+    for (const repair of retiredConfigKeyFixes(retired.keys.map(key => `dispatch: unknown key "${key.split('.')[1]}"`))) fix(repair);
+    return failures;
+  }
   if (!exists) {
     fail(`${CONFIG_FILE} is missing — no project plan can be derived`, 'ax init');
     return failures;

@@ -2750,3 +2750,20 @@ test('an unknown pr verb is a usage error, never a default action', () => {
   assert.equal(none.code, 2);
   assert.match(none.out, /which one\? \(gate\)/);
 });
+
+test('retired dispatch declarations refuse before merge grounds (AE14)', () => {
+  const root = repoFor('current', DEFAULT_GATE);
+  const path = join(root, 'ax.config.json');
+  const original = readFileSync(path, 'utf8');
+  try {
+    for (const [key, value] of [['cap', 3], ['cap', 0], ['cap', false], ['machineCap', null]]) {
+      const before = JSON.stringify({ dispatch: { [key]: value }, prGate: false });
+      writeFileSync(path, before);
+      const r = capture(() => gate(['--pr', '1845', '--merge'], { cwd: root, env: {}, gh: () => assert.fail('retired config asked tracker') }));
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`dispatch\\.${key}`));
+      assert.match(r.out, /delete .* from ax\.config\.json/);
+      assert.equal(readFileSync(path, 'utf8'), before);
+    }
+  } finally { writeFileSync(path, original); }
+});

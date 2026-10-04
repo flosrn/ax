@@ -1,4 +1,6 @@
 // `ax triage dispatch` — one Orca session per issue, and nothing else.
+// Raw retired keys refuse before vocabulary validation or mutation; config.mjs
+// owns cap env retirement and its Slots/unset repair.
 //
 // It does not read the issue, judge it, or write a word about it. The session
 // does that, from the preloaded triage playbook plus the project's own label
@@ -24,7 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
-import { loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { loadCheckoutConfig, repoPaths, retiredCapKnob } from '../config.mjs';
 import { bad, dim, fix, note, ok, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
 import { defaultExec } from '../exec.mjs';
@@ -574,6 +576,9 @@ export function dispatch(
   // pointing at nothing sends a child to improvise, and improvising here means
   // recommending in prose and stopping.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+  if (loaded.retired) return refuse(loaded.retired.problem, loaded.retired.fix);
+  const retiredCap = retiredCapKnob(env);
+  if (retiredCap) return refuse(retiredCap.problem, retiredCap.fix);
   if (!loaded.exists) return refuse(`no ax.config.json for ${paths.root}`, 'ax init # a triage session reads this project\'s contract, so the project has to have one');
   if (loaded.errors.length > 0) return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
   const config = loaded.config ?? {};
@@ -610,12 +615,6 @@ export function dispatch(
   if (!local.ok) return cannot(local.reason, 'orca open # the cap is counted, never assumed — it does not fail open');
   const store = defaultStore(env);
   const machineCap = machineCapOf(config, env);
-  if (!machineCap.ok) {
-    return refuse(
-      `${machineCap.from} is set — the cap is declared in ax.config.json now, and this repository's own cap is what binds`,
-      `unset ${machineCap.from} and declare ${machineCap.to} in ax.config.json if this machine needs a ceiling`,
-    );
-  }
   // The same liveness `ax worker ls` prints and `ax worker dispatch` refuses on,
   // from the one reader all three read (../worker/slots.mjs): every recorded
   // agent pane this runtime's list or a named host reports as up, keyed on the

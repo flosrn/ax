@@ -1,110 +1,23 @@
-// How many child panes a dispatch may add — the two counts, the two caps, and
-// the one verdict both dispatch verbs print.
-//
-// WHY THIS EXISTS (#88, measured 2026-09-02 across two checkouts on one Mac)
-// The dispatch store is host-global by design (./record.mjs), so every count
-// taken from it is machine-wide unless something scopes it. Nothing did, and the
-// three verbs that read it disagreed three ways:
-//
-//   * `ax worker ls` ended with `N live pane(s) — this is the cap count`, where
-//     N counted every live pane on the machine. Read from the ofmchat checkout
-//     it named three panes that all belonged to flosrn/ax, and an orchestrator
-//     that honours "count with `ls`, never from memory" spent a turn deciding
-//     whether it was allowed to dispatch at all.
-//   * `ax worker dispatch` enforced NOTHING. It admitted a 4th and a 5th pane
-//     without a word, minutes after `triage dispatch` had refused.
-//   * `ax triage dispatch` enforced `ORCA_TRIAGE_SESSION_CAP` — machine-wide,
-//     defaulting to 3 whether or not anybody had armed it. A 13-issue wave here
-//     ran at one slot while another repository held two panes.
-//
-// THE RULING (operator, 2026-09-02 on #88): R3 — per repository by default,
-// with a machine ceiling that is OPT-IN and UNSET.
-//
-//   `dispatch.cap` is the fairness mechanism and the only cap that binds by
-//   default. It counts the panes whose record NAMES this repository, so a wave
-//   here cannot be parked by a wave there.
-//
-//   `dispatch.machineCap` is the fuse, not the fairness mechanism: a machine has
-//   real shared limits (Orca's long-poll cap is 16), so a ceiling has to be
-//   declarable — and it does not exist until an operator declares it. An unset
-//   ceiling that still meant 3 was this issue's bug under a new name, because
-//   another checkout's panes ate the fuse and this repository never reached its
-//   own cap.
-//
-// AN UNNAMED RECORD IS UNKNOWN, AND COUNTS AGAINST THE CEILING ONLY (F-028).
-// That is the opposite convention to `../frontier.mjs` and `../pr-gate.mjs`,
-// which keep an unnamed record as possibly ours, and the difference is
-// load-bearing: for a frontier, including an unknown is the conservative
-// reading; for a per-repository cap, EXCLUDING it is what stops another checkout
-// from parking this one, and the ceiling is what keeps the machine safe once an
-// operator arms it. So an unnamed pane is never silently dropped either — every
-// caller prints how many there were.
-//
-// PURE, AND DELIBERATELY IMPORT-FREE. The counts arrive as a value from the one
-// reader that takes them (`livePanes`, ./slots.mjs), both caps arrive as a
-// validated config, and the verdict is a value. That is what lets one contract
-// answer for `ax worker dispatch`, `ax triage dispatch` and `ax worker ls`
-// without any of them reaching into another's module — and what lets the whole
-// thing be graded offline, with no store, no runtime and no `gh`.
-//
-// THE COUNTING ITSELF IS NOT HERE, and that is #161's half of the same rule.
-// `liveCount` lived in this file over a DISPATCH INDEX, so the number a cap
-// gated answered "which dispatch owns this record" instead of "is this pane
-// consuming a slot", and a pane recorded by a legacy repair phase had no slot in
-// it while `ax worker ls` printed it VIVANT. Capacity now has its own reader,
-// keyed on the recorded pane; what stays here is the caps and the refusal.
+// Transitional cap arithmetic retained until the Slots-only cutover (U4).
+// Valid configurations declare neither cap: config.mjs detects raw presence
+// and refuses before these readers run. The undeclared repository default
+// remains 3 until U4; the machine default stays unset. Env retirement belongs
+// solely to config.mjs, not to this arithmetic.
 
 /** The per-repository cap a project that declares none still gets. */
 export const REPO_CAP_DEFAULT = 3;
 
-/**
- * The env knobs the caps retired, refused BY NAME rather than read past.
- *
- * `ORCA_TRIAGE_SESSION_CAP` said `triage` while it gated the only verb that
- * enforced anything, and it defaulted to 3 with nobody arming it — the two
- * halves of #88 in one name. `ORCA_READY_SESSION_CAP` was its own predecessor
- * (`docs/adr/0001`), already refused for the same reason. Both are refused: a
- * fallback chain reading whichever is set is precisely how a rename stops being
- * one, and here it would silently restore a machine-wide cap over a
- * per-repository one.
- *
- * Empty is absence — an exported-but-empty variable is a shell artefact, not an
- * instruction.
- */
-export const RETIRED_CAP_KNOBS = ['ORCA_TRIAGE_SESSION_CAP', 'ORCA_READY_SESSION_CAP'];
 
 const asCap = value => (Number.isInteger(value) && value >= 0 ? value : null);
 
-/**
- * The per-repository cap: `dispatch.cap`, or `REPO_CAP_DEFAULT` when the project
- * declares none.
- *
- * The `dispatch` block otherwise carries no defaults on purpose — a floor
- * measured for one fleet, inherited by a repo that never declared it, is the
- * same bug in a new place. This key is the exception, and the exception is the
- * ticket: a cap that binds only where somebody declared it is a cap that does
- * not bind, which is the state #88 measured. It is a FAIRNESS number, not a
- * measurement of any machine's appetite, so a default is safe here in a way a
- * memory floor never is.
- *
- * `ax.schema.json` refuses a non-integer and a negative one, which is why the
- * fallback below reads as "absent" and never as "unreadable".
- */
+/** Repository cap or default 3 until U4. Schema rejects invalid declared values. */
 export function repoCapOf(config = {}) {
   const declared = asCap(config?.dispatch?.cap);
   return declared === null ? REPO_CAP_DEFAULT : declared;
 }
 
-/**
- * The machine ceiling — `{ ok: true, cap: <n> | null }`, where `null` is NO
- * CEILING, or a refusal naming a retired knob.
- *
- * Zero is legal and means "no new pane on this machine right now". Absence is
- * not zero and not three: it is the absence of a fuse.
- */
-export function machineCapOf(config = {}, env = {}) {
-  const retired = RETIRED_CAP_KNOBS.find(name => (env[name] ?? '') !== '');
-  if (retired !== undefined) return { ok: false, from: retired, to: 'dispatch.machineCap' };
+/** Machine ceiling or null. Environment retirement belongs to config.mjs. */
+export function machineCapOf(config = {}) {
   return { ok: true, cap: asCap(config?.dispatch?.machineCap) };
 }
 

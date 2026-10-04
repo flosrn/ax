@@ -1,4 +1,5 @@
 // `ax worktree ls` — which checkouts exist, and what each one is holding.
+// Retired dispatch declarations refuse by raw presence before reading rows.
 //
 // The question this answers cannot be answered by `git worktree list`, and that
 // gap is why it exists: git knows the paths and the branches, and nothing about
@@ -16,7 +17,7 @@ import { join } from 'node:path';
 
 import { loadCheckoutConfig, repoPaths } from '../config.mjs';
 import { listWorktrees } from '../git.mjs';
-import { bad, dim, note, section } from '../log.mjs';
+import { bad, dim, fix, note, section } from '../log.mjs';
 import { KEYS } from './plan.mjs';
 import { configProjectId } from './supabase.mjs';
 import { envFiles, readWorktreeRecord } from './probes.mjs';
@@ -28,7 +29,8 @@ export function list() {
     return 1;
   }
 
-  const { config, exists } = loadCheckoutConfig({ root, main });
+  const { config, exists, retired } = loadCheckoutConfig({ root, main });
+  if (retired) { bad(retired.problem); fix(retired.fix); return 1; }
   if (!exists || !config) {
     bad('no ax.config.json — run `ax init` in the primary checkout first');
     return 1;

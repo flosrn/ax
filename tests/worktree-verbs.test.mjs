@@ -574,3 +574,18 @@ test('clean reaps a recorded Chromium whose start identity says the pid was recy
   assert.equal(signalled.includes(owner), false, 'the proven live owner was signalled');
 });
 
+
+test('clean refuses a retired declaration before scanning or reclaiming', () => {
+  const chunks = [];
+  const out = process.stdout.write, err = process.stderr.write;
+  process.stdout.write = process.stderr.write = chunk => (chunks.push(String(chunk)), true);
+  try {
+    const code = clean([], {
+      paths: () => ({ root: '/fixture', main: '/fixture' }),
+      load: () => ({ config: CONFIG, exists: true, errors: [], retired: { problem: 'dispatch.cap retired', fix: 'delete dispatch.cap from ax.config.json' } }),
+      scan: () => assert.fail('retired declaration scanned processes'),
+    });
+    assert.equal(code, 1);
+    assert.match(chunks.join(''), /dispatch\.cap.*\n.*delete dispatch\.cap/);
+  } finally { process.stdout.write = out; process.stderr.write = err; }
+});

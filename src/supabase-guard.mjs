@@ -1,4 +1,5 @@
 // `ax supabase <args…>` — the guard that stands in front of the Supabase CLI.
+// Retired dispatch keys refuse before validation, promotion or running the CLI.
 //
 // One local Supabase stack serves the whole machine by default, so a `db reset`,
 // a migration or a typegen run from one checkout rewrites the database every
@@ -347,6 +348,7 @@ export function supabase(argv = [], deps = {}) {
   }
 
   const loaded = deps.config ? { config: deps.config, exists: true, errors: [] } : loadCheckoutConfig({ root, main });
+  if (loaded.retired) { fatal(loaded.retired.problem); warn(loaded.retired.fix); return 1; }
   if (!loaded.exists || loaded.errors.length > 0) {
     fatal(loaded.exists ? `${loaded.errors.length} problem(s) in ax.config.json` : 'no ax.config.json — run `ax init` in the primary checkout first');
     for (const error of loaded.errors) warn(error);

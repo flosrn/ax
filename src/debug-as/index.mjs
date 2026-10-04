@@ -2,6 +2,7 @@
 // identity and recorded addresses, establish browser ownership, then prepare
 // authentication and publish. Explicit phone failure precedes Chromium; automatic
 // phone failure never tears down a usable browser. All output crosses emit.mjs.
+// Raw retired dispatch keys refuse before debug adoption or browser work.
 import { repoPaths, loadCheckoutConfig } from '../config.mjs';
 import { loadDebugContract } from './config.mjs';
 import { parseDebugArgs } from './args.mjs';
@@ -26,6 +27,7 @@ export async function debugAs(argv = [], deps = {}) {
     const paths = (deps.paths ?? repoPaths)(deps.cwd ?? process.cwd());
     if (!paths.root) refuse('debug-as requires a Git checkout', 'run ax debug-as from the project checkout');
     const loaded = (deps.load ?? loadCheckoutConfig)(paths);
+    if (loaded.retired) refuse(loaded.retired.problem, loaded.retired.fix);
     if (loaded.migration) refuse(loaded.migration.problem, loaded.migration.fix);
     if (!loaded.config || loaded.errors?.length) refuse('project configuration is missing or invalid', 'ax doctor');
     const { config } = loaded;

@@ -1,4 +1,6 @@
 // `ax worker dispatch --issue <ref>` — a ticket becomes a working session, in one gesture.
+// Raw retired config keys refuse before validation or mutation; config.mjs
+// owns cap env retirement, with the unset repair and Slots as admission.
 //
 // WHY THIS EXISTS (measured 2026-08-14)
 // Both halves already existed and the SEAM did not: something turns an issue into
@@ -65,7 +67,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok, raw, section } from '../log.mjs';
 import { redactSecrets } from '../redact.mjs';
-import { PACKAGE_NAME, loadCheckoutConfig, repoPaths } from '../config.mjs';
+import { PACKAGE_NAME, loadCheckoutConfig, repoPaths, retiredCapKnob } from '../config.mjs';
 import { checkoutSkew, installCommand } from '../delegation.mjs';
 import { setup as setupVerb } from '../worktree/setup.mjs';
 import { capLines, capVerdict, machineCapOf, repoCapOf } from './capacity.mjs';
@@ -496,6 +498,9 @@ export function dispatch(
   }
 
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+  if (loaded.retired) return refuse(loaded.retired.problem, loaded.retired.fix);
+  const retiredCap = retiredCapKnob(env);
+  if (retiredCap) return refuse(retiredCap.problem, retiredCap.fix);
   if (!loaded.exists || loaded.errors.length > 0) {
     // The same refusal `ax worktree setup` prints, and the same #84 correction:
     // a checkout publishing another ax than the one running earns the repair
@@ -1234,20 +1239,7 @@ function capRoom({ run, env, config, repo }) {
     return { cannot: local.reason, repair: 'orca open   # the cap is counted, never assumed — it does not fail open', lines: [] };
   }
 
-  // The retired knob is refused BEFORE any host is asked: a shell artefact
-  // reading as the cap in force is not a reason to spend an ssh round trip.
-  const ceiling = machineCapOf(config, env);
-  if (!ceiling.ok) {
-    return {
-      verdict: {
-        ok: false,
-        kind: 'refuse',
-        message: `${ceiling.from} is set — the cap is declared in ax.config.json now, and this repository's own cap is what binds`,
-        repair: `unset ${ceiling.from} and declare ${ceiling.to} in ax.config.json if this machine needs a ceiling`,
-      },
-      lines: [],
-    };
-  }
+  const ceiling = machineCapOf(config);
 
   // The same liveness `ax worker ls` prints, from the same reader: every
   // recorded agent pane this runtime's list or a named host reports as up

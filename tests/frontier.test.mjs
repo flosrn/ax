@@ -747,3 +747,18 @@ test('an earlier exclusion still wins over a would-be cycle', () => {
   assert.doesNotMatch(out, /blocked-by-cycle/);
   assert.match(out, /takeable — 0/);
 });
+
+test('retired dispatch declarations outrank the scoped vocabulary read (AE14)', () => {
+  const path = join(root, 'ax.config.json');
+  for (const [key, value] of [['cap', 3], ['cap', 0], ['cap', false], ['machineCap', null]]) {
+    const before = JSON.stringify({ dispatch: { [key]: value }, triage: { provenance: false } });
+    writeFileSync(path, before);
+    try {
+      const r = capture(() => frontier([], { cwd: root, env: { ORCA_DISPATCH_STORE: store }, gh: () => assert.fail('retired config asked tracker') }));
+      assert.notEqual(r.code, 0);
+      assert.match(r.out, new RegExp(`dispatch\\.${key}`));
+      assert.match(r.out, /delete .* from ax\.config\.json/);
+      assert.equal(readFileSync(path, 'utf8'), before);
+    } finally { rmSync(path, { force: true }); }
+  }
+});

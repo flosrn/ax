@@ -1,4 +1,6 @@
 // `ax triage publish` — the one place a triage verdict reaches the tracker.
+// Retired dispatch keys refuse before validation or tracker mutation, even
+// though this verb consumes only triage provenance from configuration.
 //
 // A triage child writes a draft and mutates nothing, so the mutation has to
 // happen somewhere. Leaving it to the operator's own `gh` calls is not a smaller
@@ -211,6 +213,7 @@ export function publish(argv = [], { exec = defaultExec, env = process.env, cwd 
   // repositories that never adopted the group — while a remove of a label the
   // issue does not carry is graded everywhere, from the live labels alone.
   const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
+  if (loaded.retired) return refuse(loaded.retired.problem, loaded.retired.fix);
   if (loaded.exists && loaded.errors.length > 0) {
     return refuse(`ax.config.json has ${loaded.errors.length} problem(s): ${loaded.errors.join('; ')}`, 'ax doctor');
   }

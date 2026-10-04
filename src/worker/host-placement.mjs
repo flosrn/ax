@@ -266,6 +266,7 @@ export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.
   };
 
   const declared = declarationOf(cwd)();
+  if (declared.retired) { bad(declared.retired.problem); fix(declared.retired.fix); return 1; }
   const config = declared.ok ? declared.config : {};
   const source = harnessosSource({ env, config });
   if (!source.ok) return cannot(source.reason, source.repair);

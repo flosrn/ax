@@ -1,5 +1,6 @@
-// The grounds a REMOTE dispatch stands on: which host a project declared, and
-// whether that host can actually carry one more session.
+// Remote host grounds and the checkout's shared declaration reader.
+// Raw retired dispatch keys are refusals, never missing host overrides;
+// every declaration reader carries their finding and deletion repair first.
 //
 // WHY EVERY GROUND HERE IS A GROUND
 // A child placed on a host that cannot hold it does not fail visibly. It gets
@@ -105,14 +106,10 @@ export function hostFor(config, env) {
 }
 
 /**
- * THIS CHECKOUT'S OWN DECLARATION, read at most once and shared by every reader
- * of it: the hosts a record may be asked about, and the caps this repository
- * declares (#88).
- *
- * Two loads of one file would be two derivations of it (AGENTS.md), and the
- * divergence would be silent — a config invalid enough to lose its hosts would
- * still have answered a cap. LAZY, so a store with no remote record and no cap
- * line spends no read at all.
+ * THIS CHECKOUT'S OWN DECLARATION, read once and shared by every reader.
+ * Retired dispatch keys are detected from raw presence before validation and
+ * carried as a refusal with their deletion repair, never empty host overrides.
+ * Lazy reads still avoid loading a declaration no host question consumes.
  *
  * Shared by `ax worker ls` and `ax worker gate` (#192): the gate asks a
  * record's host for its own panes exactly as the listing does, and a second
@@ -129,7 +126,8 @@ export function declarationOf(cwd) {
       return memo;
     }
     const loaded = loadCheckoutConfig({ root: paths.root, main: paths.main });
-    if (!loaded.exists) memo = { ok: false, reason: `no ax.config.json under ${paths.root}, so nothing is declared here` };
+    if (loaded.retired) memo = { ok: false, retired: loaded.retired, reason: `${loaded.retired.problem}; ${loaded.retired.fix}` };
+    else if (!loaded.exists) memo = { ok: false, reason: `no ax.config.json under ${paths.root}, so nothing is declared here` };
     else if (loaded.errors.length > 0) memo = { ok: false, reason: `ax.config.json is invalid, so its declarations cannot be read: ${loaded.errors[0]}` };
     else memo = { ok: true, config: loaded.config };
     return memo;

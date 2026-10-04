@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { capLines, capVerdict, machineCapOf, repoCapOf } from '../src/worker/capacity.mjs';
+import { retiredCapKnob } from '../src/config.mjs';
 
 
 test('repoCapOf: dispatch.cap is the fairness cap, and an undeclared one is 3', () => {
@@ -36,22 +37,15 @@ test('machineCapOf: an undeclared ceiling DOES NOT EXIST', () => {
   assert.deepEqual(machineCapOf({ dispatch: { machineCap: 0 } }, {}), { ok: true, cap: 0 });
 });
 
-test('machineCapOf refuses BOTH retired env knobs by name, and names the declaration', () => {
-  // A silent fallback would keep a machine-wide 3 alive under an env var whose
-  // name says `triage` while it gated every verb. Both spellings have been the
-  // live one, so both are refused BY NAME.
-  for (const from of ['ORCA_TRIAGE_SESSION_CAP', 'ORCA_READY_SESSION_CAP']) {
-    const out = machineCapOf({}, { [from]: '5' });
-    assert.equal(out.ok, false, `${from} is not read past`);
-    assert.equal(out.from, from);
-    assert.equal(out.to, 'dispatch.machineCap');
+test('config retirement owns both env knob refusals and the Slots repair', () => {
+  for (const name of ['ORCA_TRIAGE_SESSION_CAP', 'ORCA_READY_SESSION_CAP']) {
+    const out = retiredCapKnob({ [name]: '5' });
+    assert.match(out.problem, new RegExp(`${name} is set`));
+    assert.match(out.fix, new RegExp(`unset ${name}`));
+    assert.match(out.fix, /admission is by Slots.*ax worker hosts/);
+    assert.deepEqual(machineCapOf({}, { [name]: '5' }), { ok: true, cap: null });
   }
-  // Empty is absence, exactly as it was: an exported-but-empty variable is a
-  // shell artefact, not an instruction.
-  assert.deepEqual(machineCapOf({}, { ORCA_TRIAGE_SESSION_CAP: '', ORCA_READY_SESSION_CAP: '' }), { ok: true, cap: null });
-  // A declared ceiling does not excuse the retired knob: it would read as the
-  // one in force.
-  assert.equal(machineCapOf({ dispatch: { machineCap: 8 } }, { ORCA_TRIAGE_SESSION_CAP: '2' }).ok, false);
+  assert.equal(retiredCapKnob({ ORCA_TRIAGE_SESSION_CAP: '', ORCA_READY_SESSION_CAP: '' }), null);
 });
 
 /**
