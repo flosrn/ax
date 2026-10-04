@@ -7,6 +7,8 @@
 // worse, hides those children at release time. Anything that counts workers
 // from that list inherits both bugs. The truth that no repair path can forge is
 // the PANE: a terminal handle the runtime still owns and has not orphaned.
+// An additive operator-close ending is shown as its own cause, not as landing
+// proof and not as a settlement debt. Liveness still comes from the host list.
 //
 // So this verb joins FOUR sources and shows their disagreement rather than
 // picking a winner silently:
@@ -252,7 +254,7 @@ function describeRecord(dir, file) {
   }
 
   if (latest === null) {
-    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, pending: unsettled === null ? pending : undefined, claims, why: 'no usable receipt yet' };
+    return { request, taskId: labelTask, dispatchId: null, handle: null, repo, host: undefined, unsettled, pending: unsettled === null ? pending : undefined, claims, ending: last?.ending, why: 'no usable receipt yet' };
   }
 
   const tid = (latest.task ?? {}).id ?? latest.taskId;
@@ -267,6 +269,7 @@ function describeRecord(dir, file) {
     unsettled: handle === null ? unsettled : null,
     pending: undefined,
     claims,
+    ending: last?.ending,
     why: handle === null ? 'no agent pane in the last usable receipt' : '',
   };
 }
@@ -696,7 +699,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       : leakedLive
         ? ` · an unsettled worker-start recorded ${leaked.handle}, ALIVE right now`
         : ` · an unsettled worker-start recorded ${leaked.handle}, ${leakedVerdict.pane}`;
-    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}`;
+    const line = `${pad(row.request, requestWidth)} · ${pad(row.taskId ?? 'no task id', taskWidth)} · pane ${pane} · worker-list ${state}${detail ? ` · ${detail}` : ''}${row.origin ? ` (${row.origin})` : ''}${suffix}${row.ending?.cause === 'operator-close' ? ` · operator ending at ${row.ending.at} (${row.ending.handle} on ${row.ending.host || 'here'}), not a landing` : ''}`;
 
     if (disagrees) {
       bad(line);
@@ -733,7 +736,7 @@ export function ls(argv = [], { resolve = resolveOrca, runner, exec = defaultExe
       // the handoff offers the operator the exact line #3 exists to withdraw.
       // `settle` is fail-closed and refuses that row too, which is what makes
       // naming it on every other row honest rather than a guess.
-      if (deadAttempt && continuation.route !== 'deliver') {
+      if (deadAttempt && row.ending === undefined && continuation.route !== 'deliver') {
         fix(`ax worker settle ${row.request}   # write the ending, once the gate's evidence proves it`);
       }
       // AND THE CONTINUATION OF A GONE PANE (#165), decided by

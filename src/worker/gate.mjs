@@ -9,6 +9,8 @@
 //   two are live                               -> 2, the duplicate itself
 //   the task is in no list we can read         -> 3, and both lists are Run-scoped, so this
 //                                                  covers "wrong id" AND "a Run no record names"
+// A duplicate's repair is ax worker close <handle>: that verb binds the pane to
+// its owning attempt and records an operator ending, never a landing.
 //
 // Until 2026-08-09 the bash/python original answered 3 for the FIRST of those
 // as well as the last, because it read only `worker-list` and therefore saw one
@@ -468,7 +470,7 @@ export function gate(argv = [], { resolve = resolveOrca, runner, env = process.e
   }
   if (live.length > 1) {
     bad(`DUPLICATE — ${live.length} live agents on one task, therefore one working tree.`);
-    for (const { handle, host } of live) fix(`orca terminal close --terminal ${handle}${at(host)}`);
+    for (const { handle } of live) fix(`ax worker close ${handle}`);
     note('Keep the current Dispatch\'s. Then warn the survivor: its tree mixes two sets of writes, so it must re-read everything with `git diff`.');
     note('Check reflog / upstream / dangling too.');
     return 2;

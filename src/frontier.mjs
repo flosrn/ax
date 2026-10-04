@@ -22,9 +22,9 @@
 //                     list above. Tracker data this verb cannot obtain is an
 //                     inability to establish, not an empty frontier (F-028).
 //
-// `already-dispatched` keys on an UNSETTLED record only. A settled record whose
-// ticket is still open classifies `attempt-ended-unmerged` — a dead or
-// abandoned attempt stays VISIBLE instead of vanishing from the loop.
+// `already-dispatched` keys on an UNSETTLED, unended record only. A settled
+// record or an additive operator-close ending on an open ticket classifies
+// `attempt-ended-unmerged` — visible, never evidence that the work landed.
 //
 // An empty takeable list does not establish Completion. Two observed tickets
 // blocking each other classify `blocked-by-cycle:` in excluded — an established
@@ -202,7 +202,12 @@ function dispatchStateOf(names, store, number, slug) {
       if (!Array.isArray(attempts) || attempts.length === 0) throw new Error('dispatch record: attempts is not a non-empty list');
       const settled = must(attempts[attempts.length - 1], 'settled', 'last attempt');
       if (typeof settled !== 'boolean') throw new Error("last attempt: 'settled' is not a boolean");
-      if (settled !== true) return { state: 'unsettled' };
+      const ending = attempts[attempts.length - 1].ending;
+      if (ending !== undefined && (ending?.cause !== 'operator-close' || typeof ending.handle !== 'string' ||
+          typeof ending.host !== 'string' || typeof ending.at !== 'string' || typeof ending.operation !== 'string')) {
+        throw new Error('last attempt: operator ending is malformed');
+      }
+      if (settled !== true && ending === undefined) return { state: 'unsettled' };
       settledSeen = true;
     } catch (error) {
       return { state: 'unreadable', reason: String(error.message ?? error).slice(0, 160), path };

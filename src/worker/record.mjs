@@ -17,6 +17,9 @@
 // Reading discipline (F-028): named keys, and a raise on absence — never an
 // `||` fallback on a container. An `or` on a container is how an empty worker
 // list was once read as a count of 2.
+// Close is the exception to replay: terminal close has no retry identity. Its
+// durable operation lives in close/, and its exact-attempt ending is additive;
+// neither recovery nor an ending is permission to reissue that mutation.
 
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -1361,6 +1364,36 @@ export function attemptSettle(path, { repo = '' } = {}) {
     rec.repo = backfill;
   }
   attempts[attempts.length - 1].settled = true;
+  save(rec, path);
+}
+
+/** Close operations are isolated from the root dispatch scans and saved durably. */
+export const CLOSE_NS = 'close';
+export function saveCloseOperation(path, operation) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  save(operation, path);
+}
+
+/** Write an operator ending on the bound attempt, never whichever is newest. */
+export function attemptEnd(path, tuple, ending) {
+  const rec = load(path);
+  const matches = must(rec, 'attempts', 'record root').filter(attempt => attempt.n === tuple.attempt);
+  if (matches.length !== 1) throw new Error('the bound attempt is absent or ambiguous');
+  const attempt = matches[0];
+  const phase = must(attempt, 'phases', 'bound attempt')[tuple.phase];
+  const result = phase?.receipt?.result;
+  if (phase?.name !== 'worker-start' || phase.identity !== tuple.identity ||
+      result?.dispatchId !== tuple.dispatchId || agentTerminal(result) !== tuple.handle ||
+      (argvValue(phase.argv, '--on') ?? '') !== tuple.host) {
+    throw new Error('the worker-start no longer binds the exact close tuple');
+  }
+  if (ending.cause !== 'operator-close' || ending.handle !== tuple.handle || ending.host !== tuple.host ||
+      typeof ending.at !== 'string' || typeof ending.operation !== 'string') throw new Error('invalid operator ending');
+  if (attempt.ending !== undefined) {
+    if (JSON.stringify(attempt.ending) !== JSON.stringify(ending)) throw new Error('the attempt already carries another ending');
+    return;
+  }
+  attempt.ending = ending;
   save(rec, path);
 }
 

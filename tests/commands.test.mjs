@@ -524,6 +524,11 @@ test('a verb whose contract is a judgement prints it, and only from the registry
   assert.match(release, /Never proof: an OPEN PR/);
   assert.match(release, /--close {12}act; without it this is a report and nothing mutates/);
   assert.match(release, /^Exit: 0 report or every release settled/m, 'the exit-code contract is stated where it is typed (ADR 0003)');
+  const close = plain(run(['worker', 'close', '--help'], HAS_ORCA).out);
+  assert.match(close, /ax worker close <handle\|request>/);
+  assert.match(close, /operator ending, never a landing/);
+  assert.match(close, /never reissues/);
+  assert.match(close, /--store/);
 
   const ask = plain(run(['triage', 'ask', '--help'], HAS_ORCA).out);
   for (const line of [/0 {2}answered/, /1 {2}refused/, /3 {2}cannot establish/, /4 {2}PENDING/]) {

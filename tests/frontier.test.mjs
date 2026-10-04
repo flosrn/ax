@@ -303,6 +303,19 @@ test('an UNSETTLED record is already-dispatched, a settled one on an open ticket
   assert.match(out, /#53 T53 — no blockers declared/);
 });
 
+test('an operator Close ending is ended-unmerged even while settled stays false', () => {
+  const request = requestIdFor('56', 'closed');
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({ request, repo: SLUG,
+    attempts: [{ n: 1, settled: false, phases: [], ending: {
+      cause: 'operator-close', handle: 'term_closed', host: 'gapicore', at: '2026-10-04T12:00:00Z', operation: '/store/close/op.json',
+    } }],
+  }));
+  const { code, out } = runFrontier({ issues: [issueRow(56)], graph: { i56: issueNode() } });
+  assert.equal(code, 0);
+  assert.match(out, /#56 T56 — attempt-ended-unmerged/);
+  assert.doesNotMatch(out, /#56 T56 — already-dispatched/);
+});
+
 test('a record from ANOTHER repository never excludes this repository\'s ticket', () => {
   // The dispatch store is host-global: a `61-api.json` written by a different
   // checkout must not read as this repository's dispatch. A record that NAMES

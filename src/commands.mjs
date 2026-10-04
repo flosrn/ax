@@ -212,6 +212,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       ['transcript <target>', 'a child’s session, or --last-message: its last word'],
       ['release', 'close a landed pane — proven by artifact, never by a word'],
       ['settle <task|request>', 'write a proven-dead attempt as settled — never a live one'],
+      ['close <handle|request>', 'end one pane on the operator’s word — never a landing'],
       ['sweep --under <path>', 'reclaim browsers a session left open — by the AGE of a root'],
       ['stall --request <id>', 're-arm the detached watcher of one recorded dispatch'],
     ],
@@ -244,6 +245,7 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // role brief instead (reported 2026-09-08). A flag a caller cannot discover
     // from the terminal is a flag they will guess wrong.
     verbOptions: {
+      close: [['--store <dir>', 'dispatch store (default ORCA_DISPATCH_STORE or ~/.omp/run/dispatch)']],
       dispatch: [
         ['--issue <ref>', 'the ticket: a Linear ref (ABC-123) or a GitHub number'],
         ['--name <name>', 'untracked work; the name is the request id and branch'],
@@ -273,6 +275,18 @@ Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
     // reads what counts as landing FROM THE TERMINAL, not from this module's
     // header — a header is for whoever patches the verb (./worker/release.mjs).
     helpBody: {
+      close: `Use: ax worker close <handle|request> [--store <dir>]
+Ends exactly one named pane on its recorded host, even while its agent is working.
+It records an operator ending, never a landing; no branch, worktree or PR is touched.
+A request naming several panes refuses and names the handles: choose one handle.
+
+The host must answer and still list the pane. Already absent takes ax worker settle.
+An ending needs a recorded ptyKilled:true receipt and absence from that host's list.
+Recovery never reissues terminal close. A lost receipt or unverified stop takes a
+process check, never an ending inferred from the missing pane.
+
+Exit: 0 operator ending recorded or already recorded - 1 refused or stop-unverified
+      2 usage - 3 cannot establish (store, lock, host, inventory or durable write)`,
       gate: `A missing observation is not a death, and this verb never authorises a
 re-dispatch from one (#192).
 
