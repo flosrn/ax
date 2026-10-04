@@ -322,11 +322,11 @@
         },
         "harnessos": {
           "type": "string",
-          "description": "The HarnessOS checkout whose `scripts/capacity.ts --json` places a dispatch that names no --on — absolute, or `~/`-relative. HARNESSOS_SOURCE, when set, wins: the checkout's location is the machine's answer, and this key is only its fallback. Absent with no HARNESSOS_SOURCE, a dispatch with no --on cannot establish where to go and says so. Placement runs on the operator Mac only and never places on it."
+          "description": "The HarnessOS checkout whose `scripts/capacity.ts --json` every remote dispatch reads — one with no --on, which it places, and one with --on <host>, whose Slots it measures from that host's entry — absolute, or `~/`-relative. `--on here` and a local `--worktree` do not read it. HARNESSOS_SOURCE, when set, wins: the checkout's location is the machine's answer, and this key is only its fallback. Absent with no HARNESSOS_SOURCE, a remote dispatch cannot establish its Slots and says so. Placement runs on the operator Mac only and never places on it."
         },
         "hosts": {
           "type": "object",
-          "description": "Execution hosts this project may dispatch to, keyed by the Orca environment name passed to --on. A host absent from here cannot be named with --on, and a ground it does not declare is not measured — the floors are what keep a newcomer from being OOM-killed for an incumbent's appetite, and they are per host and per project footprint. A dispatch with no --on reads its hosts' declarations from HarnessOS capacity instead, and an entry here for one of those hosts overrides them field by field for this repository.",
+          "description": "Execution hosts this project may dispatch to, keyed by the Orca environment name passed to --on. A host absent from here cannot be named with --on, and a ground it does not declare is not measured — the floors are what keep a newcomer from being OOM-killed for an incumbent's appetite, and they are per host and per project footprint. A named host must also appear in the HarnessOS capacity report with its `oom` fields (`killCount`, `baseline`, `acknowledged`, `acknowledgedAt`), or it offers no Slot. A dispatch with no --on reads its hosts' declarations from HarnessOS capacity instead, and an entry here for one of those hosts overrides them field by field for this repository.",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,

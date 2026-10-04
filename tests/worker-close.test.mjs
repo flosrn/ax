@@ -150,6 +150,24 @@ test('lost receipt recovery never reissues, absent becomes stop-unverified and u
   }
 });
 
+test('recovery of a prepared operation issues its one terminal close, since none was ever sent, and records the ending', async () => {
+  const { close } = await import('../src/worker/close.mjs');
+  const { saveCloseOperation } = await import('../src/worker/record.mjs');
+  const f = fixture();
+  const deps = { env: { ORCA_DISPATCH_STORE: f.store }, declarations };
+  capture(() => close(['term_one'], { ...deps, runner: fake({ ...f, receipt: { status: null, stdout: '', stderr: 'lost' } }).runner }));
+  const operationPath = join(f.store, 'close', readdirSync(join(f.store, 'close'))[0]);
+  const operation = JSON.parse(readFileSync(operationPath));
+  operation.state = 'prepared'; operation.receipt = null; delete operation.exit;
+  saveCloseOperation(operationPath, operation);
+  const recovery = fake(f);
+  const result = capture(() => close(['term_one'], { ...deps, runner: recovery.runner }));
+  assert.equal(result.code, 0, result.out);
+  assert.equal(recovery.calls.filter(args => args[1] === 'close').length, 1);
+  assert.equal(JSON.parse(readFileSync(operationPath)).state, 'ended');
+  assert.equal(JSON.parse(readFileSync(f.path)).attempts[0].ending.cause, 'operator-close');
+});
+
 test('a closed state without its exact stop receipt cannot authorize an ending', async () => {
   const { close } = await import('../src/worker/close.mjs');
   const { saveCloseOperation } = await import('../src/worker/record.mjs');

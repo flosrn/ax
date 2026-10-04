@@ -194,8 +194,10 @@ max(0, min(floor(min(freeMb, hostAvailableMb) / fp),
 Each live worker reserves its footprint even in a quiet phase, against both the slice maximum and
 the memory the host can still give the slice (what the slice holds plus what the host has
 available). Free memory is point-in-time headroom; the reservation terms are what leave room for
-a quiet worker's later peak. Admission holds a per-host lock from the Slot read to the recorded
-start, so two dispatches cannot spend one last Slot.
+a quiet worker's later peak. Once the host is proven, admission takes a per-host lock, reads the
+host's Slots again under it, and releases it when the start is recorded, so two dispatches cannot
+spend one last Slot. A lock left by a killed dispatch is shown by `ax worker hosts <host>` with
+its removal command.
 
 A host offers no Slot, with its reason printed, when it is cordoned, ineligible, retired, has no
 healthy gateway probe, sends a report entry that fails validation, has live panes nobody can
@@ -237,14 +239,19 @@ pull request landed.
 
 `ax worker retire-host` records that the operator wrote a host off, and only while that host's
 terminal list does not answer; a host that answers is refused, and its panes take
-`ax worker close`. The retirement is an attestation, never a proof: the host's panes stay INCONNU,
-its records leave the frontier while no other claim holds their ticket, and Slots skip it.
+`ax worker close`. Only a failed connection or a timeout is silence: any other Orca error, such as
+an unpaired environment name, writes nothing. Retirement holds the host's admission lock, so no
+dispatch is admitted onto it meanwhile. The retirement is an attestation, never a proof: the
+host's panes stay INCONNU, its records leave the frontier while no other claim holds their ticket,
+and Slots skip it.
 `ax worker unretire-host` withdraws it without asking the host.
 
 **Migration:** `dispatch.cap` and `dispatch.machineCap` are retired. A configuration that still
 declares either, whatever its value, is refused by name by every verb that reads it; delete the
 key from `ax.config.json`. `ax init` reports it without refusing. `ORCA_TRIAGE_SESSION_CAP` and
-`ORCA_READY_SESSION_CAP` stay refused: unset them and read `ax worker hosts`.
+`ORCA_READY_SESSION_CAP` stay refused: unset them and read `ax worker hosts`. `--on <host>` now
+reads HarnessOS capacity, so it needs `HARNESSOS_SOURCE` or `dispatch.harnessos` and a HarnessOS
+build that emits `oom`.
 
 ### Choose a worker's class, not its model
 

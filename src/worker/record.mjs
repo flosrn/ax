@@ -271,18 +271,51 @@ export function acquireLock(path, { pid = process.pid, host = hostname(), suffix
 
 /**
  * The per-host ADMISSION lock (KTD3): held by a remote dispatch from the Slot
- * read on `host` through the write-ahead of its `worker-start`, so two
- * dispatches cannot both read one last Slot as free. It lives under the store's
+ * read on `host` under it through the write-ahead of its `worker-start`, so two
+ * dispatches cannot both read one last Slot as free; `retire-host` holds it
+ * through its reachability read and policy write. It lives under the store's
  * `hosts/` namespace, beside nothing the root `*.json` scans read, and it is
  * the same `acquireLock` every other writer here takes — never a second lock
  * discipline. `--on here` takes none: the Mac has no Slots to spend.
  */
 export const HOSTS_NS = 'hosts';
-export function acquireHostLock(store, host, options = {}) {
+const hostLockBase = (store, host) => {
   if (!requestIdOk(host)) throw new Error(`host name "${host}" violates ${REQUEST_ID}`);
-  const dir = join(store, HOSTS_NS);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return acquireLock(join(dir, host), { ...options, suffix: '.admission.lock' });
+  return join(store, HOSTS_NS, host);
+};
+export function acquireHostLock(store, host, options = {}) {
+  const base = hostLockBase(store, host);
+  mkdirSync(dirname(base), { recursive: true, mode: 0o700 });
+  return acquireLock(base, { ...options, suffix: '.admission.lock' });
+}
+
+/**
+ * Who holds `host`'s admission lock, read without taking it: `null` when no
+ * lock file exists, else `{ path, text, repair }`. A holder on this machine
+ * whose pid is dead left it behind (a killed dispatch: `finally` never runs on
+ * a signal), and since `acquireLock` never takes a lock over, its removal is
+ * the named repair — a dead holder is mid-admission no longer, and the start
+ * it may have written ahead is in its record, not in the lock.
+ */
+export function readHostLock(store, host, { local = hostname() } = {}) {
+  const path = `${hostLockBase(store, host)}.admission.lock`;
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    return { path, text: `admission lock ${path} is unreadable: ${String(error?.message ?? error)}`, repair: `ls -l ${path}` };
+  }
+  let holder;
+  try {
+    holder = JSON.parse(raw);
+  } catch {
+    return { path, text: `admission lock ${path} is not JSON (a holder caught between create and write, or a damaged file)`, repair: `cat ${path}   # remove it only once no dispatch to '${host}' is running` };
+  }
+  if (holder?.host === local && !pidAlive(Number(holder.pid))) {
+    return { path, text: `admission lock held by pid ${holder.pid} on this machine, which is dead — a dispatch that was killed mid-admission`, repair: `rm ${path}   # its holder pid ${holder.pid} is dead; no dispatch is mid-admission` };
+  }
+  return { path, text: `admission lock held by ${holder?.host} pid ${holder?.pid} since ${holder?.at}`, repair: `ax worker hosts ${host}   # re-run once that dispatch has written its start` };
 }
 
 /**

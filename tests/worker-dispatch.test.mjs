@@ -12,7 +12,7 @@
 // touched, and nothing is ever dispatched for real.
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
@@ -1001,26 +1001,51 @@ test('two dispatches against one last Slot: the second, after the first start is
   const hosts = [computeHost('netcup-vie', { maxWorkers: 1 })];
   const orca = { hostTerminals: { 'netcup-vie': [] } };
   const lock = join(home, 'store', 'hosts', 'netcup-vie.admission.lock');
-  let heldDuringStart = false;
+  const window = [];
 
   const first = placed(['--name', 'first-slot', '--task', 'one', '--wait', '0'], {
     home,
     hosts,
     orca,
     request: 'first-slot',
+    sshAnswer: () => (window.push(`proof:${existsSync(lock)}`), { status: 0, stdout: '', stderr: '' }),
     startFn: (args, context, store) => {
-      heldDuringStart = existsSync(lock);
-      return startsOn('netcup-vie', 'first-slot')(args, context, store);
+      window.push(`start:${existsSync(lock)}`);
+      const code = startsOn('netcup-vie', 'first-slot')(args, context, store);
+      context.onWriteAhead();
+      window.push(`written:${existsSync(lock)}`);
+      return code;
     },
   });
   assert.equal(first.code, 0, first.out);
-  assert.equal(heldDuringStart, true, 'the host lock is held through the write-ahead of the start');
-  assert.equal(existsSync(lock), false, 'and released once the start is recorded');
+  assert.ok(window.filter(step => step.startsWith('proof')).every(step => step === 'proof:false'), `the host is proven before its lock is taken: ${window}`);
+  assert.deepEqual(window.filter(step => !step.startsWith('proof')), ['start:true', 'written:false'], 'held into the start, released the moment its worker-start is written ahead');
 
   const second = placed(['--name', 'second-slot', '--task', 'two', '--wait', '0'], { home, hosts, orca });
   assert.equal(second.code, 1, second.out);
   assert.match(second.out, /netcup-vie[^\n]*no free slot[^\n]*1 live/);
   assert.deepEqual(second.started, []);
+});
+
+test('a Slot spent while the host was being proven is refused under the host lock, and nothing starts', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  let rival = false;
+  const r = placed(['--name', 'late-slot', '--task', 'one', '--wait', '0'], {
+    home,
+    hosts: [computeHost('netcup-vie', { maxWorkers: 1 })],
+    orca: { hostTerminals: { 'netcup-vie': [] } },
+    sshAnswer: () => {
+      if (!rival) startsOn('netcup-vie', 'rival')([], {}, store);
+      rival = true;
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /netcup-vie[^\n]*no free slot[^\n]*read again under the host lock/);
+  assert.deepEqual(r.started, []);
+  assert.equal(existsSync(join(store, 'hosts', 'netcup-vie.admission.lock')), false, 'the refusal gives the lock back');
 });
 
 test('the host lock lives under the dispatch store namespace, and is never read as a record', () => {
@@ -1034,10 +1059,29 @@ test('the host lock lives under the dispatch store namespace, and is never read 
     env: { AX_LOCK_WAIT_MS: '0' },
   });
 
-  assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /netcup-vie[^\n]*lock[^\n]*elsewhere/);
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /CANNOT ESTABLISH[^\n]*netcup-vie[^\n]*lock[^\n]*elsewhere/);
   assert.doesNotMatch(r.out, /cannot be read/, 'the lock is not a record');
   assert.deepEqual(r.started, []);
+});
+
+test('an admission lock left by a dead dispatch on this machine names its own removal as the repair', () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  const store = join(home, 'store');
+  const lock = join(store, 'hosts', 'netcup-vie.admission.lock');
+  mkdirSync(join(store, 'hosts'), { recursive: true });
+  writeFileSync(lock, JSON.stringify({ pid: 999999999, host: hostname(), token: 't', at: '2026-10-04T10:00:00Z' }));
+  const r = placed(['--issue', ISSUE, '--slug', SLUG, '--wait', '0'], {
+    home,
+    hosts: [computeHost('netcup-vie')],
+    env: { AX_LOCK_WAIT_MS: '0' },
+  });
+
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /pid 999999999[^\n]*dead/);
+  assert.ok(r.out.includes(`rm ${lock}`), r.out);
+  assert.deepEqual(r.started, []);
+  assert.equal(existsSync(lock), true, 'never taken over automatically');
 });
 
 test('--on here takes no host lock', () => {

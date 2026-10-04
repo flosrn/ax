@@ -537,9 +537,15 @@ export const REMOTE_WORKER_START_TIMEOUT_MS = 120_000;
 const phaseTimeout = full =>
   full.includes('worker-start') && argvValue(full, '--on') ? REMOTE_WORKER_START_TIMEOUT_MS : undefined;
 
-function phaseRun(path, name, args, { bin, execute, identity = newIdentity(), now }) {
+/**
+ * `onWriteAhead` is called once a `worker-start` phase is on disk and before
+ * Orca is asked to run it: the moment a dispatch's host admission lock (KTD3)
+ * has done its work, since a written-ahead start already spends its Slot.
+ */
+function phaseRun(path, name, args, { bin, execute, identity = newIdentity(), now, onWriteAhead }) {
   const full = [bin, ...args];
   phaseBegin(path, { name, identity, argv: full, ...(now ? { now } : {}) });
+  if (name === 'worker-start') onWriteAhead?.();
   const out = execute(full);
   phaseEnd(path, 'last', { exit: out.status, receiptText: out.stdout, stderr: out.stderr, error: out.error });
   return phaseVerdict(path, 'last');
@@ -983,6 +989,7 @@ export function start(
     modelPolicy,
     now = () => new Date().toISOString(),
     sleep = sleepDefault,
+    onWriteAhead,
   } = {},
 ) {
   const parsed = parse(argv);
@@ -1048,6 +1055,7 @@ export function start(
     gateFn,
     arm,
     now,
+    onWriteAhead,
   };
 
   section(redactSecrets(`worker start ${parsed.request}`));

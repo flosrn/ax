@@ -5,7 +5,9 @@
 //
 // terminal close has no retry identity. Write issued BEFORE calling Orca, then
 // persist its receipt before checking the host's own inventory. Recovery NEVER
-// reissues: absence without a ptyKilled:true receipt cannot prove a process stop.
+// reissues once `issued` is saved: absence without a ptyKilled:true receipt
+// cannot prove a process stop. A `prepared` operation was never sent, so its
+// one close is issued on recovery.
 // A closed operation survives an ending-save failure and can finish that write.
 //
 // Exit codes (ADR 0003 — per verb):
@@ -117,10 +119,16 @@ export function close(argv = [], { resolve = resolveOrca, runner, env = process.
       }
       const before = inventory();
       if (!before.covered) return refuse(3, `CANNOT ESTABLISH — ${tuple.host || 'here'} did not answer for its own panes: ${before.scope.reason || 'inventory scope uncovered'}`, rerun);
-      if (!operation) {
+      // `prepared` is saved before `issued`: the close was provably never sent,
+      // so it is issued once here exactly as a fresh operation would be.
+      if (!operation || operation.state === 'prepared') {
         if (!before.scope.byHandle.has(tuple.handle)) return refuse(1, `REFUSED — ${tuple.handle} is already absent; nothing closed`, `ax worker settle ${quote(tuple.request)}`);
-        operation = { tuple, state: 'prepared', at: now(), receipt: null, argv: ['terminal', 'close', '--terminal', tuple.handle, ...(tuple.host ? ['--environment', tuple.host] : []), '--json'] };
-        saveCloseOperation(operationPath, operation);
+        const argv = ['terminal', 'close', '--terminal', tuple.handle, ...(tuple.host ? ['--environment', tuple.host] : []), '--json'];
+        if (operation && !same(operation.argv, argv)) return refuse(3, 'CANNOT ESTABLISH — the prepared close does not name this pane', `cat ${quote(operationPath)}   # never issue another close`);
+        if (!operation) {
+          operation = { tuple, state: 'prepared', at: now(), receipt: null, argv };
+          saveCloseOperation(operationPath, operation);
+        }
         operation.state = 'issued';
         saveCloseOperation(operationPath, operation);
         let out;

@@ -7,8 +7,8 @@
 // host, no ssh.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -306,40 +306,6 @@ test('a named host the report does not carry cannot be measured, so it is refuse
   assert.deepEqual(r.proved, []);
 });
 
-// ── KTD3: the host lock, and the Slots re-read under it ─────────────────────
-
-test('Slots are re-read under the host lock, and a host whose last Slot went meanwhile is released and skipped', () => {
-  const released = [];
-  // gapicore reads 2 Slots and is tried first; under its lock the count says
-  // both went meanwhile, so it is passed over for netcup-vie's one.
-  const r = place(capacity(host('gapicore', { maxWorkers: 2 }), host('netcup-vie', { freeMb: 1000 })), {
-    lock: name => ({
-      held: true,
-      release: () => released.push(name),
-      count: name === 'gapicore' ? { live: 2, unmeasured: 0 } : { live: 0, unmeasured: 0 },
-    }),
-  });
-
-  assert.equal(r.host, 'netcup-vie');
-  assert.match(reasonOf(r, 'gapicore'), /no free slot.*host lock/);
-  assert.deepEqual(released, ['gapicore'], 'the lock of the host passed over is released; the chosen one stays held');
-  assert.deepEqual(r.proved, ['netcup-vie']);
-  r.release();
-  assert.deepEqual(released, ['gapicore', 'netcup-vie']);
-});
-
-test('a host lock that cannot be taken skips that host with the lock named, and a failed proof releases it', () => {
-  const released = [];
-  const r = place(capacity(host('gapicore', { freeMb: 9000 }), host('netcup-vie', { freeMb: 5000 }), host('extra', { freeMb: 2000 })), {
-    lock: name => (name === 'gapicore' ? { held: false, reason: 'pre-existing lock belongs to gapicore pid 7' } : { held: true, release: () => released.push(name), count: { live: 0, unmeasured: 0 } }),
-    proofs: { 'netcup-vie': { ok: false, reason: 'only 3G free', notes: [] } },
-  });
-
-  assert.equal(r.host, 'extra');
-  assert.match(reasonOf(r, 'gapicore'), /lock.*pid 7/);
-  assert.deepEqual(released, ['netcup-vie'], 'a proof that failed gives its lock back');
-});
-
 test('hostSlots computes one line per reported host, and a named host alone when one is named', () => {
   const report = capacity(host('gapicore'), host('netcup-vie'));
   assert.equal(hostSlots({ capacity: report, liveOn: () => ({ live: 0, unmeasured: 0 }) }).lines.length, 2);
@@ -360,7 +326,7 @@ function checkout() {
 }
 
 /** What the verb printed on either stream, its exit code, and every Orca call it made. */
-function read(argv, report) {
+function read(argv, report, { prepare = () => {} } = {}) {
   const calls = [];
   const runner = args => {
     calls.push(args.join(' '));
@@ -369,6 +335,7 @@ function read(argv, report) {
     return { status: 1, receipt: { ok: false }, stderr: `unexpected ${args.join(' ')}` };
   };
   const store = realpathSync(mkdtempSync(join(tmpdir(), 'ax-hosts-store-')));
+  prepare(store);
   const written = [];
   const real = { out: process.stdout.write, err: process.stderr.write };
   process.stdout.write = process.stderr.write = chunk => (written.push(String(chunk)), true);
@@ -436,6 +403,21 @@ test('a declared host the report does not carry says why it offers no Slot', () 
   assert.match(r.out, /host 'old-box' skipped: not in the capacity report/);
   assert.match(r.out, /no Slot: not in the capacity report/);
   assert.doesNotMatch(r.out, /gapicore/);
+});
+
+test('a host whose admission lock a killed dispatch left behind says so under its line, with the removal as its repair', () => {
+  let lock = '';
+  const r = read(['gapicore'], capacity(host('gapicore')), {
+    prepare: store => {
+      mkdirSync(join(store, 'hosts'), { recursive: true });
+      lock = join(store, 'hosts', 'gapicore.admission.lock');
+      writeFileSync(lock, JSON.stringify({ pid: 999999999, host: hostname(), token: 't', at: '2026-10-04T10:00:00Z' }));
+    },
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /host 'gapicore': 6 free slot\(s\)[\s\S]*admission lock held by pid 999999999 on this machine, which is dead/);
+  assert.ok(r.out.includes(`rm ${lock}`), r.out);
 });
 
 test('peak unavailable is shown as such, and the host still offers Slots', () => {

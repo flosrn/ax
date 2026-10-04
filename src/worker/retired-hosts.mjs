@@ -9,11 +9,13 @@
 //
 // RETIRE ONLY A HOST THAT DOES NOT ANSWER. The host's own terminal list is
 // asked (`terminal list --environment <host>`) after the local runtime is
-// proven up; any answer refuses and points to `ax worker close`, which ends a
-// pane on a host that can still say it ended. A silent local runtime, an
-// undeclared host or an unreadable config cannot establish the silence, so
-// they write nothing. Unretiring needs no reachability: it only withdraws the
-// operator's word.
+// proven up, under the host's admission lock so no dispatch admits onto it
+// meanwhile; any answer refuses and points to `ax worker close`, which ends a
+// pane on a host that can still say it ended. Only a receipt naming a dialled
+// host that did not answer is silence: a silent local runtime, an undeclared
+// or unpaired host, an unreadable config, a held admission lock or any other
+// Orca error cannot establish it, so they write nothing. Unretiring needs no
+// reachability: it only withdraws the operator's word.
 //
 // WHAT IT NEVER DOES. It writes no MORT, rewrites no dispatch record, settles no
 // attempt and closes no pane. Each reader decides its own disposition, matching
@@ -40,7 +42,24 @@ import { dirname, join } from 'node:path';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { bad, fix, note, ok } from '../log.mjs';
 import { declarationOf } from './hosts.mjs';
-import { acquireLock, argvValue, defaultStore, HOSTS_NS, requestIdOk, saveJson } from './record.mjs';
+import { acquireHostLock, acquireLock, argvValue, defaultStore, HOSTS_NS, requestIdOk, saveJson } from './record.mjs';
+import { lockWaitMs } from './start.mjs';
+
+// The receipt codes that mean the paired host was dialled and did not answer.
+// `--environment` sends straight over the pairing's websocket, never through
+// the local runtime (orca src/cli/runtime/client.ts:118-122), so these name the
+// remote: `remote_runtime_unavailable` is "Could not connect to the remote Orca
+// runtime." or a closed connection (orca src/shared/remote-runtime-request-
+// socket.ts:206-208, remote-runtime-request-frames.ts:24-27), and
+// `runtime_timeout` is "Timed out waiting for the remote Orca runtime to
+// respond." (remote-runtime-request-frames.ts:30-34). Anything else — an
+// unpaired or ambiguous selector (`invalid_argument`, orca src/cli/execution-
+// host-flag.ts:162-206, raised before any host is contacted), a malformed
+// response, or no receipt at all — establishes no silence.
+const SILENT_CODES = new Set(['remote_runtime_unavailable', 'runtime_timeout']);
+
+const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const sleepDefault = ms => Atomics.wait(waitCell, 0, 0, ms);
 
 const RETIRED_FILE = 'retired.json';
 const ENTRY_KEYS = ['host', 'at', 'by'];
@@ -171,7 +190,7 @@ const cannot = (reason, repair) => {
 };
 
 /** `ax worker retire-host <host>` — write the host off, only while it does not answer. */
-export function retireHost(argv = [], { resolve = resolveOrca, runner, env = process.env, cwd = process.cwd(), declarations = declarationOf(cwd), now = () => new Date().toISOString() } = {}) {
+export function retireHost(argv = [], { resolve = resolveOrca, runner, env = process.env, cwd = process.cwd(), declarations = declarationOf(cwd), now = () => new Date().toISOString(), waitMs = Number(env.AX_LOCK_WAIT_MS ?? lockWaitMs), sleep = sleepDefault, clock = Date.now } = {}) {
   const parsed = parse('retire-host', argv, env);
   if (parsed.usage) return usage('retire-host', parsed.usage);
   const { host, store } = parsed;
@@ -203,26 +222,45 @@ export function retireHost(argv = [], { resolve = resolveOrca, runner, env = pro
   const ready = runtimeReady(run);
   if (!ready.ready) return cannot(`${ready.reason} — a host asked through a silent runtime is not a silent host`, `orca open   # then ${rerun}`);
 
-  const out = run(['terminal', 'list', '--environment', host, '--json']);
-  if (out.status === 0 && out.receipt?.ok === true) {
-    bad(`REFUSED — '${host}' answered its own terminal list, so it is not retired: a host that answers ends its panes one by one`);
-    fix(`ax worker ls   # then ax worker close <handle> for each pane on '${host}'`);
-    return 1;
+  // Admission holds this lock from its Slot re-read through the worker-start
+  // write-ahead; retirement takes it before asking the host and keeps it
+  // through the policy write (host lock first, then the policy lock), so no
+  // admission lands on a host between "it is silent" and "it is retired".
+  let lock;
+  try {
+    lock = acquireHostLock(store, host, { waitMs, sleep, clock });
+  } catch (error) {
+    return cannot(`the admission lock of '${host}' cannot be taken: ${String(error?.message ?? error)}`, `ax worker hosts ${host}   # then ${rerun}`);
   }
-  const silence = String(out.receipt?.error?.message ?? out.stderr ?? '').trim().slice(0, 200);
-  note(`'${host}' did not answer its terminal list${silence === '' ? '' : `: ${silence}`}`);
+  if (!lock.held) return cannot(`the admission lock of '${host}' is held — ${lock.reason}`, `ax worker hosts ${host}   # once its admission finishes, ${rerun}`);
+  try {
+    const out = run(['terminal', 'list', '--environment', host, '--json']);
+    if (out.status === 0 && out.receipt?.ok === true) {
+      bad(`REFUSED — '${host}' answered its own terminal list, so it is not retired: a host that answers ends its panes one by one`);
+      fix(`ax worker ls   # then ax worker close <handle> for each pane on '${host}'`);
+      return 1;
+    }
+    const code = out.receipt?.error?.code;
+    const said = String(out.receipt?.error?.message ?? out.stderr ?? '').trim().slice(0, 200);
+    if (!SILENT_CODES.has(code)) {
+      return cannot(`Orca's terminal list for '${host}' ${typeof code === 'string' ? `failed ${code}` : 'returned no error receipt'}${said === '' ? '' : `: ${said}`} — not a host that was dialled and did not answer`, `orca host list   # check '${host}' is a paired Orca server (orca environment show --environment ${host}), then ${rerun}`);
+    }
+    note(`'${host}' did not answer its terminal list (${code})${said === '' ? '' : `: ${said}`}`);
 
-  const entry = { host, at: now(), ...(env.USER ? { by: env.USER } : {}) };
-  const written = mutate(store, hosts => {
-    const existing = hosts.get(host);
-    if (existing !== undefined) return { changed: false, entry: existing };
-    hosts.set(host, entry);
-    return { changed: true, entry };
-  });
-  if (!written.ok) return cannot(written.reason, written.repair);
-  ok(`host '${host}' retired — ${retiredLine(written.entry)}: its records leave the frontier and its Slots; every pane on it stays INCONNU, never MORT, and nothing is settled`);
-  note(`ax worker unretire-host ${host}   # reverses it, should '${host}' ever answer again`);
-  return 0;
+    const entry = { host, at: now(), ...(env.USER ? { by: env.USER } : {}) };
+    const written = mutate(store, hosts => {
+      const existing = hosts.get(host);
+      if (existing !== undefined) return { changed: false, entry: existing };
+      hosts.set(host, entry);
+      return { changed: true, entry };
+    });
+    if (!written.ok) return cannot(written.reason, written.repair);
+    ok(`host '${host}' retired — ${retiredLine(written.entry)}: its records leave the frontier and its Slots; every pane on it stays INCONNU, never MORT, and nothing is settled`);
+    note(`ax worker unretire-host ${host}   # reverses it, should '${host}' ever answer again`);
+    return 0;
+  } finally {
+    lock.release();
+  }
 }
 
 /** `ax worker unretire-host <host>` — withdraw the operator's word; no host is asked. */

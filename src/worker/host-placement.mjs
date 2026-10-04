@@ -90,7 +90,7 @@ import { declarationOf } from './hosts.mjs';
 import { terminalInventory } from './pane.mjs';
 import { liveCount } from './slots.mjs';
 import { readRetired, retiredLine } from './retired-hosts.mjs';
-import { defaultStore } from './record.mjs';
+import { defaultStore, readHostLock, requestIdOk } from './record.mjs';
 
 /** The declaration fields a capacity entry carries for `proveHost` (./hosts.mjs). */
 const DECLARED = ['ssh', 'cgroup', 'diskPath', 'diskFloorGb', 'memFreeFloorMb'];
@@ -284,7 +284,7 @@ function countSkip(count) {
 const retiredSkip = count => (count?.retired ? `${retiredLine(count.retired)} — ax worker unretire-host ${count.retired.host} if it may take workers again` : '');
 
 /** One host's verdict from its entry and a live count: `{ reason }` or `{ slots, text }`. */
-function verdictOf(entry, count) {
+export function verdictOf(entry, count) {
   const retired = retiredSkip(count);
   if (retired !== '') return { reason: retired };
   const skip = countSkip(count);
@@ -372,17 +372,15 @@ export function hostSlots({ capacity, liveOn, only = '' }) {
  *
  * `liveOn(host)` answers `{ live, unmeasured, occupancy? }` from `livePanes`;
  * `repoFor(host)` answers `repoIdFor`'s verdict; `prove(host, declaration)`
- * answers `proveHost`'s; `lock(host)`, when given, takes the host lock and
- * re-reads its count under it: `{ held: true, release, count }` or
- * `{ held: false, reason }`. All are injected so the order, the arithmetic and
- * the lock discipline are provable offline.
+ * answers `proveHost`'s. All are injected so the order and the arithmetic are
+ * provable offline. No lock is taken here: a proof is ssh-bound and spends no
+ * Slot, so the caller takes the host lock (KTD3) after this returns and judges
+ * the chosen `entry` again under it with `verdictOf`.
  *
- * Answers `{ ok: true, host, declaration, repoId, grounds, lines, skipped,
- * release }` — the chosen host's lock still HELD, for the caller to release
- * once the start is written ahead — or `{ ok: false, lines, skipped }`, every
- * lock it took released.
+ * Answers `{ ok: true, host, declaration, repoId, grounds, entry, lines,
+ * skipped }` or `{ ok: false, lines, skipped }`.
  */
-export function placeHost({ capacity, declarations, liveOn, repoFor, prove, only = '', lock = null }) {
+export function placeHost({ capacity, declarations, liveOn, repoFor, prove, only = '' }) {
   const { lines, skipped, candidates } = hostSlots({ capacity, liveOn, only });
   const skip = (host, reason) => {
     skipped.push({ host, reason });
@@ -390,41 +388,19 @@ export function placeHost({ capacity, declarations, liveOn, repoFor, prove, only
   };
 
   for (const { host, entry } of candidates) {
-    let release = () => {};
-    if (lock !== null) {
-      const held = lock(host);
-      if (!held.held) {
-        skip(host, `its admission lock could not be taken: ${held.reason}`);
-        continue;
-      }
-      release = held.release;
-      if (held.count?.cannot) {
-        release();
-        skip(host, held.count.cannot);
-        continue;
-      }
-      const again = verdictOf(entry, held.count ?? NONE);
-      if (again.reason !== undefined) {
-        release();
-        skip(host, `${again.reason}, read again under the host lock`);
-        continue;
-      }
-    }
     const repo = repoFor(host);
     if (!repo.ok) {
-      release();
       skip(host, repo.reason);
       continue;
     }
     const declaration = declarations[host];
     const grounds = prove(host, declaration);
     if (!grounds.ok) {
-      release();
       skip(host, grounds.reason);
       continue;
     }
     lines.push(only === '' ? `placed on '${host}', the eligible host with the most free slots` : `admitted on '${host}', the host --on named`);
-    return { ok: true, host, declaration, repoId: repo.id, grounds, lines, skipped, release };
+    return { ok: true, host, declaration, repoId: repo.id, grounds, entry, lines, skipped };
   }
   return { ok: false, lines, skipped };
 }
@@ -510,7 +486,8 @@ export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.
 
   // The retirement policy, read before any name is judged: a retired host is a
   // known name, and a malformed policy is an inability, never no retirement.
-  const policy = readRetired(defaultStore(env));
+  const store = defaultStore(env);
+  const policy = readRetired(store);
   if (!policy.ok) return cannot(policy.reason, policy.repair);
   if (only !== '') {
     const reported = fleet.capacity.hosts.map(entry => entry?.host).filter(name => typeof name === 'string' && name !== '');
@@ -541,6 +518,14 @@ export function hosts(argv = [], { resolve = resolveOrca, runner, env = process.
   for (const row of rows) {
     note(row.line);
     for (const detail of hostDetails(row)) note(`  ${detail}`);
+    // A lock a dispatch is holding, or one a killed dispatch left: the lock a
+    // dispatch refused on is shown here too, or the Slot count above would
+    // contradict that refusal.
+    const held = requestIdOk(row.host) ? readHostLock(store, row.host) : null;
+    if (held !== null) {
+      note(`  ${held.text}`);
+      note(`  repair: ${held.repair}`);
+    }
   }
   if (!declared.ok) note(`read without this checkout's dispatch.hosts overrides: ${declared.reason}`);
   return 0;

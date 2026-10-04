@@ -80,14 +80,14 @@ import { setup as setupVerb } from '../worktree/setup.mjs';
 import { terminalInventory } from './pane.mjs';
 import { peerRun, peerSessionId } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, remoteTreeOf, untilSeen } from './placement.mjs';
-import { acquireHostLock, defaultStore, recordRepoNaming, staleClaim } from './record.mjs';
+import { acquireHostLock, defaultStore, readHostLock, recordRepoNaming, staleClaim } from './record.mjs';
 import { liveCount } from './slots.mjs';
 import { reportPathFor, reportPathWithin } from './report.mjs';
 import { verify } from './verify.mjs';
 import { lockWaitMs, start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
-import { capacityOf, countedConfig, harnessosSource, hostDeclarations, NONE, operatorMac, placeHost } from './host-placement.mjs';
+import { capacityOf, countedConfig, harnessosSource, hostDeclarations, NONE, operatorMac, placeHost, verdictOf } from './host-placement.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // The landed facts this dispatch's notes carry, and the SHARED reader that
@@ -777,20 +777,37 @@ function dispatchOnce(
     if (measured.cannot) return cannot(measured.cannot, measured.repair);
     for (const line of measured.lines) note(line);
   }
-  // THE HOST LOCK (KTD3): taken on the host about to be admitted, its count
-  // read again under it — a start another dispatch wrote ahead while this one
-  // was reading now spends its Slot — and held until §7 has written this
-  // dispatch's own start ahead. A live holder on this machine is waited out.
+  // THE HOST LOCK (KTD3): taken on the admitted host only once it is proven
+  // (§7), its count read again under it — a start another dispatch wrote ahead
+  // meanwhile now spends its Slot — and held until this dispatch's own start is
+  // written ahead. A live holder on this machine is waited out; anything else
+  // that keeps it is an inability, named with the holder's own repair.
   const admit = host => {
+    const store = defaultStore(env);
     let lock;
     try {
-      lock = acquireHostLock(defaultStore(env), host, { waitMs: Number(env.AX_LOCK_WAIT_MS ?? lockWaitMs), sleep, clock: now });
+      lock = acquireHostLock(store, host, { waitMs: Number(env.AX_LOCK_WAIT_MS ?? lockWaitMs), sleep, clock: now });
     } catch (error) {
-      return { held: false, reason: String(error?.message ?? error) };
+      return { cannot: `the admission lock of '${host}' could not be taken: ${String(error?.message ?? error)}`, repair: `ls -ld ${join(store, 'hosts')}` };
     }
-    if (!lock.held) return lock;
-    const again = measureLive({ run, env, config: counted, only: onHost });
-    return { held: true, release: lock.release, count: again.cannot ? { cannot: again.cannot } : (again.hosts.get(host) ?? NONE) };
+    if (!lock.held) {
+      let holder = null;
+      try {
+        holder = readHostLock(store, host);
+      } catch {
+        // The refusal below still names the lock; the holder is a courtesy.
+      }
+      return {
+        cannot: `the admission lock of '${host}' could not be taken: ${lock.reason}${holder === null ? '' : ` — ${holder.text}`}`,
+        repair: holder?.repair ?? `ax worker hosts ${host}   # then re-run this dispatch`,
+      };
+    }
+    const again = measureLive({ run, env, config: counted, only: host });
+    if (again.cannot) {
+      lock.release();
+      return { cannot: again.cannot, repair: again.repair };
+    }
+    return { lock, count: again.hosts.get(host) ?? NONE };
   };
 
   if (flags.needsRef !== '') {
@@ -882,10 +899,10 @@ function dispatchOnce(
 
   // A remote host — the one with the most Slots when no `--on` names it, or
   // the named host alone — passes one contract (KTD10): its Slots from the
-  // measurement §3 took, then, outside a dry run, its host lock and its Slots
-  // read AGAIN under it (KTD3), then its repository and its grounds. The lock
-  // is kept through the write-ahead of the start (§7). Never this Mac (R2),
-  // and a named host never falls back to another (R3).
+  // measurement §3 took, then its repository and its grounds, then, outside a
+  // dry run, its host lock and its Slots read AGAIN under it (KTD3, §7). The
+  // proof is ssh-bound and spends nothing, so no lock is held across it. Never
+  // this Mac (R2), and a named host never falls back to another (R3).
   const repoName = basename(paths.root || cwd);
   const proveOn = declaration => proveHost(declaration, { ssh: args => exec('ssh', args, cwd), kind, ref: flags.issue, sweep: !dry });
   let target = null;
@@ -899,7 +916,6 @@ function dispatchOnce(
       // explicit `--repo-id` is taken as given.
       repoFor: host => (onHost === '' ? repoIdFor(repoName, { run, env: host }) : { ok: true, id: flags.repoId }),
       prove: (host, declaration) => proveOn(declaration),
-      lock: dry ? null : host => admit(host),
     });
     for (const line of chosen.lines) note(line);
     if (!chosen.ok) {
@@ -914,7 +930,6 @@ function dispatchOnce(
             `ax worker hosts   # each host's Slots and why; then --on <a host with a Slot>, or --on here for this Mac`,
           );
     }
-    admission.release = chosen.release;
     target = chosen;
     on = chosen.host;
   }
@@ -1170,8 +1185,30 @@ function dispatchOnce(
   }
 
   // ── 7. dispatch ────────────────────────────────────────────────────────────
+  // The host lock (KTD3), taken last: a Slot another dispatch wrote ahead while
+  // this one proved the host is refused here, never spent twice, and a named
+  // host still never falls back (R3). Released by start the moment its
+  // worker-start is on disk — written ahead, answered or STRANDED, that start
+  // spends the host's Slot from the record — so the remote call behind it, up
+  // to 120s, never holds a sibling waiting.
+  if (target !== null) {
+    const admitted = admit(on);
+    if (admitted.cannot) return cannot(admitted.cannot, admitted.repair);
+    admission.release = admitted.lock.release;
+    const again = verdictOf(target.entry, admitted.count);
+    if (again.reason !== undefined) {
+      return refuse(
+        `'${on}' has no Slot left for this worker — host '${on}' skipped: ${again.reason}, read again under the host lock`,
+        onHost === '' ? 'ax worker hosts   # then re-run this dispatch: placement chooses again' : `ax worker hosts ${on}   # then --on <a host with a Slot>, or --on here for this Mac`,
+      );
+    }
+  }
+  const released = () => {
+    admission.release();
+    admission.release = () => {};
+  };
   const startArgs = [...owned, '--spec-file', spec, '--orca', bin, '--', ...place];
-  let code = startFn(startArgs, { env, runner, modelPolicy: policy });
+  let code = startFn(startArgs, { env, runner, modelPolicy: policy, onWriteAhead: released });
   if (code === 4) {
     // STRANDED: the mutation ran and the reply came back empty. That is not a
     // failure to report, it is exactly what --resume exists for, and BOTH remote
@@ -1182,10 +1219,8 @@ function dispatchOnce(
     note('STRANDED — the recorded mutation may still be running; replaying the recorded call (F-001: never a second request)');
     code = startFn(['--resume', '--request', request, '--orca', bin], { env, runner });
   }
-  // The start is on disk now — written ahead, answered or STRANDED, it spends
-  // its host's Slot from the record — so the host lock has done its work.
-  admission.release();
-  admission.release = () => {};
+  // A start that never reached its worker-start gives the lock back here.
+  released();
   if (code !== 0) return code;
 
   // ── 8. verify ──────────────────────────────────────────────────────────────

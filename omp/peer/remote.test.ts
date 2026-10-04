@@ -15,6 +15,7 @@
  * module hands it.
  */
 
+import { execFileSync } from 'node:child_process';
 import { expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -315,6 +316,24 @@ test('a caller outside any repository has no declaration to read, and says so', 
 
   expect(got.buf).toBeUndefined();
   expect(String(got.reason)).toContain('is inside a repository');
+});
+
+test('a checkout still declaring a retired dispatch key is refused by name, and no host is asked', () => {
+  const at = tree();
+  const argv: string[][] = [];
+  const checkout = mkdtempSync(join(tmpdir(), 'ax-remote-retired-'));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: checkout });
+  writeFileSync(
+    join(checkout, 'ax.config.json'),
+    JSON.stringify({ project: { name: 'probe' }, apps: { web: '.' }, dispatch: { cap: 3, hosts: { gapicore: { ssh: 'orca@vps' } } } }),
+  );
+
+  const got = fetch(at, { declaration: undefined, cwd: checkout, ssh: localShell(argv) }) as Record<string, unknown>;
+
+  expect(got.buf).toBeUndefined();
+  expect(String(got.reason)).toContain('dispatch.cap retired');
+  expect(String(got.repair)).toContain('delete dispatch.cap');
+  expect(argv).toHaveLength(0);
 });
 
 test('a bound that is not a byte count is refused before any host is asked', () => {

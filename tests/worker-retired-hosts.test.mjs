@@ -139,6 +139,34 @@ test('retire-host refuses a host this checkout does not declare, and a silent ru
   assert.equal(existsSync(retiredPath(store)), false);
 });
 
+test('retire-host writes nothing when Orca refuses the selector itself (invalid_argument): the host was never asked', () => {
+  const store = tmp('ax-retired-store-');
+  const down = orca();
+  const unpaired = 'Unknown Orca server in --environment netcup-dev: no paired Orca server is named or has id netcup-dev.';
+  const run = args => (args[0] === 'terminal' ? (down.calls.push(args.join(' ')), { status: 1, stdout: '', stderr: unpaired, receipt: { ok: false, error: { code: 'invalid_argument', message: unpaired } } }) : down(args));
+  const r = retire(store, run, checkout());
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /invalid_argument/);
+  assert.match(r.out, /orca host list/);
+  assert.equal(existsSync(retiredPath(store)), false, 'a selector error is not silence');
+  const bare = retire(store, args => (args[0] === 'terminal' ? { status: 1, stdout: '', stderr: 'boom' } : down(args)), checkout());
+  assert.equal(bare.code, 3, 'no receipt is not silence either');
+  assert.equal(existsSync(retiredPath(store)), false);
+});
+
+test('retire-host serializes with admission: a held host admission lock refuses before the host is asked', () => {
+  const store = tmp('ax-retired-store-');
+  mkdirSync(join(store, 'hosts'), { recursive: true });
+  writeFileSync(join(store, 'hosts', 'netcup-dev.admission.lock'), JSON.stringify({ pid: 1, host: 'another-machine', token: 'foreign', at: AT }));
+  const run = orca();
+  const r = capture(() => retireHost(['netcup-dev', '--store', store], { runner: run, cwd: checkout(), env: { USER: 'flo' }, now: () => AT, waitMs: 0 }));
+  assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /admission lock|another-machine/);
+  assert.match(r.out, /ax worker hosts netcup-dev/);
+  assert.equal(run.calls.some(call => call.startsWith('terminal list')), false, 'no terminal list under a foreign admission');
+  assert.equal(existsSync(retiredPath(store)), false);
+});
+
 // ── the readers ────────────────────────────────────────────────────────────────
 
 test('ls keeps a retired host\'s pane INCONNU with the retirement, never MORT, and names no settle for it', () => {

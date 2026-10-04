@@ -2391,3 +2391,28 @@ test('#221: replace refuses when a live pane occupies the recorded worktree unde
   assert.equal(run.calls.filter(call => call.includes('task-update')).length, 0, 'gate refusal issues no ready-flip');
   assert.equal(run.calls.filter(call => call.includes('worker-start')).length, 0, 'and no second identity');
 });
+
+// KTD3: a dispatch's host admission lock is held until THIS start's worker-start
+// is on disk, and no longer — the remote call behind it can take 120s, and a
+// sibling waiting on the lock reads the written-ahead start as a spent Slot.
+test('onWriteAhead fires once the worker-start phase is on disk, before Orca is asked to start it', () => {
+  const home = scratch();
+  const run = fakeRunner();
+  const seen = [];
+  const r = invoke(freshArgs(home, 'req-ahead'), {
+    env: { HOME: home },
+    run,
+    startDeps: {
+      onWriteAhead: () => {
+        const rec = JSON.parse(readFileSync(join(home, 'dispatch', 'req-ahead.json'), 'utf8'));
+        seen.push({
+          phases: rec.attempts.at(-1).phases.map(phase => phase.name),
+          asked: run.calls.filter(call => call.includes('worker-start')).length,
+        });
+      },
+    },
+  });
+
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(seen, [{ phases: ['task-create', 'worker-start'], asked: 0 }]);
+});
