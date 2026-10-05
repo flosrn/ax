@@ -22,6 +22,15 @@
 // there" (F-028), so it closes nothing. A close is proven by the pane's
 // absence from a fresh list, never by Orca's acknowledgement alone.
 //
+// A DISPATCHED PANE IS NOT THIS VERB'S TO CLOSE. A worker-start in the
+// dispatch store binds its agent pane to a record, and ending that pane is a
+// recorded mutation (AGENTS.md: written before it is issued): `ax worker
+// close` writes its close operation first and attaches the operator ending to
+// the exact attempt. Closing it here would leave the record pending beside a
+// dead pane nobody can explain. So a named handle any record binds refuses the
+// whole call and names `ax worker close`, and a store with an unreadable record
+// closes nothing — that record may be the one binding the pane (F-028).
+//
 // Exit codes (ADR 0003 — per verb):
 //   0  listed; or every named pane closed and proven absent
 //   1  refused: the primary checkout, a handle not in this worktree, or a close
@@ -38,6 +47,7 @@ import { readWorktrees } from '../git.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import { terminalInventory } from '../worker/pane.mjs';
+import { agentTerminal, defaultStore, scanStore } from '../worker/record.mjs';
 import { locateWorktree, physical, withinPath } from './locate.mjs';
 
 const USAGE = 'ax worktree panes <name-or-path> [--close <handle>...]';
@@ -115,12 +125,44 @@ export function describePane(pane) {
   return `${pane.handle} ${title} · ${agent} · last output ${spoke}`;
 }
 
+/**
+ * The dispatch request binding each pane handle as a worker-start's agent pane
+ * (`{ bound: Map<handle, request> }`), or `{ unread }`. A store that does not
+ * exist is a machine that never dispatched; one with an unreadable record is
+ * not known to bind nothing.
+ */
+export function workerPanes(store) {
+  const scan = scanStore(store);
+  if (scan.reason !== '' && !scan.missing) {
+    return { unread: { reason: `the dispatch store ${store} cannot be enumerated (${scan.reason}), so which panes a dispatch owns is unknown`, repair: `ls ${shq(store)}   # then re-run` } };
+  }
+  if (scan.unreadable.length > 0) {
+    return {
+      unread: {
+        reason: `${scan.unreadable.length} record(s) in ${store} cannot be read (${scan.unreadable.slice(0, 3).map(row => row.file).join(', ')}), and an unread record may be the one binding a pane named here`,
+        repair: `cat ${shq(`${store}/${scan.unreadable[0].file}`)}   # repair or move it aside, then re-run`,
+      },
+    };
+  }
+  const bound = new Map();
+  for (const { rec } of scan.records) {
+    for (const attempt of Array.isArray(rec.attempts) ? rec.attempts : []) {
+      for (const phase of Array.isArray(attempt?.phases) ? attempt.phases : []) {
+        if (phase?.name !== 'worker-start') continue;
+        const handle = agentTerminal(phase.receipt?.result);
+        if (handle !== null) bound.set(handle, rec.request);
+      }
+    }
+  }
+  return { bound };
+}
+
 export function panes(argv = [], { cwd = process.cwd(), env = process.env, platform = process.platform, resolve: resolveBin = resolveOrca, runner, exec = defaultExec, worktrees = readWorktrees } = {}) {
   const usage = message => (bad(message), fix(USAGE), 2);
   const refuse = (reason, repair) => (bad(`REFUSED — ${reason}`), fix(repair), 1);
   const cannot = (reason, repair) => (bad(`CANNOT ESTABLISH — ${reason}`), fix(repair), 3);
 
-  const closeAt = argv.indexOf('--close');
+  const closeAt = argv.findIndex(arg => arg === '--close');
   const head = closeAt === -1 ? argv : argv.slice(0, closeAt);
   const handles = closeAt === -1 ? [] : argv.slice(closeAt + 1);
   const unknown = [...head, ...handles].filter(arg => arg.startsWith('-'));
@@ -163,6 +205,7 @@ export function panes(argv = [], { cwd = process.cwd(), env = process.env, platf
   const before = read();
   if (before.unread) return cannot(before.unread.reason, before.unread.repair);
 
+  const workers = workerPanes(defaultStore(env));
   section(`panes ${path}`);
   if (handles.length === 0) {
     if (before.panes.length === 0) {
@@ -170,13 +213,18 @@ export function panes(argv = [], { cwd = process.cwd(), env = process.env, platf
       fix(`ax worktree reclaim ${shq(target)}`);
       return 0;
     }
-    for (const pane of before.panes) note(describePane(pane));
+    const recorded = handle => (workers.bound ?? new Map()).get(handle);
+    for (const pane of before.panes) {
+      const request = recorded(pane.handle);
+      note(request === undefined ? describePane(pane) : `${describePane(pane)} · dispatch ${request} — ax worker close ${shq(pane.handle)}`);
+    }
+    if (workers.unread) note(`${workers.unread.reason} — a close here refuses until it is read`);
     ok(`${before.panes.length} pane(s) hold this worktree — close the ones you own, by handle`);
-    const offered = before.panes.filter(pane => pane.handle !== self);
+    const offered = before.panes.filter(pane => pane.handle !== self && recorded(pane.handle) === undefined);
     fix(
       offered.length > 0
         ? `ax worktree panes ${shq(target)} --close ${offered.map(pane => shq(pane.handle)).join(' ')}   # the panes listed above; drop any you do not own`
-        : `ax worktree panes ${shq(target)}   # the only pane here is the one running this command`,
+        : `ax worktree panes ${shq(target)}   # no pane here is this verb's to close`,
     );
     return 0;
   }
@@ -187,6 +235,15 @@ export function panes(argv = [], { cwd = process.cwd(), env = process.env, platf
     return refuse(
       `${foreign.join(', ')} ${foreign.length === 1 ? 'is' : 'are'} not a pane of ${path} in the list just read — nothing was closed`,
       `ax worktree panes ${shq(target)}   # the handles this worktree holds now`,
+    );
+  }
+  if (workers.unread) return cannot(`${workers.unread.reason} — nothing was closed`, workers.unread.repair);
+  const dispatched = handles.filter(handle => workers.bound.has(handle));
+  if (dispatched.length > 0) {
+    const handle = dispatched[0];
+    return refuse(
+      `${dispatched.map(h => `${h} is the agent pane of dispatch record ${workers.bound.get(h)}`).join('; ')} — its close is a recorded mutation, so nothing was closed`,
+      `ax worker close ${shq(handle)}   # ends it through its record; then close the others here`,
     );
   }
 

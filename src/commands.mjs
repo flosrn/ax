@@ -108,6 +108,7 @@ export const COMMANDS = [
       ['reclaim <name>', 'a landed slice’s whole workspace, or a named KEEP'],
       ['panes <name>', 'what holds a worktree open; --close ends the handles you name'],
     ],
+    verbOptions: { panes: [['--close <handle>', 'end these named panes of the worktree — one or more handles, never a sweep']] },
     // What `ax worktree reclaim --help` prints under the block. Three verbs of
     // one noun now touch a checkout's life, and which one an operator wants is
     // a JUDGEMENT they make before typing: `clean` keeps the tree, `rm` is
@@ -161,9 +162,14 @@ bulk close: a shell opened after you read the list is never swept. Nothing in a
 pane list says who opened a pane, so read the list before you name a handle.
 A close counts only once the pane is absent from a fresh list.
 
+A pane a dispatch record binds is the worker's: it is listed with its record and
+closed by ax worker close <handle>, which records the ending. Naming one here
+refuses the whole call; an unreadable dispatch store closes nothing.
+
 Exit: 0 listed, or every named pane closed - 1 refused (primary checkout, a
-      handle not in this worktree, closing from inside it) - 2 usage
-      3 cannot establish (no Orca CLI, unreadable pane list, close not proven)`,
+      handle not in this worktree or bound to a dispatch, closing from inside it)
+      2 usage - 3 cannot establish (no Orca CLI, unreadable pane list or dispatch
+      store, close not proven)`,
     },
     agentLine:
       '`ax worktree setup` — make a fresh worktree runnable, `ax worktree ls` to see the port and database each one holds, and `ax worktree reclaim <name>` once a slice has landed.',

@@ -211,3 +211,43 @@ test('the primary checkout is never a target, listed or closed', () => {
   }
   assert.deepEqual(closes(), []);
 });
+
+/** A dispatch record whose worker-start bound `handle` as its agent pane. */
+function recordWorker(s, request, handle) {
+  const store = join(s.fixture, '.omp', 'run', 'dispatch');
+  mkdirSync(store, { recursive: true });
+  const result = { dispatchId: `ctx_${request}`, state: 'ready', effects: [{ kind: 'terminal', id: handle, role: 'agent' }] };
+  const phase = { name: 'worker-start', identity: 'id', argv: ['orchestration', 'dispatch', '--worktree', s.path], receipt: { ok: true, result }, exit: 0 };
+  writeFileSync(join(store, `${request}.json`), JSON.stringify({ request, host: 'h', orca: 'orca', createdAt: '2026-10-04T08:00:00.000Z', attempts: [{ n: 1, settled: false, phases: [phase] }] }));
+  return store;
+}
+
+test('a pane a dispatch record binds is closed through ax worker close, never here', () => {
+  const s = stage();
+  recordWorker(s, 'fix-parity', 'term_shell');
+  const { deps: d, closes } = deps(s, { terminals: TWO(s) });
+
+  const closing = capture(() => panes(['enterprise-pro-parity', '--close', 'term_shell', 'term_setup'], d));
+  assert.equal(closing.code, 1, closing.out);
+  assert.match(closing.out, /term_shell is the agent pane of dispatch record fix-parity/);
+  assert.match(closing.out, /ax worker close term_shell/);
+  assert.deepEqual(closes(), [], 'one recorded pane closes nothing, not even the unrecorded one');
+
+  const listing = capture(() => panes(['enterprise-pro-parity'], d));
+  assert.equal(listing.code, 0, listing.out);
+  assert.match(listing.out, /term_shell .*dispatch fix-parity — ax worker close term_shell/);
+  assert.match(listing.out, /--close term_setup\b/);
+  assert.doesNotMatch(listing.out, /--close[^\n]*term_shell/);
+});
+
+test('a dispatch store it cannot read in full closes nothing: an unread record may bind the pane', () => {
+  const s = stage();
+  const store = recordWorker(s, 'fix-parity', 'term_elsewhere');
+  writeFileSync(join(store, 'torn.json'), '{"request":');
+  const { deps: d, closes } = deps(s, { terminals: TWO(s) });
+
+  const { code, out } = capture(() => panes(['enterprise-pro-parity', '--close', 'term_setup'], d));
+  assert.equal(code, 3, out);
+  assert.match(out, /torn\.json/);
+  assert.deepEqual(closes(), []);
+});
