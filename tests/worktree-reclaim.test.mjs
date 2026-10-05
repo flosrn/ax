@@ -1509,7 +1509,7 @@ test('a linked workspace that cannot answer its baseRef is still an unread claim
   assertRepair(out);
 });
 
-test('the live-pane KEEP names per-handle closes, never a bulk sweep of the worktree', () => {
+test('the live-pane KEEP names ax worktree panes with the exact handles, never a bulk sweep of the worktree', () => {
   const s = stage();
   const { deps } = host(s, {
     terminals: [
@@ -1521,11 +1521,9 @@ test('the live-pane KEEP names per-handle closes, never a bulk sweep of the work
   const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
 
   assert.equal(code, 1, out);
-  // Inspection first, then the exact handles — and never `--all`, which would
-  // sweep a shell somebody opened after this line was printed.
-  assert.match(out, /orca terminal show --terminal term_shell/);
-  assert.match(out, /orca terminal close --terminal term_shell --json/);
-  assert.match(out, /orca terminal close --terminal term_setup --json/);
+  // The handles printed are the only ones the repair closes — never `--all`,
+  // which would sweep a shell somebody opened after this line was printed.
+  assert.match(out, new RegExp(`ax worktree panes ${s.path.replace(/[/\\]/g, '\\$&')} --close term_shell term_setup`));
   assert.doesNotMatch(out, /--all/);
 });
 

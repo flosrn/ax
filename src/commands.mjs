@@ -106,6 +106,7 @@ export const COMMANDS = [
       ['clean [path]', 'reclaim processes, containers and caches; keep the tree'],
       ['rm <name> [--force]', 'reclaim, then remove the tree'],
       ['reclaim <name>', 'a landed slice’s whole workspace, or a named KEEP'],
+      ['panes <name>', 'what holds a worktree open; --close ends the handles you name'],
     ],
     // What `ax worktree reclaim --help` prints under the block. Three verbs of
     // one noun now touch a checkout's life, and which one an operator wants is
@@ -128,7 +129,8 @@ Every term must hold, and a term that cannot be READ is a KEEP, never a pass:
   landed head   HEAD equals the head the Gate merge record validated. Never a
                 commit count, never diff emptiness, never a mutable headRefOid
   clean tree    porcelain status, untracked included
-  nobody there  the panes of that worktree, counted from the pane list
+  nobody there  the panes of that worktree, counted from the pane list; see and
+                close them with ax worktree panes <name>
   unclaimed     git's worktree \`locked\` flag (with its reason), Orca's
                 \`isPinned\`, a lineage child, any workspace based on this branch
   evidence      every Report the dispatch records require, copied under the
@@ -148,6 +150,20 @@ attempted. The removal itself passes no --run-hooks, so nothing runs twice.
 
 Exit: 0 reclaimed (or a removal already recorded) - 1 KEEP/REFUSED/STRANDED
       2 usage - 3 cannot establish (no Orca CLI, silent runtime, no gh)`,
+      panes: `Use: ax worktree panes <name-or-path> [--close <handle>...]
+Lists every pane open in one worktree — the panes that keep reclaim at KEEP —
+with its title, the agent running there and its last output. Any worktree,
+whether a dispatch placed it or not.
+
+--close ends exactly the handles you name, on your word: each must be one of
+this worktree's panes in the list read now, or nothing is closed. There is no
+bulk close: a shell opened after you read the list is never swept. Nothing in a
+pane list says who opened a pane, so read the list before you name a handle.
+A close counts only once the pane is absent from a fresh list.
+
+Exit: 0 listed, or every named pane closed - 1 refused (primary checkout, a
+      handle not in this worktree, closing from inside it) - 2 usage
+      3 cannot establish (no Orca CLI, unreadable pane list, close not proven)`,
     },
     agentLine:
       '`ax worktree setup` — make a fresh worktree runnable, `ax worktree ls` to see the port and database each one holds, and `ax worktree reclaim <name>` once a slice has landed.',

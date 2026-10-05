@@ -385,11 +385,14 @@ not be asked.
 A pane whose work did not land and that the operator wants ended — a stuck or
 abandoned worker — is the operator's `ax worker close <handle|request>`: it ends
 one named pane its host still lists and records an operator ending, never a
-landing. Its host must answer. A host that will never answer again is the
-operator's `ax worker retire-host <host>`: an attestation its panes stay INCONNU
-under, never a MORT; `ax worker unretire-host <host>` withdraws it. Neither is
-yours to reach for on your own reading — name the pane or host and the verb to
-the operator.
+landing. Its host must answer. A KEEP on live panes nobody recorded — Orca's
+`Setup` hook pane, a placement shell, a shell somebody opened — is the
+operator's `ax worktree panes <worktree> --close <handle>…`; `ax worktree panes
+<worktree>` lists them with title, agent and last output. A host that will
+never answer again is the operator's `ax worker retire-host <host>`: an
+attestation its panes stay INCONNU under, never a MORT; `ax worker
+unretire-host <host>` withdraws it. None of these is yours to reach for on your
+own reading — name the pane or host and the verb to the operator.
 
 ## Get bearings
 
