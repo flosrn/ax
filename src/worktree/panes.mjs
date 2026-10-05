@@ -142,7 +142,13 @@ export function panes(argv = [], { cwd = process.cwd(), env = process.env, platf
   const path = located.path;
   if (physical(path) === physical(checkout)) return refuse(`${path} is the primary checkout — its panes are not a worktree's leftovers`, 'ax worktree ls   # name one of the linked checkouts instead');
   if (handles.length > 0 && withinPath(physical(resolvePath(cwd)), physical(path))) {
-    return refuse(`you are standing in ${path}, so the pane running this command is one of the panes it would close`, `cd ${shq(checkout)} && ax worktree panes ${shq(target)} --close ${handles.map(shq).join(' ')}`);
+    return refuse(`you are standing in ${path}, so the pane running this command is likely one of the panes it would close`, `cd ${shq(checkout)} && ax worktree panes ${shq(target)}   # list them from outside, then name the handles`);
+  }
+  // The pane this command runs in, when Orca says which (as ../worker/release.mjs
+  // reads it): never closed, and never offered as a handle to close.
+  const self = env.ORCA_TERMINAL_HANDLE ?? '';
+  if (self !== '' && handles.includes(self)) {
+    return refuse(`${self} is the pane running this command — closing it would end this run mid-close`, `ax worktree panes ${shq(target)} --close <handle>   # from another terminal, or name only the other panes`);
   }
 
   const bin = resolveBin({ env, platform });
@@ -166,7 +172,12 @@ export function panes(argv = [], { cwd = process.cwd(), env = process.env, platf
     }
     for (const pane of before.panes) note(describePane(pane));
     ok(`${before.panes.length} pane(s) hold this worktree — close the ones you own, by handle`);
-    fix(`ax worktree panes ${shq(target)} --close ${before.panes.map(pane => shq(pane.handle)).join(' ')}`);
+    const offered = before.panes.filter(pane => pane.handle !== self);
+    fix(
+      offered.length > 0
+        ? `ax worktree panes ${shq(target)} --close ${offered.map(pane => shq(pane.handle)).join(' ')}   # the panes listed above; drop any you do not own`
+        : `ax worktree panes ${shq(target)}   # the only pane here is the one running this command`,
+    );
     return 0;
   }
 

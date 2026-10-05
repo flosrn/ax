@@ -1122,7 +1122,7 @@ function measure({ run, git, worktrees, path, branch, checkout }) {
           .slice(0, NAMED)
           .map(describePane)
           .join(' ; ')}`,
-        repair: `ax worktree panes ${target} --close ${live.map(pane => shq(pane.handle)).join(' ')}   # only the panes you own; ax worktree panes ${target} shows each`,
+        repair: `ax worktree panes ${target}   # every pane in it, and the --close that ends the ones you name`,
       },
     };
   }

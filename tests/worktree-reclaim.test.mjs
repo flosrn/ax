@@ -1509,7 +1509,7 @@ test('a linked workspace that cannot answer its baseRef is still an unread claim
   assertRepair(out);
 });
 
-test('the live-pane KEEP names ax worktree panes with the exact handles, never a bulk sweep of the worktree', () => {
+test('the live-pane KEEP names ax worktree panes on the exact target, and closes nothing itself', () => {
   const s = stage();
   const { deps } = host(s, {
     terminals: [
@@ -1521,10 +1521,11 @@ test('the live-pane KEEP names ax worktree panes with the exact handles, never a
   const { code, out } = capture(() => reclaim([s.path, '--store', s.store], deps));
 
   assert.equal(code, 1, out);
-  // The handles printed are the only ones the repair closes — never `--all`,
-  // which would sweep a shell somebody opened after this line was printed.
-  assert.match(out, new RegExp(`ax worktree panes ${s.path.replace(/[/\\]/g, '\\$&')} --close term_shell term_setup`));
-  assert.doesNotMatch(out, /--all/);
+  // A paste of the repair LISTS; closing is a second command naming handles,
+  // and never `--all`, which would sweep a shell opened after this line.
+  assert.match(out, new RegExp(`ax worktree panes ${s.path.replace(/[/\\]/g, '\\$&')}   #`));
+  const command = out.split('\n').find(line => line.includes('→')).split('#')[0];
+  assert.doesNotMatch(command, /--close|--all/);
 });
 
 test('the live-pane KEEP names what it is keeping the tree FOR, not just a count', () => {

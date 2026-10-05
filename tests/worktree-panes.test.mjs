@@ -182,3 +182,32 @@ test('closing from inside the target refuses: the pane running this command is o
   assert.equal(code, 1, out);
   assert.deepEqual(closes(), []);
 });
+
+test('naming the pane this command runs in refuses, and the listing never offers it to close', () => {
+  const s = stage();
+  const { deps: d, closes } = deps(s, { terminals: TWO(s) });
+  const self = { ...d, env: { ...d.env, ORCA_TERMINAL_HANDLE: 'term_shell' } };
+
+  const closing = capture(() => panes(['enterprise-pro-parity', '--close', 'term_shell', 'term_setup'], self));
+  assert.equal(closing.code, 1, closing.out);
+  assert.match(closing.out, /term_shell is the pane running this command/);
+  assert.deepEqual(closes(), [], 'refused before anything is closed');
+
+  const listing = capture(() => panes(['enterprise-pro-parity'], self));
+  assert.equal(listing.code, 0, listing.out);
+  assert.match(listing.out, /--close term_setup\b/);
+  assert.doesNotMatch(listing.out, /--close[^\n]*term_shell/);
+});
+
+test('the primary checkout is never a target, listed or closed', () => {
+  const s = stage();
+  const { deps: d, closes } = deps(s, { terminals: [{ handle: 'term_main', worktreeId: 'repo::main', worktreePath: s.main }] });
+  const outside = { ...d, cwd: s.path };
+
+  for (const argv of [['main'], ['main', '--close', 'term_main']]) {
+    const { code, out } = capture(() => panes(argv, outside));
+    assert.equal(code, 1, out);
+    assert.match(out, /primary checkout/);
+  }
+  assert.deepEqual(closes(), []);
+});
