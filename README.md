@@ -177,6 +177,7 @@ bytes; the merge needs the orchestrator's explicit judgment of that read:
 ax pr gate --pr 19 --issue 12                      # detector: grounds plus the acceptance digest
 ax pr gate --pr 19 --issue 12 --merge --accept-report <digest> --reason "<what was inspected>"
 ax worker release && ax worktree reclaim <worktree>
+ax worktree panes <worktree>                       # what a live-pane KEEP is holding; --close <handle>… ends them
 ```
 
 Judge the current canonical criteria and evidence the detector prints on each fresh read, a

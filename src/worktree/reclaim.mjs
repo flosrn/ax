@@ -52,7 +52,8 @@
 //     list itself. Never from `liveTerminalCount`: `orca worktree list --json`
 //     does not emit that key on this build, so a reader of it reads `undefined`.
 //     A released worker does not make every pane in its tree disposable, and a
-//     live sibling is a KEEP.
+//     live sibling is a KEEP. Its repair is `ax worktree panes` (./panes.mjs),
+//     which closes only the handles the operator names; this verb closes none.
 //  5. NOBODY HAS CLAIMED IT — the machine-readable claims that ALREADY exist:
 //     git's own worktree `locked` flag with its reason, and Orca's `isPinned` on
 //     the supported receipt. This work adds no retention marker, config key or
@@ -149,7 +150,6 @@ import { defaultExec, run as execRun } from '../exec.mjs';
 import { repoView } from '../gh.mjs';
 import { gitBlobSha } from '../hash.mjs';
 import { readWorktrees } from '../git.mjs';
-import { terminalInventory } from '../worker/pane.mjs';
 import { bad, fix, note, ok, section } from '../log.mjs';
 import { createRunner, resolveOrca, runtimeReady } from '../orca-bin.mjs';
 import {
@@ -171,6 +171,7 @@ import { reportPathFor } from '../worker/report.mjs';
 import { worktreesOf } from '../worker/transcript.mjs';
 import { clean } from './clean.mjs';
 import { locateWorktree, physical, withinPath } from './locate.mjs';
+import { describePane, showWorktree, worktreePanes } from './panes.mjs';
 
 const USAGE = 'ax worktree reclaim <name-or-path> [--store <dir>]';
 
@@ -1055,18 +1056,9 @@ function measure({ run, git, worktrees, path, branch, checkout }) {
     };
   }
 
-  const show = run(['worktree', 'show', '--worktree', `path:${path}`, '--json']);
-  const receipt = show.receipt ?? {};
-  const worktree = (receipt.result ?? {}).worktree ?? null;
-  if (receipt.ok !== true || worktree === null || typeof worktree !== 'object') {
-    const detail = (receipt.error ?? {}).message ?? receipt.unparseable ?? firstLine(show.stderr) ?? '';
-    return {
-      keep: {
-        reason: `orca worktree show could not answer for ${path}: ${String(detail).slice(0, 200) || `exit ${show.status}`} — an unread inventory is not an unclaimed target`,
-        repair: `orca worktree show --worktree path:${shq(path)} --json   # then re-run`,
-      },
-    };
-  }
+  const shown = showWorktree(run, path);
+  if (shown.unread) return { keep: { reason: `${shown.unread.reason} — an unread inventory is not an unclaimed target`, repair: shown.unread.repair } };
+  const worktree = shown.worktree;
   if (typeof worktree.isPinned !== 'boolean') {
     return {
       keep: {
@@ -1101,98 +1093,36 @@ function measure({ run, git, worktrees, path, branch, checkout }) {
     };
   }
 
-  // PANES COME THROUGH THE SHARED READER, WITH ITS COVERAGE RULE.
+  // PANES COME THROUGH THE SHARED READER, WITH ITS COVERAGE RULE (./panes.mjs).
   //
-  // `terminalInventory` (../worker/pane.mjs) is the one reader of "which panes
-  // does this runtime still own": it refuses an absent container and a
-  // TRUNCATED list, and it carries the scope — `hostIds` covered,
-  // `omittedHostIds` not asked. Reading a scoped `terminal list` here instead
-  // reproduced none of that: an EMPTY `terminals` array from a reply whose scope
-  // omitted the host that owns this target read as "nobody is there", which is
-  // an unread machine authorising a deletion (F-028).
-  //
-  // Coverage is judged for THIS TARGET'S OWN HOST and nothing else. An
-  // unrelated sleeping runtime must not make a local worktree unreclaimable —
-  // that is the #83 cost, and `paneVerdict` states the same rule: a reply that
-  // read `local` covers the runtime that answered it.
-  const inventory = terminalInventory(run);
-  if (!inventory.ok) {
-    return {
-      keep: {
-        reason: `${inventory.reason} — an absent or partial pane list cannot prove nobody is still in ${path}`,
-        repair: `orca terminal list --json   # then re-run`,
-      },
-    };
-  }
-  const host = String(worktree.hostId ?? (worktree.identity ?? {}).executionHostId ?? '');
-  if (host === '') {
-    return {
-      keep: {
-        reason: `the Orca receipt for ${path} names no execution host, so which runtime had to be asked about its panes is unread`,
-        repair: `orca worktree show --worktree path:${shq(path)} --json   # establish hostId, then re-run`,
-      },
-    };
-  }
-  const covered = Array.isArray(inventory.hosts) && (inventory.hosts.includes(host) || (host === 'local' && inventory.hosts.includes('local')));
-  if (!covered) {
-    const omitted = Array.isArray(inventory.omittedHosts) ? inventory.omittedHosts : [];
-    return {
-      keep: {
-        reason: `${path} is owned by execution host '${host}', which this pane list did not read (it covered ${(inventory.hosts ?? []).join(', ') || 'nothing it named'}${omitted.length > 0 ? `, omitting ${omitted.slice(0, NAMED).join(', ')}` : ''}) — an unqueried host is not an empty one`,
-        repair: `orca terminal list --environment ${shq(host)} --json   # ask the host that owns it, then re-run`,
-      },
-    };
-  }
-  const mine = pane =>
-    (typeof pane.worktreeId === 'string' && worktree.id !== undefined && pane.worktreeId === worktree.id) ||
-    (typeof pane.worktreePath === 'string' && physical(pane.worktreePath) === physical(path));
-  const live = [...inventory.byHandle.values()].filter(pane => pane !== null && typeof pane === 'object' && mine(pane) && pane.orphaned !== true);
+  // `terminalInventory` (../worker/pane.mjs) refuses an absent container and a
+  // TRUNCATED list and carries the scope; `worktreePanes` judges coverage for
+  // THIS TARGET'S OWN HOST and nothing else, so an unrelated sleeping runtime
+  // never makes a local worktree unreclaimable (#83) and an empty list from a
+  // scope that omitted the owner never reads as "nobody is there" (F-028).
+  const held = worktreePanes({ run, worktree, path });
+  if (held.unread) return { keep: held.unread };
+  const live = held.panes;
   if (live.length > 0) {
     // WHAT IS BEING KEPT, PANE BY PANE — never a bare count. Measured
     // 2026-09-08 across four worktrees of one wave (goodluckagency/ofmchat PRD
     // #208): every dispatch-placed worktree carries exactly three panes — the
-    // worker's own (`agentIdentity: "omp"`, title prefixed with the runtime's
-    // spinner and suffixed with the request slug), the `orca-setup` hook's
-    // pane, and a bare placement shell. `ax worker release --close` removes the
-    // first and the other two survive, which is release claiming its own and
-    // nothing else. So this term fired on two panes no human had opened, and
-    // `2 live pane(s)` reads as "somebody is working in there": the operator
-    // paid two `orca terminal show` calls per worktree to learn otherwise.
+    // worker's own, the `orca-setup` hook's pane, and a bare placement shell —
+    // and `ax worker release --close` removes only the first.
     //
-    // AND IT STILL CLAIMS NOTHING. The same wave measured the receipt's fields
-    // exhaustively — handle, ptyId, incarnationId, orphaned, worktreeId,
-    // worktreePath, branch, tabId, leafId, title, connected, writable,
-    // lastOutputAt, agentIdentity, executionHostId, preview — with no dispatch
-    // id, no role marker and no ownership state anywhere. A human's shell in a
-    // worktree carries `agentIdentity: null` exactly like the placement shell,
-    // and `title` FILLS IN LATER (the same pane read `null`, then
-    // `Terminal 1`), so it is not evidence of what a pane is either. Attributing
-    // a pane to the dispatch is therefore unavailable, and guessing it here
-    // would authorise closing somebody's terminal.
-    //
-    // What is available is the three signals the list does carry, printed so the
-    // reading the operator was making by hand is already made: a pane running an
-    // agent, a pane named by a hook, and when each last said anything.
-    const describe = pane => {
-      const title = typeof pane.title === 'string' && pane.title.trim() !== '' ? `"${pane.title.trim()}"` : 'untitled';
-      const agent = typeof pane.agentIdentity === 'string' && pane.agentIdentity !== '' ? pane.agentIdentity : 'no agent';
-      const spoke = typeof pane.lastOutputAt === 'string' && pane.lastOutputAt !== '' ? pane.lastOutputAt : 'never observed';
-      return `${pane.handle} ${title} · ${agent} · last output ${spoke}`;
-    };
+    // AND IT STILL CLAIMS NOTHING: no field in a pane list attributes a pane to
+    // the dispatch that placed it (#233), so a human's shell and the placement
+    // shell read alike. The repair is `ax worktree panes`, which closes only the
+    // handles the operator names — never `--all`, which would sweep a shell
+    // somebody opened after this reason was printed.
+    const target = shq(path);
     return {
       keep: {
         reason: `${live.length} live pane(s) in ${path} — a released worker does not make every pane in its tree disposable, and nothing in a pane list attributes one to the dispatch that placed it: ${live
           .slice(0, NAMED)
-          .map(describe)
+          .map(describePane)
           .join(' ; ')}`,
-        // NEVER `--worktree … --all`. That sweeps whatever is registered at the
-        // moment it runs — including a shell a human opened after this reason
-        // was printed. The repair names the INSPECTION first, then the exact
-        // handles it was printed for.
-        repair: `orca terminal show --terminal ${live[0].handle} --json   # inspect each, then close only the ones you own, by handle: ${live
-          .slice(0, NAMED)
-          .map(pane => `orca terminal close --terminal ${pane.handle} --json`)
-          .join(' ; ')}`,
+        repair: `ax worktree panes ${target}   # every pane in it, and the --close that ends the ones you name`,
       },
     };
   }
