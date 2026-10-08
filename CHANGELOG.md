@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.32.1](https://github.com/flosrn/ax/compare/v0.32.0...v0.32.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **worker:** give a remote start a readiness budget that covers its host setup ([#301](https://github.com/flosrn/ax/issues/301)) ([8aae40a](https://github.com/flosrn/ax/commit/8aae40a8fa8a54f112965a4781aac7e06fc77efe))
+
 ## [0.32.0](https://github.com/flosrn/ax/compare/v0.31.0...v0.32.0) (2026-10-08)
 
 
