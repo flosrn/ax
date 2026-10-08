@@ -8,6 +8,13 @@ below. Releases made before it took over are recorded only in the git tags:
 Versions are pre-1.0, so `feat:` and a breaking change both bump the minor and
 `fix:` bumps the patch — see `release-please-config.json`.
 
+## [0.32.0](https://github.com/flosrn/ax/compare/v0.31.0...v0.32.0) (2026-10-08)
+
+
+### Features
+
+* **worker:** wake named sleeping compute hosts before dispatch ([#299](https://github.com/flosrn/ax/issues/299)) ([c8c1f52](https://github.com/flosrn/ax/commit/c8c1f52a869a835d8f9e931c037ecfbc3111a316))
+
 ## [0.31.0](https://github.com/flosrn/ax/compare/v0.30.0...v0.31.0) (2026-10-04)
 
 
