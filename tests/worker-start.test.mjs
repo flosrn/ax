@@ -679,6 +679,23 @@ test('a remote worker-start passes Orca a readiness budget that covers the host 
   assert.ok(!local.calls.find(call => call.includes('worker-start')).includes('--timeout-ms'), 'a local start keeps Orca’s default');
 });
 
+test('a caller’s own remote --timeout-ms stands, and one Orca would not accept leaves ax a valid process budget', () => {
+  for (const [given, budget] of [['90000', 150_000], ['-100000', 120_000], ['1.5', 60_002], ['soon', 120_000]]) {
+    const home = scratch();
+    const opts = [];
+    const run = remoteRunner();
+    const r = invoke(freshArgs(home, '2122-work', [...REMOTE_PLACEMENT, '--timeout-ms', given]), {
+      env: { HOME: home },
+      startDeps: { resolve: () => 'orca', makeRunner: option => { opts.push(option); return run; } },
+      run: undefined,
+    });
+    assert.equal(r.code, 0, r.out);
+    const start = run.calls.find(call => call.includes('worker-start'));
+    assert.equal(start.filter(arg => arg === '--timeout-ms').length, 1, start.join(' '));
+    assert.ok(opts.some(option => option.timeoutMs === budget), `${given}: ${JSON.stringify(opts)}`);
+  }
+});
+
 test('replace reuses the task, opens one attempt, and omits --run from worker-start argv', () => {
   const home = scratch();
   const first = invoke(freshArgs(home), { env: { HOME: home } });

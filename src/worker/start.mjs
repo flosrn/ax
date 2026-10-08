@@ -548,8 +548,10 @@ const ORCA_READINESS_DEFAULT_MS = 60_000;
 
 const phaseTimeout = full => {
   if (!full.includes('worker-start') || !argvValue(full, '--on')) return undefined;
-  const readiness = Number(argvValue(full, '--timeout-ms') ?? ORCA_READINESS_DEFAULT_MS);
-  return REMOTE_WORKER_START_TIMEOUT_MS - ORCA_READINESS_DEFAULT_MS + (Number.isFinite(readiness) ? readiness : ORCA_READINESS_DEFAULT_MS);
+  // Orca, like spawnSync, takes only a positive budget; anything else falls back to Orca's own default.
+  const named = Number(argvValue(full, '--timeout-ms'));
+  const readiness = Number.isFinite(named) && named > 0 ? Math.ceil(named) : ORCA_READINESS_DEFAULT_MS;
+  return REMOTE_WORKER_START_TIMEOUT_MS - ORCA_READINESS_DEFAULT_MS + readiness;
 };
 
 /** The readiness budget a remote worker-start passes Orca, unless its passthrough already names one. */
