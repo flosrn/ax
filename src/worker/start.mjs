@@ -534,8 +534,27 @@ function reservedRefusal(passthru) {
  */
 export const REMOTE_WORKER_START_TIMEOUT_MS = 120_000;
 
-const phaseTimeout = full =>
-  full.includes('worker-start') && argvValue(full, '--on') ? REMOTE_WORKER_START_TIMEOUT_MS : undefined;
+/**
+ * A REMOTE START ALSO WAITS ON ITS HOST'S SETUP. Orca holds the prompt until the
+ * pane is idle, and with `--setup run` that is after the worktree setup:
+ * gapila's pnpm install on boat-1 took ~100s right after a wake (a disk boat
+ * had just restored), and Orca's default 60s readiness failed the start at
+ * agent_readiness with the agent up and no brief delivered (ctx_ae02d0f61c7f,
+ * 2026-10-08). So a remote worker-start names its own readiness budget, and the
+ * process budget grows by the same amount. A caller's own --timeout-ms stands.
+ */
+export const REMOTE_READINESS_TIMEOUT_MS = 300_000;
+const ORCA_READINESS_DEFAULT_MS = 60_000;
+
+const phaseTimeout = full => {
+  if (!full.includes('worker-start') || !argvValue(full, '--on')) return undefined;
+  const readiness = Number(argvValue(full, '--timeout-ms') ?? ORCA_READINESS_DEFAULT_MS);
+  return REMOTE_WORKER_START_TIMEOUT_MS - ORCA_READINESS_DEFAULT_MS + (Number.isFinite(readiness) ? readiness : ORCA_READINESS_DEFAULT_MS);
+};
+
+/** The readiness budget a remote worker-start passes Orca, unless its passthrough already names one. */
+const readinessArgs = passthru =>
+  argvValue(passthru, '--on') && argvValue(passthru, '--timeout-ms') === null ? ['--timeout-ms', String(REMOTE_READINESS_TIMEOUT_MS)] : [];
 
 /**
  * `onWriteAhead` is called once a `worker-start` phase is on disk and before
@@ -891,7 +910,7 @@ function replaceLocked(path, passthru, context) {
 
   attemptNew(path);
   const identity = newIdentity();
-  const args = ['orchestration', 'worker-start', '--task', task, '--retry-request', identity, ...inherited, '--json'];
+  const args = ['orchestration', 'worker-start', '--task', task, '--retry-request', identity, ...inherited, ...readinessArgs(inherited), '--json'];
   const failed = phaseFailure(phaseRun(path, 'worker-start', args, { ...context, identity }), { request: context.request });
   if (failed !== null) return failed;
 
@@ -950,7 +969,7 @@ function fresh(path, spec, passthru, context) {
   const workerIdentity = newIdentity();
   const workerArgs = [
     'orchestration', 'worker-start', '--task', task, '--run', context.runId,
-    '--retry-request', workerIdentity, ...passthru, '--json',
+    '--retry-request', workerIdentity, ...passthru, ...readinessArgs(passthru), '--json',
   ];
   const workerFailed = phaseFailure(phaseRun(path, 'worker-start', workerArgs, { ...context, identity: workerIdentity }), {
     request: context.request,

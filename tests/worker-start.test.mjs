@@ -660,6 +660,25 @@ test('a remote worker-start replay gets the same long budget, never a shorter on
   assert.ok(opts.some(option => option.timeoutMs >= 110_000), JSON.stringify(opts));
 });
 
+test('a remote worker-start passes Orca a readiness budget that covers the host setup, and waits that long plus Orca’s transport grace', () => {
+  const home = scratch();
+  const opts = [];
+  const run = remoteRunner();
+  const r = invoke(freshArgs(home, '2122-work', REMOTE_PLACEMENT), {
+    env: { HOME: home },
+    startDeps: { resolve: () => 'orca', makeRunner: option => { opts.push(option); return run; } },
+    run: undefined,
+  });
+  assert.equal(r.code, 0, r.out);
+  const start = run.calls.find(call => call.includes('worker-start'));
+  assert.equal(start[start.indexOf('--timeout-ms') + 1], '300000', start.join(' '));
+  assert.ok(opts.some(option => option.timeoutMs === 360_000), JSON.stringify(opts));
+
+  const local = invoke(freshArgs(scratch(), '2123-work'), { run: remoteRunner() });
+  assert.equal(local.code, 0, local.out);
+  assert.ok(!local.calls.find(call => call.includes('worker-start')).includes('--timeout-ms'), 'a local start keeps Orca’s default');
+});
+
 test('replace reuses the task, opens one attempt, and omits --run from worker-start argv', () => {
   const home = scratch();
   const first = invoke(freshArgs(home), { env: { HOME: home } });
@@ -726,7 +745,8 @@ test("a replace with no placement flags issues the record's placement, less the 
   // record's, in the record's order — without `--repo`/`--name`, which Orca
   // refuses beside an existing remote tree (placement.mjs, CREATION_FLAGS).
   const reused = ['--on', 'gapicore', '--worktree', `id:repo_1::${tree}`, '--agent', 'omp'];
-  assert.deepEqual(call.slice(-(reused.length + 3)), ['--model', 'alias', ...reused, '--json']);
+  // A remote start then names its readiness budget (REMOTE_READINESS_TIMEOUT_MS).
+  assert.deepEqual(call.slice(-(reused.length + 5)), ['--model', 'alias', ...reused, '--timeout-ms', '300000', '--json']);
 });
 
 test('a replace may retype the recorded placement, and one that differs is refused naming both values', () => {
@@ -1599,7 +1619,7 @@ test('the flags a caller legitimately owns are forwarded untouched', () => {
   const r = invoke(freshArgs(home, 'req-allowed', passthru), { env: { HOME: home } });
   assert.equal(r.code, 0, r.out);
   const call = r.calls.find(args => args.includes('worker-start'));
-  assert.deepEqual(call.slice(-(passthru.length + 1)), [...passthru, '--json']);
+  assert.deepEqual(call.slice(-(passthru.length + 3)), [...passthru, '--timeout-ms', '300000', '--json']);
 });
 
 test('--because is recorded, never forwarded: the reason a ticket\u2019s own assignment was overridden', () => {
