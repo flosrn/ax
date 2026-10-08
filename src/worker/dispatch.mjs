@@ -82,6 +82,7 @@ import { peerRun, peerSessionId } from './peers.mjs';
 import { databaseArgs, placeLocal, placeRemote, remoteSelectorFor, remoteTreeOf, untilSeen } from './placement.mjs';
 import { acquireHostLock, defaultStore, readHostLock, recordRepoNaming, staleClaim } from './record.mjs';
 import { liveCount } from './slots.mjs';
+import { readRetired, retiredLine } from './retired-hosts.mjs';
 import { reportPathFor, reportPathWithin } from './report.mjs';
 import { verify } from './verify.mjs';
 import { lockWaitMs, start as startVerb } from './start.mjs';
@@ -749,6 +750,23 @@ function dispatchOnce(
   // gates a dispatch (R1).
   const trackerRepo = repoSlug(args => exec('gh', args, paths.root ?? cwd)) || (named ? '' : trackerRepoOf(ticket.url));
 
+  // These refusals spend nothing, so they run before a named sleeping host is
+  // woken: a dispatch refused afterward would have resumed a billable host for
+  // nothing.
+  if (flags.needsRef !== '') {
+    const proven = needsRef(flags.needsRef, { exec, cwd });
+    if (!proven.ok) return refuse(proven.reason, 'git ls-remote --refs origin   # what origin actually carries');
+    note(`${flags.needsRef} resolves on origin, so a child on any clone of it is defined by something it can reach`);
+  }
+
+  const contract = readContract(dispatchConfig, paths.root);
+  if (contract.missing) {
+    return refuse(
+      `dispatch.contract names ${contract.path}, which cannot be read — a brief pointing at nothing sends a child to improvise (2026-08-01)`,
+      `ls ${contract.path}   # or drop dispatch.contract to use the mechanics-only contract`,
+    );
+  }
+
   // A REMOTE HOST IS MEASURED FIRST (KTD10): its report, then the live workers
   // on it, through the one reader `ax worker ls` prints (./slots.mjs). The
   // report comes before the count because the count needs it: a pane placed
@@ -767,6 +785,12 @@ function dispatchOnce(
     if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
     const namedEntries = fleet.capacity.hosts.filter(entry => entry?.host === onHost);
     if (onHost !== '' && namedEntries.length === 1 && sleepingHost(namedEntries[0]) && namedEntries[0].cordoned !== true) {
+      // A retirement is the operator's; a malformed policy is an inability,
+      // never no retirement (F-028). Either refuses before the host is woken.
+      const policy = readRetired(defaultStore(env));
+      if (!policy.ok) return cannot(policy.reason, policy.repair);
+      const retired = policy.hosts.get(onHost);
+      if (retired) return refuse(`${retiredLine(retired)}; a retired host is never woken`, `ax worker unretire-host ${onHost}   # if it may take workers again`);
       if (dry) {
         process.stderr.write(`ax: would wake ${onHost}; placement requires awake capacity\n`);
         return 0;
@@ -822,20 +846,6 @@ function dispatchOnce(
     }
     return { lock, count: again.hosts.get(host) ?? NONE };
   };
-
-  if (flags.needsRef !== '') {
-    const proven = needsRef(flags.needsRef, { exec, cwd });
-    if (!proven.ok) return refuse(proven.reason, 'git ls-remote --refs origin   # what origin actually carries');
-    note(`${flags.needsRef} resolves on origin, so a child on any clone of it is defined by something it can reach`);
-  }
-
-  const contract = readContract(dispatchConfig, paths.root);
-  if (contract.missing) {
-    return refuse(
-      `dispatch.contract names ${contract.path}, which cannot be read — a brief pointing at nothing sends a child to improvise (2026-08-01)`,
-      `ls ${contract.path}   # or drop dispatch.contract to use the mechanics-only contract`,
-    );
-  }
 
   // ONE source, and it is not an argument (./peers.mjs). An empty entry means
   // nothing in this session consumes a Run, so there is no address a child's
