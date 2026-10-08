@@ -153,6 +153,23 @@ export function capacityOf({ source, run = execRun }) {
   return { ok: true, capacity: report };
 }
 
+/** Only a named dispatch may wake a sleeper; automatic placement remains read-only. */
+export const sleepingHost = entry => entry?.state === 'asleep' && entry.wakeable === true;
+
+/** Wake through the same Bun/checkout boundary as capacityOf, then let the caller re-read capacity. */
+export function wakeHost({ source, host, run = execRun }) {
+  const out = run('bun', [join(source, 'scripts', 'capacity.ts'), 'wake', host, '--json'], { cwd: source, timeout: 240000 });
+  if (out.error === undefined && out.status === 0) return { ok: true };
+  let message = '';
+  try {
+    const answer = JSON.parse(out.stdout);
+    message = typeof answer.message === 'string' ? answer.message : typeof answer.error?.message === 'string' ? answer.error.message : '';
+  } catch {
+    // A failed command may answer plain text instead of JSON.
+  }
+  return { ok: false, reason: message || String(out.stderr ?? '').trim() || String(out.stdout ?? '').trim() || String(out.error?.message ?? `exit ${out.status}`) };
+}
+
 /**
  * Each reported host's declaration: the capacity entry's own (ssh, slice
  * cgroup, disk path and floors), with `dispatch.hosts.<host>` in ax.config.json
@@ -219,6 +236,7 @@ function invalidField(entry) {
 /** Why the report itself passes over a host, or '' when it does not. */
 function reportSkip(entry) {
   if (entry.cordoned === true) return `cordoned — bun scripts/capacity.ts uncordon ${entry.host} when it may take workers again`;
+  if (entry.state === 'asleep') return sleepingHost(entry) ? `asleep (dispatch --on ${entry.host} wakes it)` : 'asleep (not wakeable)';
   if (entry.eligible !== true) {
     const reasons = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.join('; ') : 'no reason given';
     return `ineligible (${entry.state ?? 'unknown state'}): ${reasons}`;
@@ -424,6 +442,11 @@ function hostDetails({ entry, count, reason }) {
     if (entry === null || typeof entry !== 'object') details.push('memory and OOM unavailable — the capacity report did not measure this host');
   }
   if (entry !== null && typeof entry === 'object') {
+    if (entry.state === 'asleep') {
+      details.push('measurements unavailable while asleep');
+      if (reason !== undefined) details.push(`no Slot: ${reason}`);
+      return details;
+    }
     if (!count?.retired && reason !== undefined && reportSkip(entry) !== '' && invalidField(entry) === '' && countSkip(count ?? NONE) === '') {
       const terms = slotsOf(entry, Number.isInteger(count?.live) ? count.live : 0);
       details.push(`Slots 0 offered; by its terms it would hold ${terms.slots} (${terms.text})`);

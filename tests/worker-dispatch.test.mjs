@@ -317,6 +317,7 @@ const run = (argv, options = {}) => {
       runner: options.runnerOverride ?? runner,
       platform: options.platform ?? 'linux',
       capacity: options.capacity ?? (remote === '' ? () => assert.fail('a local dispatch read the capacity report') : roomy),
+      ...(options.wake === undefined ? {} : { wake: options.wake }),
       exec: (bin, args, at) => {
         if (bin === 'gh' && args[0] === 'repo') {
           const slug = options.slug ?? 'acme/widgets';
@@ -1491,6 +1492,97 @@ function computeHost(name, { freeMb = 8000, freePercent = 600, maxWorkers = 8, .
     ...rest,
   };
 }
+
+const sleepingBoat = () => computeHost('boat-1', { state: 'asleep', wakeable: true, eligible: false, reasons: ['asleep'], memory: null, cpu: null, disk: null, orcaServeRssMb: null, oom: null });
+
+test('a named sleeping host wakes, re-reads capacity, and dispatches normally', () => {
+  let woke = false;
+  const sources = [];
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1', '--repo-id', 'r1', '--wait', '0'], {
+    orca: { hostTerminals: { 'boat-1': [] } },
+    capacity: ({ source }) => { sources.push(source); return { ok: true, capacity: { hosts: [woke ? computeHost('boat-1') : sleepingBoat()] } }; },
+    wake: ({ source, host }) => { assert.equal(source, '/src/harnessos'); assert.equal(host, 'boat-1'); woke = true; return { ok: true }; },
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /ax: waking boat-1…/);
+  assert.deepEqual(sources, ['/src/harnessos', '/src/harnessos']);
+  assert.equal(r.started.length, 1);
+});
+
+test('a failed wake refuses the named host without falling back', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1'], {
+    capacity: () => ({ ok: true, capacity: { hosts: [sleepingBoat()] } }),
+    wake: () => ({ ok: false, reason: 'provider unavailable' }),
+  });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /'boat-1' could not be woken: provider unavailable/);
+  assert.deepEqual(r.started, []);
+  assert.ok(!r.calls.some(call => call.includes('--environment boat-1')));
+});
+
+/** A home whose store holds `policy` as the host retirement policy, written verbatim. */
+function retiredHome(policy) {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ax-home-')));
+  mkdirSync(join(home, 'store', 'hosts'), { recursive: true });
+  writeFileSync(join(home, 'store', 'hosts', 'retired.json'), policy);
+  return home;
+}
+
+test('a sleeping named host is never woken when a refusal that spends nothing applies', () => {
+  const never = label => () => assert.fail(`${label} woke boat-1`);
+  const asleep = () => ({ ok: true, capacity: { hosts: [sleepingBoat()] } });
+
+  const retired = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1'], {
+    home: retiredHome(JSON.stringify({ hosts: [{ host: 'boat-1', at: '2026-10-04T12:00:00.000Z', by: 'flo' }] })),
+    capacity: asleep, wake: never('a retired host'),
+  });
+  assert.equal(retired.code, 1, retired.out);
+  assert.match(retired.out, /retired[^\n]*a retired host is never woken/);
+
+  const malformed = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1'], {
+    home: retiredHome('{not json'),
+    capacity: asleep, wake: never('a malformed policy'),
+  });
+  assert.equal(malformed.code, 3, malformed.out);
+  assert.match(malformed.out, /retirement policy [^\n]* is malformed/);
+
+  const ref = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1', '--needs-ref', 'refs/tags/v4/x'], {
+    exec: (bin, args) => (bin === 'git' && args[0] === 'ls-remote' ? { status: 2, stdout: '', stderr: '' } : { status: 0, stdout: '', stderr: '' }),
+    capacity: asleep, wake: never('a missing --needs-ref'),
+  });
+  assert.equal(ref.code, 1, ref.out);
+  assert.match(ref.out, /does not resolve on origin/);
+
+  const contract = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1'], {
+    root: repo({ dispatch: { contract: 'docs/missing-contract.md' } }),
+    capacity: asleep, wake: never('a missing dispatch.contract'),
+  });
+  assert.equal(contract.code, 1, contract.out);
+  assert.match(contract.out, /dispatch\.contract names [^\n]*missing-contract\.md, which cannot be read/);
+
+  for (const r of [retired, malformed, ref, contract]) assert.deepEqual(r.started, []);
+});
+
+test('a dry run reports a sleeping named host would wake without waking or measuring it', () => {
+  const r = run(['--issue', ISSUE, '--slug', SLUG, '--on', 'boat-1', '--dry-run'], {
+    capacity: () => ({ ok: true, capacity: { hosts: [sleepingBoat()] } }),
+    wake: () => assert.fail('dry run woke boat-1'),
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /ax: would wake boat-1; placement requires awake capacity/);
+  assert.deepEqual(r.started, []);
+  assert.ok(!r.calls.some(call => call.includes('--environment boat-1')));
+});
+
+test('automatic placement never wakes a sleeping host and names its skip', () => {
+  const r = placed(['--issue', ISSUE, '--slug', SLUG], {
+    hosts: [sleepingBoat()],
+    wake: () => assert.fail('automatic placement woke boat-1'),
+  });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /boat-1: asleep \(dispatch --on boat-1 wakes it\)/);
+  assert.deepEqual(r.started, []);
+});
 
 /** A placement run on the operator Mac: no --on, the report injected, every ssh target recorded. */
 function placed(argv, { hosts, root = repo(), orca = {}, env = {}, sources = [], ssh = [], sshAnswer, ...options } = {}) {

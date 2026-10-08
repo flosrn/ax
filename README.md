@@ -202,8 +202,15 @@ Slots are the only admission. A remote dispatch, placed or named with `--on <hos
 `bun scripts/capacity.ts --json` in the HarnessOS checkout named by `HARNESSOS_SOURCE`, or by
 `dispatch.harnessos` in `ax.config.json` when that variable is unset. Each reported host's ssh
 target, slice cgroup and floors come from that report; `dispatch.hosts.<host>` overrides them
-field by field for this repository. With `live` the panes recorded on that host plus the starts
-still open there, and `fp` the worker footprint, a host's Slots are:
+field by field for this repository. A sleeping host (`state: "asleep"`, `wakeable: true`)
+is woken only by an explicit `--on <host>`: AX prints `ax: waking <host>…`, runs
+`bun scripts/capacity.ts wake <host> --json` in that same checkout, then re-reads capacity
+before normal admission. A wake failure refuses that named host; it never falls back to this
+machine. Automatic placement never wakes hosts and names the skip as
+`asleep (dispatch --on <host> wakes it)`. A `--dry-run` naming a sleeper reports that it
+would wake it and stops without waking or claiming that awake capacity is available.
+With `live` the panes recorded on that host plus the starts still open there, and `fp`
+the worker footprint, a host's Slots are:
 
 ```text
 max(0, min(floor(min(freeMb, hostAvailableMb) / fp),
