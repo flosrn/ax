@@ -87,7 +87,7 @@ import { verify } from './verify.mjs';
 import { lockWaitMs, start as startVerb } from './start.mjs';
 import { emptyBodyRefusal, needsRef, normalizeSlug, readCommand, readTicket, readyAssignmentRefusal, ticketKind } from './ticket.mjs';
 import { hostFor, proveHost, quote, repoIdFor } from './hosts.mjs';
-import { capacityOf, countedConfig, harnessosSource, hostDeclarations, NONE, operatorMac, placeHost, verdictOf } from './host-placement.mjs';
+import { capacityOf, countedConfig, harnessosSource, hostDeclarations, NONE, operatorMac, placeHost, sleepingHost, verdictOf, wakeHost } from './host-placement.mjs';
 import { renderBrief } from './brief.mjs';
 import { pinIdentity, untilEquipped, writeMandate } from './child.mjs';
 // The landed facts this dispatch's notes carry, and the SHARED reader that
@@ -220,6 +220,7 @@ function dispatchOnce(
     // HarnessOS's capacity report, read for real; the suite injects a fixture
     // of its contract. Read only for a remote host (KTD10).
     capacity = capacityOf,
+    wake = wakeHost,
   },
   admission,
 ) {
@@ -764,6 +765,18 @@ function dispatchOnce(
     if (!source.ok) return cannot(source.reason, source.repair);
     fleet = capacity({ source: source.path });
     if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
+    const namedEntries = fleet.capacity.hosts.filter(entry => entry?.host === onHost);
+    if (onHost !== '' && namedEntries.length === 1 && sleepingHost(namedEntries[0]) && namedEntries[0].cordoned !== true) {
+      if (dry) {
+        process.stderr.write(`ax: would wake ${onHost}; placement requires awake capacity\n`);
+        return 0;
+      }
+      process.stderr.write(`ax: waking ${onHost}…\n`);
+      const woken = wake({ source: source.path, host: onHost });
+      if (!woken.ok) return refuse(`'${onHost}' could not be woken: ${woken.reason}; a named host never falls back to another host or to this Mac`, `bun ${join(source.path, 'scripts', 'capacity.ts')} wake ${onHost} --json`);
+      fleet = capacity({ source: source.path });
+      if (!fleet.ok) return cannot(fleet.reason, fleet.repair);
+    }
     declarations = hostDeclarations(fleet.capacity, dispatchConfig.hosts);
     const own = declarations[onHost] ?? dispatchConfig.hosts?.[onHost];
     counted = onHost === '' ? countedConfig(config, declarations) : { ...config, dispatch: { ...dispatchConfig, hosts: own === undefined ? {} : { [onHost]: own } } };

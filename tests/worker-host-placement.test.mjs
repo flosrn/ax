@@ -12,7 +12,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { capacityOf, harnessosSource, hostDeclarations, hostSlots, hosts, placeHost, slotsOf } from '../src/worker/host-placement.mjs';
+import { capacityOf, harnessosSource, hostDeclarations, hostSlots, hosts, placeHost, slotsOf, wakeHost } from '../src/worker/host-placement.mjs';
 
 /** One capacity entry, eligible and roomy unless a test says otherwise. */
 function host(name, { freeMb = 8000, maxMb = 12288, freePercent = 600, maxWorkers = 8, footprint = { memoryMb: 1000, cpuPercent: 100 }, ...rest } = {}) {
@@ -56,6 +56,33 @@ function place(report, { live = {}, repos = {}, proofs = {}, overrides = {}, onl
 }
 
 const reasonOf = (result, name) => result.skipped.find(row => row.host === name)?.reason ?? '';
+
+test('sleeping capacity is a named skip, not malformed null measurements', () => {
+  const asleep = host('boat-1', { state: 'asleep', wakeable: true, eligible: false, reasons: ['asleep'], memory: null, cpu: null, disk: null, orcaServeRssMb: null, oom: null });
+  const r = place(capacity(asleep));
+  assert.equal(reasonOf(r, 'boat-1'), 'asleep (dispatch --on boat-1 wakes it)');
+  assert.deepEqual(r.proved, []);
+  const shown = read([], capacity(asleep));
+  assert.equal(shown.code, 0, shown.out);
+  assert.match(shown.out, /measurements unavailable while asleep/);
+  assert.doesNotMatch(shown.out, /unverified|malformed|missing counter/);
+  assert.match(reasonOf(place(capacity(host('boat-1', { memory: null }))), 'boat-1'), /unverified.*memory/);
+});
+
+test('wake uses capacity checkout and Bun with a bounded generous timeout and names failures', () => {
+  const calls = [];
+  const run = (bin, args, options) => {
+    calls.push({ bin, args, options });
+    return { status: 0, stdout: '{"host":"boat-1","state":"awake"}', stderr: '' };
+  };
+  assert.deepEqual(wakeHost({ source: '/src/hos', host: 'boat-1', run }), { ok: true });
+  assert.deepEqual(calls, [{ bin: 'bun', args: ['/src/hos/scripts/capacity.ts', 'wake', 'boat-1', '--json'], options: { cwd: '/src/hos', timeout: 240000 } }]);
+  for (const answer of [
+    { status: 1, stdout: '{"message":"resume failed"}', stderr: '' },
+    { status: 1, stdout: '', stderr: 'resume failed' },
+    { status: null, error: new Error('resume failed') },
+  ]) assert.deepEqual(wakeHost({ source: '/src/hos', host: 'boat-1', run: () => answer }), { ok: false, reason: 'resume failed' });
+});
 
 // ── AE4 ──────────────────────────────────────────────────────────────────────
 
