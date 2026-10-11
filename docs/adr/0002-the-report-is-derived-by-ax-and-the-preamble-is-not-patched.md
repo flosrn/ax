@@ -13,7 +13,7 @@ delivered the section in the channel the orchestrator reads — seven wrote it a
 file they named themselves, one not at all, and no send used `--report-path`. Every worker obeyed
 the preamble. Decided with Flo 2026-09-04: the preamble owns the lifecycle message and stays as
 upstream ships it; ax owns the work artifact and says so in the last text a worker reads, the
-brief Orca appends as the TASK block. The artifact is the **Report** (`CONTEXT.md`), and its
+brief Orca appends as the TASK block. The artifact is the **Report** (`GLOSSARY.md`), and its
 location is derived from the dispatch record — `<worktree>/.scratch/report/<request>.md`, the rule
 `draftPath` already applies to triage — never a path the worker names.
 

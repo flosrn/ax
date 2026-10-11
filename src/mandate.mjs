@@ -35,7 +35,7 @@
 // presence established by the first well-formed line. A second vocabulary for
 // the same shape of fact is how one of them ends up wrong.
 //
-// COMPLETE OR ABSENT, NEVER PARTIAL — the rule `CONTEXT.md` already applies to
+// COMPLETE OR ABSENT, NEVER PARTIAL — the rule `GLOSSARY.md` already applies to
 // an Assignment. A container carrying two of the three parts is `incomplete`,
 // and the missing part is named: a target with no observations authorizes a
 // deployment nobody can verify, and observations with no target authorize one

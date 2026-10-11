@@ -106,7 +106,7 @@ checkout, declare `"@flosrn/ax": "link:../../flosrn/ax"` in the consumer, then `
 ## Domain docs
 
 `docs/ownership.md` (the module → owner map — look a file up before changing its rule) ·
-`CONTEXT.md` (the ratified glossary — read it before writing prose that names a session, a verb or
+`GLOSSARY.md` (the ratified glossary — read it before writing prose that names a session, a verb or
 an artifact; its `_Avoid_` lines are enforced over this file and README.md by `tests/docs.test.mjs`)
 · `docs/adr/` (this repo's decisions, cited by path; a bare `ADR NNNN` is the harness-wide set under
 `~/.omp/docs/adr/`) · `docs/solutions/` (past fixes, one file each, YAML frontmatter keyed by

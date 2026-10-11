@@ -197,7 +197,7 @@ test('the retired claim is caught inside a file whose other paragraphs are corre
 // that told a child, a playbook or a peer to go ask "the readiness session".
 // That is the more expensive half: a triage worker obeying such a sentence
 // addresses a session nobody activates, and its question is delivered to no
-// mailbox at all. `docs/adr/0001` deletes the role and CONTEXT.md retires the
+// mailbox at all. `docs/adr/0001` deletes the role and GLOSSARY.md retires the
 // word, so the bundled surfaces name the one operator session instead.
 //
 // Scoped to what a session OBEYS — the roles and the playbooks this package

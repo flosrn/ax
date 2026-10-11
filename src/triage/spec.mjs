@@ -50,7 +50,7 @@ export const READY_LABEL = 'ready-for-agent';
  * The sentence names no "readiness pass". `refine` was the last thing that word
  * described here, and it went; leaving the noun in the refusal that retires it
  * pointed a reader at a lane they could not find in the help, in the config or
- * in `--job`. CONTEXT.md retires the word (_Avoid_: readiness), and this string
+ * in `--job`. GLOSSARY.md retires the word (_Avoid_: readiness), and this string
  * is what an operator reads instead of that glossary.
  */
 export const REFINE_REMOVED =

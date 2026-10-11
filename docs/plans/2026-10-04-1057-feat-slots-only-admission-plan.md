@@ -17,7 +17,7 @@ execution: code
 
 - **Objective:** an operator can always dispatch a worker onto any machine that has room for it, see each machine's real memory headroom and OOM history before choosing, and end or write off panes the system cannot otherwise retire — without one unreachable machine freezing work anywhere else, and without admitting a worker a host cannot hold.
 - **Means:** admission by per-host Slots only (KTD1, KTD2), OOM-blocked hosts from HarnessOS (KTD5), `ax worker close` (KTD7) and host retirement as policy (KTD8). Decision record: `docs/adr/0005-slots-are-the-only-admission.md`.
-- **Authority:** the R-IDs below win on behavior; KTDs win on mechanism within them; ADR 0005 and `CONTEXT.md` (Slot, Close, Verdict) bind vocabulary. Owning module headers stay the doctrine authority per `AGENTS.md`, and each touched header is rewritten to the new rule.
+- **Authority:** the R-IDs below win on behavior; KTDs win on mechanism within them; ADR 0005 and `GLOSSARY.md` (Slot, Close, Verdict) bind vocabulary. Owning module headers stay the doctrine authority per `AGENTS.md`, and each touched header is rewritten to the new rule.
 - **Stop conditions:** stop and ask if a settled decision proves infeasible in code (for example Orca cannot close a remote pane by `--environment`), or if a change would require writing MORT without a covering inventory.
 - **Execution profile:** behavior fixes start red (`AGENTS.md`), offline tests with injected machine answers; no test spawns a mutating CLI against real defaults.
 - **Who ships:** this session's operator. HarnessOS ships first (R14), ax releases through Release Please with a breaking-change commit, then consumers re-pin.
@@ -336,7 +336,7 @@ U1 → U2 ship in HarnessOS and reach the Mac checkout, then gapicore's existing
 - **Goal:** the documentation, role prose and ownership map describe Slots, Close and retirement, and the release is marked breaking.
 - **Requirements:** R1–R13.
 - **Dependencies:** U3–U7.
-- **Files:** `docs/ownership.md`, `README.md`, `omp/roles/orchestrator.md`, `omp/index.test.ts`, `CONTEXT.md`, `docs/adr/0005-slots-are-the-only-admission.md`, `docs/solutions/bugs/a-count-labelled-as-the-fence-while-a-different-count-fenced.md` (superseded note).
+- **Files:** `docs/ownership.md`, `README.md`, `omp/roles/orchestrator.md`, `omp/index.test.ts`, `GLOSSARY.md`, `docs/adr/0005-slots-are-the-only-admission.md`, `docs/solutions/bugs/a-count-labelled-as-the-fence-while-a-different-count-fenced.md` (superseded note).
 - **Approach:** replace cap rows in the ownership map with the new modules; rewrite the README placement section and add the operator verbs; move the orchestrator role's admission read from `ls` to `hosts`; mark the #88 learning superseded by ADR 0005; land the work under a `feat(worker)!:` commit whose footer states the removed keys and the repair.
 - **Test expectation:** none beyond the existing `tests/docs.test.mjs` and `omp/index.test.ts`, which grade copyable commands, paths and retired words.
 - **Verification:** `pnpm test` passes; README commands all resolve in the registry.
@@ -379,7 +379,7 @@ Smoke after both ship, on the operator Mac: `hos host capacity` shows gapicore's
 
 ## Sources
 
-- `docs/adr/0005-slots-are-the-only-admission.md`, `CONTEXT.md` (Slot, Close, Verdict).
+- `docs/adr/0005-slots-are-the-only-admission.md`, `GLOSSARY.md` (Slot, Close, Verdict).
 - flosrn/ax#292 — the freeze and the failed settle on netcup-dev.
 - `src/worker/host-placement.mjs` header (KTD9 of plan 2026-09-26-001 and the #271 reservation rule).
 - `docs/solutions/bugs/a-count-labelled-as-the-fence-while-a-different-count-fenced.md`, `two-readers-of-one-store-one-question-each.md`, `unknown-liveness-is-not-permission-to-redispatch.md`, `an-identical-path-on-another-host-is-an-impostor-not-a-fallback.md`.
