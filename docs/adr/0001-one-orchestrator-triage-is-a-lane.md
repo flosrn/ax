@@ -11,7 +11,7 @@ made the parent worktree multi-pane. Measured 2026-08-30 (ofmchat spec 2, #117 a
 night): every finished child of that shape was told its report could not be delivered, because
 Orca's lineage stops at the worktree. Decided with Flo 2026-08-31: one `orchestrator` session
 dispatches both lanes — implementation and triage — rules its children's questions, and owns the
-validated merge. The `readiness` role is deleted. The ratified vocabulary lives in `CONTEXT.md` at
+validated merge. The `readiness` role is deleted. The ratified vocabulary lives in `GLOSSARY.md` at
 the repo root.
 
 **Clarified 2026-09-04.** The decision stands, and so does the lineage fact: Orca's lineage is

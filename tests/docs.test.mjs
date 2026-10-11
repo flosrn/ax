@@ -99,7 +99,7 @@ test('the help and the manifest describe the same tool', () => {
 // find out (spec #39, `docs/adr/0001`).
 //
 // The list is not this test's invention. Each retired word must be one
-// CONTEXT.md retires on an `_Avoid_` line, and each replacement must be a term
+// GLOSSARY.md retires on an `_Avoid_` line, and each replacement must be a term
 // that glossary DEFINES — so the authority stays the dictionary and a test can
 // never outlaw a word nobody ruled on. What the test adds is the direction no
 // glossary can hold by itself: absence from the docs it governs.
@@ -111,14 +111,14 @@ const RETIRED_WORDS = [
   ['Definition-of-Ready', 'Triage'],
 ];
 
-test('the docs speak the ratified glossary, and CONTEXT.md is what ratified it', () => {
-  const glossary = read('CONTEXT.md');
+test('the docs speak the ratified glossary, and GLOSSARY.md is what ratified it', () => {
+  const glossary = read('GLOSSARY.md');
   const avoided = [...glossary.matchAll(/^_Avoid_: (.+)$/gm)].map(match => match[1]).join(' ');
-  assert.ok(avoided.length > 0, 'CONTEXT.md retires nothing — the avoid lines are what this test reads');
+  assert.ok(avoided.length > 0, 'GLOSSARY.md retires nothing — the avoid lines are what this test reads');
 
   for (const [retired, replacement] of RETIRED_WORDS) {
-    assert.ok(avoided.includes(retired), `CONTEXT.md retires no word "${retired}": this list enforces the glossary, it may not extend it`);
-    assert.match(glossary, new RegExp(`^\\*\\*${replacement}\\*\\*:`, 'm'), `CONTEXT.md defines no term "${replacement}", so the repair names a word of nobody's`);
+    assert.ok(avoided.includes(retired), `GLOSSARY.md retires no word "${retired}": this list enforces the glossary, it may not extend it`);
+    assert.match(glossary, new RegExp(`^\\*\\*${replacement}\\*\\*:`, 'm'), `GLOSSARY.md defines no term "${replacement}", so the repair names a word of nobody's`);
 
     for (const file of DOCS) {
       assert.doesNotMatch(read(file), new RegExp(`\\b${retired}\\b`, 'i'), `${file} still says "${retired}" — the ratified term is "${replacement}"`);
@@ -127,11 +127,11 @@ test('the docs speak the ratified glossary, and CONTEXT.md is what ratified it',
 });
 
 test('AGENTS.md routes a prose writer to the dictionary that grades them', () => {
-  // The test above enforces CONTEXT.md's _Avoid_ lines OVER AGENTS.md — so a
+  // The test above enforces GLOSSARY.md's _Avoid_ lines OVER AGENTS.md — so a
   // cold agent editing prose here is graded against a glossary the file never
   // named. The pointer is the repair: the dictionary must be one hop away from
   // the writer it rules (spec #39 US-24, found by the wave's verification pass).
-  assert.match(read('AGENTS.md'), /CONTEXT\.md/, 'AGENTS.md never names CONTEXT.md, the naming authority its own prose is graded against');
+  assert.match(read('AGENTS.md'), /GLOSSARY\.md/, 'AGENTS.md never names GLOSSARY.md, the naming authority its own prose is graded against');
 });
 
 // ── the ownership map's completeness, which is the half a machine can hold ────

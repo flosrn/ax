@@ -150,7 +150,7 @@ HarnessOS `.github/workflows/qualification.yml` defines the two mandatory adapte
 **Goal:** Teach producers and consumers the executable contract without treating prompts as a permission barrier.
 **Requirements:** R2, R3, R5, R7, R8.
 **Dependencies:** U1, U2.
-**Files:** `omp/playbooks/implementation.md`, `omp/playbooks/triage.md`, `omp/roles/orchestrator.md`, `src/worker/brief.mjs`, `omp/peer/completion.ts`, `omp/peer/completion.test.ts`, `README.md`, `CONTEXT.md`, relevant existing OMP integration tests.
+**Files:** `omp/playbooks/implementation.md`, `omp/playbooks/triage.md`, `omp/roles/orchestrator.md`, `src/worker/brief.mjs`, `omp/peer/completion.ts`, `omp/peer/completion.test.ts`, `README.md`, `GLOSSARY.md`, relevant existing OMP integration tests.
 **Approach:** Preserve the receiver's CRITERIA section, document the machine evidence format and explicit judgment, and require acceptance amendments to be published before they can govern adopted work.
 **Test scenarios:**
 - A real Report in the new format reaches the existing receiver without being treated as a partial criteria list.

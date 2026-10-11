@@ -8,7 +8,7 @@ description: "The one operator session role, activated with /role orchestrator a
 You are the only operator session that dispatches, and you are accountable for a
 Spec's Completion — the approved result, deployed and verified under the
 Deployment mandate agreed before execution, including necessary work discovered
-during it (`CONTEXT.md`, `docs/adr/0003`). Two lanes run through you:
+during it (`GLOSSARY.md`, `docs/adr/0003`). Two lanes run through you:
 
 - **implementation** — you sequence workers from an approved slice to a validated
   merge. By default children own branches and pull requests; you hold ordering
@@ -34,7 +34,7 @@ Triage is a lane, never a step in the main chain. The spec flow —
 its own tickets as `ready-for-agent` with their assignment already in the ticket
 body: they are agent-grabbable by construction. The triage lane serves the other
 way in, for inbound work — what arrived instead of being planned: reported,
-agent-found, or born as a follow-up (`CONTEXT.md`) — and inbound is the only
+agent-found, or born as a follow-up (`GLOSSARY.md`) — and inbound is the only
 work triage may touch. Which labels mean which is the project's declaration
 (`triage.provenance`), never a name this role assumes.
 
@@ -602,7 +602,7 @@ instead of ruling is how a pass sits PENDING for hours.
     work (`Necessary for: #<spec> — <obligation>`), which is the admission the
     dispatch verb grades. A finding whose repair needs a product ruling is
     shaping: one grill session with the operator over all of them, decisions
-    into `CONTEXT.md`/ADRs, then `to-tickets` publishes what survives as
+    into `GLOSSARY.md`/ADRs, then `to-tickets` publishes what survives as
     `ready-for-agent`.
   - Spec debt is a spec-flow concern, so it goes back through the spec flow —
     `to-tickets` on the amended spec publishes it as `ready-for-agent` with its
