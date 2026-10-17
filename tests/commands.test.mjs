@@ -595,12 +595,13 @@ const parsedFlags = file => {
 };
 
 test('a verb’s help names every flag its own parser accepts', () => {
-  for (const [name, verb, parser] of [
-    ['worker', 'dispatch', 'src/worker/dispatch.mjs'],
-    ['pr', 'gate', 'src/pr-gate.mjs'],
+  for (const [name, verb, parser, floor] of [
+    ['worker', 'dispatch', 'src/worker/dispatch.mjs', 4],
+    ['pr', 'gate', 'src/pr-gate.mjs', 4],
+    ['worktree', 'panes', 'src/worktree/panes.mjs', 1],
   ]) {
     const accepted = parsedFlags(parser);
-    assert.ok(accepted.length > 3, `${parser}: ${accepted.length} flags extracted, so this test would prove nothing`);
+    assert.ok(accepted.length >= floor, `${parser}: ${accepted.length} flags extracted, so this test would prove nothing`);
 
     // The declaration, so a flag named only in passing by the noun's block or
     // by a body cannot pass for one this verb documents.
